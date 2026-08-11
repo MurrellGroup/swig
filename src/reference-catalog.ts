@@ -14,6 +14,12 @@ export interface ReferenceCollection {
   segments: Partial<Record<SegmentKey, ReferenceSource>>;
 }
 
+export interface ReferenceDatabaseOption {
+  id: string;
+  label: string;
+  collection: ReferenceCollection | null;
+}
+
 interface ReferenceSource {
   url: string;
   headers?: Record<string, string>;
@@ -23,6 +29,8 @@ interface ReferenceSource {
 const KI_TCR_ROOT = "https://gkhlab.gitlab.io/tcr/sequences";
 const KIARVA_API = "https://kiarva.scilifelab.se/api/fasta/genomic";
 const KIARVA_HEADERS = { "X-api-key": "kiarvafrontend" };
+
+export const DEFAULT_DATABASE_ID = "imgt";
 
 function kiTcrCollection(locus: LocusKey, segments: SegmentKey[]): ReferenceCollection {
   return {
@@ -90,6 +98,25 @@ export function collectionsFor(species: string, locus: LocusKey | null): Referen
   if (!locus) return [];
   return REFERENCE_COLLECTIONS.filter((collection) => collection.locus === locus
     && collection.speciesPrefixes.some((prefix) => species === prefix || species.startsWith(`${prefix}_`)));
+}
+
+export function databaseOptionsFor(
+  species: string,
+  locus: LocusKey | null,
+  imgtRelease: string,
+): ReferenceDatabaseOption[] {
+  return [
+    {
+      id: DEFAULT_DATABASE_ID,
+      label: `IMGT/GENE-DB ${imgtRelease || "reference pack"} · default`,
+      collection: null,
+    },
+    ...collectionsFor(species, locus).map((collection) => ({
+      id: collection.id,
+      label: collection.name,
+      collection,
+    })),
+  ];
 }
 
 export async function loadCollectionSegment(

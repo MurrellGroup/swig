@@ -73,9 +73,9 @@ The repertoire dashboard accumulates summaries while AIRR batches are committed,
 
 Swig runs SwiftIG, not IgBLAST. Receptor behavior is determined from the selected IG/TR locus and locus-bearing gene identifiers rather than an IgBLAST `ig_seqtype` setting. The bundled pack retains C-REGION records where the IMGT source provides them; a matching C FASTA can be supplied independently.
 
-## Germline collections and preprocessing
+## Germline databases and preprocessing
 
-The default pack is derived from IMGT/GENE-DB. The chain-specific selector also exposes the following KI resources:
+The **Database** selector always defaults to the bundled IMGT/GENE-DB pack. Alternative entries are added only when their declared species and individual locus match the current selection; for example, no KI entry is shown for cat, and combined BCR/TCR searches retain IMGT. The compatible alternatives are:
 
 | Collection | Scope | Delivery |
 | --- | --- | --- |
@@ -83,7 +83,7 @@ The default pack is derived from IMGT/GENE-DB. The chain-specific selector also 
 | KI human TCR database | human TRA, TRB, TRD, and TRG V/D/J as applicable | fetched from the publisher's HTTPS FASTA endpoint when selected |
 | KIMDB 1.1 | rhesus and cynomolgus macaque IGH V/D/J | bundled unchanged because the publisher endpoint is HTTP-only and cannot be fetched by an HTTPS page |
 
-Each collection can replace all of its segments or only V, D, or J. Custom FASTA uses the same in-browser preprocessing worker. The preprocessor:
+Selecting an alternative database loads all segments that it publishes; any segment absent from that resource continues to use the bundled IMGT baseline. The V, D, J, and C cards then remain independent: uploading a FASTA replaces only that component, and removing the upload restores that component from the selected database. Custom and remotely loaded FASTA use the same in-browser preprocessing worker. The preprocessor:
 
 - validates identifiers, locus/segment consistency, nucleotide symbols, duplicate names, and embedded `SWIGMETA` coordinates;
 - reads exact FWR/CDR boundaries from an IMGT-gapped V record when present;

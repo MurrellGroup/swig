@@ -4,7 +4,7 @@ import test from "node:test";
 import zlib from "node:zlib";
 
 import { preprocessGermlineFasta, type MetadataAllele } from "../src/germline-preprocess.ts";
-import { collectionsFor } from "../src/reference-catalog.ts";
+import { collectionsFor, databaseOptionsFor, DEFAULT_DATABASE_ID } from "../src/reference-catalog.ts";
 
 const pack = JSON.parse(zlib.gunzipSync(fs.readFileSync(new URL("../public/references/imgt-202632-7.json.gz", import.meta.url))).toString());
 const human = pack.species.find((entry: { name: string }) => entry.name === "Homo sapiens");
@@ -75,6 +75,14 @@ test("the KI catalog exposes human IGH/TCR and macaque IGH collections by matchi
   assert.equal(collectionsFor("Macaca mulatta_AG07107", "IGH")[0]?.id, "kimdb-macaca_mulatta");
   assert.equal(collectionsFor("Macaca fascicularis", "IGH")[0]?.id, "kimdb-macaca_fascicularis");
   assert.deepEqual(collectionsFor("Mus musculus_C57BL/6", "IGH"), []);
+});
+
+test("database choices always default to IMGT and never expose a mismatched KI collection", () => {
+  const cat = databaseOptionsFor("Felis catus_Abyssinian", "IGH", "202632-7");
+  assert.deepEqual(cat.map((option) => option.id), [DEFAULT_DATABASE_ID]);
+  assert.match(cat[0].label, /^IMGT\/GENE-DB 202632-7/);
+  assert.deepEqual(databaseOptionsFor("Homo sapiens", null, "202632-7").map((option) => option.id), [DEFAULT_DATABASE_ID]);
+  assert.deepEqual(databaseOptionsFor("Homo sapiens", "IGH", "202632-7").map((option) => option.id), [DEFAULT_DATABASE_ID, "kiarva-human-igh"]);
 });
 
 test("bundled KIMDB files are intact FASTA exports", () => {
