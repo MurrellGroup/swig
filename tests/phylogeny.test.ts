@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   collapseShortInternalBranches,
   extractNewick,
+  ladderizeTree,
   layoutTree,
   parseNewick,
   rootOnOutgroup,
@@ -89,6 +90,21 @@ test("phylogram layout preserves FastTree zero-length branches", () => {
   assert.ok(cladogram.nodes.find((node) => node.name === "a")!.x > 24);
 });
 
+test("phylogram expands fractional branch lengths across the complete tree viewport", () => {
+  const parsed = parseNewick("((a:0.003,b:0.007):0.002,c:0.031);" );
+  const phylogram = layoutTree(parsed, 620, 24, "phylogram", 24, 74);
+  const c = phylogram.nodes.find((node) => node.name === "c")!;
+  assert.equal(phylogram.maximumDistance, 0.031);
+  assert.ok(Math.abs(c.x - (620 - 24)) < 1e-9, `deepest tip stopped at x=${c.x}`);
+  assert.ok((phylogram.nodes.find((node) => node.name === "b")?.x ?? 0) > 150);
+});
+
+test("tree layout has no hidden horizontal floor when the width is compressed to zero", () => {
+  const compressed = layoutTree(parseNewick("(a:0.01,b:0.02);"), 0, 0, "phylogram", 24, 74);
+  assert.ok(compressed.nodes.every((node) => node.x === 0));
+  assert.equal(compressed.nodes.find((node) => node.name === "a")?.y, compressed.nodes.find((node) => node.name === "b")?.y);
+});
+
 test("Newick serialization writes an explicit length for every edge, including zero-length tips", () => {
   const parsed = parseNewick("((a:0,b:5e-9)0.91:0,c:1);");
   const serialized = `${serializeNewick(parsed)};`;
@@ -113,6 +129,20 @@ test("germline rerooting preserves every pairwise patristic distance", () => {
   const before = pairwiseLeafDistances(parsed);
   const after = pairwiseLeafDistances(rootOnOutgroup(parsed, "GERMLINE_OUTGROUP"));
   assert.deepEqual([...after.keys()].sort(), [...before.keys()].sort());
+  for (const [pair, distance] of before) assert.ok(Math.abs((after.get(pair) ?? Number.NaN) - distance) < 1e-12, pair);
+  const rooted = rootOnOutgroup(parsed, "GERMLINE_OUTGROUP");
+  assert.equal(rooted.children.find((child) => child.name === "GERMLINE_OUTGROUP")?.length, 0);
+  assert.equal(rooted.children.find((child) => child.name !== "GERMLINE_OUTGROUP")?.length, 0.5);
+});
+
+test("ladderization reorders clades without changing topology or branch lengths", () => {
+  const parsed = parseNewick("((a:0.1,b:0.2):0.3,(c:0.4,(d:0.5,e:0.6):0.7):0.8,f:0.9);" );
+  const largeFirst = ladderizeTree(parsed, "large-first");
+  const smallFirst = ladderizeTree(parsed, "small-first");
+  assert.deepEqual(leafNames(largeFirst).slice(0, 3).sort(), ["c", "d", "e"]);
+  assert.equal(leafNames(smallFirst)[0], "f");
+  const before = pairwiseLeafDistances(parsed);
+  const after = pairwiseLeafDistances(largeFirst);
   for (const [pair, distance] of before) assert.ok(Math.abs((after.get(pair) ?? Number.NaN) - distance) < 1e-12, pair);
 });
 

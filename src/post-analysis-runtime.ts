@@ -1,6 +1,8 @@
 import type { AirrResultStore, AirrScanRow } from "./result-store";
 import type {
+  CollapseMode,
   DedupKey,
+  DenoiseOptions,
   ExpansionOptions,
   LineageOptions,
   LineageSummary,
@@ -9,11 +11,19 @@ import type {
 } from "./post-analysis-core";
 
 export interface DedupDashboard {
+  mode: CollapseMode;
   key: DedupKey;
+  algorithm: string;
   inputRecords: number;
+  inputAbundance: number;
   uniqueRecords: number;
   collapsedRecords: number;
   largestGroups: Array<{ ordinal: number; count: number }>;
+  partitions: number;
+  candidateComparisons: number;
+  excludedAmbiguous: number;
+  unresolvedRecords: number;
+  warnings: string[];
 }
 
 export interface LineageDashboard {
@@ -69,7 +79,7 @@ export class PostAnalysisRuntime {
       await this.request({ type: "init", total: this.store.count });
       const fields = [
         "sequence_id", "sequence", "sequence_alignment", "locus", "v_call", "j_call",
-        "cdr3", "cdr3_aa", "productive",
+        "cdr3", "cdr3_aa", "productive", "duplicate_count",
       ];
       await this.store.scanAirrRows(fields, async (rows) => {
         if (signal?.aborted) throw new DOMException("Post-analysis was cancelled.", "AbortError");
@@ -83,6 +93,19 @@ export class PostAnalysisRuntime {
   async deduplicate(key: DedupKey): Promise<DedupDashboard> {
     await this.ensureIndexed();
     return this.request<DedupDashboard>({ type: "dedup", key });
+  }
+
+  async denoise(options: DenoiseOptions, onProgress?: (processed: number, total: number) => void, signal?: AbortSignal): Promise<DedupDashboard> {
+    await this.ensureIndexed(onProgress, signal);
+    await this.request({ type: "denoiseInit", options });
+    await this.store.scanAirrRows(["sequence_alignment", "sequence", "v_sequence_start", "j_sequence_end"], async (rows) => {
+      if (signal?.aborted) throw new DOMException("Denoising was cancelled.", "AbortError");
+      await this.request({
+        type: "denoiseIngest",
+        rows: rows.map((row) => ({ ordinal: row.ordinal, sequence: denoiseVdjSequence(row) })),
+      });
+    }, { batchSize: 2_000, onProgress, signal });
+    return this.request<DedupDashboard>({ type: "denoiseFinish" });
   }
 
   async applyDedupFilter(): Promise<{ mask: Uint8Array; retained: number }> {
@@ -166,5 +189,16 @@ function toWorkerRow(row: AirrScanRow): WorkerResult {
     cdr3: row.values.cdr3,
     cdr3_aa: row.values.cdr3_aa,
     productive: row.values.productive,
+    duplicate_count: row.values.duplicate_count,
   };
+}
+
+function denoiseVdjSequence(row: AirrScanRow): string {
+  const raw = row.values.sequence ?? "";
+  const start = Math.floor(Number(row.values.v_sequence_start));
+  const end = Math.floor(Number(row.values.j_sequence_end));
+  if (raw && Number.isFinite(start) && Number.isFinite(end) && start >= 1 && end >= start && end <= raw.length) {
+    return raw.slice(start - 1, end);
+  }
+  return row.values.sequence_alignment || raw;
 }

@@ -1,6 +1,6 @@
 {
   "name": "swig-github-pages",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -19,6 +19,7 @@
     "test:post": "node --experimental-strip-types --test tests/post-analysis-core.test.ts tests/alignment-provenance.test.ts tests/phylogeny.test.ts tests/lineage-phylogeny.test.ts tests/kabat-numbering.test.ts tests/chimera-view-model.test.ts",
     "test:wasm": "node --experimental-strip-types --test tests/swiftig-wasm.test.mjs",
     "benchmark:50k": "node tests/benchmark-wasm-pool.mjs",
+    "benchmark:denoise-50k": "node --experimental-strip-types tests/benchmark-denoise-50k.mjs",
     "build:wasm": "bash scripts/build-swiftig-wasm.sh",
     "build:references": "node scripts/build-imgt-reference-pack.mjs"
   },

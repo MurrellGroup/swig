@@ -2,6 +2,7 @@
 
 import {
   assignLineages,
+  DenoiseAccumulator,
   deduplicate,
   expandSingleLinkage,
   minHashSketch,
@@ -10,6 +11,7 @@ import {
   sequenceFingerprint,
   type DedupKey,
   type DedupResult,
+  type DenoiseOptions,
   type ExpansionOptions,
   type LineageOptions,
   type LineageResult,
@@ -29,6 +31,7 @@ interface IngestRow {
   cdr3: string;
   cdr3_aa: string;
   productive: string;
+  duplicate_count: string;
 }
 
 type Request =
@@ -37,6 +40,9 @@ type Request =
   | { id: number; type: "initSketches" }
   | { id: number; type: "ingestSketches"; rows: Array<{ ordinal: number; sequence: string }> }
   | { id: number; type: "dedup"; key: DedupKey }
+  | { id: number; type: "denoiseInit"; options: DenoiseOptions }
+  | { id: number; type: "denoiseIngest"; rows: Array<{ ordinal: number; sequence: string }> }
+  | { id: number; type: "denoiseFinish" }
   | { id: number; type: "applyDedupFilter" }
   | { id: number; type: "setActiveMask"; mask: Uint8Array | null }
   | { id: number; type: "lineages"; options: LineageOptions; useDedup: boolean }
@@ -55,6 +61,7 @@ let currentDedup: DedupResult | undefined;
 let currentLineages: LineageResult | undefined;
 let packedSketches: Uint32Array | undefined;
 let currentActiveMask: Uint8Array | undefined;
+let denoiseAccumulator: DenoiseAccumulator | undefined;
 const interned = new Map<string, string>();
 
 function intern(value: string): string {
@@ -80,11 +87,19 @@ function compactLineageResult(result: LineageResult) {
 
 function compactDedupResult(result: DedupResult) {
   return {
+    mode: result.mode,
     key: result.key,
+    algorithm: result.algorithm,
     inputRecords: result.inputRecords,
+    inputAbundance: result.inputAbundance,
     uniqueRecords: result.uniqueRecords,
     collapsedRecords: result.collapsedRecords,
     largestGroups: result.largestGroups,
+    partitions: result.partitions,
+    candidateComparisons: result.candidateComparisons,
+    excludedAmbiguous: result.excludedAmbiguous,
+    unresolvedRecords: result.unresolvedRecords,
+    warnings: result.warnings,
   };
 }
 
@@ -99,6 +114,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       currentLineages = undefined;
       packedSketches = undefined;
       currentActiveMask = undefined;
+      denoiseAccumulator = undefined;
       interned.clear();
       result = { expected };
     } else if (request.type === "ingest") {
@@ -115,6 +131,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
           productive: row.productive === "T" || row.productive.toLowerCase() === "true",
           sequenceFingerprint: sequenceFingerprint(sequence),
           trimmedFingerprint: sequenceFingerprint(normalizeNt(row.sequence_alignment || row.sequence)),
+          inputCount: Math.max(1, Math.floor(Number(row.duplicate_count) || 1)),
         });
       }
       result = { indexed: records.length, expected };
@@ -128,8 +145,24 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       result = { sketched: request.rows.length };
     } else if (request.type === "dedup") {
       currentDedup = deduplicate(records, request.key);
+      denoiseAccumulator = undefined;
       currentLineages = undefined;
       currentActiveMask = undefined;
+      result = compactDedupResult(currentDedup);
+    } else if (request.type === "denoiseInit") {
+      denoiseAccumulator = new DenoiseAccumulator(records, request.options);
+      currentDedup = undefined;
+      currentLineages = undefined;
+      currentActiveMask = undefined;
+      result = { expected };
+    } else if (request.type === "denoiseIngest") {
+      if (!denoiseAccumulator) throw new Error("Initialize denoising before streaming VDJ sequences.");
+      request.rows.forEach((row) => denoiseAccumulator!.add(row.ordinal, row.sequence));
+      result = { ingested: request.rows.length };
+    } else if (request.type === "denoiseFinish") {
+      if (!denoiseAccumulator) throw new Error("Initialize denoising before finalization.");
+      currentDedup = denoiseAccumulator.finish();
+      denoiseAccumulator = undefined;
       result = compactDedupResult(currentDedup);
     } else if (request.type === "applyDedupFilter") {
       if (!currentDedup) throw new Error("Run deduplication before applying representative filtering.");
@@ -187,6 +220,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       currentLineages = undefined;
       packedSketches = undefined;
       currentActiveMask = undefined;
+      denoiseAccumulator = undefined;
       interned.clear();
       result = { cleared: true };
     }

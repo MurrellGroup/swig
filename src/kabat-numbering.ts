@@ -9,6 +9,9 @@ export interface KabatColumnMap {
   confidence: number;
   numberedColumns: number;
   contributingSequences: number;
+  warnings: string[];
+  partialCodonRecords: number;
+  stopCodons: number;
 }
 
 interface KabatNumberingResult {
@@ -30,23 +33,35 @@ export interface KabatNumberer {
  */
 export function inferKabatColumnsWithNumberer(records: FastaRecord[], annotator: KabatNumberer, maximumContributors = 24): KabatColumnMap {
   if (!records.length) throw new Error("Kabat numbering requires a lineage alignment.");
-  if (records.some((record) => record.sequence.length % 3 !== 0)) {
-    throw new Error("Kabat numbering requires a codon-column nucleotide alignment. Use the codon-aware aligner or import a codon-preserving correction.");
+  const partialCodonRecords = records.filter((record) => record.sequence.length % 3 !== 0).length;
+  const translatedRecords = records.map((record) => translateAlignedNucleotides(record.sequence));
+  const stopCodons = translatedRecords.reduce((total, sequence) => total + [...sequence].filter((residue) => residue === "*").length, 0);
+  const warnings: string[] = [];
+  if (partialCodonRecords || stopCodons) {
+    const details = [
+      partialCodonRecords ? `${partialCodonRecords} sequence${partialCodonRecords === 1 ? " has" : "s have"} a terminal partial codon` : "",
+      stopCodons ? `${stopCodons} stop codon${stopCodons === 1 ? "" : "s"}` : "",
+    ].filter(Boolean).join("; ");
+    warnings.push(`Partial or stop codons detected (${details}). Kabat numbering may be unreliable near those columns.`);
   }
-  const width = Math.max(...records.map((record) => record.sequence.length / 3));
+  const width = Math.max(...records.map((record) => Math.ceil(record.sequence.length / 3)));
   const votes = Array.from({ length: width }, () => new Map<string, number>());
   const chainVotes = new Map<"H" | "K" | "L", number>();
   let confidence = 0;
   let contributingSequences = 0;
-  for (const record of records) {
+  for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+    const record = records[recordIndex];
     if (record.name === GERMLINE_OUTGROUP || contributingSequences >= maximumContributors) continue;
-    const aligned = translateAlignedNucleotides(record.sequence);
+    const aligned = translatedRecords[recordIndex];
+    const partialColumn = record.sequence.length % 3 ? Math.floor(record.sequence.length / 3) : -1;
     const columns: number[] = [];
     const sequence = [...aligned].filter((residue, column) => {
-      if (residue === "-") return false;
+      // A terminal one- or two-base overhang is displayed as X but must not be
+      // presented to the domain numberer as a complete amino acid.
+      if (residue === "-" || column === partialColumn) return false;
       columns.push(column);
       return true;
-    }).join("");
+    }).join("").replace(/\*/g, "X");
     if (sequence.length < 55) continue;
     const result = annotator.number(sequence);
     if (result.error || !result.numbering || result.query_start === null || !result.chain || !["H", "K", "L"].includes(result.chain)) continue;
@@ -70,6 +85,9 @@ export function inferKabatColumnsWithNumberer(records: FastaRecord[], annotator:
     confidence: confidence / contributingSequences,
     numberedColumns: labels.filter(Boolean).length,
     contributingSequences,
+    warnings,
+    partialCodonRecords,
+    stopCodons,
   };
 }
 

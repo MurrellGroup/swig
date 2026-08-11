@@ -4,10 +4,12 @@ import test from "node:test";
 import {
   assignLineages,
   chmmairraDistanceFromReference,
+  DenoiseAccumulator,
   deduplicate,
   expandSingleLinkage,
   minHashSketch,
   prepareReferenceMsa,
+  poissonStrictUpperTail,
   queryRecords,
   runChmm,
   sequenceFingerprint,
@@ -43,6 +45,80 @@ test("deduplication retains abundance and representative membership", () => {
   assert.equal(result.uniqueRecords, 2);
   assert.equal(result.collapsedRecords, 1);
   assert.deepEqual([...result.counts], [2, 0, 1]);
+  assert.deepEqual([...result.representatives], [0, 0, 2]);
+});
+
+test("exact deduplication sums an existing AIRR duplicate_count", () => {
+  const records = [record(0, "TGTGCCAAA"), record(1, "TGTGCCAAA")];
+  records[0].inputCount = 7;
+  records[1].inputCount = 3;
+  const result = deduplicate(records, "sequence");
+  assert.equal(result.inputAbundance, 10);
+  assert.deepEqual([...result.counts], [10, 0]);
+});
+
+test("Poisson strict upper tail matches known probabilities used by FAD method 2", () => {
+  assert.ok(Math.abs(poissonStrictUpperTail(0, 0.1) - 0.095162581964) < 1e-11);
+  assert.ok(Math.abs(poissonStrictUpperTail(1, 0.1) - 0.00467884016044) < 1e-11);
+});
+
+test("FAD-compatible denoising preserves multiplicity and partitions by V/J calls", () => {
+  const parent = "ACGT".repeat(15);
+  const child = `${parent.slice(0, 29)}A${parent.slice(30)}`;
+  const records = [record(0, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", parent), record(1, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", child)];
+  records[0].inputCount = 100;
+  const accumulator = new DenoiseAccumulator(records, {
+    mode: "fad",
+    errorRate: 0.00473,
+    alpha: 0.01,
+    callResolution: "allele",
+    ambiguity: "strict",
+    minimumParentCount: 2,
+    ambiguousPolicy: "exclude",
+    fadNeighborThreshold: 1,
+    fadMethod: 2,
+    expectedZeroErrorFraction: 1,
+    maximumHammingDistance: 1,
+    maxCandidatesPerVariant: 10_000,
+  });
+  records.forEach((value) => accumulator.add(value.ordinal, value.ordinal ? child : parent));
+  const result = accumulator.finish();
+  assert.equal(result.mode, "fad");
+  assert.equal(result.partitions, 1);
+  assert.equal(result.uniqueRecords, 1);
+  assert.deepEqual([...result.counts], [101, 0]);
+  assert.deepEqual([...result.representatives], [0, 0]);
+});
+
+test("conservative denoising merges plausible one-base errors but retains isolated singletons", () => {
+  const parent = "ACGT".repeat(15);
+  const child = `${parent.slice(0, 29)}A${parent.slice(30)}`;
+  const isolated = "T".repeat(parent.length);
+  const records = [
+    record(0, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", parent),
+    record(1, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", child),
+    record(2, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", isolated),
+  ];
+  records[0].inputCount = 100;
+  const accumulator = new DenoiseAccumulator(records, {
+    mode: "conservative",
+    errorRate: 0.00473,
+    alpha: 0.01,
+    callResolution: "allele",
+    ambiguity: "strict",
+    minimumParentCount: 2,
+    ambiguousPolicy: "retain",
+    fadNeighborThreshold: 1,
+    fadMethod: 2,
+    expectedZeroErrorFraction: 1,
+    maximumHammingDistance: 1,
+    maxCandidatesPerVariant: 10_000,
+  });
+  [parent, child, isolated].forEach((sequence, ordinal) => accumulator.add(ordinal, sequence));
+  const result = accumulator.finish();
+  assert.equal(result.mode, "conservative");
+  assert.equal(result.uniqueRecords, 2);
+  assert.deepEqual([...result.counts], [101, 0, 1]);
   assert.deepEqual([...result.representatives], [0, 0, 2]);
 });
 

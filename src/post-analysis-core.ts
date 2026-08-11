@@ -1,6 +1,7 @@
 export type CallResolution = "gene" | "allele";
 export type AmbiguityPolicy = "overlap" | "top" | "strict";
 export type DedupKey = "sequence" | "trimmed" | "cdr3" | "rearrangement";
+export type CollapseMode = "exact" | "fad" | "conservative";
 
 export interface PostAnalysisRecord {
   ordinal: number;
@@ -14,16 +15,43 @@ export interface PostAnalysisRecord {
   sequenceFingerprint: string;
   trimmedFingerprint: string;
   trimmedSketch?: Uint32Array;
+  inputCount?: number;
 }
 
 export interface DedupResult {
+  mode: CollapseMode;
   key: DedupKey;
+  algorithm: string;
   inputRecords: number;
+  inputAbundance: number;
   uniqueRecords: number;
   collapsedRecords: number;
   representatives: Int32Array;
   counts: Uint32Array;
   largestGroups: Array<{ ordinal: number; count: number }>;
+  partitions: number;
+  candidateComparisons: number;
+  excludedAmbiguous: number;
+  unresolvedRecords: number;
+  warnings: string[];
+}
+
+export interface DenoiseOptions {
+  mode: "fad" | "conservative";
+  errorRate: number;
+  alpha: number;
+  callResolution: CallResolution;
+  ambiguity: "top" | "strict";
+  minimumParentCount: number;
+  ambiguousPolicy: "exclude" | "retain";
+  /** FAD corrected 6-mer distance radius. */
+  fadNeighborThreshold: number;
+  /** FAD method 1 is abundance-only; method 2 uses its Poisson decision. */
+  fadMethod: 1 | 2;
+  expectedZeroErrorFraction: number;
+  /** Exact Hamming radius for the conservative error model. */
+  maximumHammingDistance: number;
+  maxCandidatesPerVariant: number;
 }
 
 export interface LineageOptions {
@@ -225,36 +253,610 @@ function dedupKey(record: PostAnalysisRecord, key: DedupKey): string {
   return `${record.locus}\u0000${record.vCall}\u0000${record.jCall}\u0000${record.cdr3Nt}`;
 }
 
+function largestCountGroups(counts: Uint32Array, limit = 100): Array<{ ordinal: number; count: number }> {
+  const heap: number[] = [];
+  const worse = (left: number, right: number) => counts[left] < counts[right] || (counts[left] === counts[right] && left > right);
+  const rise = (start: number) => {
+    let index = start;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (!worse(heap[index], heap[parent])) break;
+      [heap[index], heap[parent]] = [heap[parent], heap[index]];
+      index = parent;
+    }
+  };
+  const sink = () => {
+    let index = 0;
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      let next = index;
+      if (left < heap.length && worse(heap[left], heap[next])) next = left;
+      if (right < heap.length && worse(heap[right], heap[next])) next = right;
+      if (next === index) break;
+      [heap[index], heap[next]] = [heap[next], heap[index]];
+      index = next;
+    }
+  };
+  for (let ordinal = 0; ordinal < counts.length; ordinal += 1) {
+    if (counts[ordinal] <= 1) continue;
+    if (heap.length < limit) {
+      heap.push(ordinal);
+      rise(heap.length - 1);
+    } else if (worse(heap[0], ordinal)) {
+      heap[0] = ordinal;
+      sink();
+    }
+  }
+  return heap.sort((left, right) => counts[right] - counts[left] || left - right).map((ordinal) => ({ ordinal, count: counts[ordinal] }));
+}
+
 export function deduplicate(records: PostAnalysisRecord[], key: DedupKey): DedupResult {
   const representatives = new Int32Array(records.length);
   const counts = new Uint32Array(records.length);
   const seen = new Map<string, number>();
+  let inputAbundance = 0;
   for (let index = 0; index < records.length; index += 1) {
+    const weight = Math.max(1, Math.floor(records[index].inputCount ?? 1));
+    inputAbundance += weight;
     const value = dedupKey(records[index], key);
     const previous = seen.get(value);
     if (previous === undefined) {
       seen.set(value, index);
       representatives[index] = index;
-      counts[index] = 1;
+      counts[index] = weight;
     } else {
       representatives[index] = previous;
-      counts[previous] += 1;
+      counts[previous] += weight;
     }
   }
-  const largestGroups = [...seen.values()]
-    .filter((ordinal) => counts[ordinal] > 1)
-    .sort((a, b) => counts[b] - counts[a] || a - b)
-    .slice(0, 100)
-    .map((ordinal) => ({ ordinal, count: counts[ordinal] }));
+  const largestGroups = largestCountGroups(counts);
   return {
+    mode: "exact",
     key,
+    algorithm: "Exact key collapse",
     inputRecords: records.length,
+    inputAbundance,
     uniqueRecords: seen.size,
     collapsedRecords: records.length - seen.size,
     representatives,
     counts,
     largestGroups,
+    partitions: 1,
+    candidateComparisons: 0,
+    excludedAmbiguous: 0,
+    unresolvedRecords: 0,
+    warnings: [],
   };
+}
+
+interface PackedDnaLocation {
+  chunk: number;
+  offset: number;
+  length: number;
+}
+
+/**
+ * Append-only two-bit DNA storage. Denoising may need the complete trimmed VDJ
+ * sequence, but retaining one JavaScript string per unique read is prohibitive
+ * for large repertoires. Fixed chunks also avoid a transient 2x allocation
+ * when an expanding typed array is copied.
+ */
+class PackedDnaArena {
+  private readonly chunkWords = 262_144;
+  private readonly chunks: Uint32Array[] = [];
+  private readonly used: number[] = [];
+
+  append(sequence: string): PackedDnaLocation {
+    const words = Math.ceil(sequence.length / 16);
+    let chunk = this.chunks.length - 1;
+    if (chunk < 0 || this.used[chunk] + words > this.chunkWords) {
+      chunk = this.chunks.length;
+      this.chunks.push(new Uint32Array(Math.max(this.chunkWords, words)));
+      this.used.push(0);
+    }
+    const offset = this.used[chunk];
+    this.used[chunk] += words;
+    const target = this.chunks[chunk];
+    for (let index = 0; index < sequence.length; index += 1) {
+      const code = sequence[index] === "C" ? 1 : sequence[index] === "G" ? 2 : sequence[index] === "T" ? 3 : 0;
+      target[offset + (index >>> 4)] |= code << ((index & 15) * 2);
+    }
+    return { chunk, offset, length: sequence.length };
+  }
+
+  base(location: PackedDnaLocation, index: number): string {
+    const code = (this.chunks[location.chunk][location.offset + (index >>> 4)] >>> ((index & 15) * 2)) & 3;
+    return code === 0 ? "A" : code === 1 ? "C" : code === 2 ? "G" : "T";
+  }
+
+  equals(location: PackedDnaLocation, sequence: string): boolean {
+    if (location.length !== sequence.length) return false;
+    for (let index = 0; index < sequence.length; index += 1) if (this.base(location, index) !== sequence[index]) return false;
+    return true;
+  }
+
+  decode(location: PackedDnaLocation): string {
+    let sequence = "";
+    // Joining moderate blocks avoids quadratic string growth for long reads.
+    for (let start = 0; start < location.length; start += 1_024) {
+      const values: string[] = [];
+      const end = Math.min(location.length, start + 1_024);
+      for (let index = start; index < end; index += 1) values.push(this.base(location, index));
+      sequence += values.join("");
+    }
+    return sequence;
+  }
+}
+
+interface DenoiseVariant {
+  location: PackedDnaLocation;
+  partition: string;
+  representative: number;
+  count: number;
+  target: number;
+}
+
+interface KmerProfile {
+  codes: Uint16Array;
+  counts: Uint16Array;
+  hashes: Uint32Array;
+}
+
+function denoisePartition(record: PostAnalysisRecord, options: DenoiseOptions): string | null {
+  const v = callSet(record.vCall, options.callResolution, options.ambiguity);
+  const j = callSet(record.jCall, options.callResolution, options.ambiguity);
+  if (!v.length || !j.length) return null;
+  return `${record.locus || "?"}\u0000${v.join("+")}\u0000${j.join("+")}`;
+}
+
+function kmerProfile(sequence: string, blockCount: number, k = 6): KmerProfile {
+  const space = 1 << (2 * k);
+  const counts = new Uint16Array(space);
+  const touched: number[] = [];
+  const mask = space - 1;
+  let code = 0;
+  for (let index = 0; index < sequence.length; index += 1) {
+    const base = sequence[index] === "C" ? 1 : sequence[index] === "G" ? 2 : sequence[index] === "T" ? 3 : 0;
+    code = ((code << 2) | base) & mask;
+    if (index < k - 1) continue;
+    if (!counts[code]) touched.push(code);
+    if (counts[code] < 0xffff) counts[code] += 1;
+  }
+  touched.sort((left, right) => left - right);
+  const codes = Uint16Array.from(touched);
+  const sparseCounts = Uint16Array.from(touched, (value) => counts[value]);
+  const hashes = new Uint32Array(blockCount);
+  for (let block = 0; block < blockCount; block += 1) hashes[block] = mix32(0x9e3779b9 ^ block);
+  for (let index = 0; index < codes.length; index += 1) {
+    const block = codes[index] % blockCount;
+    hashes[block] = mix32(hashes[block] ^ mix32(Math.imul(codes[index] + 1, 0x85ebca6b) ^ sparseCounts[index]));
+  }
+  return { codes, counts: sparseCounts, hashes };
+}
+
+function kmerSquaredDistance(left: KmerProfile, right: KmerProfile, ceiling = Number.POSITIVE_INFINITY): number {
+  let a = 0;
+  let b = 0;
+  let distance = 0;
+  while (a < left.codes.length || b < right.codes.length) {
+    if (b >= right.codes.length || (a < left.codes.length && left.codes[a] < right.codes[b])) {
+      distance += left.counts[a] ** 2;
+      a += 1;
+    } else if (a >= left.codes.length || right.codes[b] < left.codes[a]) {
+      distance += right.counts[b] ** 2;
+      b += 1;
+    } else {
+      distance += (left.counts[a] - right.counts[b]) ** 2;
+      a += 1;
+      b += 1;
+    }
+    if (distance > ceiling) return distance;
+  }
+  return distance;
+}
+
+interface KmerVpNode {
+  point: number;
+  radius: number;
+  inside: KmerVpNode | null;
+  outside: KmerVpNode | null;
+}
+
+/** Exact metric index for FAD's final nearest-centroid assignment. */
+function buildKmerVpTree(points: number[], profiles: Map<number, KmerProfile>, compared: () => void): KmerVpNode | null {
+  if (!points.length) return null;
+  const point = points[points.length - 1];
+  if (points.length === 1) return { point, radius: 0, inside: null, outside: null };
+  const distances = points.slice(0, -1).map((candidate) => {
+    compared();
+    return { candidate, distance: Math.sqrt(kmerSquaredDistance(profiles.get(point)!, profiles.get(candidate)!)) };
+  }).sort((left, right) => left.distance - right.distance || left.candidate - right.candidate);
+  const middle = Math.floor(distances.length / 2);
+  const radius = distances[middle]?.distance ?? 0;
+  return {
+    point,
+    radius,
+    inside: buildKmerVpTree(distances.slice(0, middle).map((value) => value.candidate), profiles, compared),
+    outside: buildKmerVpTree(distances.slice(middle).map((value) => value.candidate), profiles, compared),
+  };
+}
+
+function nearestKmerPoint(
+  tree: KmerVpNode,
+  query: number,
+  profiles: Map<number, KmerProfile>,
+  abundance: (point: number) => number,
+  compared: () => void,
+): number {
+  let best = tree.point;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  const visit = (node: KmerVpNode | null) => {
+    if (!node) return;
+    compared();
+    // Exact distance is required for triangle-inequality pruning. An
+    // early-aborted partial distance could select the wrong VP-tree branch.
+    const distance = Math.sqrt(kmerSquaredDistance(profiles.get(query)!, profiles.get(node.point)!));
+    if (distance < bestDistance || (distance === bestDistance && abundance(node.point) > abundance(best))) {
+      best = node.point;
+      bestDistance = distance;
+    }
+    if (!node.inside && !node.outside) return;
+    if (distance < node.radius) {
+      visit(node.inside);
+      if (distance + bestDistance >= node.radius) visit(node.outside);
+    } else {
+      visit(node.outside);
+      if (distance - bestDistance <= node.radius) visit(node.inside);
+    }
+  };
+  visit(tree);
+  return best;
+}
+
+function logGamma(value: number): number {
+  const coefficients = [
+    0.9999999999998099, 676.5203681218851, -1259.1392167224028, 771.3234287776531,
+    -176.6150291621406, 12.50734327868691, -0.1385710952657201, 9.984369578019572e-6,
+    1.505632735149312e-7,
+  ];
+  if (value < 0.5) return Math.log(Math.PI) - Math.log(Math.sin(Math.PI * value)) - logGamma(1 - value);
+  let x = coefficients[0];
+  const z = value - 1;
+  for (let index = 1; index < coefficients.length; index += 1) x += coefficients[index] / (z + index);
+  const t = z + 7.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+}
+
+function regularizedGammaP(shape: number, value: number): number {
+  if (!(shape > 0) || value < 0 || Number.isNaN(value)) return Number.NaN;
+  if (value === 0) return 0;
+  const logScale = -value + shape * Math.log(value) - logGamma(shape);
+  if (value < shape + 1) {
+    let term = 1 / shape;
+    let sum = term;
+    let denominator = shape;
+    for (let iteration = 0; iteration < 10_000; iteration += 1) {
+      denominator += 1;
+      term *= value / denominator;
+      sum += term;
+      if (Math.abs(term) < Math.abs(sum) * 1e-14) break;
+    }
+    return Math.min(1, Math.max(0, sum * Math.exp(logScale)));
+  }
+  let b = value + 1 - shape;
+  const floor = 1e-300;
+  let c = 1 / floor;
+  let d = 1 / Math.max(floor, b);
+  let fraction = d;
+  for (let iteration = 1; iteration < 10_000; iteration += 1) {
+    const coefficient = -iteration * (iteration - shape);
+    b += 2;
+    d = coefficient * d + b;
+    if (Math.abs(d) < floor) d = floor;
+    c = b + coefficient / c;
+    if (Math.abs(c) < floor) c = floor;
+    d = 1 / d;
+    const delta = d * c;
+    fraction *= delta;
+    if (Math.abs(delta - 1) < 1e-14) break;
+  }
+  const q = Math.exp(logScale) * fraction;
+  return Math.min(1, Math.max(0, 1 - q));
+}
+
+/** P(Poisson(lambda) > observed), matching Distributions.jl ccdf. */
+export function poissonStrictUpperTail(observed: number, lambda: number): number {
+  if (!(lambda > 0)) return 0;
+  if (observed < 0) return 1;
+  return regularizedGammaP(Math.floor(observed) + 1, lambda);
+}
+
+function alternativeCount(length: number, distance: number): number {
+  if (distance <= 0) return 1;
+  let combinations = 1;
+  for (let index = 1; index <= distance; index += 1) combinations *= (length - distance + index) / index;
+  return Math.max(1, combinations * 3 ** distance);
+}
+
+function sequenceBlocks(sequence: string, count: number): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const start = Math.floor(index * sequence.length / count);
+    const end = Math.floor((index + 1) * sequence.length / count);
+    result.push(sequence.slice(start, end));
+  }
+  return result;
+}
+
+/**
+ * Streaming builder used by the post-analysis worker. Exact variants are
+ * dereplicated while batches are scanned, sequences live in a compact 2-bit
+ * arena, and only one V/J partition's temporary neighbor index exists at a
+ * time during finalization.
+ */
+export class DenoiseAccumulator {
+  private readonly arena = new PackedDnaArena();
+  private readonly variants: DenoiseVariant[] = [];
+  private readonly variantsByFingerprint = new Map<string, number[]>();
+  private readonly variantByOrdinal: Int32Array;
+  private readonly processed: Uint8Array;
+  private readonly standalone: number[] = [];
+  private readonly retainedAmbiguous = new Map<string, { representative: number; members: number[]; count: number }>();
+  private excludedAmbiguous = 0;
+  private unresolvedRecords = 0;
+  private readonly records: PostAnalysisRecord[];
+  private readonly options: DenoiseOptions;
+
+  constructor(records: PostAnalysisRecord[], options: DenoiseOptions) {
+    this.records = records;
+    this.options = options;
+    this.variantByOrdinal = new Int32Array(records.length);
+    this.variantByOrdinal.fill(-1);
+    this.processed = new Uint8Array(records.length);
+    if (!(options.errorRate > 0 && options.errorRate < 1)) throw new Error("The denoising error rate must be between 0 and 1.");
+    if (!(options.alpha > 0 && options.alpha < 1)) throw new Error("The denoising alpha must be between 0 and 1.");
+    if (options.fadNeighborThreshold < 0) throw new Error("The FAD neighbor threshold cannot be negative.");
+    if (options.maximumHammingDistance < 1 || options.maximumHammingDistance > 4) throw new Error("The conservative Hamming radius must be from 1 to 4.");
+  }
+
+  add(ordinal: number, rawSequence: string) {
+    if (ordinal < 0 || ordinal >= this.records.length || this.processed[ordinal]) return;
+    this.processed[ordinal] = 1;
+    const record = this.records[ordinal];
+    const sequence = normalizeNt(rawSequence);
+    const partition = denoisePartition(record, this.options);
+    if (!sequence || !partition) {
+      this.standalone.push(ordinal);
+      this.unresolvedRecords += 1;
+      return;
+    }
+    if (sequence.includes("N")) {
+      if (this.options.ambiguousPolicy === "exclude") {
+        this.excludedAmbiguous += 1;
+        return;
+      }
+      const key = `${partition}\u0000${sequence}`;
+      const existing = this.retainedAmbiguous.get(key);
+      const weight = Math.max(1, Math.floor(record.inputCount ?? 1));
+      if (existing) {
+        existing.members.push(ordinal);
+        existing.count += weight;
+      } else this.retainedAmbiguous.set(key, { representative: ordinal, members: [ordinal], count: weight });
+      return;
+    }
+    const fingerprint = `${partition}\u0000${sequenceFingerprint(sequence)}`;
+    const candidates = this.variantsByFingerprint.get(fingerprint) ?? [];
+    let variantIndex = candidates.find((candidate) => this.arena.equals(this.variants[candidate].location, sequence));
+    const weight = Math.max(1, Math.floor(record.inputCount ?? 1));
+    if (variantIndex === undefined) {
+      variantIndex = this.variants.length;
+      this.variants.push({ location: this.arena.append(sequence), partition, representative: ordinal, count: weight, target: variantIndex });
+      candidates.push(variantIndex);
+      this.variantsByFingerprint.set(fingerprint, candidates);
+    } else this.variants[variantIndex].count += weight;
+    this.variantByOrdinal[ordinal] = variantIndex;
+  }
+
+  finish(): DedupResult {
+    for (let ordinal = 0; ordinal < this.records.length; ordinal += 1) {
+      if (!this.processed[ordinal]) {
+        this.standalone.push(ordinal);
+        this.unresolvedRecords += 1;
+      }
+    }
+    const partitions = new Map<string, number[]>();
+    this.variants.forEach((variant, index) => {
+      const values = partitions.get(variant.partition);
+      if (values) values.push(index);
+      else partitions.set(variant.partition, [index]);
+    });
+    let candidateComparisons = 0;
+    let truncated = 0;
+    for (const group of partitions.values()) {
+      const result = this.options.mode === "fad" ? this.processFadPartition(group) : this.processConservativePartition(group);
+      candidateComparisons += result.comparisons;
+      truncated += result.truncated;
+    }
+
+    const representatives = new Int32Array(this.records.length);
+    representatives.fill(-1);
+    const counts = new Uint32Array(this.records.length);
+    for (let ordinal = 0; ordinal < this.records.length; ordinal += 1) {
+      const variantIndex = this.variantByOrdinal[ordinal];
+      if (variantIndex < 0) continue;
+      const target = this.variants[this.variants[variantIndex].target];
+      representatives[ordinal] = target.representative;
+    }
+    for (const variant of this.variants) {
+      const target = this.variants[variant.target];
+      counts[target.representative] += variant.count;
+    }
+    for (const group of this.retainedAmbiguous.values()) {
+      counts[group.representative] = group.count;
+      group.members.forEach((ordinal) => { representatives[ordinal] = group.representative; });
+    }
+    for (const ordinal of this.standalone) {
+      const weight = Math.max(1, Math.floor(this.records[ordinal].inputCount ?? 1));
+      counts[ordinal] = weight;
+      representatives[ordinal] = ordinal;
+    }
+    let uniqueRecords = 0;
+    for (const count of counts) if (count > 0) uniqueRecords += 1;
+    const largestGroups = largestCountGroups(counts);
+    const warnings: string[] = [];
+    if (this.excludedAmbiguous) warnings.push(`${this.excludedAmbiguous.toLocaleString()} records containing ambiguous nucleotide symbols were excluded to match the selected policy.`);
+    if (this.unresolvedRecords) warnings.push(`${this.unresolvedRecords.toLocaleString()} records without a usable trimmed sequence or both V/J calls were retained unchanged.`);
+    if (truncated) warnings.push(`${truncated.toLocaleString()} variants reached the candidate cap; increase it before treating this denoising result as complete.`);
+    const inputAbundance = this.records.reduce((sum, record) => sum + Math.max(1, Math.floor(record.inputCount ?? 1)), 0);
+    return {
+      mode: this.options.mode,
+      key: "trimmed",
+      algorithm: this.options.mode === "fad" ? `FAD-compatible corrected 6-mer / method ${this.options.fadMethod}` : "Conservative exact-neighbor error model",
+      inputRecords: this.records.length,
+      inputAbundance,
+      uniqueRecords,
+      collapsedRecords: this.records.length - uniqueRecords,
+      representatives,
+      counts,
+      largestGroups,
+      partitions: partitions.size,
+      candidateComparisons,
+      excludedAmbiguous: this.excludedAmbiguous,
+      unresolvedRecords: this.unresolvedRecords,
+      warnings,
+    };
+  }
+
+  private processFadPartition(group: number[]): { comparisons: number; truncated: number } {
+    const maximumSquared = Math.max(0, Math.floor(12 * this.options.fadNeighborThreshold + 1e-9));
+    const blockCount = Math.max(1, maximumSquared + 1);
+    const profiles = new Map<number, KmerProfile>();
+    const sequences = new Map<number, string>();
+    for (const index of group) {
+      const sequence = this.arena.decode(this.variants[index].location);
+      sequences.set(index, sequence);
+      profiles.set(index, kmerProfile(sequence, blockCount));
+    }
+    const ordered = [...group].sort((left, right) => this.variants[right].count - this.variants[left].count || this.variants[left].representative - this.variants[right].representative);
+    const accepted: number[] = [];
+    const index = new Map<string, number[]>();
+    let comparisons = 0;
+    let truncated = 0;
+    const addAccepted = (variantIndex: number) => {
+      accepted.push(variantIndex);
+      const profile = profiles.get(variantIndex)!;
+      profile.hashes.forEach((hash, block) => {
+        const key = `${block}:${hash}`;
+        const values = index.get(key);
+        if (values) values.push(variantIndex);
+        else index.set(key, [variantIndex]);
+      });
+    };
+    for (const variantIndex of ordered.filter((value) => this.variants[value].count >= this.options.minimumParentCount)) {
+      const profile = profiles.get(variantIndex)!;
+      const candidates = new Set<number>();
+      profile.hashes.forEach((hash, block) => {
+        if (candidates.size >= this.options.maxCandidatesPerVariant) return;
+        for (const candidate of index.get(`${block}:${hash}`) ?? []) {
+          if (candidates.size >= this.options.maxCandidatesPerVariant) break;
+          candidates.add(candidate);
+        }
+      });
+      if (candidates.size >= this.options.maxCandidatesPerVariant) truncated += 1;
+      const neighbors: Array<{ index: number; distance: number }> = [];
+      for (const candidate of candidates) {
+        comparisons += 1;
+        const distance = kmerSquaredDistance(profile, profiles.get(candidate)!, maximumSquared);
+        if (distance <= maximumSquared) neighbors.push({ index: candidate, distance });
+      }
+      if (!neighbors.length) {
+        addAccepted(variantIndex);
+        continue;
+      }
+      neighbors.sort((left, right) => this.variants[right.index].count - this.variants[left.index].count || left.distance - right.distance || this.variants[left.index].representative - this.variants[right.index].representative);
+      const parent = neighbors[0].index;
+      const child = this.variants[variantIndex];
+      const parentCount = this.variants[parent].count;
+      const lambda = parentCount / Math.max(Number.MIN_VALUE, this.options.expectedZeroErrorFraction) * this.options.errorRate;
+      const adjusted = Math.min(1, poissonStrictUpperTail(child.count, lambda) * (sequences.get(variantIndex)?.length ?? 1));
+      if (this.options.fadMethod === 2 && adjusted < this.options.alpha) addAccepted(variantIndex);
+      else child.target = parent;
+    }
+    if (!accepted.length && ordered.length) addAccepted(ordered[0]);
+    // The published FAD implementation assigns every non-template variant to
+    // its globally nearest accepted corrected-k-mer centroid, even when it is
+    // outside the template-selection radius. V/J partitioning bounds this
+    // exact scan and preserves compatibility with that behavior.
+    const acceptedSet = new Set(accepted);
+    const vpTree = buildKmerVpTree(accepted, profiles, () => { comparisons += 1; });
+    for (const variantIndex of ordered) {
+      if (acceptedSet.has(variantIndex)) {
+        this.variants[variantIndex].target = variantIndex;
+        continue;
+      }
+      this.variants[variantIndex].target = vpTree ? nearestKmerPoint(vpTree, variantIndex, profiles, (point) => this.variants[point].count, () => { comparisons += 1; }) : variantIndex;
+    }
+    return { comparisons, truncated };
+  }
+
+  private processConservativePartition(group: number[]): { comparisons: number; truncated: number } {
+    const distanceLimit = this.options.maximumHammingDistance;
+    const blockCount = distanceLimit + 1;
+    const sequences = new Map(group.map((index) => [index, this.arena.decode(this.variants[index].location)]));
+    const ordered = [...group].sort((left, right) => this.variants[right].count - this.variants[left].count || this.variants[left].representative - this.variants[right].representative);
+    const parentIndex = new Map<string, number[]>();
+    let comparisons = 0;
+    let truncated = 0;
+    const addParent = (variantIndex: number) => {
+      if (this.variants[variantIndex].count < this.options.minimumParentCount) return;
+      const sequence = sequences.get(variantIndex)!;
+      sequenceBlocks(sequence, blockCount).forEach((block, blockIndex) => {
+        const key = `${sequence.length}:${blockIndex}:${block}`;
+        const values = parentIndex.get(key);
+        if (values) values.push(variantIndex);
+        else parentIndex.set(key, [variantIndex]);
+      });
+    };
+    for (const variantIndex of ordered) {
+      const child = this.variants[variantIndex];
+      const sequence = sequences.get(variantIndex)!;
+      const candidates = new Set<number>();
+      sequenceBlocks(sequence, blockCount).forEach((block, blockIndex) => {
+        if (candidates.size >= this.options.maxCandidatesPerVariant) return;
+        for (const candidate of parentIndex.get(`${sequence.length}:${blockIndex}:${block}`) ?? []) {
+          if (candidates.size >= this.options.maxCandidatesPerVariant) break;
+          candidates.add(candidate);
+        }
+      });
+      if (candidates.size >= this.options.maxCandidatesPerVariant) truncated += 1;
+      let best = -1;
+      let bestLambda = -1;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const candidate of candidates) {
+        comparisons += 1;
+        const distance = hammingDistanceWithin(sequence, sequences.get(candidate)!, distanceLimit, false);
+        if (distance < 1 || distance > distanceLimit) continue;
+        const parentCount = this.variants[candidate].count;
+        const exactErrorProbability = (this.options.errorRate / 3) ** distance * (1 - this.options.errorRate) ** Math.max(0, sequence.length - distance);
+        const lambda = parentCount * exactErrorProbability;
+        const adjusted = Math.min(1, poissonStrictUpperTail(child.count, lambda) * alternativeCount(sequence.length, distance));
+        // A child is collapsed only when its abundance is statistically
+        // compatible with sequencing error from a more abundant accepted read.
+        if (adjusted >= this.options.alpha && (lambda > bestLambda || (lambda === bestLambda && distance < bestDistance))) {
+          best = candidate;
+          bestLambda = lambda;
+          bestDistance = distance;
+        }
+      }
+      if (best >= 0) child.target = best;
+      else {
+        child.target = variantIndex;
+        addParent(variantIndex);
+      }
+    }
+    return { comparisons, truncated };
+  }
 }
 
 class UnionFind {
@@ -328,7 +930,7 @@ export function assignLineages(
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
-    const weight = activeMask && !activeMask[index] ? 0 : dedup ? dedup.counts[index] : 1;
+    const weight = activeMask && !activeMask[index] ? 0 : dedup ? dedup.counts[index] : Math.max(1, Math.floor(records[index].inputCount ?? 1));
     if (!weight) continue;
     activeAbundance += weight;
     const cdr3 = normalizeNt(record.cdr3Nt);
@@ -383,7 +985,7 @@ export function assignLineages(
   const representativeByRoot = new Int32Array(records.length);
   representativeByRoot.fill(-1);
   for (let index = 0; index < records.length; index += 1) {
-    const weight = activeMask && !activeMask[index] ? 0 : dedup ? dedup.counts[index] : 1;
+    const weight = activeMask && !activeMask[index] ? 0 : dedup ? dedup.counts[index] : Math.max(1, Math.floor(records[index].inputCount ?? 1));
     if (!weight) continue;
     const record = records[index];
     if (!record.cdr3Nt || !recordIndexTokens(record, options).length || (options.productiveOnly && !record.productive)) continue;

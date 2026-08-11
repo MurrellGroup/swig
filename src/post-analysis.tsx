@@ -33,6 +33,7 @@ import {
   prepareReferenceMsa,
   type AmbiguityPolicy,
   type CallResolution,
+  type CollapseMode,
   type DedupKey,
   type LineageSummary,
   type QueryHit,
@@ -287,7 +288,19 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [error, setError] = useState("");
 
   const [dedupKey, setDedupKey] = useState<DedupKey>("sequence");
+  const [collapseMode, setCollapseMode] = useState<CollapseMode>("exact");
   const [dedup, setDedup] = useState<DedupDashboard | null>(null);
+  const [denoiseErrorRate, setDenoiseErrorRate] = useState(0.00473);
+  const [denoiseAlpha, setDenoiseAlpha] = useState(0.01);
+  const [denoiseResolution, setDenoiseResolution] = useState<CallResolution>("allele");
+  const [denoiseAmbiguity, setDenoiseAmbiguity] = useState<"top" | "strict">("strict");
+  const [minimumParentCount, setMinimumParentCount] = useState(2);
+  const [denoiseAmbiguousPolicy, setDenoiseAmbiguousPolicy] = useState<"exclude" | "retain">("exclude");
+  const [fadNeighborThreshold, setFadNeighborThreshold] = useState(1);
+  const [fadMethod, setFadMethod] = useState<1 | 2>(2);
+  const [expectedZeroErrorFraction, setExpectedZeroErrorFraction] = useState(1);
+  const [maximumDenoiseDistance, setMaximumDenoiseDistance] = useState(1);
+  const [denoiseCandidateCap, setDenoiseCandidateCap] = useState(50_000);
   const [workingMask, setWorkingMask] = useState<Uint8Array | null>(null);
   const [workingStages, setWorkingStages] = useState<WorkingSetStage[]>([]);
 
@@ -392,7 +405,22 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   }
 
   async function runDedup() {
-    const result = await operation("Deduplicating AIRR records", () => runtime.deduplicate(dedupKey));
+    setProgress({ processed: 0, total: store.count });
+    const label = collapseMode === "exact" ? "Deduplicating AIRR records" : collapseMode === "fad" ? "Running FAD-compatible denoising" : "Running conservative error-model denoising";
+    const result = await operation(label, () => collapseMode === "exact" ? runtime.deduplicate(dedupKey) : runtime.denoise({
+      mode: collapseMode,
+      errorRate: denoiseErrorRate,
+      alpha: denoiseAlpha,
+      callResolution: denoiseResolution,
+      ambiguity: denoiseAmbiguity,
+      minimumParentCount,
+      ambiguousPolicy: denoiseAmbiguousPolicy,
+      fadNeighborThreshold,
+      fadMethod,
+      expectedZeroErrorFraction,
+      maximumHammingDistance: maximumDenoiseDistance,
+      maxCandidatesPerVariant: denoiseCandidateCap,
+    }, (processed, total) => setProgress({ processed, total })));
     if (result) {
       setDedup(result);
       setWorkingMask(null);
@@ -415,11 +443,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setWorkingMask(result.mask);
     setWorkingStages([{
       id: "dedup",
-      label: `Deduplicate by ${dedup.key}`,
+      label: dedup.mode === "exact" ? `Exact collapse · ${dedup.key}` : dedup.mode === "fad" ? "FAD denoising" : "Conservative denoising",
       input: dedup.inputRecords,
       retained: result.retained,
       discarded: dedup.collapsedRecords,
-      detail: "Collapsed abundance remains in duplicate_count and lineage weights.",
+      detail: `${dedup.algorithm}. Collapsed abundance remains in duplicate_count and lineage weights.`,
     }]);
     setChmm(null);
     setChmmRun(null);
@@ -453,7 +481,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setError("");
     try {
       const counts = await runtime.dedupCounts();
-      await saveStream(`${baseName(inputName)}.deduplicated.airr.tsv`, "Deduplicated AIRR rearrangement table", ".tsv", async (writer) => store.writeDeduplicatedAirr(counts, writer.write));
+      const suffix = dedup?.mode === "exact" ? "deduplicated" : "denoised";
+      await saveStream(`${baseName(inputName)}.${suffix}.airr.tsv`, "Collapsed AIRR rearrangement table with multiplicity", ".tsv", async (writer) => store.writeDeduplicatedAirr(counts, writer.write));
     } catch (operationError) {
       setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
@@ -899,9 +928,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const jChart = lineages?.jUsage.slice(0, topGenes).map((item) => ({ label: item.call, value: item[geneMetric] })) ?? [];
 
   return <section className="post-analysis-shell">
-    <header className="post-analysis-heading"><div><span className="section-kicker">Post-assignment methods</span><h2>Repertoire structure and targeted phylogenetics</h2><p>Deduplication and chimera exclusion modify an explicit cumulative working set. CHMMAIRRa, lineage assignment, repertoire querying, and expansion consume that set; alignment and tree inference consume the selected lineage.</p></div><div className="local-method-note"><span>Execution</span><strong>Browser-local</strong><small>Input, germlines, and results are not submitted to an analysis server.</small></div></header>
+    <header className="post-analysis-heading"><div><span className="section-kicker">Post-assignment methods</span><h2>Repertoire structure and targeted phylogenetics</h2><p>Exact collapse or denoising and chimera exclusion modify an explicit cumulative working set. CHMMAIRRa, lineage assignment, repertoire querying, and expansion consume that set; alignment and tree inference consume the selected lineage.</p></div><div className="local-method-note"><span>Execution</span><strong>Browser-local</strong><small>Input, germlines, and results are not submitted to an analysis server.</small></div></header>
 
-    <div className="post-method-map"><article><b>01</b><span>Collapse</span><strong>Deduplicate + retain count</strong></article><article><b>02</b><span>QC</span><strong>Optional CHMMAIRRa</strong></article><article><b>03</b><span>Repertoire</span><strong>Assign lineages</strong></article><article><b>04</b><span>Targeted</span><strong>Query + expand</strong></article><article><b>05</b><span>On demand</span><strong>Align + infer tree</strong></article></div>
+    <div className="post-method-map"><article><b>01</b><span>Collapse</span><strong>Exact deduplication or denoising</strong></article><article><b>02</b><span>QC</span><strong>Optional CHMMAIRRa</strong></article><article><b>03</b><span>Repertoire</span><strong>Assign lineages</strong></article><article><b>04</b><span>Targeted</span><strong>Query + expand</strong></article><article><b>05</b><span>On demand</span><strong>Align + infer tree</strong></article></div>
 
     <section className="working-set-panel" aria-label="Downstream working-set pipeline">
       <header><div><span className="section-kicker">Cumulative downstream filter</span><h3>{workingCount.toLocaleString()} of {store.count.toLocaleString()} records active</h3><p>Nothing is deleted from the AIRR result. Applying a stage excludes rows from later computation; resetting restores the complete input.</p></div><button type="button" disabled={Boolean(busy) || !workingStages.length} onClick={() => void resetWorkingSet()}>Reset to all records</button></header>
@@ -912,13 +941,38 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     {error && <div className="post-error" role="alert"><strong>Post-analysis stopped</strong><span>{error}</span><button type="button" onClick={() => setError("")}>Dismiss</button></div>}
 
     <section className="post-module dedup-module">
-      <header><div className="module-number">01</div><div><span className="section-kicker">Abundance preservation</span><h3>Deduplicate records</h3><p>One representative is retained for each key; <code>duplicate_count</code> carries the collapsed abundance into lineage sizes and export.</p></div></header>
-      <div className="module-controls">
-        <label><span>Identity key</span><select value={dedupKey} onChange={(event) => setDedupKey(event.target.value as DedupKey)}><option value="sequence">Full input sequence</option><option value="trimmed">VDJ-aligned sequence</option><option value="cdr3">Locus + CDR3 nucleotide</option><option value="rearrangement">Locus + V/J calls + CDR3</option></select></label>
-        <button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runDedup()}>Run deduplication</button>
+      <header><div className="module-number">01</div><div><span className="section-kicker">Abundance preservation</span><h3>Collapse exact duplicates or denoise read errors</h3><p>Select one method explicitly. Every retained representative carries the sum of its source multiplicities in <code>duplicate_count</code>; lineage abundance and phylogeny bubbles use that value.</p></div><a href="https://academic.oup.com/nar/article/47/18/e104/5550323" target="_blank" rel="noreferrer">FAD paper ↗</a></header>
+      <div className="collapse-mode-grid" role="radiogroup" aria-label="Collapse method">
+        <button type="button" role="radio" aria-checked={collapseMode === "exact"} className={collapseMode === "exact" ? "selected" : ""} onClick={() => { setCollapseMode("exact"); setDedup(null); }}><b>A</b><span><strong>Exact deduplication</strong><small>Collapse identical keys only. No error model.</small></span></button>
+        <button type="button" role="radio" aria-checked={collapseMode === "fad"} className={collapseMode === "fad" ? "selected" : ""} onClick={() => { setCollapseMode("fad"); setDenoiseAmbiguousPolicy("exclude"); setDedup(null); }}><b>B</b><span><strong>FAD-compatible denoising</strong><small>Published 6-mer distance and abundance/Poisson rule.</small></span></button>
+        <button type="button" role="radio" aria-checked={collapseMode === "conservative"} className={collapseMode === "conservative" ? "selected" : ""} onClick={() => { setCollapseMode("conservative"); setDenoiseAmbiguousPolicy("retain"); setDedup(null); }}><b>C</b><span><strong>Exact-neighbor error model</strong><small>Experimental; conservative, indexed Hamming candidates.</small></span></button>
       </div>
-      {(dedupKey === "sequence" || dedupKey === "trimmed") && <p className="scientific-note"><span>i</span>Sequence-key modes compare normalized length plus a 128-bit fingerprint so complete sequence payloads do not remain in memory. CDR3 and rearrangement modes retain and compare their exact key strings.</p>}
-      {dedup && <div className="module-result"><div className="post-stat-grid"><article><span>Input records</span><strong>{dedup.inputRecords.toLocaleString()}</strong></article><article><span>Unique representatives</span><strong>{dedup.uniqueRecords.toLocaleString()}</strong></article><article><span>Collapsed duplicates</span><strong>{dedup.collapsedRecords.toLocaleString()}</strong></article><article><span>Largest abundance</span><strong>{(dedup.largestGroups[0]?.count ?? 1).toLocaleString()}</strong></article></div><div className="filter-commit"><div><span>Downstream action</span><strong>Retain representatives; preserve collapsed abundance as counts</strong><p>This action changes the working set from {dedup.inputRecords.toLocaleString()} to {dedup.uniqueRecords.toLocaleString()} rows and invalidates downstream results.</p></div><button className="post-primary" type="button" disabled={Boolean(busy) || workingStages.some((stage) => stage.id === "dedup")} onClick={() => void applyDedupFilter()}>{workingStages.some((stage) => stage.id === "dedup") ? "Applied downstream" : `Apply ${dedup.uniqueRecords.toLocaleString()} representatives`}</button></div><div className="result-actions"><button type="button" onClick={() => void downloadDeduplicated()}>Download deduplicated AIRR + counts</button></div></div>}
+      {collapseMode === "exact" ? <>
+        <div className="module-controls">
+          <label><span>Identity key</span><select value={dedupKey} onChange={(event) => setDedupKey(event.target.value as DedupKey)}><option value="sequence">Full input sequence</option><option value="trimmed">VDJ-aligned sequence</option><option value="cdr3">Locus + CDR3 nucleotide</option><option value="rearrangement">Locus + V/J calls + CDR3</option></select></label>
+          <button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runDedup()}>Run exact deduplication</button>
+        </div>
+        {(dedupKey === "sequence" || dedupKey === "trimmed") && <p className="scientific-note"><span>i</span>Sequence-key modes compare normalized length plus a 128-bit fingerprint so complete sequence payloads do not remain in memory. Existing <code>duplicate_count</code> values are summed rather than reset.</p>}
+      </> : <div className="denoise-config">
+        <div className="control-grid three">
+          <label><span>V/J call level</span><select value={denoiseResolution} onChange={(event) => setDenoiseResolution(event.target.value as CallResolution)}><option value="allele">Allele</option><option value="gene">Gene</option></select></label>
+          <label><span>Uncertain assignments</span><select value={denoiseAmbiguity} onChange={(event) => setDenoiseAmbiguity(event.target.value as "top" | "strict")}><option value="strict">Exact sorted call set</option><option value="top">Top V and J calls</option></select></label>
+          <label><span>Ambiguous N bases</span><select value={denoiseAmbiguousPolicy} onChange={(event) => setDenoiseAmbiguousPolicy(event.target.value as "exclude" | "retain")}><option value="exclude">Exclude (published FAD behavior)</option><option value="retain">Keep as exact-only representatives</option></select></label>
+          <label><span>Per-base error rate</span><input type="number" min="0.000001" max="0.2" step="0.00001" value={denoiseErrorRate} onChange={(event) => setDenoiseErrorRate(Number(event.target.value))} /></label>
+          <label><span>Significance α</span><input type="number" min="0.000001" max="0.5" step="0.001" value={denoiseAlpha} onChange={(event) => setDenoiseAlpha(Number(event.target.value))} /></label>
+          <label><span>Minimum parent abundance</span><input type="number" min="1" max="1000000" step="1" value={minimumParentCount} onChange={(event) => setMinimumParentCount(Number(event.target.value))} /></label>
+        </div>
+        {collapseMode === "fad" ? <div className="control-grid three denoise-specific">
+          <label><span>FAD decision</span><select value={fadMethod} onChange={(event) => setFadMethod(Number(event.target.value) as 1 | 2)}><option value={2}>Method 2 · Poisson</option><option value={1}>Method 1 · abundance only</option></select></label>
+          <label><span>Corrected 6-mer radius</span><input type="number" min="0" max="5" step="0.25" value={fadNeighborThreshold} onChange={(event) => setFadNeighborThreshold(Number(event.target.value))} /></label>
+          <label><span>Expected zero-error fraction</span><input type="number" min="0.0001" max="1" step="0.01" value={expectedZeroErrorFraction} onChange={(event) => setExpectedZeroErrorFraction(Number(event.target.value))} /></label>
+        </div> : <div className="control-grid three denoise-specific"><label><span>Maximum Hamming errors</span><select value={maximumDenoiseDistance} onChange={(event) => setMaximumDenoiseDistance(Number(event.target.value))}><option value={1}>1 substitution</option><option value={2}>2 substitutions</option><option value={3}>3 substitutions</option></select></label></div>}
+        <details className="post-advanced"><summary>Performance guard</summary><div className="control-grid three"><label><span>Candidate cap / variant</span><input type="number" min="100" max="1000000" step="1000" value={denoiseCandidateCap} onChange={(event) => setDenoiseCandidateCap(Number(event.target.value))} /></label></div></details>
+        <div className="algorithm-note"><strong>{collapseMode === "fad" ? "FAD-compatible indexed implementation" : "Conservative exact-neighbor implementation"}</strong><span>{collapseMode === "fad" ? "Partition locus/V/J → exact dereplication → complete corrected-6-mer radius index → published template test → exact nearest accepted centroid within each partition." : "Partition locus/V/J → exact dereplication → d+1 block index → exact Hamming verification → sequence-specific Poisson error test. Isolated singletons are retained; no read is assigned to a distant centroid."}</span></div>
+        <p className="scientific-note"><span>i</span>Trimmed VDJ sequences are streamed from the AIRR store into a two-bit packed arena. Temporary neighbor profiles are released one V/J partition at a time. The 0.00473 default reproduces the linked workflow’s MiSeq median error-rate setting; it should be changed for a different assay.</p>
+        <button className="post-primary denoise-run" type="button" disabled={Boolean(busy)} onClick={() => void runDedup()}>{collapseMode === "fad" ? "Run FAD-compatible denoising" : "Run exact-neighbor denoising"}</button>
+      </div>}
+      {dedup && <div className="module-result"><div className="post-stat-grid"><article><span>Input rows / abundance</span><strong>{dedup.inputRecords.toLocaleString()} / {dedup.inputAbundance.toLocaleString()}</strong></article><article><span>Retained representatives</span><strong>{dedup.uniqueRecords.toLocaleString()}</strong></article><article><span>Collapsed or excluded rows</span><strong>{dedup.collapsedRecords.toLocaleString()}</strong></article><article><span>Largest multiplicity</span><strong>{(dedup.largestGroups[0]?.count ?? 1).toLocaleString()}</strong></article>{dedup.mode !== "exact" && <><article><span>V/J partitions</span><strong>{dedup.partitions.toLocaleString()}</strong></article><article><span>Verified candidates</span><strong>{dedup.candidateComparisons.toLocaleString()}</strong></article></>}</div><div className="denoise-provenance"><strong>{dedup.algorithm}</strong><span>{dedup.mode === "exact" ? `Key: ${dedup.key}` : `${denoiseResolution}-level V/J partitioning · ${denoiseAmbiguity} assignment policy`}</span></div>{dedup.warnings.map((warning) => <div key={warning} className="scientific-note warning"><span>!</span><p>{warning}</p></div>)}<div className="filter-commit"><div><span>Downstream action</span><strong>Retain representatives; preserve collapsed abundance as counts</strong><p>This action changes the working set from {dedup.inputRecords.toLocaleString()} to {dedup.uniqueRecords.toLocaleString()} rows and invalidates downstream results.</p></div><button className="post-primary" type="button" disabled={Boolean(busy) || workingStages.some((stage) => stage.id === "dedup")} onClick={() => void applyDedupFilter()}>{workingStages.some((stage) => stage.id === "dedup") ? "Applied downstream" : `Apply ${dedup.uniqueRecords.toLocaleString()} representatives`}</button></div><div className="result-actions"><button type="button" onClick={() => void downloadDeduplicated()}>Download collapsed AIRR + multiplicity</button></div></div>}
     </section>
 
     <section className="post-module chmm-module">

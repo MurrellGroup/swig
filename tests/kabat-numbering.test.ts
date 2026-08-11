@@ -24,6 +24,40 @@ test("Kabat labels are projected back through codon-alignment gaps", () => {
   assert.equal(result.labels[4], "3");
 });
 
-test("Kabat projection rejects nucleotide alignments that are not codon-column aligned", () => {
-  assert.throws(() => inferKabatColumnsWithNumberer([{ name: "member__1", sequence: "GCTA" }], { number: () => { throw new Error("unreachable"); } }), /codon-column/);
+test("Kabat projection warns but still numbers an alignment with a terminal partial codon", () => {
+  const result = inferKabatColumnsWithNumberer([{ name: "member__1", sequence: `${"GCT".repeat(60)}G` }], {
+    number: (query) => {
+      assert.equal(query.length, 60);
+      return {
+        chain: "H",
+        confidence: 0.88,
+        numbering: new Map(Array.from({ length: 60 }, (_, index) => [String(index + 1), "A"])),
+        query_start: 0,
+        error: null,
+      };
+    },
+  });
+  assert.equal(result.labels.length, 61);
+  assert.equal(result.partialCodonRecords, 1);
+  assert.equal(result.stopCodons, 0);
+  assert.match(result.warnings[0], /terminal partial codon/);
+  assert.equal(result.numberedColumns, 60);
+});
+
+test("Kabat projection replaces stop codons for numbering and reports them", () => {
+  const sequence = `${"GCT".repeat(30)}TAA${"GCT".repeat(29)}`;
+  const result = inferKabatColumnsWithNumberer([{ name: "member__1", sequence }], {
+    number: (query) => {
+      assert.equal(query[30], "X");
+      return {
+        chain: "H",
+        confidence: 0.77,
+        numbering: new Map(Array.from({ length: 60 }, (_, index) => [String(index + 1), query[index]])),
+        query_start: 0,
+        error: null,
+      };
+    },
+  });
+  assert.equal(result.stopCodons, 1);
+  assert.match(result.warnings[0], /stop codon/);
 });

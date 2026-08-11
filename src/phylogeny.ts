@@ -16,9 +16,11 @@ export interface TreeLayout {
   height: number;
   leaves: number;
   mode: TreeLayoutMode;
+  maximumDistance: number;
 }
 
 export type TreeLayoutMode = "phylogram" | "cladogram";
+export type LadderizeDirection = "large-first" | "small-first";
 
 export const FASTTREE_DOUBLE_MINIMUM_BRANCH = 5e-9;
 export const FASTTREE_AMBIGUOUS_BRANCH_THRESHOLD = 1e-8;
@@ -170,12 +172,31 @@ export function rootOnOutgroup(root: TreeNode, outgroupName: string): TreeNode {
     length: branchLength,
     children: (adjacency.get(node) ?? []).filter((edge) => edge.node !== parent).map((edge) => orient(edge.node, node, edge.length)),
   });
-  const half = neighbor.length / 2;
+  // The N-masked germline represents the UCA anchor, not an ordinary sampled
+  // outgroup. Place the root exactly at that tip: its root edge is zero and
+  // the ingroup receives the complete original connecting-edge length.
   return {
     name: "",
     length: 0,
-    children: [orient(outgroup, neighbor.node, half), orient(neighbor.node, outgroup, half)],
+    children: [orient(outgroup, neighbor.node, 0), orient(neighbor.node, outgroup, neighbor.length)],
   };
+}
+
+/** Reorder children for display without changing topology or branch lengths. */
+export function ladderizeTree(root: TreeNode, direction: LadderizeDirection): TreeNode {
+  const visit = (node: TreeNode): { node: TreeNode; leaves: number; key: string } => {
+    if (!node.children.length) return { node: { ...node, children: [] }, leaves: 1, key: node.name };
+    const children = node.children.map(visit).sort((left, right) => {
+      const sizeOrder = direction === "large-first" ? right.leaves - left.leaves : left.leaves - right.leaves;
+      return sizeOrder || left.key.localeCompare(right.key);
+    });
+    return {
+      node: { ...node, children: children.map((child) => child.node) },
+      leaves: children.reduce((sum, child) => sum + child.leaves, 0),
+      key: children.map((child) => child.key).sort().join("\u0000"),
+    };
+  };
+  return visit(root).node;
 }
 
 /**
@@ -252,13 +273,25 @@ export function layoutTree(
   const leafY = new Map(leaves.map((leaf, index) => [leaf, topPadding + index * rowHeight]));
   const nodes: TreeLayoutNode[] = [];
   const edges: Array<{ parent: TreeLayoutNode; child: TreeLayoutNode }> = [];
+  // Padding must contract with the user-controlled width. Otherwise a small
+  // width slider value merely hits an invisible 48 px floor instead of truly
+  // compressing the tree.
+  const leftPadding = Math.min(24, Math.max(0, width * 0.1));
+  const effectiveRightPadding = Math.min(Math.max(0, rightPadding), Math.max(0, width * 0.1));
+  const drawableWidth = Math.max(0, width - leftPadding - effectiveRightPadding);
+  // Branch lengths are normally fractions of one substitution per site. The
+  // previous Math.max(maximum, 1) denominator therefore compressed ordinary
+  // lineage trees into only a few pixels at the left of the panel. Normalize
+  // by the observed maximum itself so the most distant tip uses the full tree
+  // viewport, irrespective of the absolute evolutionary scale.
+  const distanceScale = maximum > 0 ? maximum : 1;
   const build = (node: TreeNode): TreeLayoutNode => {
     const children = node.children.map(build);
     const y = children.length ? children.reduce((sum, child) => sum + child.y, 0) / children.length : leafY.get(node) ?? 0;
     const layout: TreeLayoutNode = {
       ...node,
       children,
-      x: 24 + (distances.get(node) ?? 0) / Math.max(maximum, 1) * Math.max(24, width - 24 - rightPadding),
+      x: leftPadding + (distances.get(node) ?? 0) / distanceScale * drawableWidth,
       y,
     };
     nodes.push(layout);
@@ -266,5 +299,13 @@ export function layoutTree(
     return layout;
   };
   build(root);
-  return { nodes, edges, width, height: Math.max(90, topPadding + Math.max(0, leaves.length - 1) * rowHeight + 32), leaves: leaves.length, mode };
+  return {
+    nodes,
+    edges,
+    width,
+    height: Math.max(90, topPadding + Math.max(0, leaves.length - 1) * rowHeight + 32),
+    leaves: leaves.length,
+    mode,
+    maximumDistance: maximum,
+  };
 }
