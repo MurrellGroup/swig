@@ -1,0 +1,32 @@
+{
+  "name": "swig-github-pages",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run check && vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "test": "npm run test:wasm",
+    "test:wasm": "node --test tests/swiftig-wasm.test.mjs",
+    "build:wasm": "bash scripts/build-swiftig-wasm.sh",
+    "build:references": "node scripts/build-imgt-reference-pack.mjs"
+  },
+  "dependencies": {
+    "@bjorn3/browser_wasi_shim": "0.4.2",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "typescript": "5.9.3",
+    "vite": "8.0.13"
+  }
+}
+
