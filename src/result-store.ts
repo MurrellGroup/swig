@@ -96,6 +96,16 @@ export interface ResultPage {
 
 type AirrRow = Record<string, string>;
 
+export interface AirrScanRow {
+  ordinal: number;
+  values: AirrRow;
+}
+
+export interface AirrDetailRow {
+  record: AirrIndexRecord;
+  values: AirrRow;
+}
+
 interface PackedIndexRecord {
   o: number;
   c: number;
@@ -670,6 +680,87 @@ export class AirrResultStore {
     return Object.fromEntries(this.headers.map((header, index) => [header, values[index] ?? ""]));
   }
 
+  async indexRecords(ordinals: readonly number[]): Promise<AirrIndexRecord[]> {
+    if (!ordinals.length) return [];
+    const database = await this.database;
+    const transaction = database.transaction("records", "readonly");
+    const store = transaction.objectStore("records");
+    const packed = await Promise.all(ordinals.map((ordinal) => requestResult(store.get(ordinal)) as Promise<PackedIndexRecord | undefined>));
+    return packed.flatMap((record) => record ? [unpackRecord(record)] : []);
+  }
+
+  async detailMany(ordinals: readonly number[]): Promise<AirrDetailRow[]> {
+    const records = await this.indexRecords(ordinals);
+    const byChunk = new Map<number, AirrIndexRecord[]>();
+    for (const record of records) {
+      const values = byChunk.get(record.chunk);
+      if (values) values.push(record);
+      else byChunk.set(record.chunk, [record]);
+    }
+    const result = new Map<number, AirrDetailRow>();
+    const database = await this.database;
+    for (const [chunkIndex, chunkRecords] of byChunk) {
+      const transaction = database.transaction("chunks", "readonly");
+      const chunk = await requestResult(transaction.objectStore("chunks").get(chunkIndex)) as ChunkRecord | undefined;
+      if (!chunk) continue;
+      const lines = (await this.chunkText(chunk)).split("\n");
+      for (const record of chunkRecords) {
+        const line = lines[record.line]?.replace(/\r$/, "") ?? "";
+        const values = line.split("\t");
+        result.set(record.ordinal, {
+          record,
+          values: Object.fromEntries(this.headers.map((header, index) => [header, values[index] ?? ""])),
+        });
+      }
+    }
+    return ordinals.flatMap((ordinal) => result.get(ordinal) ?? []);
+  }
+
+  async scanAirrRows(
+    fields: readonly string[],
+    onBatch: (rows: AirrScanRow[]) => void | Promise<void>,
+    options: {
+      batchSize?: number;
+      onProgress?: (processed: number, total: number) => void;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<void> {
+    const selected = [...new Set(fields)];
+    const positions = selected.map((field) => this.headers.indexOf(field));
+    const batchSize = Math.max(100, options.batchSize ?? 2_000);
+    const database = await this.database;
+    let ordinal = 0;
+    let batch: AirrScanRow[] = [];
+    for (let index = 0; index < this.nextChunk; index += 1) {
+      if (options.signal?.aborted) throw new DOMException("Post-analysis was cancelled.", "AbortError");
+      const transaction = database.transaction("chunks", "readonly");
+      const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
+      if (!chunk) continue;
+      const lines = (await this.chunkText(chunk)).split("\n");
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, "");
+        if (!line) continue;
+        const values = line.split("\t");
+        const row: AirrRow = {};
+        selected.forEach((field, fieldIndex) => {
+          const position = positions[fieldIndex];
+          row[field] = position >= 0 ? values[position] ?? "" : "";
+        });
+        batch.push({ ordinal, values: row });
+        ordinal += 1;
+        if (batch.length >= batchSize) {
+          await onBatch(batch);
+          batch = [];
+          options.onProgress?.(ordinal, this.count);
+          await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+          if (options.signal?.aborted) throw new DOMException("Post-analysis was cancelled.", "AbortError");
+        }
+      }
+    }
+    if (batch.length) await onBatch(batch);
+    options.onProgress?.(ordinal, this.count);
+  }
+
   private async chunkBlob(chunk: ChunkRecord): Promise<Blob> {
     if (chunk.storage === "external") {
       if (!this.directOutput || chunk.start === undefined || chunk.length === undefined) {
@@ -749,6 +840,61 @@ export class AirrResultStore {
       const transaction = database.transaction("chunks", "readonly");
       const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
       if (chunk) await write(await this.chunkBlob(chunk));
+    }
+  }
+
+  async writeDeduplicatedAirr(
+    counts: Uint32Array,
+    write: (part: string | Blob | Uint8Array) => Promise<void>,
+  ): Promise<void> {
+    if (counts.length < this.count) throw new Error("The duplicate-count vector does not cover every AIRR record.");
+    await write(`${this.headerLine}\tduplicate_count\n`);
+    const database = await this.database;
+    let ordinal = 0;
+    for (let index = 0; index < this.nextChunk; index += 1) {
+      const transaction = database.transaction("chunks", "readonly");
+      const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
+      if (!chunk) continue;
+      const lines = (await this.chunkText(chunk)).split("\n");
+      let body = "";
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, "");
+        if (!line) continue;
+        const count = counts[ordinal++];
+        if (count) body += `${line}\t${count}\n`;
+      }
+      if (body) await write(body);
+    }
+  }
+
+  async writeLineageAirr(
+    assignments: Int32Array,
+    write: (part: string | Blob | Uint8Array) => Promise<void>,
+  ): Promise<void> {
+    if (assignments.length < this.count) throw new Error("The lineage-assignment vector does not cover every AIRR record.");
+    const clonePosition = this.headers.indexOf("clone_id");
+    await write(`${clonePosition >= 0 ? this.headerLine : `${this.headerLine}\tclone_id`}\n`);
+    const database = await this.database;
+    let ordinal = 0;
+    for (let index = 0; index < this.nextChunk; index += 1) {
+      const transaction = database.transaction("chunks", "readonly");
+      const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
+      if (!chunk) continue;
+      const lines = (await this.chunkText(chunk)).split("\n");
+      let body = "";
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, "");
+        if (!line) continue;
+        const lineage = assignments[ordinal++];
+        const cloneId = lineage > 0 ? `swig_lineage_${lineage}` : "";
+        if (clonePosition < 0) body += `${line}\t${cloneId}\n`;
+        else {
+          const values = line.split("\t");
+          values[clonePosition] = cloneId;
+          body += `${values.join("\t")}\n`;
+        }
+      }
+      if (body) await write(body);
     }
   }
 

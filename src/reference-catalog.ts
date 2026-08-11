@@ -1,4 +1,4 @@
-import type { LocusKey, SegmentKey } from "./reference-pack";
+import type { LocusKey, ScopeKey, SegmentKey } from "./reference-pack";
 
 export interface ReferenceCollection {
   id: string;
@@ -14,10 +14,25 @@ export interface ReferenceCollection {
   segments: Partial<Record<SegmentKey, ReferenceSource>>;
 }
 
+export interface ReferenceDatabase {
+  id: string;
+  name: string;
+  provider: string;
+  version: string;
+  speciesPrefixes: string[];
+  summary: string;
+  sourceUrl: string;
+  citationUrl: string;
+  terms?: { label: string; url: string };
+  defaultScope: ScopeKey;
+  scopes: ScopeKey[];
+  collectionIds: string[];
+}
+
 export interface ReferenceDatabaseOption {
   id: string;
   label: string;
-  collection: ReferenceCollection | null;
+  database: ReferenceDatabase | null;
 }
 
 interface ReferenceSource {
@@ -94,6 +109,52 @@ export const REFERENCE_COLLECTIONS: ReferenceCollection[] = [
   kimdbCollection("Macaca fascicularis"),
 ];
 
+export const REFERENCE_DATABASES: ReferenceDatabase[] = [
+  {
+    id: "kiarva-human-igh",
+    name: "KIARVA · human IGH",
+    provider: "Karlsson Hedestam laboratory, Karolinska Institutet",
+    version: "current genomic release",
+    speciesPrefixes: ["Homo sapiens"],
+    summary: "Human population IGHV, IGHD, and IGHJ alleles inferred from 2,486 1000 Genomes Project cases.",
+    sourceUrl: "https://kiarva.scilifelab.se/about",
+    citationUrl: "https://kiarva.scilifelab.se/about",
+    terms: { label: "CC BY-NC 4.0", url: "https://kiarva.scilifelab.se/license" },
+    defaultScope: "IGH",
+    scopes: ["IGH"],
+    collectionIds: ["kiarva-human-igh"],
+  },
+  {
+    id: "ki-human-tcr",
+    name: "KI human TCR database",
+    provider: "Karlsson Hedestam laboratory, Karolinska Institutet",
+    version: "Corcoran et al. 2023",
+    speciesPrefixes: ["Homo sapiens"],
+    summary: "Human TRA, TRB, TRD, and TRG V(D)J reference sequences; analyze all TCR loci together or select one locus.",
+    sourceUrl: "https://gkhlab.gitlab.io/tcr/sequences/",
+    citationUrl: "https://doi.org/10.1016/j.immuni.2023.02.007",
+    defaultScope: "TCR",
+    scopes: ["TCR", "TRA", "TRB", "TRD", "TRG"],
+    collectionIds: ["ki-human-tra", "ki-human-trb", "ki-human-trd", "ki-human-trg"],
+  },
+  ...(["Macaca mulatta", "Macaca fascicularis"] as const).map((species) => {
+    const slug = species.replace(" ", "_").toLowerCase();
+    return {
+      id: `kimdb-${slug}`,
+      name: `KIMDB 1.1 · ${species} IGH`,
+      provider: "Karlsson Hedestam laboratory, Karolinska Institutet",
+      version: "1.1",
+      speciesPrefixes: [species],
+      summary: `Curated ${species} heavy-chain V, D, and J germline sequences from KIMDB.`,
+      sourceUrl: "http://kimdb.gkhlab.se/",
+      citationUrl: "https://pubmed.ncbi.nlm.nih.gov/33484642/",
+      defaultScope: "IGH" as ScopeKey,
+      scopes: ["IGH" as ScopeKey],
+      collectionIds: [`kimdb-${slug}`],
+    };
+  }),
+];
+
 export function collectionsFor(species: string, locus: LocusKey | null): ReferenceCollection[] {
   if (!locus) return [];
   return REFERENCE_COLLECTIONS.filter((collection) => collection.locus === locus
@@ -102,21 +163,43 @@ export function collectionsFor(species: string, locus: LocusKey | null): Referen
 
 export function databaseOptionsFor(
   species: string,
-  locus: LocusKey | null,
   imgtRelease: string,
 ): ReferenceDatabaseOption[] {
   return [
     {
       id: DEFAULT_DATABASE_ID,
       label: `IMGT/GENE-DB ${imgtRelease || "reference pack"} · default`,
-      collection: null,
+      database: null,
     },
-    ...collectionsFor(species, locus).map((collection) => ({
-      id: collection.id,
-      label: collection.name,
-      collection,
+    ...REFERENCE_DATABASES.filter((database) => database.speciesPrefixes.some((prefix) => species === prefix || species.startsWith(`${prefix}_`))).map((database) => ({
+      id: database.id,
+      label: database.name,
+      database,
     })),
   ];
+}
+
+export function collectionsForDatabase(
+  database: ReferenceDatabase,
+  scope: ScopeKey,
+): ReferenceCollection[] {
+  const loci = scope === "BCR"
+    ? new Set<LocusKey>(["IGH", "IGK", "IGL"])
+    : scope === "TCR"
+      ? new Set<LocusKey>(["TRA", "TRB", "TRD", "TRG"])
+      : new Set<LocusKey>([scope as LocusKey]);
+  return database.collectionIds
+    .map((id) => REFERENCE_COLLECTIONS.find((collection) => collection.id === id))
+    .filter((collection): collection is ReferenceCollection => Boolean(collection && loci.has(collection.locus)));
+}
+
+export function databasesForCell(
+  species: string,
+  locus: LocusKey,
+  segment: SegmentKey,
+): ReferenceDatabase[] {
+  return REFERENCE_DATABASES.filter((database) => database.speciesPrefixes.some((prefix) => species === prefix || species.startsWith(`${prefix}_`))
+    && collectionsForDatabase(database, locus).some((collection) => Boolean(collection.segments[segment])));
 }
 
 export async function loadCollectionSegment(

@@ -93,6 +93,22 @@ test("constant-region evidence yields isotype facets and repertoire summaries", 
   await store.clear();
 });
 
+test("lineage export adds AIRR clone_id values and leaves excluded records blank", async () => {
+  const store = new AirrResultStore();
+  await store.appendBatch(header, makeBody(0, 3));
+  await store.finalize();
+  let output = "";
+  await store.writeLineageAirr(Int32Array.from([7, 0, 12]), async (part) => {
+    output += typeof part === "string" ? part : part instanceof Blob ? await part.text() : new TextDecoder().decode(part);
+  });
+  const lines = output.trimEnd().split("\n");
+  assert.equal(lines[0].split("\t").at(-1), "clone_id");
+  assert.equal(lines[1].split("\t").at(-1), "swig_lineage_7");
+  assert.equal(lines[2].split("\t").at(-1), "");
+  assert.equal(lines[3].split("\t").at(-1), "swig_lineage_12");
+  await store.clear();
+});
+
 test("direct output keeps byte offsets usable for on-demand detail", async () => {
   const parts: BlobPart[] = [];
   let file = new File([], "direct.airr.tsv");

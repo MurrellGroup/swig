@@ -39,6 +39,25 @@ function positiveModulo(value: number, modulus: number): number {
   return ((value % modulus) + modulus) % modulus;
 }
 
+export function biologicalFrameOffset(queryStartOneBased: number, sequenceFrameOneBased: number): number {
+  if (!queryStartOneBased || !sequenceFrameOneBased) return 0;
+  return positiveModulo((sequenceFrameOneBased - 1) - (queryStartOneBased - 1), 3);
+}
+
+export function projectCodonAlignment(dna: string, alignedAminoAcids: string, frame: number): string {
+  const clean = dna.replaceAll("-", "").toUpperCase().replaceAll("U", "T");
+  let result = clean.slice(0, frame).padEnd(3, "-");
+  let position = frame;
+  for (const aminoAcid of alignedAminoAcids) {
+    if (aminoAcid === "-") result += "---";
+    else {
+      result += clean.slice(position, position + 3).padEnd(3, "-");
+      position += 3;
+    }
+  }
+  return result + clean.slice(position).padEnd(3, "-");
+}
+
 function translateAligned(sequence: string): string {
   let protein = "";
   for (let index = 0; index + 2 < sequence.length; index += 3) {
@@ -65,9 +84,7 @@ export function biologicalSegmentAlignment(
   sequenceFrameOneBased: number,
 ): AlignmentPair | null {
   if (!nucleotideQuery || !nucleotideReference || !queryStartOneBased || !sequenceFrameOneBased) return null;
-  const queryStart = queryStartOneBased - 1;
-  const frame = sequenceFrameOneBased - 1;
-  const basesToSkip = positiveModulo(frame - queryStart, 3);
+  const basesToSkip = biologicalFrameOffset(queryStartOneBased, sequenceFrameOneBased);
   const column = queryOffsetColumn(nucleotideQuery, basesToSkip);
   const query = translateAligned(nucleotideQuery.slice(column));
   const reference = translateAligned(nucleotideReference.slice(column));

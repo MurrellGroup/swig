@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { biologicalSegmentAlignment, buildTrackFeatures } from "../src/alignment-model.ts";
+import { biologicalFrameOffset, biologicalSegmentAlignment, buildTrackFeatures, projectCodonAlignment } from "../src/alignment-model.ts";
 
 test("the layered track model preserves AIRR region and germline coordinates", () => {
   const row = {
@@ -29,4 +29,12 @@ test("per-segment amino-acid alignment uses the rearrangement frame rather than 
   const translated = biologicalSegmentAlignment("AAATGGGCT", "AAATGGGCT", 2, 1);
   assert.deepEqual(translated, { query: "MG", reference: "MG" });
   assert.equal(biologicalSegmentAlignment("AAATGGGCT", "AAATGGGCT", 2, 0), null);
+  assert.equal(biologicalFrameOffset(5, 2), 0);
+  assert.equal(biologicalFrameOffset(6, 2), 2);
+});
+
+test("codon projection preserves phase and emits only complete triplet columns", () => {
+  const projected = projectCodonAlignment("AATGGGC", "-MG", 1);
+  assert.equal(projected, "A-----ATGGGC---");
+  assert.equal(projected.length % 3, 0);
 });

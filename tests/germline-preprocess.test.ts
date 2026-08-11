@@ -4,7 +4,15 @@ import test from "node:test";
 import zlib from "node:zlib";
 
 import { preprocessGermlineFasta, type MetadataAllele } from "../src/germline-preprocess.ts";
-import { collectionsFor, databaseOptionsFor, DEFAULT_DATABASE_ID } from "../src/reference-catalog.ts";
+import { composeReferenceOverrides, referenceCellKey, segmentAppliesToLocus } from "../src/reference-composition.ts";
+import {
+  collectionsFor,
+  collectionsForDatabase,
+  databaseOptionsFor,
+  databasesForCell,
+  DEFAULT_DATABASE_ID,
+  REFERENCE_DATABASES,
+} from "../src/reference-catalog.ts";
 
 const pack = JSON.parse(zlib.gunzipSync(fs.readFileSync(new URL("../public/references/imgt-202632-7.json.gz", import.meta.url))).toString());
 const human = pack.species.find((entry: { name: string }) => entry.name === "Homo sapiens");
@@ -78,11 +86,39 @@ test("the KI catalog exposes human IGH/TCR and macaque IGH collections by matchi
 });
 
 test("database choices always default to IMGT and never expose a mismatched KI collection", () => {
-  const cat = databaseOptionsFor("Felis catus_Abyssinian", "IGH", "202632-7");
+  const cat = databaseOptionsFor("Felis catus_Abyssinian", "202632-7");
   assert.deepEqual(cat.map((option) => option.id), [DEFAULT_DATABASE_ID]);
   assert.match(cat[0].label, /^IMGT\/GENE-DB 202632-7/);
-  assert.deepEqual(databaseOptionsFor("Homo sapiens", null, "202632-7").map((option) => option.id), [DEFAULT_DATABASE_ID]);
-  assert.deepEqual(databaseOptionsFor("Homo sapiens", "IGH", "202632-7").map((option) => option.id), [DEFAULT_DATABASE_ID, "kiarva-human-igh"]);
+  assert.deepEqual(databaseOptionsFor("Homo sapiens", "202632-7").map((option) => option.id), [DEFAULT_DATABASE_ID, "kiarva-human-igh", "ki-human-tcr"]);
+  assert.deepEqual(databaseOptionsFor("Macaca mulatta_AG07107", "202632-7").map((option) => option.id), [DEFAULT_DATABASE_ID, "kimdb-macaca_mulatta"]);
+});
+
+test("published databases compose by receptor, locus, and segment", () => {
+  const kiarva = REFERENCE_DATABASES.find((database) => database.id === "kiarva-human-igh");
+  const tcr = REFERENCE_DATABASES.find((database) => database.id === "ki-human-tcr");
+  assert.ok(kiarva);
+  assert.ok(tcr);
+  assert.deepEqual(collectionsForDatabase(kiarva, "BCR").map((collection) => collection.locus), ["IGH"]);
+  assert.deepEqual(collectionsForDatabase(tcr, "TCR").map((collection) => collection.locus), ["TRA", "TRB", "TRD", "TRG"]);
+  assert.deepEqual(collectionsForDatabase(tcr, "TRB").map((collection) => collection.locus), ["TRB"]);
+  assert.deepEqual(databasesForCell("Homo sapiens", "IGH", "V").map((database) => database.id), ["kiarva-human-igh"]);
+  assert.deepEqual(databasesForCell("Homo sapiens", "IGK", "V"), []);
+  assert.deepEqual(databasesForCell("Homo sapiens", "TRB", "D").map((database) => database.id), ["ki-human-tcr"]);
+});
+
+test("a locus-specific replacement retains IMGT records from the other combined-chain loci", () => {
+  const customIghV = ">IGHV_CUSTOM*01\nACGTACGTACGT\n";
+  const composed = composeReferenceOverrides(
+    ["IGH", "IGK", "IGL"],
+    { [referenceCellKey("IGH", "V")]: { text: customIghV } },
+    (locus, segment) => (human.loci[locus]?.[segment] ?? []).map((allele: MetadataAllele) => `>${allele[0]}\n${allele[1]}\n`).join(""),
+  );
+  assert.match(composed.V ?? "", /^>IGHV_CUSTOM\*01/m);
+  assert.match(composed.V ?? "", new RegExp(`^>${human.loci.IGK.V[0][0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`, "m"));
+  assert.match(composed.V ?? "", new RegExp(`^>${human.loci.IGL.V[0][0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`, "m"));
+  assert.equal(composed.D, undefined);
+  assert.equal(segmentAppliesToLocus("IGK", "D"), false);
+  assert.equal(segmentAppliesToLocus("IGH", "D"), true);
 });
 
 test("bundled KIMDB files are intact FASTA exports", () => {

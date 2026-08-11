@@ -41,12 +41,25 @@ The generated static site is written to `dist/`. It contains the JavaScript/CSS 
 Swig is deliberately split into three views:
 
 1. **Overview** explains the biological and computational workflow before asking for data.
-2. **Analyze** accepts a file or pasted records, configures species/receptor/locus and independent V/D/J/C substitutions, and shows measured read, reference-indexing, annotation, and result-indexing progress.
-3. **Results** downloads the complete AIRR TSV, opens a repertoire dashboard, or explores the local result index. Runs of one to three records open directly at the record detail; larger runs remain paged and filterable.
+2. **Analyze** accepts a file or pasted records, configures species/receptor/locus and a composable locus-by-segment reference matrix, and shows measured read, reference-indexing, annotation, and result-indexing progress.
+3. **Results** downloads the complete AIRR TSV, opens a repertoire dashboard, explores the local result index, or runs opt-in post-analysis. Runs of one to three records open directly at the record detail; larger runs remain paged and filterable.
 
 Selecting a record scrolls directly to its detail panel. A shared coordinate view layers the query, IMGT FWR/CDR intervals, and mapped V/D/J/C hits. The same panel provides the stitched V(D)J alignment, individual query-to-germline alignments, junction calls, and every populated AIRR field. Nucleotide and amino-acid modes share one biologically derived rearrangement frame; frames are not optimized independently per segment. Exact co-optimal calls and sparse near-tied candidates are shown with score, identity, and coordinates. Full alternate alignment strings are not duplicated into every AIRR row.
 
 The repertoire dashboard accumulates summaries while AIRR batches are committed, so opening it does not rescan a million-row output. It includes customizable V/D/J/C or isotype frequency bars, CDR3-length and V-identity distributions, and a V–J pairing bubble matrix. Every rendered figure downloads as a standalone SVG. Ambiguous comma-separated calls can be counted by first call or split fractionally across co-optimal alleles.
+
+## Post-analysis
+
+The **Post-analysis** results tab is opt-in and keeps the full AIRR rows in chunked storage. It provides:
+
+- **Deduplication with abundance:** full input sequence, VDJ-aligned sequence, locus + CDR3 nucleotide, or locus + V/J calls + CDR3 can define the representative. The worker retains the representative mapping and `duplicate_count`; the deduplicated AIRR table is written batchwise. To avoid retaining all full sequences in RAM, the two sequence modes use sequence length plus four independent 32-bit fingerprints.
+- **CHMMAIRRa:** a browser implementation of the CHMMera structured HMM can be run after assignment on V (default) or J. IG defaults to the per-reference Baum–Welch model; TCR defaults to the discretized Bayesian model with a fixed 0.005 mutation-rate state. The default posterior threshold is 0.95, chimera prior 0.05, and minimum distance-from-reference is one. The selected run's V or J FASTA can be aligned with Kalign WASM, or an equal-length aligned FASTA MSA can be uploaded. Missing reference alleles are reported and never silently replaced. Detailed mode adds Viterbi starting references and switch positions. Results export as a separate TSV rather than mutating the original assignment table.
+- **Lineage assignment:** records are partitioned by locus, compatible V/J assignments, and exact CDR3 nucleotide length. Default gene-level ambiguity handling accepts any overlapping call, then performs single-linkage clustering at 85% CDR3 nucleotide identity. A pigeonhole `d+1` block index generates candidates, exact normalized Hamming distance verifies every retained edge, and union–find constructs components. Call resolution, ambiguity policy, productivity, identity, and the pathological-bucket comparison cap are configurable. Assignments can be exported as an AIRR table with `clone_id`; records excluded by the selected criteria retain an empty value.
+- **Sequence-directed retrieval:** one or more CDR3 nucleotide, CDR3 amino-acid, or full VDJ-aligned queries can be searched by exact match, substring, bounded Hamming distance, banded edit distance, or a compact 7-mer MinHash estimate. Optional locus/V/J constraints use the same ambiguity policy as lineage assignment. **Single-linkage expand set** starts from the current matches and follows CDR3 nucleotide edges to a fixed point or a user-visible result cap, so a candidate lineage can be recovered without assigning every lineage first.
+- **Lineage figures and inspection:** abundance distribution, largest components, and V/J use are rendered as customizable SVG figures. The largest lineages are clickable; only the selected component's AIRR rows are decompressed.
+- **On-demand alignment and phylogeny:** selected lineage members can use the existing AIRR coordinate strings as a fast approximate view, Kalign 3.3.1 WASM for nucleotide MSA, or the codon-aware alivibe-style path that aligns translated sequences and projects gaps back as triplets. An N-masked reconstructed germline is included. FastTree 2.1.11 WASM is run only when requested on the nucleotide MSA, then the displayed tree is rooted on the germline edge. Alignment FASTA, rooted Newick, and tree SVG are downloadable.
+
+Kalign and FastTree are provided through the [bioWASM Aioli runtime](https://biowasm.com/). Their program modules are downloaded on first use. Sequence data are mounted in the worker's browser-local virtual filesystem and are not uploaded to bioWASM.
 
 ## Large-run behavior
 
@@ -57,6 +70,9 @@ The repertoire dashboard accumulates summaries while AIRR batches are committed,
 - The table renders 50 records at a time. Exact locus, productivity, V/D/J/C allele, and isotype filters use browser-local indexes; ID, CDR3 substring, identity, length, and QC filters scan the narrowed candidate set on demand and are cancellable.
 - Additional filters cover V/D/J/C identity floors, CDR3 amino-acid length, D/CDR3 presence, receptor locus, and productivity.
 - Full alignment rows are retrieved only after a record is opened.
+- Post-analysis scans chunked AIRR rows into a dedicated worker and retains compact sequence fingerprints, call/CDR3 keys, and typed assignment arrays—not full AIRR rows or a million-row DOM. The 32 MB-per-million VDJ MinHash array is allocated only if full VDJ sketch search is requested.
+- CHMMAIRRa uses a bounded batch per worker and stores posterior/DFR outputs in 6 bytes per input record plus a bounded high-posterior list. Its TSV writer rescans sequence IDs batchwise.
+- Lineage alignment and trees are never precomputed repertoire-wide. At most the first 500 records of an opened lineage are retrieved, and the alignment limit defaults to 200.
 - Every input still receives one lightweight IndexedDB record for filtering. Full AIRR rows and alignments remain in chunked storage and are read only for the selected query.
 - Direct-to-disk output uses the File System Access API (Chromium-family browsers in a secure context). Other modern browsers use compressed IndexedDB plus the streaming download service worker. A conventional Blob is only the small-result fallback.
 
@@ -67,7 +83,7 @@ The repertoire dashboard accumulates summaries while AIRR batches are committed,
 - BCR: `IGH`, `IGK`, and `IGL`
 - TCR: `TRA`, `TRB`, `TRD`, and `TRG`
 - D-segment search for `IGH`, `TRB`, and `TRD`
-- independent V, D, J, and optional C germline FASTA replacement
+- independent V, D, J, and optional C source selection or FASTA upload for every active locus
 - constant-region calls require at least 30 aligned nucleotides; the derived `isotype` AIRR extension additionally requires at least 65% identity
 - 64 species/strain reference sets derived from the IMGT-gapped all-species file in IMGT/GENE-DB release `202632-7`
 
@@ -75,7 +91,7 @@ Swig runs SwiftIG, not IgBLAST. Receptor behavior is determined from the selecte
 
 ## Germline databases and preprocessing
 
-The **Database** selector always defaults to the bundled IMGT/GENE-DB pack. Alternative entries are added only when their declared species and individual locus match the current selection; for example, no KI entry is shown for cat, and combined BCR/TCR searches retain IMGT. The compatible alternatives are:
+The **Database** selector always defaults to the bundled IMGT/GENE-DB pack. Alternative entries are shown only for compatible species; for example, no KI entry is shown for cat. Applying a database is a preset operation, not an all-or-nothing switch: it changes only the locus/segment cells supplied by that resource and leaves every other cell unchanged. The compatible alternatives are:
 
 | Collection | Scope | Delivery |
 | --- | --- | --- |
@@ -83,7 +99,7 @@ The **Database** selector always defaults to the bundled IMGT/GENE-DB pack. Alte
 | KI human TCR database | human TRA, TRB, TRD, and TRG V/D/J as applicable | fetched from the publisher's HTTPS FASTA endpoint when selected |
 | KIMDB 1.1 | rhesus and cynomolgus macaque IGH V/D/J | bundled unchanged because the publisher endpoint is HTTP-only and cannot be fetched by an HTTPS page |
 
-Selecting an alternative database loads all segments that it publishes; any segment absent from that resource continues to use the bundled IMGT baseline. The V, D, J, and C cards then remain independent: uploading a FASTA replaces only that component, and removing the upload restores that component from the selected database. Custom and remotely loaded FASTA use the same in-browser preprocessing worker. The preprocessor:
+The reference matrix has loci as rows and V/D/J/C as columns. Every applicable cell independently selects IMGT, a compatible published database, or an uploaded FASTA. Thus a combined BCR run can use KIARVA for IGH V/D/J while retaining IMGT for IGK/IGL, and a single cell such as IGH J can then be replaced again without changing IGH V or D. Custom and remotely loaded FASTA use the same in-browser preprocessing worker. The preprocessor:
 
 - validates identifiers, locus/segment consistency, nucleotide symbols, duplicate names, and embedded `SWIGMETA` coordinates;
 - reads exact FWR/CDR boundaries from an IMGT-gapped V record when present;
@@ -127,4 +143,4 @@ Update the filename in `src/reference-pack.ts` when the release ID changes. The 
 
 ## Scientific scope
 
-SwiftIG/Swig 0.5 is research software. Benchmark study-critical calls against IgBLAST or another validated workflow for the organism, assay, read length, somatic-hypermutation regime, and germline set relevant to the analysis. Public germline coverage is not available for every animal species; arbitrary or partial new sets can be supplied with the per-segment upload controls.
+SwiftIG/Swig 0.6 is research software. Benchmark study-critical calls and post-analysis thresholds against an independently validated workflow for the organism, assay, read length, somatic-hypermutation regime, and germline set relevant to the analysis. The 85% CDR3 identity lineage threshold is a literature-informed starting value, not a universal biological constant. Public germline coverage is not available for every animal species; arbitrary or partial new sets can be supplied with the per-segment upload controls.

@@ -11,8 +11,10 @@ import { AlignmentViewer } from "./alignment-view";
 import type { GermlinePreprocessReport, MetadataAllele } from "./germline-preprocess";
 import { preprocessGermlinesInWorker } from "./germline-preprocess-client";
 import { RepertoireDashboard } from "./repertoire-charts";
+import { PostAnalysisWorkbench } from "./post-analysis";
 import {
   allelesForScope,
+  allelesToFasta,
   availableScopes,
   compileReferences,
   loadReferencePack,
@@ -20,15 +22,23 @@ import {
   makeDemoFasta,
   type ReferencePack,
   type ReferenceSpecies,
+  type CompiledReferences,
   type LocusKey,
   type ScopeKey,
   type SegmentKey,
 } from "./reference-pack";
 import {
+  composeReferenceOverrides,
+  referenceCellKey,
+  segmentAppliesToLocus,
+} from "./reference-composition";
+import {
+  collectionsForDatabase,
+  databasesForCell,
   databaseOptionsFor,
   DEFAULT_DATABASE_ID,
   loadCollectionSegment,
-  type ReferenceCollection,
+  type ReferenceDatabase,
 } from "./reference-catalog";
 import {
   AirrResultStore,
@@ -65,8 +75,11 @@ interface ReferenceOverride {
   count: number;
   size: number;
   report: GermlinePreprocessReport;
+  sourceKind: "database" | "upload";
   sourceDatabaseId?: string;
 }
+
+type ReferenceCellMap = Record<string, ReferenceOverride>;
 
 interface ResultSession {
   id: number;
@@ -84,6 +97,7 @@ interface ResultSession {
   inputTotal: number;
   subsampleSize: number | null;
   subsampleSeed: number | null;
+  references: CompiledReferences;
 }
 
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
@@ -370,8 +384,8 @@ function LandingPage({ references, onStart, onDemo }: {
         <div className="section-heading"><p className="eyebrow"><span>Analysis workflow</span></p><h2>Input, annotation, and results.</h2><p>Each run has an explicit configuration, measured progress, and a browser-local result index.</p></div>
         <div className="workflow-cards">
           <article><span>01</span><div className="workflow-icon upload-icon" /><h3>Provide sequences</h3><p>Upload or paste FASTA, FASTQ, or an AIRR table. Gzip inputs are decompressed incrementally.</p></article>
-          <article><span>02</span><div className="workflow-icon engine-icon" /><h3>Set references</h3><p>Choose a species and IG/TR locus. V, D, J, and C sets can be replaced independently before parallel WASM annotation.</p></article>
-          <article><span>03</span><div className="workflow-icon result-icon" /><h3>Review results</h3><p>Download AIRR TSV, inspect repertoire summaries, filter records, and open nucleotide or amino-acid alignment layers.</p></article>
+          <article><span>02</span><div className="workflow-icon engine-icon" /><h3>Set references</h3><p>Choose a species and IG/TR search space, then compose IMGT, published, or uploaded V/D/J/C sets by locus.</p></article>
+          <article><span>03</span><div className="workflow-icon result-icon" /><h3>Review and post-analyze</h3><p>Download AIRR TSV, inspect calls, deduplicate with abundance, assign or query lineages, and align selected groups on demand.</p></article>
         </div>
       </section>
 
@@ -390,66 +404,102 @@ function LandingPage({ references, onStart, onDemo }: {
   );
 }
 
-function ReferenceSegment({ segment, count, coverage, databaseReference, override, optional, onFile, onClear }: {
+function ReferenceCellControl({ speciesName, locus, segment, builtInCount, builtInCoverage, reference, busy, onSelect, onFile }: {
+  speciesName: string;
+  locus: LocusKey;
   segment: SegmentKey;
-  count: number;
-  coverage?: { annotated: number; total: number };
-  databaseReference?: ReferenceOverride;
-  override?: ReferenceOverride;
-  optional?: boolean;
-  onFile: (segment: SegmentKey, file: File) => void;
-  onClear: (segment: SegmentKey) => void;
+  builtInCount: number;
+  builtInCoverage?: { annotated: number; total: number };
+  reference?: ReferenceOverride;
+  busy: boolean;
+  onSelect: (locus: LocusKey, segment: SegmentKey, sourceId: string) => void;
+  onFile: (locus: LocusKey, segment: SegmentKey, file: File) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
-  const activeReference = override ?? databaseReference;
+  const databases = databasesForCell(speciesName, locus, segment);
+  const value = reference?.sourceKind === "upload" ? "upload" : reference?.sourceDatabaseId ?? DEFAULT_DATABASE_ID;
+  const count = reference?.count ?? builtInCount;
+  const coverage = reference && (segment === "V" || segment === "J")
+    ? { annotated: reference.report.annotated, total: reference.report.count }
+    : builtInCoverage;
   return (
-    <article className={`reference-segment ${override ? "custom" : databaseReference ? "database" : ""}`}>
-      <span className={`segment-symbol segment-${segment.toLowerCase()}`}>{segment}</span>
-      <div>
-        <strong>{segment} germlines {optional && <small>optional</small>}</strong>
-        <span title={activeReference?.name}>{activeReference?.name ?? (count ? "IMGT/GENE-DB baseline" : segment === "C" ? "Upload to enable constant calls" : "Not used for this locus")}</span>
-        <b>{count.toLocaleString()} alleles</b>
-        {(segment === "V" || segment === "J") && coverage && <em className={coverage.annotated === coverage.total ? "complete" : coverage.annotated ? "partial" : "missing"} title={activeReference?.report.warnings.join("\n")}>{coverage.annotated.toLocaleString()}/{coverage.total.toLocaleString()} with validated {segment === "V" ? "region boundaries" : "frame + motif"}</em>}
+    <div className={`composition-cell ${reference?.sourceKind ?? "imgt"} ${busy ? "busy" : ""}`}>
+      <select aria-label={`${locus} ${segment} reference source`} value={value} disabled={busy} onChange={(event) => onSelect(locus, segment, event.target.value)}>
+        <option value={DEFAULT_DATABASE_ID}>IMGT/GENE-DB{builtInCount ? "" : " · no records"}</option>
+        {databases.map((database) => <option value={database.id} key={database.id}>{database.name}</option>)}
+        {reference?.sourceKind === "upload" && <option value="upload">Uploaded · {reference.name}</option>}
+      </select>
+      <div className="composition-cell-meta">
+        <b>{busy ? "Validating…" : `${count.toLocaleString()} allele${count === 1 ? "" : "s"}`}</b>
+        {(segment === "V" || segment === "J") && coverage && <em className={coverage.annotated === coverage.total ? "complete" : coverage.annotated ? "partial" : "missing"} title={reference?.report.warnings.join("\n")}>{coverage.annotated.toLocaleString()}/{coverage.total.toLocaleString()} {segment === "V" ? "regions" : "anchors"}</em>}
       </div>
       <input ref={input} className="visually-hidden" type="file" accept=".fa,.fasta,.fna,.fas,.txt,.gz" onChange={(event) => {
         const file = event.target.files?.[0];
-        if (file) onFile(segment, file);
+        if (file) onFile(locus, segment, file);
         event.target.value = "";
       }} />
-      {override ? <button className="segment-action remove" type="button" onClick={() => onClear(segment)} aria-label={`Remove uploaded ${segment} replacement and restore the selected database`}>×</button> : <button className="segment-action" type="button" onClick={() => input.current?.click()}>{count ? "Replace" : "Upload"}</button>}
-    </article>
+      <button className="cell-upload" type="button" disabled={busy} onClick={() => input.current?.click()}>{reference?.sourceKind === "upload" ? "Replace FASTA" : "Upload FASTA"}</button>
+    </div>
   );
 }
 
-function DatabaseSummary({
-  selected,
-  busy,
-  imgtRelease,
+function ReferenceCompositionMatrix({
+  species,
+  scope,
+  references,
+  busyCells,
+  onSelect,
+  onFile,
 }: {
-  selected?: ReferenceCollection;
-  busy: boolean;
-  imgtRelease: string;
+  species: ReferenceSpecies;
+  scope: ScopeKey;
+  references: ReferenceCellMap;
+  busyCells: Set<string>;
+  onSelect: (locus: LocusKey, segment: SegmentKey, sourceId: string) => void;
+  onFile: (locus: LocusKey, segment: SegmentKey, file: File) => void;
 }) {
-  if (!selected) {
-    return (
-      <section className="database-summary" aria-label="Selected reference database">
-        <div>
-          <span>Selected database</span>
-          <strong>IMGT/GENE-DB {imgtRelease || "reference pack"}</strong>
-          <p>The bundled IMGT-derived set for the selected species and locus is the active baseline.</p>
-        </div>
-      </section>
-    );
-  }
+  const loci = lociForScope(species, scope);
   return (
-    <section className="database-summary alternative" aria-label="Selected reference database">
+    <div className="composition-matrix" role="table" aria-label="Germline reference composition">
+      <div className="composition-row composition-head" role="row"><span role="columnheader">Locus</span>{SEGMENTS.map((segment) => <span className={`segment-${segment.toLowerCase()}`} role="columnheader" key={segment}>{segment}<small>{segment === "V" ? "variable" : segment === "D" ? "diversity" : segment === "J" ? "joining" : "constant"}</small></span>)}</div>
+      {loci.map((locus) => <div className="composition-row" role="row" key={locus}>
+        <div className="composition-locus" role="rowheader"><strong>{locus}</strong><small>{LOCUS_LABELS[locus]}</small></div>
+        {SEGMENTS.map((segment) => {
+          if (!segmentAppliesToLocus(locus, segment)) return <div className="composition-na" role="cell" key={segment}><span>Not used</span></div>;
+          const alleles = species.loci[locus]?.[segment] ?? [];
+          const builtInCoverage = segment === "V"
+            ? { annotated: alleles.filter((allele) => allele[2]?.slice(2, 12).every((value) => value >= 0)).length, total: alleles.length }
+            : segment === "J"
+              ? { annotated: alleles.filter((allele) => Boolean(allele[2] && allele[2]![0] >= 0 && allele[2]![1] >= 0)).length, total: alleles.length }
+              : undefined;
+          const key = referenceCellKey(locus, segment);
+          return <div role="cell" key={segment}><ReferenceCellControl speciesName={species.name} locus={locus} segment={segment} builtInCount={alleles.length} builtInCoverage={builtInCoverage} reference={references[key]} busy={busyCells.has(key)} onSelect={onSelect} onFile={onFile} /></div>;
+        })}
+      </div>)}
+    </div>
+  );
+}
+
+function CompositionSummary({
+  databases,
+  hasUploads,
+  busy,
+  release,
+}: {
+  databases: ReferenceDatabase[];
+  hasUploads: boolean;
+  busy: boolean;
+  release: string;
+}) {
+  const sources = [`IMGT/GENE-DB ${release || "reference pack"}`, ...databases.map((database) => database.name), ...(hasUploads ? ["uploaded FASTA"] : [])];
+  return (
+    <section className={`database-summary ${databases.length || hasUploads ? "alternative" : ""}`} aria-label="Reference composition summary">
       <div>
-        <span>Selected database</span>
-        <strong>{selected.name}</strong>
-        <p>{busy ? "Downloading and validating the selected germline FASTA in this browser…" : selected.summary}</p>
-        <small>{selected.provider} · {selected.version}</small>
+        <span>Reference composition</span>
+        <strong>{sources.join(" + ")}</strong>
+        <p>{busy ? "Downloading and validating published germline FASTA in this browser…" : "Apply a database above, then refine any locus/segment independently in the matrix. Unchanged cells retain IMGT."}</p>
       </div>
-      <div className="database-links"><a href={selected.sourceUrl} target="_blank" rel="noreferrer">Source ↗</a><a href={selected.citationUrl} target="_blank" rel="noreferrer">Citation ↗</a>{selected.terms && <a href={selected.terms.url} target="_blank" rel="noreferrer">{selected.terms.label} ↗</a>}</div>
+      {databases.length > 0 && <div className="database-links">{databases.flatMap((database) => [<a href={database.sourceUrl} target="_blank" rel="noreferrer" key={`${database.id}:source`}>{database.name} source ↗</a>, <a href={database.citationUrl} target="_blank" rel="noreferrer" key={`${database.id}:citation`}>Citation ↗</a>, ...(database.terms ? [<a href={database.terms.url} target="_blank" rel="noreferrer" key={`${database.id}:terms`}>{database.terms.label} ↗</a>] : [])])}</div>}
     </section>
   );
 }
@@ -560,7 +610,8 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
 }
 
 function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNewAnalysis: () => void }) {
-  const [view, setView] = useState<"repertoire" | "sequences">(session.total <= 3 ? "sequences" : "repertoire");
+  const [view, setView] = useState<"repertoire" | "sequences" | "post">(session.total <= 3 ? "sequences" : "repertoire");
+  const [postOpened, setPostOpened] = useState(false);
   const [filters, setFilters] = useState<ResultFilters>({ ...EMPTY_FILTERS });
   const [page, setPage] = useState(0);
   const [results, setResults] = useState<ResultPage>({ rows: [], hasMore: false, totalMatches: session.total, scanned: 0 });
@@ -639,6 +690,15 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     setSelected(row);
   }
 
+  async function inspectOrdinal(ordinal: number) {
+    const [record] = await session.store.indexRecords([ordinal]);
+    if (!record) return;
+    setView("sequences");
+    setDetail(null);
+    scrollToDetail.current = true;
+    setSelected(record);
+  }
+
   function updateFilter<K extends keyof ResultFilters>(key: K, value: ResultFilters[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
     setPage(0);
@@ -705,9 +765,9 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         </div>
       </section>
 
-      <nav className="results-view-tabs" aria-label="Results view"><button className={view === "repertoire" ? "active" : ""} type="button" onClick={() => setView("repertoire")}><span>Repertoire</span><small>Figures + composition</small></button><button className={view === "sequences" ? "active" : ""} type="button" onClick={() => setView("sequences")}><span>Sequences</span><small>Filter + inspect calls</small></button></nav>
+      <nav className="results-view-tabs" aria-label="Results view"><button className={view === "repertoire" ? "active" : ""} type="button" onClick={() => setView("repertoire")}><span>Repertoire</span><small>Figures + composition</small></button><button className={view === "sequences" ? "active" : ""} type="button" onClick={() => setView("sequences")}><span>Sequences</span><small>Filter + inspect calls</small></button><button className={view === "post" ? "active" : ""} type="button" onClick={() => { setPostOpened(true); setView("post"); }}><span>Post-analysis</span><small>Deduplicate + lineages + trees</small></button></nav>
 
-      {view === "repertoire" ? <RepertoireDashboard store={session.store} loci={session.facets.loci} inputName={session.inputName} /> : <>
+      {view === "repertoire" ? <RepertoireDashboard store={session.store} loci={session.facets.loci} inputName={session.inputName} /> : view === "sequences" ? <>
 
       <section className="explorer-shell">
         <aside className="filter-panel">
@@ -761,7 +821,8 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
       </section>
 
       {selected && <section ref={detailRef} className="detail-shell" tabIndex={-1} aria-label={`Details for ${selected.sequenceId}`}>{detail ? <ResultDetail row={detail} onClose={() => setSelected(null)} /> : <div className="detail-loading">Loading selected AIRR record…</div>}</section>}
-      </>}
+      </> : null}
+      {postOpened && <div hidden={view !== "post"}><PostAnalysisWorkbench store={session.store} references={session.references} scope={session.scope} loci={session.facets.loci} inputName={session.inputName} workers={session.workers} onInspect={(ordinal) => void inspectOrdinal(ordinal)} /></div>}
     </main>
   );
 }
@@ -776,10 +837,9 @@ export default function SwigApp() {
   const [fileInput, setFileInput] = useState<InputData | null>(null);
   const [pasteText, setPasteText] = useState("");
   const [inputError, setInputError] = useState("");
-  const [databaseId, setDatabaseId] = useState(DEFAULT_DATABASE_ID);
-  const [databaseReferences, setDatabaseReferences] = useState<Partial<Record<SegmentKey, ReferenceOverride>>>({});
+  const [cellReferences, setCellReferences] = useState<ReferenceCellMap>({});
+  const [busyCells, setBusyCells] = useState<Set<string>>(new Set());
   const [databaseBusy, setDatabaseBusy] = useState(false);
-  const [overrides, setOverrides] = useState<Partial<Record<SegmentKey, ReferenceOverride>>>({});
   const [minimumIdentity, setMinimumIdentity] = useState(0.6);
   const [strand, setStrand] = useState<0 | 1 | 2>(0);
   const [workerCount, setWorkerCount] = useState(recommendedWorkerCount);
@@ -796,6 +856,8 @@ export default function SwigApp() {
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const databaseRequestRef = useRef(0);
+  const cellRequestRef = useRef<Record<string, number>>({});
+  const referenceCacheRef = useRef<Map<string, ReferenceOverride>>(new Map());
 
   useEffect(() => {
     loadReferencePack().then(setPack).catch((error) => setPackError(error instanceof Error ? error.message : String(error)));
@@ -813,13 +875,23 @@ export default function SwigApp() {
   const species = useMemo(() => speciesList.find((candidate) => candidate.name === speciesName) ?? speciesList[0], [speciesList, speciesName]);
   const scopes = useMemo(() => species ? availableScopes(species) : [], [species]);
   const activeScope = scopes.includes(scope) ? scope : scopes[0] ?? "BCR";
-  const effectiveReferences = useMemo(() => ({ ...databaseReferences, ...overrides }), [databaseReferences, overrides]);
-  const compiled = useMemo(() => species ? compileReferences(species, activeScope, Object.fromEntries(Object.entries(effectiveReferences).map(([key, value]) => [key, value?.text]))) : null, [activeScope, effectiveReferences, species]);
-  const activeLocus = activeScope === "BCR" || activeScope === "TCR" ? null : activeScope as LocusKey;
-  const databaseOptions = useMemo(() => databaseOptionsFor(species?.name ?? "", activeLocus, pack?.release ?? ""), [activeLocus, pack?.release, species?.name]);
-  const selectedDatabase = databaseOptions.find((option) => option.id === databaseId);
-  const selectedCollection = selectedDatabase?.collection ?? undefined;
-  const databaseLabel = selectedCollection?.name ?? `IMGT/GENE-DB ${pack?.release ?? "reference pack"}`;
+  const referenceOverrides = useMemo(() => species ? composeReferenceOverrides(
+    lociForScope(species, activeScope),
+    cellReferences,
+    (locus, segment) => allelesToFasta(species.loci[locus]?.[segment] ?? []),
+  ) : {}, [activeScope, cellReferences, species]);
+  const compiled = useMemo(() => species ? compileReferences(species, activeScope, referenceOverrides) : null, [activeScope, referenceOverrides, species]);
+  const databaseOptions = useMemo(() => databaseOptionsFor(species?.name ?? "", pack?.release ?? ""), [pack?.release, species?.name]);
+  const activeReferenceEntries = useMemo(() => {
+    if (!species) return [] as Array<[string, ReferenceOverride]>;
+    const activeLoci = new Set(lociForScope(species, activeScope));
+    return Object.entries(cellReferences).filter(([key]) => activeLoci.has(key.split(":", 1)[0] as LocusKey));
+  }, [activeScope, cellReferences, species]);
+  const usedDatabaseIds = useMemo(() => new Set(activeReferenceEntries.flatMap(([, reference]) => reference.sourceDatabaseId ? [reference.sourceDatabaseId] : [])), [activeReferenceEntries]);
+  const usedDatabases = useMemo(() => databaseOptions.flatMap((option) => option.database && usedDatabaseIds.has(option.database.id) ? [option.database] : []), [databaseOptions, usedDatabaseIds]);
+  const hasUploadedReferences = activeReferenceEntries.some(([, reference]) => reference.sourceKind === "upload");
+  const compositionMode = activeReferenceEntries.length ? "mixed" : DEFAULT_DATABASE_ID;
+  const databaseLabel = activeReferenceEntries.length ? ["IMGT", ...usedDatabases.map((database) => database.name), ...(hasUploadedReferences ? ["uploaded FASTA"] : [])].join(" + ") : `IMGT/GENE-DB ${pack?.release ?? "reference pack"}`;
   const receptor = activeScope.startsWith("IG") || activeScope === "BCR" ? "BCR" : "TCR";
   const receptorScopes = scopes.filter((value) => receptor === "BCR" ? value === "BCR" || value.startsWith("IG") : value === "TCR" || value.startsWith("TR"));
   const pasteInput = useMemo(() => {
@@ -827,15 +899,6 @@ export default function SwigApp() {
     try { return inspectText("pasted-sequences.txt", pasteText); } catch { return null; }
   }, [pasteText]);
   const activeInput = inputSource === "upload" ? fileInput : pasteInput;
-
-  useEffect(() => {
-    if (databaseOptions.some((option) => option.id === databaseId)) return;
-    databaseRequestRef.current += 1;
-    setDatabaseId(DEFAULT_DATABASE_ID);
-    setDatabaseReferences({});
-    setDatabaseBusy(false);
-    setOverrides({});
-  }, [databaseId, databaseOptions]);
 
   function navigate(next: AppPage) {
     if (next === "results" && !session) next = "analyze";
@@ -858,15 +921,17 @@ export default function SwigApp() {
     segment: SegmentKey,
     text: string,
     name: string,
+    sourceKind: "database" | "upload",
+    referenceScope: ScopeKey,
     sourceDatabaseId?: string,
   ): Promise<ReferenceOverride> {
     if (!pack || !species) throw new Error("The baseline reference pack is not ready.");
-    const allowedLoci = lociForScope(species, activeScope);
+    const allowedLoci = lociForScope(species, referenceScope);
     if (!allowedLoci.length) throw new Error("Choose a supported locus before adding germlines.");
     const report = await preprocessGermlinesInWorker(
       text,
       segment,
-      templateTiers(pack, species, activeScope, segment),
+      templateTiers(pack, species, referenceScope, segment),
       allowedLoci,
     );
     return {
@@ -875,75 +940,157 @@ export default function SwigApp() {
       count: report.count,
       size: new Blob([report.fasta]).size,
       report,
+      sourceKind,
       sourceDatabaseId,
     };
   }
 
-  async function acceptReferenceFile(segment: SegmentKey, file: File) {
+  function markCellsBusy(keys: string[], busy: boolean) {
+    setBusyCells((current) => {
+      const next = new Set(current);
+      for (const key of keys) busy ? next.add(key) : next.delete(key);
+      return next;
+    });
+  }
+
+  async function databaseCellReference(
+    database: ReferenceDatabase,
+    locus: LocusKey,
+    segment: SegmentKey,
+  ): Promise<ReferenceOverride> {
+    if (!species) throw new Error("Choose a species before loading a database.");
+    const cacheKey = `${species.name}:${database.id}:${locus}:${segment}`;
+    const cached = referenceCacheRef.current.get(cacheKey);
+    if (cached) return cached;
+    const collection = collectionsForDatabase(database, locus).find((candidate) => candidate.segments[segment]);
+    if (!collection) throw new Error(`${database.name} does not provide ${locus} ${segment} records.`);
+    const text = await loadCollectionSegment(collection, segment);
+    const prepared = await prepareReferenceOverride(
+      segment,
+      text,
+      `${database.name} · ${locus} ${segment}`,
+      "database",
+      locus,
+      database.id,
+    );
+    referenceCacheRef.current.set(cacheKey, prepared);
+    return prepared;
+  }
+
+  async function acceptReferenceFile(locus: LocusKey, segment: SegmentKey, file: File) {
     const contextRequest = databaseRequestRef.current;
+    const key = referenceCellKey(locus, segment);
+    const cellRequest = (cellRequestRef.current[key] ?? 0) + 1;
+    cellRequestRef.current[key] = cellRequest;
+    markCellsBusy([key], true);
     try {
       setRunError("");
       const text = await readUploadedText(file);
-      if (text.trimStart()[0] !== ">") throw new Error(`${segment} references must be FASTA.`);
-      const override = await prepareReferenceOverride(segment, text, file.name);
-      if (databaseRequestRef.current !== contextRequest) return;
-      setOverrides((current) => ({ ...current, [segment]: override }));
+      if (text.trimStart()[0] !== ">") throw new Error(`${locus} ${segment} references must be FASTA.`);
+      const override = await prepareReferenceOverride(segment, text, file.name, "upload", locus);
+      if (databaseRequestRef.current !== contextRequest || cellRequestRef.current[key] !== cellRequest) return;
+      setCellReferences((current) => ({ ...current, [key]: override }));
     } catch (error) {
-      if (databaseRequestRef.current !== contextRequest) return;
+      if (databaseRequestRef.current !== contextRequest || cellRequestRef.current[key] !== cellRequest) return;
       setRunError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (databaseRequestRef.current === contextRequest && cellRequestRef.current[key] === cellRequest) markCellsBusy([key], false);
     }
   }
 
-  async function selectReferenceDatabase(nextId: string) {
-    const requestId = ++databaseRequestRef.current;
+  async function selectCellSource(locus: LocusKey, segment: SegmentKey, sourceId: string) {
+    const key = referenceCellKey(locus, segment);
+    const cellRequest = (cellRequestRef.current[key] ?? 0) + 1;
+    cellRequestRef.current[key] = cellRequest;
+    if (sourceId === "upload") return;
     setRunError("");
-    setDatabaseId(nextId);
-    setDatabaseReferences({});
-    setOverrides({});
+    if (sourceId === DEFAULT_DATABASE_ID) {
+      setCellReferences((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      markCellsBusy([key], false);
+      return;
+    }
+    const database = databaseOptions.find((option) => option.id === sourceId)?.database;
+    if (!database) {
+      setRunError("That database is not available for the selected species.");
+      return;
+    }
+    const contextRequest = databaseRequestRef.current;
+    markCellsBusy([key], true);
+    try {
+      const reference = await databaseCellReference(database, locus, segment);
+      if (databaseRequestRef.current !== contextRequest || cellRequestRef.current[key] !== cellRequest) return;
+      setCellReferences((current) => ({ ...current, [key]: reference }));
+    } catch (error) {
+      if (databaseRequestRef.current !== contextRequest || cellRequestRef.current[key] !== cellRequest) return;
+      setRunError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (databaseRequestRef.current === contextRequest && cellRequestRef.current[key] === cellRequest) markCellsBusy([key], false);
+    }
+  }
+
+  async function applyReferenceDatabase(nextId: string) {
+    if (nextId === "mixed") return;
+    const requestId = ++databaseRequestRef.current;
+    cellRequestRef.current = {};
+    setRunError("");
     if (nextId === DEFAULT_DATABASE_ID) {
+      setCellReferences({});
+      setBusyCells(new Set());
       setDatabaseBusy(false);
       return;
     }
-    const collection = databaseOptions.find((option) => option.id === nextId)?.collection;
-    if (!collection) {
-      setDatabaseId(DEFAULT_DATABASE_ID);
-      setRunError("That database is not available for the selected species and locus.");
+    const database = databaseOptions.find((option) => option.id === nextId)?.database;
+    if (!database) {
+      setRunError("That database is not available for the selected species.");
       return;
     }
-    const segments = SEGMENTS.filter((segment) => collection.segments[segment]);
+    let targetScope = activeScope;
+    let collections = collectionsForDatabase(database, targetScope);
+    if (!collections.length) {
+      targetScope = database.defaultScope;
+      collections = collectionsForDatabase(database, targetScope);
+    }
+    if (!collections.length || !scopes.includes(targetScope)) {
+      setRunError(`${database.name} has no records compatible with this species and search space.`);
+      return;
+    }
+    const currentReceptor = activeScope === "BCR" || activeScope.startsWith("IG") ? "BCR" : "TCR";
+    const targetReceptor = targetScope === "BCR" || targetScope.startsWith("IG") ? "BCR" : "TCR";
+    const replaceComposition = currentReceptor !== targetReceptor;
+    if (targetScope !== activeScope) setScope(targetScope);
+    const targets = collections.flatMap((collection) => SEGMENTS.flatMap((segment) => collection.segments[segment] ? [{ locus: collection.locus, segment }] : []));
+    const keys = targets.map(({ locus, segment }) => referenceCellKey(locus, segment));
     setDatabaseBusy(true);
+    markCellsBusy(keys, true);
     try {
-      const downloaded = await Promise.all(segments.map(async (segment) => ({
-        segment,
-        text: await loadCollectionSegment(collection, segment),
-      })));
-      const preparedEntries = await Promise.all(downloaded.map(async (item) => ({
-        segment: item.segment,
-        reference: await prepareReferenceOverride(
-          item.segment,
-          item.text,
-          `${collection.name} · ${item.segment}`,
-          collection.id,
-        ),
+      const preparedEntries = await Promise.all(targets.map(async ({ locus, segment }) => ({
+        key: referenceCellKey(locus, segment),
+        reference: await databaseCellReference(database, locus, segment),
       })));
       if (databaseRequestRef.current !== requestId) return;
-      setDatabaseReferences(Object.fromEntries(preparedEntries.map((entry) => [entry.segment, entry.reference])));
+      setCellReferences((current) => ({ ...(replaceComposition ? {} : current), ...Object.fromEntries(preparedEntries.map((entry) => [entry.key, entry.reference])) }));
     } catch (error) {
       if (databaseRequestRef.current !== requestId) return;
-      setDatabaseId(DEFAULT_DATABASE_ID);
-      setDatabaseReferences({});
       setRunError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (databaseRequestRef.current === requestId) setDatabaseBusy(false);
+      if (databaseRequestRef.current === requestId) {
+        setDatabaseBusy(false);
+        markCellsBusy(keys, false);
+      }
     }
   }
 
   function resetReferenceContext() {
     databaseRequestRef.current += 1;
-    setDatabaseId(DEFAULT_DATABASE_ID);
-    setDatabaseReferences({});
+    cellRequestRef.current = {};
+    setCellReferences({});
+    setBusyCells(new Set());
     setDatabaseBusy(false);
-    setOverrides({});
+    referenceCacheRef.current.clear();
   }
 
   function chooseDemo() {
@@ -965,8 +1112,8 @@ export default function SwigApp() {
 
   function requestRun() {
     if (!activeInput || !compiled || !species) return;
-    if (databaseBusy) {
-      setRunError("Wait for the selected reference database to finish validation.");
+    if (databaseBusy || busyCells.size) {
+      setRunError("Wait for reference validation to finish.");
       return;
     }
     if (!compiled.counts.V || !compiled.counts.J) {
@@ -1073,6 +1220,7 @@ export default function SwigApp() {
         inputTotal: result.inputRecords,
         subsampleSize: subsampleEnabled ? result.count : null,
         subsampleSeed: subsampleEnabled ? Math.trunc(subsampleSeed) : null,
+        references: compiled,
       });
       setPage("results");
       window.scrollTo({ top: 0 });
@@ -1126,7 +1274,7 @@ export default function SwigApp() {
                 </section>
 
                 <section className="analysis-card reference-card">
-                  <header><span className="card-number">02</span><div><h2>Biological search space</h2><p>Select a baseline reference and, if required, replace individual segments.</p></div>{Object.keys(overrides).length > 0 && <button className="reset-button" type="button" onClick={() => setOverrides({})}>Reset replacements</button>}</header>
+                  <header><span className="card-number">02</span><div><h2>Biological search space</h2><p>Compose germline sources by locus and segment.</p></div>{Object.keys(cellReferences).length > 0 && <button className="reset-button" type="button" onClick={resetReferenceContext}>Reset all to IMGT</button>}</header>
                   <div className="reference-selectors">
                     <label><span>Species / strain</span><select value={species?.name ?? ""} disabled={!pack} onChange={(event) => {
                       setSpeciesName(event.target.value);
@@ -1135,14 +1283,14 @@ export default function SwigApp() {
                       if (!nextScopes.includes(activeScope)) setScope(nextScopes[0] ?? "BCR");
                       resetReferenceContext();
                     }}>{!pack && <option>Loading IMGT references…</option>}{speciesList.map((item) => <option value={item.name} key={item.name}>{friendlySpecies(item.name)}</option>)}</select></label>
-                    <div className="receptor-selector"><span>Receptor</span><div><button className={receptor === "BCR" ? "active" : ""} type="button" disabled={!hasBcr} onClick={() => { setScope("BCR"); resetReferenceContext(); }}>BCR <small>IG</small></button><button className={receptor === "TCR" ? "active" : ""} type="button" disabled={!hasTcr} onClick={() => { setScope("TCR"); resetReferenceContext(); }}>TCR <small>TR</small></button></div></div>
-                    <label><span>Chain / locus</span><select value={activeScope} onChange={(event) => { setScope(event.target.value as ScopeKey); resetReferenceContext(); }}>{receptorScopes.map((value) => <option value={value} key={value}>{LOCUS_LABELS[value]}</option>)}</select></label>
-                    <label><span>Database</span><select value={databaseId} disabled={!pack || databaseBusy} onChange={(event) => void selectReferenceDatabase(event.target.value)}>{databaseOptions.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}</select></label>
+                    <label><span>Database</span><select value={compositionMode} disabled={!pack || databaseBusy || Boolean(busyCells.size)} onChange={(event) => void applyReferenceDatabase(event.target.value)}>{databaseOptions.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}{compositionMode === "mixed" && <option value="mixed" disabled>Mixed sources · configured below</option>}</select></label>
+                    <div className="receptor-selector"><span>Receptor</span><div><button className={receptor === "BCR" ? "active" : ""} type="button" disabled={!hasBcr} onClick={() => { if (receptor !== "BCR") resetReferenceContext(); setScope("BCR"); }}>BCR <small>IG</small></button><button className={receptor === "TCR" ? "active" : ""} type="button" disabled={!hasTcr} onClick={() => { if (receptor !== "TCR") resetReferenceContext(); setScope("TCR"); }}>TCR <small>TR</small></button></div></div>
+                    <label><span>Chain / locus</span><select value={activeScope} disabled={databaseBusy || Boolean(busyCells.size)} onChange={(event) => setScope(event.target.value as ScopeKey)}>{receptorScopes.map((value) => <option value={value} key={value}>{LOCUS_LABELS[value]}</option>)}</select></label>
                   </div>
                   {packError && <p className="inline-error" role="alert">{packError}</p>}
-                  <DatabaseSummary selected={selectedCollection} busy={databaseBusy} imgtRelease={pack?.release ?? ""} />
-                  <div className="reference-segments">{SEGMENTS.map((segment) => <ReferenceSegment key={segment} segment={segment} count={compiled?.counts[segment] ?? 0} coverage={segment === "V" || segment === "J" ? compiled?.annotation[segment] : undefined} databaseReference={databaseReferences[segment]} override={overrides[segment]} optional={segment === "D" || segment === "C"} onFile={(key, file) => void acceptReferenceFile(key, file)} onClear={(key) => setOverrides((current) => { const next = { ...current }; delete next[key]; return next; })} />)}</div>
-                  <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · {databaseLabel}. An uploaded replacement changes only that segment and removing it restores the selected database. In-browser preprocessing assigns V FWR/CDR boundaries and J frame/junction-anchor metadata by transfer from validated, locus-matched IMGT relatives; metadata are retained only when mapped intervals and conserved anchors validate. D and C records are validated and indexed but do not have FWR/CDR boundaries. C references enable constant-region and isotype calls when ≥30 nt align.</p>
+                  <CompositionSummary databases={usedDatabases} hasUploads={hasUploadedReferences} busy={databaseBusy || Boolean(busyCells.size)} release={pack?.release ?? ""} />
+                  {species && <ReferenceCompositionMatrix species={species} scope={activeScope} references={cellReferences} busyCells={busyCells} onSelect={(locus, segment, sourceId) => void selectCellSource(locus, segment, sourceId)} onFile={(locus, segment, file) => void acceptReferenceFile(locus, segment, file)} />}
+                  <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · {databaseLabel}. The database selector applies a preset only where compatible; every matrix cell remains independently selectable or uploadable. In-browser preprocessing assigns V FWR/CDR boundaries and J frame/junction-anchor metadata by transfer from validated, locus-matched IMGT relatives; metadata are retained only when mapped intervals and conserved anchors validate. D and C records are validated and indexed but do not have FWR/CDR boundaries.</p>
                 </section>
 
                 <section className="analysis-card settings-card">
@@ -1160,9 +1308,9 @@ export default function SwigApp() {
 
               <aside className="run-summary">
                 <span className="section-kicker">Run manifest</span><h2>{activeInput ? subsampleEnabled ? `${Math.floor(subsampleSize).toLocaleString()}-read sample` : activeInput.count === null ? "Large file" : `${activeInput.count?.toLocaleString()} sequences` : "Awaiting data"}</h2><p>{activeInput?.name ?? "Add an input to configure the run."}</p>
-                <dl><div><dt>Species</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Database</dt><dd>{databaseLabel}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>V / D / J / C</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J} / ${compiled.counts.C}` : "—"}</dd></div><div><dt>Replacements</dt><dd>{Object.keys(overrides).length ? Object.keys(overrides).join(" + ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · bounded queue</dd></div><div><dt>Storage</dt><dd>{outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
+                <dl><div><dt>Species</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Sources</dt><dd>{databaseLabel}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>V / D / J / C</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J} / ${compiled.counts.C}` : "—"}</dd></div><div><dt>Non-IMGT cells</dt><dd>{activeReferenceEntries.length ? activeReferenceEntries.map(([key]) => key.replace(":", " ")).join(" · ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · bounded queue</dd></div><div><dt>Storage</dt><dd>{outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
                 {runError && <p className="run-error" role="alert">{runError}</p>}
-                <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError) || databaseBusy} onClick={requestRun}><span>{databaseBusy ? "Validating database…" : "Analyze with SwiftIG"}</span><b>→</b></button>
+                <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError) || databaseBusy || Boolean(busyCells.size)} onClick={requestRun}><span>{databaseBusy || busyCells.size ? "Validating references…" : "Analyze with SwiftIG"}</span><b>→</b></button>
                 <p className="privacy-copy"><span>i</span> Query sequences, uploaded germlines, and AIRR results are processed in this browser; Swig does not transmit them. A remotely hosted alternative database is requested from its named provider only when selected.</p>
               </aside>
             </div>
@@ -1180,7 +1328,7 @@ export default function SwigApp() {
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
         <p className="output-safety"><span>i</span> Query sequences remain in this browser and are not transmitted by Swig.</p>
       </section></div>}
-      <footer className="site-footer"><Brand /><p>Swig 0.5.1 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      <footer className="site-footer"><Brand /><p>Swig 0.5.2 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }
