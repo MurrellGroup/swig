@@ -2,6 +2,7 @@ import Aioli from "@biowasm/aioli";
 
 import { projectCodonAlignment } from "./alignment-model";
 import { parseFasta, type FastaRecord } from "./post-analysis-core";
+import { extractNewick } from "./phylogeny";
 
 interface AioliRuntime {
   mount(file: { name: string; data: string | File | Blob | Uint8Array }): Promise<string>;
@@ -88,10 +89,10 @@ export async function runFastTree(alignedFasta: string, model: "gtr" | "jc" = "g
   const cli = await tools();
   await cli.mount({ name: "swig_tree.fa", data: input.fasta });
   const flags = ["-nt", model === "gtr" ? "-gtr" : "", fast ? "-fastest" : ""].filter(Boolean).join(" ");
-  let output = await cli.exec(`fasttree ${flags} swig_tree.fa`);
-  if (!output.includes("(")) throw new Error("FastTree did not return a Newick tree.");
+  let output = extractNewick(await cli.exec(`fasttree ${flags} swig_tree.fa`));
   input.names.forEach((name, index) => {
-    output = output.replace(new RegExp(`(?<=[(,])${index}(?=[:),])`, "g"), name.replace(/[\s():;,]/g, "_"));
+    const safeName = name.replace(/[^A-Za-z0-9_.|*+\-]/g, "_") || `tip_${index + 1}`;
+    output = output.replace(new RegExp(`([,(])${index}(?=[:),])`, "g"), (_match, prefix: string) => `${prefix}${safeName}`);
   });
   return output.trim();
 }

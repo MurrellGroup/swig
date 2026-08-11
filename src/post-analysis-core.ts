@@ -316,6 +316,7 @@ export function assignLineages(
   records: PostAnalysisRecord[],
   options: LineageOptions,
   dedup?: DedupResult,
+  activeMask?: Uint8Array,
 ): LineageResult {
   const union = new UnionFind(records.length);
   const bucket = new Map<string, number[]>();
@@ -323,11 +324,13 @@ export function assignLineages(
   let candidateComparisons = 0;
   let truncatedCandidates = 0;
   let assignedRecords = 0;
+  let activeAbundance = 0;
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
-    const weight = dedup ? dedup.counts[index] : 1;
+    const weight = activeMask && !activeMask[index] ? 0 : dedup ? dedup.counts[index] : 1;
     if (!weight) continue;
+    activeAbundance += weight;
     const cdr3 = normalizeNt(record.cdr3Nt);
     const tokens = recordIndexTokens(record, options);
     if (!cdr3 || !tokens.length || (options.productiveOnly && !record.productive)) continue;
@@ -380,7 +383,7 @@ export function assignLineages(
   const representativeByRoot = new Int32Array(records.length);
   representativeByRoot.fill(-1);
   for (let index = 0; index < records.length; index += 1) {
-    const weight = dedup ? dedup.counts[index] : 1;
+    const weight = activeMask && !activeMask[index] ? 0 : dedup ? dedup.counts[index] : 1;
     if (!weight) continue;
     const record = records[index];
     if (!record.cdr3Nt || !recordIndexTokens(record, options).length || (options.productiveOnly && !record.productive)) continue;
@@ -479,7 +482,7 @@ export function assignLineages(
     vUsage: usage(vUsageMap),
     jUsage: usage(jUsageMap),
     assignedRecords,
-    unassignedRecords: records.length - assignedRecords,
+    unassignedRecords: activeAbundance - assignedRecords,
     candidateComparisons,
     truncatedCandidates,
   };
@@ -503,11 +506,19 @@ function matchesQueryConstraints(record: PostAnalysisRecord, options: QueryOptio
   return matchesOneQueryConstraint(record, options, options);
 }
 
-export function queryRecords(records: PostAnalysisRecord[], queries: string[], options: QueryOptions, packedSketches?: Uint32Array): QueryHit[] {
+export function queryRecords(
+  records: PostAnalysisRecord[],
+  queries: string[],
+  options: QueryOptions,
+  packedSketches?: Uint32Array,
+  activeMask?: Uint8Array,
+): QueryHit[] {
   const normalizedQueries = queries.map((query) => options.target === "cdr3_aa" ? normalizeAa(query) : normalizeNt(query));
   const querySketches = options.target === "trimmed" ? normalizedQueries.map((query) => minHashSketch(query)) : [];
   const hits: QueryHit[] = [];
-  for (const record of records) {
+  for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+    if (activeMask && !activeMask[recordIndex]) continue;
+    const record = records[recordIndex];
     if (!matchesQueryConstraints(record, options)) continue;
     for (let queryIndex = 0; queryIndex < normalizedQueries.length; queryIndex += 1) {
       if (!matchesOneQueryConstraint(record, options.queryConstraints?.[queryIndex], options)) continue;
@@ -558,9 +569,11 @@ export function expandSingleLinkage(
   records: PostAnalysisRecord[],
   seedOrdinals: number[],
   options: ExpansionOptions,
+  activeMask?: Uint8Array,
 ): { ordinals: number[]; comparisons: number; capped: boolean } {
   const byLength = new Map<number, Map<string, number[]>>();
   for (let index = 0; index < records.length; index += 1) {
+    if (activeMask && !activeMask[index]) continue;
     const record = records[index];
     const cdr3 = normalizeNt(record.cdr3Nt);
     if (!cdr3 || (options.productiveOnly && !record.productive)) continue;
@@ -579,7 +592,7 @@ export function expandSingleLinkage(
     }
   }
 
-  const visited = new Set(seedOrdinals.filter((ordinal) => ordinal >= 0 && ordinal < records.length));
+  const visited = new Set(seedOrdinals.filter((ordinal) => ordinal >= 0 && ordinal < records.length && (!activeMask || Boolean(activeMask[ordinal]))));
   const queue = [...visited];
   let comparisons = 0;
   for (let head = 0; head < queue.length && visited.size < options.maxResults; head += 1) {
@@ -681,7 +694,10 @@ export function threadSequenceToMsa(
   const gappedFullReference = msa.sequences[referenceIndex];
   const degappedReference = gappedFullReference.replaceAll("-", "");
   const localGermline = germlineAlignment.toUpperCase().replaceAll(".", "-");
-  const localQuery = sequenceAlignment.toUpperCase().replaceAll(".", "-");
+  // CHMMera maps every non-ACGT observation other than a gap to its
+  // non-informative N state. Apply that conversion before threading so IUPAC
+  // query symbols cannot become accidental informative matches.
+  const localQuery = sequenceAlignment.toUpperCase().replaceAll(".", "-").replace(/[^ACGT-]/g, "N");
   const degappedLocal = localGermline.replaceAll("-", "");
   const matchStart = degappedReference.indexOf(degappedLocal);
   if (matchStart < 0) throw new Error(`The ${callName} local germline alignment cannot be located in its MSA reference.`);
@@ -717,13 +733,14 @@ export interface ChmmResult {
   referencePath?: Int32Array;
 }
 
-function informativeMismatchCount(query: string, germline: string): number {
+export function chmmairraDistanceFromReference(query: string, germline: string): number {
+  const normalizedQuery = query.toUpperCase().replaceAll(".", "-");
+  const normalizedGermline = germline.toUpperCase().replaceAll(".", "-");
   let mismatches = 0;
-  for (let index = 0; index < Math.min(query.length, germline.length); index += 1) {
-    const left = query[index]?.toUpperCase();
-    const right = germline[index]?.toUpperCase();
-    if (!left || !right || left === "-" || right === "-" || left === "N" || right === "N") continue;
-    if (left !== right) mismatches += 1;
+  // This intentionally follows CHMMAIRRa.jl's add_DFR_column!: zip the local
+  // alignments and count every unequal character, including gap and N sites.
+  for (let index = 0; index < Math.min(normalizedQuery.length, normalizedGermline.length); index += 1) {
+    if (normalizedQuery[index] !== normalizedGermline[index]) mismatches += 1;
   }
   return mismatches;
 }
@@ -1023,7 +1040,7 @@ export function runChmm(
   options: ChmmOptions,
 ): ChmmResult {
   if (threadedObservation.length !== msa.length) throw new Error("Threaded query and reference MSA lengths differ.");
-  const dfr = informativeMismatchCount(localSequenceAlignment, localGermlineAlignment);
+  const dfr = chmmairraDistanceFromReference(localSequenceAlignment, localGermlineAlignment);
   if (options.method === "DB") {
     const path = options.detailed ? fullViterbi(msa, threadedObservation, options) : { startingReference: "", recombinations: [] };
     return {

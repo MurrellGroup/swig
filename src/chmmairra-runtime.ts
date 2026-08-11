@@ -37,6 +37,8 @@ export interface ChmmFlaggedRecord {
 export interface ChmmDashboard {
   segment: ChmmSegment;
   threshold: number;
+  inputRecords: number;
+  upstreamExcluded: number;
   evaluated: number;
   flagged: number;
   lowDfr: number;
@@ -59,7 +61,6 @@ export interface ChmmDetail {
   startingReference: string;
   recombinations: Array<{ position: number; left: string; right: string }>;
   threadedObservation: string;
-  parentPath: Uint16Array;
   parents: Array<{ name: string; sequence: string }>;
 }
 
@@ -108,10 +109,17 @@ export async function runChmmairra(
   store: AirrResultStore,
   msa: string,
   options: ChmmRunOptions,
+  workingMask?: Uint8Array,
   onProgress?: (processed: number, total: number) => void,
   signal?: AbortSignal,
 ): Promise<ChmmDashboard> {
-  const workerCount = Math.max(1, Math.min(options.workers, 16, store.count || 1));
+  let inputRecords = store.count;
+  if (workingMask) {
+    if (workingMask.length !== store.count) throw new Error("The CHMMAIRRa working set does not match the AIRR record count.");
+    inputRecords = 0;
+    for (const value of workingMask) inputRecords += value ? 1 : 0;
+  }
+  const workerCount = Math.max(1, Math.min(options.workers, 16, inputRecords || 1));
   const clients = Array.from({ length: workerCount }, makeClient);
   const workerOptions = modelOptions(options);
   try {
@@ -172,10 +180,12 @@ export async function runChmmairra(
     await store.scanAirrRows(
       [`${prefix}_call`, `${prefix}_sequence_alignment`, `${prefix}_germline_alignment`],
       async (rows) => {
+        const includedRows = workingMask ? rows.filter((row) => Boolean(workingMask[row.ordinal])) : rows;
+        if (!includedRows.length) return;
         const current = slot;
         slot = (slot + 1) % clients.length;
         await slots[current];
-        const workerRows = rows.map((row) => ({
+        const workerRows = includedRows.map((row) => ({
           ordinal: row.ordinal,
           call: row.values[`${prefix}_call`],
           sequenceAlignment: row.values[`${prefix}_sequence_alignment`],
@@ -189,6 +199,8 @@ export async function runChmmairra(
     return {
       segment: options.segment,
       threshold: options.threshold,
+      inputRecords,
+      upstreamExcluded: store.count - inputRecords,
       ...counters,
       histogram: Array.from(histogram, (count, index) => ({ label: `${(index / 10).toFixed(1)}–${((index + 1) / 10).toFixed(1)}`, count })),
       top: top.sort((a, b) => b.probability - a.probability || b.dfr - a.dfr || a.ordinal - b.ordinal),

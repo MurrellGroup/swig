@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import {
+  chmmairraDistanceFromReference,
   prepareReferenceMsa,
   runChmm,
   threadSequenceToMsa,
@@ -36,17 +37,6 @@ let options: ChmmOptions | null = null;
 let minDfr = 1;
 const cache = new Map<string, Omit<ChmmWorkerResult, "ordinal">>();
 
-function mismatchCount(query: string, germline: string): number {
-  let count = 0;
-  for (let index = 0; index < Math.min(query.length, germline.length); index += 1) {
-    const left = query[index]?.toUpperCase();
-    const right = germline[index]?.toUpperCase();
-    if (!left || !right || left === "-" || right === "-" || left === "N" || right === "N") continue;
-    if (left !== right) count += 1;
-  }
-  return count;
-}
-
 worker.onmessage = (event: MessageEvent<Request>) => {
   const request = event.data;
   try {
@@ -76,8 +66,6 @@ worker.onmessage = (event: MessageEvent<Request>) => {
         const rightFirst = result.referencePath!.indexOf(right);
         return leftFirst - rightFirst;
       });
-      const remap = new Map(used.map((reference, index) => [reference, index]));
-      const parentPath = Uint16Array.from(result.referencePath, (reference) => remap.get(reference) ?? 0);
       worker.postMessage({ id: request.id, result: {
         ordinal: row.ordinal,
         probability: result.probability,
@@ -85,7 +73,6 @@ worker.onmessage = (event: MessageEvent<Request>) => {
         startingReference: result.startingReference,
         recombinations: result.recombinations,
         threadedObservation,
-        parentPath,
         parents: used.map((reference) => ({ name: msa!.names[reference], sequence: msa!.sequences[reference] })),
       } });
       return;
@@ -96,7 +83,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
         results.push({ ordinal: row.ordinal, probability: Number.NaN, dfr: 0, startingReference: "", recombinations: [], status: "missing_alignment" });
         continue;
       }
-      const dfr = mismatchCount(row.sequenceAlignment, row.germlineAlignment);
+      const dfr = chmmairraDistanceFromReference(row.sequenceAlignment, row.germlineAlignment);
       if (dfr < minDfr) {
         results.push({ ordinal: row.ordinal, probability: Number.NaN, dfr, startingReference: "", recombinations: [], status: "low_dfr" });
         continue;

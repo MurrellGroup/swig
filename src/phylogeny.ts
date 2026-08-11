@@ -17,15 +17,76 @@ export interface TreeLayout {
   leaves: number;
 }
 
+export function extractNewick(output: string): string {
+  const text = String(output).replace(/\x1b\[[0-9;]*m/g, "");
+  let best = "";
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "(") continue;
+    let depth = 0;
+    let quote = "";
+    let commentDepth = 0;
+    for (let index = start; index < text.length; index += 1) {
+      const value = text[index];
+      if (quote) {
+        if (value === quote && text[index - 1] !== "\\") quote = "";
+        continue;
+      }
+      if (value === "'" || value === '"') {
+        quote = value;
+        continue;
+      }
+      if (value === "[") {
+        commentDepth += 1;
+        continue;
+      }
+      if (value === "]" && commentDepth) {
+        commentDepth -= 1;
+        continue;
+      }
+      if (commentDepth) continue;
+      if (value === "(") depth += 1;
+      else if (value === ")") {
+        depth -= 1;
+        if (depth !== 0) continue;
+        let end = index + 1;
+        while (end < text.length && text[end] !== ";" && text[end] !== "\n" && text[end] !== "\r") end += 1;
+        if (text[end] !== ";") break;
+        end += 1;
+        const candidate = text.slice(start, end).trim();
+        if (candidate.includes(",") && candidate.length > best.length) best = candidate;
+        break;
+      }
+      if (depth < 0) break;
+    }
+  }
+  if (!best) throw new Error("FastTree did not return a complete Newick tree.");
+  return `${best.replace(/;+$/, "")};`;
+}
+
 export function parseNewick(text: string): TreeNode {
-  const source = text.trim().replace(/;$/, "");
+  const source = extractNewick(text).replace(/\[[^\]]*\]/g, "");
   let position = 0;
+  const whitespace = () => {
+    while (/\s/.test(source[position] ?? "")) position += 1;
+  };
   const token = () => {
+    whitespace();
+    if (source[position] === "'" || source[position] === '"') {
+      const quote = source[position++];
+      let value = "";
+      while (position < source.length && source[position] !== quote) value += source[position++];
+      if (source[position] === quote) position += 1;
+      whitespace();
+      return value;
+    }
     const start = position;
-    while (position < source.length && !"(),:;".includes(source[position])) position += 1;
-    return source.slice(start, position).trim();
+    while (position < source.length && !"(),:;".includes(source[position]) && !/\s/.test(source[position])) position += 1;
+    const value = source.slice(start, position).trim();
+    whitespace();
+    return value;
   };
   const length = () => {
+    whitespace();
     if (source[position] !== ":") return 0;
     position += 1;
     const value = token();
@@ -33,6 +94,7 @@ export function parseNewick(text: string): TreeNode {
     return Number.isFinite(parsed) ? parsed : 0;
   };
   const parse = (): TreeNode => {
+    whitespace();
     const children: TreeNode[] = [];
     if (source[position] === "(") {
       position += 1;
@@ -46,6 +108,7 @@ export function parseNewick(text: string): TreeNode {
           position += 1;
           break;
         }
+        throw new Error("Could not parse the complete Newick tree.");
       }
     }
     const name = token();
@@ -53,6 +116,9 @@ export function parseNewick(text: string): TreeNode {
     return { name, length: branchLength, children };
   };
   const root = parse();
+  whitespace();
+  if (source[position] === ";") position += 1;
+  whitespace();
   if (position < source.length) throw new Error("Could not parse the complete Newick tree.");
   return root;
 }

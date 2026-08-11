@@ -5,7 +5,7 @@ import type { AirrDetailRow } from "./result-store";
 export const GERMLINE_OUTGROUP = "__germline_N_masked__";
 
 function safeName(value: string, fallback: string): string {
-  return (value || fallback).replace(/[\s():;,]/g, "_");
+  return (value || fallback).replace(/[^A-Za-z0-9_.|*+\-]/g, "_");
 }
 
 function nMaskedGermline(row: AirrDetailRow): string {

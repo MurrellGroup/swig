@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   assignLineages,
+  chmmairraDistanceFromReference,
   deduplicate,
   expandSingleLinkage,
   minHashSketch,
@@ -43,6 +44,24 @@ test("deduplication retains abundance and representative membership", () => {
   assert.equal(result.collapsedRecords, 1);
   assert.deepEqual([...result.counts], [2, 0, 1]);
   assert.deepEqual([...result.representatives], [0, 0, 2]);
+});
+
+test("deduplicated active representatives retain collapsed abundance in lineage summaries", () => {
+  const records = [record(0, "TGTGCCAAA"), record(1, "TGTGCCAAA"), record(2, "TGTGCCTAA")];
+  const collapsed = deduplicate(records, "sequence");
+  const active = Uint8Array.from([1, 0, 0]);
+  const result = assignLineages(records, {
+    identity: 0.9,
+    callResolution: "gene",
+    ambiguity: "overlap",
+    productiveOnly: true,
+    requireSameLocus: true,
+    maxCandidateComparisons: 10_000,
+  }, collapsed, active);
+  assert.equal(result.lineageCount, 1);
+  assert.equal(result.assignedRecords, 2);
+  assert.equal(result.summaries[0].uniqueMembers, 1);
+  assert.equal(result.summaries[0].abundance, 2);
 });
 
 test("lineages use V/J ambiguity overlap, exact CDR3 length, and bounded Hamming distance", () => {
@@ -94,6 +113,50 @@ test("sequence query and single-linkage expansion recover a transitive CDR3 neig
     maxResults: 100,
   });
   assert.deepEqual(expanded.ordinals.sort((a, b) => a - b), [0, 1, 2]);
+});
+
+test("the cumulative active mask is honored by lineage assignment, query, and expansion", () => {
+  const records = [
+    record(0, "AAAAAAAAAA"),
+    record(1, "AAAAAAAATA"),
+    record(2, "AAAAAATATA"),
+    record(3, "CCCCCCCCCC"),
+  ];
+  const active = Uint8Array.from([1, 0, 1, 0]);
+  const lineages = assignLineages(records, {
+    identity: 0.9,
+    callResolution: "gene",
+    ambiguity: "overlap",
+    productiveOnly: true,
+    requireSameLocus: true,
+    maxCandidateComparisons: 10_000,
+  }, undefined, active);
+  assert.equal(lineages.assignedRecords, 2);
+  assert.equal(lineages.lineageCount, 2, "an excluded intermediate must not bridge active records");
+  assert.equal(lineages.assignments[1], 0);
+  assert.equal(lineages.assignments[3], 0);
+
+  const hits = queryRecords(records, ["AAAAAAAAAA"], {
+    target: "cdr3_nt",
+    metric: "hamming",
+    identity: 0.8,
+    maxResults: 100,
+    callResolution: "gene",
+    ambiguity: "overlap",
+    productiveOnly: true,
+  }, undefined, active);
+  assert.deepEqual(hits.map((hit) => hit.ordinal), [0, 2]);
+
+  const expanded = expandSingleLinkage(records, [0, 1], {
+    identity: 0.9,
+    callResolution: "gene",
+    ambiguity: "overlap",
+    productiveOnly: true,
+    requireSameLocus: true,
+    maxCandidateComparisons: 10_000,
+    maxResults: 100,
+  }, active);
+  assert.deepEqual(expanded.ordinals, [0], "inactive seeds and bridge records must stay excluded");
 });
 
 test("per-query inferred V/J constraints preserve seed-specific V-J combinations", () => {
@@ -160,6 +223,15 @@ test("AIRR local alignments are threaded onto an uploaded reference MSA", () => 
   const msa = prepareReferenceMsa(">IGHV1*01\nAA--CCGG\n>IGHV2*01\nAATTCCGG\n");
   const threaded = threadSequenceToMsa("TCGG", "CCGG", "IGHV1*01", msa);
   assert.equal(threaded, "NN--TCGG");
+});
+
+test("CHMMAIRRa threading maps ambiguous observations to N and DFR counts gaps and N mismatches", () => {
+  const msa = prepareReferenceMsa(">IGHV1*01\nAA--CCGG\n>IGHV2*01\nAATTCCGG\n");
+  assert.equal(threadSequenceToMsa("RCGG", "CCGG", "IGHV1*01", msa), "NN--NCGG");
+  assert.equal(threadSequenceToMsa("CTCGG", "C-CGG", "IGHV1*01", msa), "NN--CCGG", "query insertions opposite local germline gaps are dropped");
+  assert.equal(threadSequenceToMsa("C-GG", "CCGG", "IGHV1*01", msa), "NN--C-GG", "query deletions are retained as non-informative gaps");
+  assert.equal(chmmairraDistanceFromReference("AC-N", "ACAN"), 1);
+  assert.equal(chmmairraDistanceFromReference("ACNN", "ACAA"), 2);
 });
 
 test("50k post-analysis records retain bounded compact state and avoid all-pairs lineage comparisons", () => {

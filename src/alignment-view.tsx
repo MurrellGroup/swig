@@ -7,6 +7,7 @@ import {
   type AirrRow,
   type AlignmentMode,
 } from "./alignment-model";
+import { ColoredSequence } from "./sequence-colors";
 
 function matchLine(query: string, reference: string): string {
   return [...query].map((value, index) => {
@@ -61,7 +62,7 @@ function RegionSequences({ row, mode }: { row: AirrRow; mode: AlignmentMode }) {
         const value = row[mode === "aa" ? `${region}_aa` : region] || "";
         const start = Number(row[`${region}_start`]);
         const end = Number(row[`${region}_end`]);
-        return <article className={region.startsWith("cdr") ? "cdr" : "fwr"} key={region}><span>{region.toUpperCase()}</span><code>{value || "—"}</code><small>{start && end ? `${coordinate(start, mode, Number(row.sequence_frame))}–${coordinate(end, mode, Number(row.sequence_frame))}` : "not assigned"}</small></article>;
+        return <article className={region.startsWith("cdr") ? "cdr" : "fwr"} key={region}><span>{region.toUpperCase()}</span>{value ? <ColoredSequence sequence={value} alphabet={mode} /> : <code>—</code>}<small>{start && end ? `${coordinate(start, mode, Number(row.sequence_frame))}–${coordinate(end, mode, Number(row.sequence_frame))}` : "not assigned"}</small></article>;
       })}
     </div>
   );
@@ -75,9 +76,9 @@ function CompositeAlignment({ row, mode }: { row: AirrRow; mode: AlignmentMode }
     <article className="composite-alignment">
       <header><div><span className="section-kicker">Combined V(D)J layer</span><h4>Query ↔ composite germline</h4></div><small>{mode === "aa" ? `Shared biological frame ${row.sequence_frame ? `+${row.sequence_frame}` : "not available"}` : "AIRR stitched nucleotide alignment"}</small></header>
       {rendered.length ? rendered.map((block) => <div className="alignment-block" key={block.offset}>
-        <div><span>query</span><code>{block.query}</code></div>
+        <div><span>query</span><ColoredSequence sequence={block.query} alphabet={mode} /></div>
         <div className="match-row"><span /><code>{block.match}</code></div>
-        <div><span>V(D)J ref</span><code>{block.reference}</code></div>
+        <div><span>V(D)J ref</span><ColoredSequence sequence={block.reference} alphabet={mode} /></div>
       </div>) : <p className="empty-alignment">{mode === "aa" ? "A shared coding frame could not be established for this record." : "No stitched V(D)J alignment was reported."}</p>}
     </article>
   );
@@ -113,9 +114,9 @@ function SegmentAlignment({ row, segment, mode }: {
         </dl>
       </header>
       {rendered.length ? rendered.map((block) => <div className="alignment-block" key={block.offset}>
-        <div><span>query</span><code>{block.query}</code></div>
+        <div><span>query</span><ColoredSequence sequence={block.query} alphabet={mode} /></div>
         <div className="match-row"><span /><code>{block.match}</code></div>
-        <div><span>{segment.label.toLowerCase()} ref</span><code>{block.reference}</code></div>
+        <div><span>{segment.label.toLowerCase()} ref</span><ColoredSequence sequence={block.reference} alphabet={mode} /></div>
       </div>) : <p className="empty-alignment">{mode === "aa" ? "No frame-consistent translated alignment is available." : "No aligned sequence was reported for this segment."}</p>}
     </article>
   );

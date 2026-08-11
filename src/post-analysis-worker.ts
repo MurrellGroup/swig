@@ -37,6 +37,8 @@ type Request =
   | { id: number; type: "initSketches" }
   | { id: number; type: "ingestSketches"; rows: Array<{ ordinal: number; sequence: string }> }
   | { id: number; type: "dedup"; key: DedupKey }
+  | { id: number; type: "applyDedupFilter" }
+  | { id: number; type: "setActiveMask"; mask: Uint8Array | null }
   | { id: number; type: "lineages"; options: LineageOptions; useDedup: boolean }
   | { id: number; type: "query"; queries: string[]; options: QueryOptions }
   | { id: number; type: "expand"; seedOrdinals: number[]; options: ExpansionOptions }
@@ -52,6 +54,7 @@ let expected = 0;
 let currentDedup: DedupResult | undefined;
 let currentLineages: LineageResult | undefined;
 let packedSketches: Uint32Array | undefined;
+let currentActiveMask: Uint8Array | undefined;
 const interned = new Map<string, string>();
 
 function intern(value: string): string {
@@ -95,6 +98,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       currentDedup = undefined;
       currentLineages = undefined;
       packedSketches = undefined;
+      currentActiveMask = undefined;
       interned.clear();
       result = { expected };
     } else if (request.type === "ingest") {
@@ -125,20 +129,37 @@ worker.onmessage = (event: MessageEvent<Request>) => {
     } else if (request.type === "dedup") {
       currentDedup = deduplicate(records, request.key);
       currentLineages = undefined;
+      currentActiveMask = undefined;
       result = compactDedupResult(currentDedup);
+    } else if (request.type === "applyDedupFilter") {
+      if (!currentDedup) throw new Error("Run deduplication before applying representative filtering.");
+      currentActiveMask = Uint8Array.from(currentDedup.counts, (count) => count > 0 ? 1 : 0);
+      currentLineages = undefined;
+      result = { mask: currentActiveMask, retained: currentDedup.uniqueRecords };
+    } else if (request.type === "setActiveMask") {
+      if (request.mask && request.mask.length !== records.length) throw new Error("The downstream working-set mask does not match the AIRR record count.");
+      currentActiveMask = request.mask ? request.mask.slice() : undefined;
+      currentLineages = undefined;
+      let retained = records.length;
+      if (currentActiveMask) {
+        retained = 0;
+        for (const value of currentActiveMask) retained += value ? 1 : 0;
+      }
+      result = { retained };
     } else if (request.type === "lineages") {
-      currentLineages = assignLineages(records, request.options, request.useDedup ? currentDedup : undefined);
+      currentLineages = assignLineages(records, request.options, request.useDedup ? currentDedup : undefined, currentActiveMask);
       result = compactLineageResult(currentLineages);
     } else if (request.type === "query") {
       if (request.options.target === "trimmed" && !packedSketches) throw new Error("Build the VDJ sketch index before querying aligned sequences.");
-      result = { hits: queryRecords(records, request.queries, request.options, packedSketches) satisfies QueryHit[] };
+      result = { hits: queryRecords(records, request.queries, request.options, packedSketches, currentActiveMask) satisfies QueryHit[] };
     } else if (request.type === "expand") {
-      result = expandSingleLinkage(records, request.seedOrdinals, request.options);
+      result = expandSingleLinkage(records, request.seedOrdinals, request.options, currentActiveMask);
     } else if (request.type === "lineageMembers") {
       if (!currentLineages) throw new Error("Run lineage assignment before opening lineage members.");
       const ordinals: number[] = [];
       let total = 0;
       for (let ordinal = 0; ordinal < currentLineages.assignments.length; ordinal += 1) {
+        if (currentActiveMask && !currentActiveMask[ordinal]) continue;
         if (currentLineages.assignments[ordinal] !== request.lineageId) continue;
         if (total >= request.offset && ordinals.length < request.limit) ordinals.push(ordinal);
         total += 1;
@@ -165,6 +186,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       currentDedup = undefined;
       currentLineages = undefined;
       packedSketches = undefined;
+      currentActiveMask = undefined;
       interned.clear();
       result = { cleared: true };
     }

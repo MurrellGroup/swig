@@ -85,6 +85,16 @@ export class PostAnalysisRuntime {
     return this.request<DedupDashboard>({ type: "dedup", key });
   }
 
+  async applyDedupFilter(): Promise<{ mask: Uint8Array; retained: number }> {
+    await this.ensureIndexed();
+    return this.request({ type: "applyDedupFilter" });
+  }
+
+  async setActiveMask(mask: Uint8Array | null): Promise<{ retained: number }> {
+    await this.ensureIndexed();
+    return this.request({ type: "setActiveMask", mask });
+  }
+
   async assignLineages(options: LineageOptions, useDedup: boolean): Promise<LineageDashboard> {
     await this.ensureIndexed();
     return this.request<LineageDashboard>({ type: "lineages", options, useDedup });
