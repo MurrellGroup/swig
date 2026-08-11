@@ -117,6 +117,19 @@ test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, 
   assert.equal(fasta.rows[0].j_call, customJName);
   assert.ok(fasta.headers.includes("junction_aa"));
   assert.ok(fasta.headers.includes("germline_alignment"));
+  for (const segment of ["v", "j"]) {
+    assert.ok(fasta.rows[0][`${segment}_sequence_alignment`], `${segment.toUpperCase()} query alignment is empty`);
+    assert.ok(fasta.rows[0][`${segment}_germline_alignment`], `${segment.toUpperCase()} germline alignment is empty`);
+    assert.equal(
+      fasta.rows[0][`${segment}_sequence_alignment`].length,
+      fasta.rows[0][`${segment}_germline_alignment`].length,
+      `${segment.toUpperCase()} alignment strings differ in length`,
+    );
+  }
+  if (heavy.names.D) {
+    assert.ok(fasta.rows[0].d_sequence_alignment);
+    assert.ok(fasta.rows[0].d_germline_alignment);
+  }
 
   const fastq = runtime.annotate(
     `@fastq_case\n${heavy.sequence}\n+\n${"I".repeat(heavy.sequence.length)}\n`,

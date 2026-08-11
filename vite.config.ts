@@ -10,9 +10,12 @@ function githubPagesBase(): string {
 
 export default defineConfig({
   base: githubPagesBase(),
+  server: {
+    host: "0.0.0.0",
+    allowedHosts: ["terminal.local"],
+  },
   plugins: [react()],
   build: {
     target: "es2022",
   },
 });
-

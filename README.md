@@ -36,6 +36,25 @@ npm run preview
 
 The generated static site is written to `dist/`. It contains the JavaScript/CSS bundles, `swiftig.wasm`, the compressed reference pack, and an `index.html`; it can be served by any ordinary static file host.
 
+## User flow
+
+Swig is deliberately split into three views:
+
+1. **Overview** explains the biological and computational workflow before asking for data.
+2. **Analyze** accepts a file or pasted records, configures species/receptor/locus and independent V/D/J/C substitutions, and shows measured read, reference-indexing, annotation, and result-indexing progress.
+3. **Results** downloads the complete AIRR TSV or explores the local result index. Runs of one to three records open directly into evidence; larger runs stay paged and filterable.
+
+Selecting a record retrieves its full AIRR row and exposes its rearrangement map, framework/CDR regions, junction evidence, every populated AIRR field, and separate query-to-germline V, D, J, and optional C alignments. The alignment viewer switches between nucleotide and amino-acid modes. Protein alignments are translated and calculated only for the selected record.
+
+## Large-run behavior
+
+- SwiftIG runs in a Web Worker and annotates bounded batches.
+- AIRR batches are acknowledged only after they have been committed to IndexedDB, providing backpressure between WebAssembly and browser storage.
+- The table renders 50 records at a time. Exact locus, productivity, allele, frame, stop-codon, completeness, and orientation queries use browser-local indexes; ID and CDR3 substring searches scan candidates on demand and are cancellable.
+- Additional filters cover V/D/J identity floors, CDR3 amino-acid length, D/CDR3 presence, receptor locus, and productivity.
+- Full alignments and translated evidence are retrieved or calculated only after a row is opened.
+- On browsers with the File System Access API, large AIRR downloads are streamed chunk by chunk to the chosen file. Other browsers use a conventional Blob download.
+
 ## Supported biology and formats
 
 - FASTA, FASTQ, and AIRR Rearrangement TSV input, optionally gzip-compressed
@@ -76,4 +95,3 @@ Update the filename in `src/reference-pack.ts` when the release ID changes. The 
 ## Scientific scope
 
 SwiftIG 0.2 is research software. Benchmark study-critical calls against IgBLAST or another validated workflow for the organism, assay, read length, somatic-hypermutation regime, and germline set relevant to the analysis. Public germline coverage is not literally available for every animal species; arbitrary or partial new sets can be supplied with the per-segment upload controls.
-

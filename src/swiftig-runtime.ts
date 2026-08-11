@@ -1,17 +1,27 @@
 import type { CompiledReferences } from "./reference-pack";
 
+export interface ResultBatch {
+  header: string;
+  body: string;
+  count: number;
+  processed: number;
+  total: number;
+}
+
 export interface RunOptions {
-  query: string;
+  query: string | File;
   format: 0 | 1 | 2 | 3;
   references: CompiledReferences;
   minimumIdentity: number;
   strand: 0 | 1 | 2;
   onProgress?: (stage: string, value: number) => void;
+  onBatch?: (batch: ResultBatch) => void | Promise<void>;
+  signal?: AbortSignal;
 }
 
 export interface RunResult {
   count: number;
-  tsv: string;
+  total: number;
 }
 
 let requestId = 0;
@@ -20,33 +30,64 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
   const id = ++requestId;
   const worker = new Worker(new URL("./swiftig-worker.ts", import.meta.url), { type: "module" });
   return new Promise((resolve, reject) => {
+    let finished = false;
+    const fail = (error: Error) => {
+      if (finished) return;
+      finished = true;
+      options.signal?.removeEventListener("abort", abort);
+      worker.terminate();
+      reject(error);
+    };
+    const abort = () => fail(new DOMException("Analysis cancelled.", "AbortError"));
+    if (options.signal?.aborted) {
+      abort();
+      return;
+    }
+    options.signal?.addEventListener("abort", abort, { once: true });
+
     worker.onmessage = (event) => {
       const message = event.data as {
         id: number;
-        type: "progress" | "result" | "error";
+        type: "progress" | "batch" | "result" | "error";
         stage?: string;
         value?: number;
+        batch?: number;
+        header?: string;
+        body?: string;
         count?: number;
-        tsv?: string;
+        processed?: number;
+        total?: number;
         message?: string;
       };
-      if (message.id !== id) return;
+      if (message.id !== id || finished) return;
       if (message.type === "progress") {
         options.onProgress?.(message.stage ?? "Working", message.value ?? 0);
         return;
       }
-      worker.terminate();
-      if (message.type === "error") {
-        reject(new Error(message.message ?? "SwiftIG failed."));
-      } else {
-        resolve({ count: message.count ?? 0, tsv: message.tsv ?? "" });
+      if (message.type === "batch") {
+        Promise.resolve(options.onBatch?.({
+          header: message.header ?? "",
+          body: message.body ?? "",
+          count: message.count ?? 0,
+          processed: message.processed ?? 0,
+          total: message.total ?? 0,
+        })).then(() => {
+          worker.postMessage({ type: "ack", id, batch: message.batch ?? 0 });
+        }).catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
+        return;
       }
-    };
-    worker.onerror = (event) => {
+      if (message.type === "error") {
+        fail(new Error(message.message ?? "SwiftIG failed."));
+        return;
+      }
+      finished = true;
+      options.signal?.removeEventListener("abort", abort);
       worker.terminate();
-      reject(new Error(event.message || "The SwiftIG worker stopped unexpectedly."));
+      resolve({ count: message.count ?? 0, total: message.total ?? 0 });
     };
+    worker.onerror = (event) => fail(new Error(event.message || "The SwiftIG worker stopped unexpectedly."));
     worker.postMessage({
+      type: "start",
       id,
       query: options.query,
       format: options.format,
