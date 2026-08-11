@@ -1714,11 +1714,20 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .tree-controls { display: grid; grid-template-columns: 1fr 130px 150px auto; gap: 12px; align-items: end; padding: 24px 28px; border-top: 1px solid var(--line); }
 .tree-controls h4 { margin: 7px 0 4px; font: 650 20px Georgia,serif; }
 .tree-controls p { margin: 0; color: var(--muted); font-size: 8px; }
+.tree-provenance { display: flex; justify-content: space-between; gap: 18px; align-items: center; margin: -8px 28px 16px; padding: 13px 15px; border: 1px solid #aeb9b3; border-left: 4px solid var(--teal); border-radius: 3px; background: #f2f4ef; }
+.tree-provenance > div:first-child { display: grid; gap: 4px; min-width: 0; }
+.tree-provenance strong { font: 650 13px Georgia,serif; }
+.tree-provenance small { color: var(--muted); font-size: 7px; overflow-wrap: anywhere; }
+.tree-provenance code { width: fit-content; max-width: 100%; padding: 5px 7px; overflow: auto; color: #d8e9e2; background: #172622; font-size: 7px; white-space: nowrap; }
+.tree-provenance .result-actions { flex: 0 0 auto; margin: 0; }
+.tree-output-switch { display: flex; justify-content: space-between; align-items: center; margin: 0 28px 10px; }
+.tree-output-switch > span { color: var(--muted); font-size: 7px; }
 .tree-viewer { margin: 0 28px 28px; overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-soft); }
 .tree-viewer > header { display: flex; justify-content: space-between; align-items: center; padding: 14px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .tree-viewer h4 { margin: 6px 0 0; font-size: 13px; }
-.tree-viewer header > div:last-child { display: flex; gap: 6px; }
+.tree-viewer header > div:last-child { display: flex; gap: 6px; align-items: center; }
 .tree-viewer header button { padding: 8px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-soft); font-size: 7px; font-weight: 800; }
+.tree-viewer header .mode-toggle button.active { color: white; border-color: var(--teal); background: var(--teal); }
 .tree-scroll { max-height: 720px; overflow: auto; padding: 8px; background: #e3e0d7; }
 .tree-scroll svg { display: block; width: 100%; min-width: 800px; height: auto; border: 1px solid #d1cec5; }
 .tree-viewer > .scientific-note { padding: 0 14px 14px; }
@@ -1944,6 +1953,9 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
   .alignment-editor-transfer > small,
   .alignment-editor-transfer .editor-status,
   .alignment-editor-transfer .inline-method-error { grid-column: auto; }
+  .tree-provenance { align-items: flex-start; flex-direction: column; }
+  .tree-provenance .result-actions { justify-content: flex-start; }
+  .tree-output-switch { align-items: flex-start; flex-direction: column; gap: 8px; }
 }
 
 @media (max-width: 600px) {

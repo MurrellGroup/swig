@@ -15,6 +15,18 @@ export interface TreeLayout {
   width: number;
   height: number;
   leaves: number;
+  mode: TreeLayoutMode;
+}
+
+export type TreeLayoutMode = "phylogram" | "cladogram";
+
+export const FASTTREE_DOUBLE_MINIMUM_BRANCH = 5e-9;
+export const FASTTREE_AMBIGUOUS_BRANCH_THRESHOLD = 1e-8;
+
+export interface CollapsedTree {
+  root: TreeNode;
+  collapsedEdges: number;
+  threshold: number;
 }
 
 export function extractNewick(output: string): string {
@@ -160,13 +172,67 @@ export function rootOnOutgroup(root: TreeNode, outgroupName: string): TreeNode {
   };
 }
 
-export function layoutTree(root: TreeNode, width = 900, rowHeight = 24): TreeLayout {
+/**
+ * Return a deterministic child order without changing any splits or lengths.
+ * Newick child order is arbitrary, but a stable order prevents equivalent
+ * trees from jumping around in the lineage viewer between runtimes.
+ */
+export function canonicalizeTree(root: TreeNode): TreeNode {
+  const visit = (node: TreeNode): { node: TreeNode; key: string } => {
+    if (!node.children.length) return { node: { ...node, children: [] }, key: node.name };
+    const children = node.children.map(visit).sort((left, right) => left.key.localeCompare(right.key));
+    return {
+      node: { ...node, children: children.map((child) => child.node) },
+      key: children.map((child) => child.key).sort().join("\0"),
+    };
+  };
+  return visit(root).node;
+}
+
+/**
+ * Collapse internal branches at FastTreeDbl's numerical floor. FastTree can
+ * resolve these zero-information edges differently across native and WASM
+ * floating-point targets. Leaves are never collapsed, and the untouched raw
+ * FastTree Newick remains available separately for audit.
+ */
+export function collapseShortInternalBranches(
+  root: TreeNode,
+  threshold = FASTTREE_AMBIGUOUS_BRANCH_THRESHOLD,
+): CollapsedTree {
+  if (!Number.isFinite(threshold) || threshold < 0) throw new Error("The branch-collapse threshold must be a non-negative number.");
+  let collapsedEdges = 0;
+  const visit = (node: TreeNode): TreeNode => {
+    const children = node.children.flatMap((child) => {
+      const next = visit(child);
+      if (next.children.length && next.length <= threshold) {
+        collapsedEdges += 1;
+        return next.children;
+      }
+      return [next];
+    });
+    return { ...node, children };
+  };
+  return { root: canonicalizeTree(visit(root)), collapsedEdges, threshold };
+}
+
+export function layoutTree(root: TreeNode, width = 900, rowHeight = 24, requestedMode: TreeLayoutMode = "phylogram"): TreeLayout {
+  let hasPositiveLength = false;
+  const detectLengths = (node: TreeNode) => {
+    for (const child of node.children) {
+      if (child.length > 0) hasPositiveLength = true;
+      detectLengths(child);
+    }
+  };
+  detectLengths(root);
+  const mode: TreeLayoutMode = requestedMode === "phylogram" && hasPositiveLength ? "phylogram" : "cladogram";
   const distances = new Map<TreeNode, number>();
   let maximum = 0;
   const measure = (node: TreeNode, distance: number) => {
     distances.set(node, distance);
     maximum = Math.max(maximum, distance);
-    node.children.forEach((child) => measure(child, distance + (child.length > 0 ? child.length : 1)));
+    // A zero-length FastTree edge is biologically meaningful. Never inflate it
+    // to one unit in a phylogram; use unit depth only in explicit cladogram mode.
+    node.children.forEach((child) => measure(child, distance + (mode === "phylogram" ? Math.max(0, child.length) : 1)));
   };
   measure(root, 0);
   const leaves = [...distances.keys()].filter((node) => !node.children.length);
@@ -187,5 +253,5 @@ export function layoutTree(root: TreeNode, width = 900, rowHeight = 24): TreeLay
     return layout;
   };
   build(root);
-  return { nodes, edges, width, height: Math.max(90, leaves.length * rowHeight + 50), leaves: leaves.length };
+  return { nodes, edges, width, height: Math.max(90, leaves.length * rowHeight + 50), leaves: leaves.length, mode };
 }

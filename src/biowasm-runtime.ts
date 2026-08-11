@@ -1,12 +1,23 @@
 import Aioli from "@biowasm/aioli";
 
 import { projectCodonAlignment } from "./alignment-model";
+import { prepareFastTreeInput } from "./fasttree-input";
 import { parseFasta, type FastaRecord } from "./post-analysis-core";
 import { extractNewick } from "./phylogeny";
 
 interface AioliRuntime {
-  mount(file: { name: string; data: string | File | Blob | Uint8Array }): Promise<string>;
+  write(options: { path: string; buffer: Uint8Array }): Promise<void>;
   exec(command: string): Promise<string>;
+}
+
+export interface FastTreeRun {
+  newick: string;
+  inputFasta: string;
+  alignmentFasta: string;
+  command: string;
+  rows: number;
+  columns: number;
+  fingerprint: string;
 }
 
 let runtime: Promise<AioliRuntime> | null = null;
@@ -29,6 +40,14 @@ function restoreNames(fasta: string, names: string[]): string {
     const index = Number(record.name);
     return `>${Number.isInteger(index) && names[index] ? names[index] : record.name}\n${record.sequence}`;
   }).join("\n") + "\n";
+}
+
+async function writeInput(cli: AioliRuntime, path: string, value: string): Promise<string> {
+  // Aioli.mount() retains every Blob it has ever mounted. Direct w+ writes
+  // truncate this browser-local MEMFS path on every invocation, so a corrected
+  // alignment can never resolve to bytes from an earlier run.
+  await cli.write({ path, buffer: new TextEncoder().encode(value) });
+  return path;
 }
 
 const CODONS: Record<string, string> = {
@@ -57,8 +76,8 @@ export async function runKalign(fasta: string): Promise<string> {
   if (records.length < 2) throw new Error("Kalign needs at least two sequences.");
   const input = safeFasta(records);
   const cli = await tools();
-  await cli.mount({ name: "swig_kalign.fa", data: input.fasta });
-  const output = await cli.exec("kalign swig_kalign.fa -f fasta");
+  const path = await writeInput(cli, "/shared/data/swig_kalign_nt.fa", input.fasta);
+  const output = await cli.exec(`kalign ${path} -f fasta`);
   if (!output.includes(">")) throw new Error("Kalign did not return a FASTA alignment.");
   return restoreNames(output, input.names);
 }
@@ -69,8 +88,8 @@ export async function runCodonAwareKalign(fasta: string, frames?: number[]): Pro
   const normalizedFrames = records.map((_, index) => Math.max(0, Math.min(2, frames?.[index] ?? 0)));
   const aminoAcids = records.map((record, index) => ({ name: String(index), sequence: translate(record.sequence, normalizedFrames[index]) }));
   const cli = await tools();
-  await cli.mount({ name: "swig_codon_aa.fa", data: aminoAcids.map((record) => `>${record.name}\n${record.sequence}`).join("\n") + "\n" });
-  const output = await cli.exec("kalign swig_codon_aa.fa -f fasta");
+  const path = await writeInput(cli, "/shared/data/swig_kalign_codon_aa.fa", aminoAcids.map((record) => `>${record.name}\n${record.sequence}`).join("\n") + "\n");
+  const output = await cli.exec(`kalign ${path} -f fasta`);
   const aligned = parseFasta(output, true);
   const byIndex = new Map(aligned.map((record) => [Number(record.name), record.sequence]));
   const projected = records.map((record, index) => ({
@@ -81,20 +100,24 @@ export async function runCodonAwareKalign(fasta: string, frames?: number[]): Pro
   return projected.map((record) => `>${record.name}\n${record.sequence.padEnd(maximum, "-")}`).join("\n") + "\n";
 }
 
-export async function runFastTree(alignedFasta: string, model: "gtr" | "jc" = "gtr", fast = false): Promise<string> {
-  const records = parseFasta(alignedFasta, true);
-  if (records.length < 3) throw new Error("FastTree needs at least three aligned sequences.");
-  if (records.some((record) => record.sequence.length !== records[0].sequence.length)) throw new Error("FastTree input records must have equal aligned length.");
-  const input = safeFasta(records, true);
+export async function runFastTree(alignedFasta: string, model: "gtr" | "jc" = "gtr", fast = false): Promise<FastTreeRun> {
+  const input = prepareFastTreeInput(alignedFasta, model, fast);
   const cli = await tools();
-  await cli.mount({ name: "swig_tree.fa", data: input.fasta });
-  const flags = ["-nt", model === "gtr" ? "-gtr" : "", fast ? "-fastest" : ""].filter(Boolean).join(" ");
-  let output = extractNewick(await cli.exec(`fasttree ${flags} swig_tree.fa`));
+  const path = await writeInput(cli, "/shared/data/swig_fasttree_input.fa", input.inputFasta);
+  let output = extractNewick(await cli.exec(`fasttree ${input.flags} ${path}`));
   input.names.forEach((name, index) => {
     const safeName = name.replace(/[^A-Za-z0-9_.|*+\-]/g, "_") || `tip_${index + 1}`;
     output = output.replace(new RegExp(`([,(])${index}(?=[:),])`, "g"), (_match, prefix: string) => `${prefix}${safeName}`);
   });
-  return output.trim();
+  return {
+    newick: output.trim(),
+    inputFasta: input.inputFasta,
+    alignmentFasta: input.alignmentFasta,
+    command: input.command,
+    rows: input.rows,
+    columns: input.columns,
+    fingerprint: input.fingerprint,
+  };
 }
 
 export async function warmBiowasm(): Promise<void> {

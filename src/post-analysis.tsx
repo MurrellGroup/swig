@@ -7,7 +7,8 @@ import {
   type ReactNode,
 } from "react";
 
-import { runCodonAwareKalign, runFastTree, runKalign } from "./biowasm-runtime";
+import { runCodonAwareKalign, runFastTree, runKalign, type FastTreeRun } from "./biowasm-runtime";
+import { inspectAlignment, validateCorrectedAlignment } from "./alignment-provenance";
 import { chimeraVisiblePositions, classifyChimeraQuerySite } from "./chimera-view-model";
 import {
   runChmmairra,
@@ -19,7 +20,15 @@ import {
   type ChmmSegment,
 } from "./chmmairra-runtime";
 import { GERMLINE_OUTGROUP, lineageInputFasta, quickAirrAlignment } from "./lineage-alignment";
-import { layoutTree, parseNewick, rootOnOutgroup, serializeNewick } from "./phylogeny";
+import {
+  canonicalizeTree,
+  collapseShortInternalBranches,
+  FASTTREE_AMBIGUOUS_BRANCH_THRESHOLD,
+  layoutTree,
+  parseNewick,
+  rootOnOutgroup,
+  serializeNewick,
+} from "./phylogeny";
 import {
   parseFasta,
   prepareReferenceMsa,
@@ -71,6 +80,16 @@ interface WorkingSetStage {
   discarded: number;
   detail: string;
 }
+
+interface TreeSnapshot extends FastTreeRun {
+  rootedNewick: string;
+  stableNewick: string;
+  collapsedEdges: number;
+  collapseThreshold: number;
+  source: string;
+}
+
+type TreeViewMode = "stable" | "rooted" | "raw";
 
 function baseName(name: string): string {
   return name.replace(/(\.airr)?\.(tsv|csv|txt|fa|fasta|fastq)(\.gz)?$/i, "") || "swig";
@@ -158,17 +177,31 @@ function BarChart({ title, subtitle, data, color, name, controls }: {
   </article>;
 }
 
-function TreeView({ newick, name }: { newick: string; name: string }) {
+function TreeView({
+  newick,
+  name,
+  variant,
+  collapsedEdges = 0,
+  collapseThreshold = FASTTREE_AMBIGUOUS_BRANCH_THRESHOLD,
+}: {
+  newick: string;
+  name: string;
+  variant: TreeViewMode;
+  collapsedEdges?: number;
+  collapseThreshold?: number;
+}) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const tree = useMemo(() => layoutTree(parseNewick(newick), 980, 24), [newick]);
+  const [layoutMode, setLayoutMode] = useState<"phylogram" | "cladogram">("phylogram");
+  const tree = useMemo(() => layoutTree(parseNewick(newick), 980, 24, layoutMode), [newick, layoutMode]);
+  const label = variant === "stable" ? "Germline-rooted · ambiguous edges collapsed" : variant === "rooted" ? "Germline-rooted · complete FastTree resolution" : "Raw FastTree output";
   return <section className="tree-viewer">
-    <header><div><span className="section-kicker">Rooted phylogeny</span><h4>{tree.leaves.toLocaleString()} tips</h4></div><div><button type="button" onClick={() => saveSvg(svgRef.current, `${name}.svg`)}>Download SVG</button><button type="button" onClick={() => downloadText(`${newick.replace(/;?$/, ";")}\n`, `${name}.nwk`)}>Newick</button></div></header>
-    <div className="tree-scroll"><svg ref={svgRef} viewBox={`0 0 ${tree.width} ${tree.height}`} role="img" aria-label="N-masked germline rooted lineage tree">
+    <header><div><span className="section-kicker">{label}</span><h4>{tree.leaves.toLocaleString()} tips · {tree.mode}{variant === "stable" ? ` · ${collapsedEdges.toLocaleString()} minimum-length edges collapsed` : ""}</h4></div><div className="tree-header-actions"><div className="mode-toggle"><button className={layoutMode === "phylogram" ? "active" : ""} type="button" onClick={() => setLayoutMode("phylogram")}>Branch lengths</button><button className={layoutMode === "cladogram" ? "active" : ""} type="button" onClick={() => setLayoutMode("cladogram")}>Topology only</button></div><button type="button" onClick={() => saveSvg(svgRef.current, `${name}.svg`)}>Download SVG</button><button type="button" onClick={() => downloadText(`${newick.replace(/;?$/, ";")}\n`, `${name}.nwk`)}>Newick</button></div></header>
+    <div className="tree-scroll"><svg ref={svgRef} viewBox={`0 0 ${tree.width} ${tree.height}`} role="img" aria-label={`${label} lineage tree`}>
       <rect width={tree.width} height={tree.height} fill="#fbfaf5" />
       {tree.edges.map((edge, index) => <g key={index} stroke="#49605a" strokeWidth="1.2" fill="none"><path d={`M${edge.parent.x},${edge.parent.y} V${edge.child.y} H${edge.child.x}`} /></g>)}
       {tree.nodes.map((node, index) => <g key={index}><circle cx={node.x} cy={node.y} r={node.children.length ? 2.2 : 2.8} fill={node.name === GERMLINE_OUTGROUP ? "#d49a19" : "#08796f"} />{!node.children.length && <text x={node.x + 7} y={node.y + 4} fontFamily="ui-monospace,monospace" fontSize="10" fontWeight={node.name === GERMLINE_OUTGROUP ? "700" : "500"} fill="#1a2925">{node.name}</text>}</g>)}
     </svg></div>
-    <p className="scientific-note"><span>i</span> FastTree is inferred from nucleotide alignment. The reconstructed germline has N at non-templated junction positions and is placed as the outgroup; its incident edge defines the displayed root.</p>
+    <p className="scientific-note"><span>i</span>{variant === "stable" ? `Internal branches at or below ${collapseThreshold.toExponential(0)} substitutions/site are numerical-floor resolutions and are shown as polytomies. Retained branch lengths are unchanged; the complete resolved and raw trees remain available.` : tree.mode === "phylogram" ? "FastTree branch lengths are drawn exactly; minimum-length edges remain visible." : "Cladogram mode draws every edge at equal depth and does not represent evolutionary distance."} {variant === "raw" ? "This is the unmodified Newick returned by FastTree before germline rooting." : "The germline edge defines the root; rerooting does not change the inferred unrooted splits."}</p>
   </section>;
 }
 
@@ -305,7 +338,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [alignmentMode, setAlignmentMode] = useState<"nt" | "aa">("nt");
   const [alignmentMethod, setAlignmentMethod] = useState<"quick" | "kalign" | "codon">("codon");
   const [alignmentLimit, setAlignmentLimit] = useState(200);
-  const [treeNewick, setTreeNewick] = useState("");
+  const [alignmentSource, setAlignmentSource] = useState("");
+  const alignmentRevisionRef = useRef(0);
+  const [treeRun, setTreeRun] = useState<TreeSnapshot | null>(null);
+  const [treeViewMode, setTreeViewMode] = useState<TreeViewMode>("stable");
   const [treeError, setTreeError] = useState("");
   const [treeModel, setTreeModel] = useState<"gtr" | "jc">("gtr");
   const [treeFast, setTreeFast] = useState(false);
@@ -313,6 +349,28 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const alivibeWindowRef = useRef<Window | null>(null);
   const [alignmentEditorStatus, setAlignmentEditorStatus] = useState("");
   const [alignmentEditorError, setAlignmentEditorError] = useState("");
+  const alignmentInfo = useMemo(() => {
+    if (!alignment) return null;
+    try { return inspectAlignment(alignment); } catch { return null; }
+  }, [alignment]);
+
+  function clearAlignmentArtifacts() {
+    alignmentRevisionRef.current += 1;
+    setAlignment("");
+    setAlignmentSource("");
+    setTreeRun(null);
+    setTreeError("");
+  }
+
+  function installAlignment(next: string, source: string) {
+    const inspected = inspectAlignment(next);
+    alignmentRevisionRef.current += 1;
+    setAlignment(inspected.fasta);
+    setAlignmentSource(source);
+    setTreeRun(null);
+    setTreeError("");
+    return inspected;
+  }
 
   const isTcr = scope === "TCR" || String(scope).startsWith("TR");
   const [chmmSegment, setChmmSegment] = useState<ChmmSegment>("V");
@@ -395,8 +453,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setChimeraDetail(null);
     setLineages(null);
     setSelectedLineage(null);
-    setAlignment("");
-    setTreeNewick("");
+    clearAlignmentArtifacts();
     setQueryHits([]);
     setExpanded(null);
   }
@@ -411,8 +468,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setChimeraDetail(null);
     setLineages(null);
     setSelectedLineage(null);
-    setAlignment("");
-    setTreeNewick("");
+    clearAlignmentArtifacts();
     setQueryHits([]);
     setExpanded(null);
   }
@@ -443,9 +499,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       setLineages(result);
       setSelectedLineage(null);
       setLineageRows([]);
-      setAlignment("");
-      setTreeNewick("");
-      setTreeError("");
+      clearAlignmentArtifacts();
     }
   }
 
@@ -471,9 +525,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       setSelectedLineage(summary);
       setLineageRows(rows);
       setLineageTotal(members.total);
-      setAlignment("");
-      setTreeNewick("");
-      setTreeError("");
+      clearAlignmentArtifacts();
       setAlignmentEditorStatus("");
       setAlignmentEditorError("");
       window.requestAnimationFrame(() => workbenchRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -496,9 +548,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         const input = lineageInputFasta(rows);
         next = alignmentMethod === "codon" ? await runCodonAwareKalign(input.fasta, input.frames) : await runKalign(input.fasta);
       }
-      setAlignment(next);
-      setTreeNewick("");
-      setTreeError("");
+      installAlignment(next, alignmentMethod === "quick" ? "AIRR-anchored alignment" : alignmentMethod === "codon" ? "Codon-aware Kalign 3.3.1" : "Nucleotide Kalign 3.3.1");
       setAlignmentEditorStatus("");
       setAlignmentEditorError("");
     } catch (operationError) {
@@ -512,10 +562,24 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     if (!alignment) return;
     setBusy("Running FastTree WASM and rooting on the N-masked germline");
     setTreeError("");
+    const revision = alignmentRevisionRef.current;
+    const alignmentSnapshot = alignment;
+    const sourceSnapshot = alignmentSource;
     try {
-      const unrooted = await runFastTree(alignment, treeModel, treeFast);
-      const rooted = rootOnOutgroup(parseNewick(unrooted), GERMLINE_OUTGROUP);
-      setTreeNewick(`${serializeNewick(rooted)};`);
+      const execution = await runFastTree(alignmentSnapshot, treeModel, treeFast);
+      if (revision !== alignmentRevisionRef.current) throw new Error("The alignment changed while FastTree was running. Run the tree again on the current alignment.");
+      const rooted = rootOnOutgroup(parseNewick(execution.newick), GERMLINE_OUTGROUP);
+      const canonicalRooted = canonicalizeTree(rooted);
+      const stable = collapseShortInternalBranches(canonicalRooted);
+      setTreeRun({
+        ...execution,
+        rootedNewick: `${serializeNewick(canonicalRooted)};`,
+        stableNewick: `${serializeNewick(stable.root)};`,
+        collapsedEdges: stable.collapsedEdges,
+        collapseThreshold: stable.threshold,
+        source: sourceSnapshot,
+      });
+      setTreeViewMode("stable");
       window.requestAnimationFrame(() => treeResultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     } catch (operationError) {
       setTreeError(operationError instanceof Error ? operationError.message : String(operationError));
@@ -525,18 +589,12 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     }
   }
 
-  function importEditedAlignment(text: string) {
-    const records = parseFasta(text, true);
-    if (records.length < 2) throw new Error("The edited FASTA must contain at least two aligned sequences.");
-    const width = records[0].sequence.length;
-    if (!width || records.some((record) => record.sequence.length !== width)) throw new Error("Every edited FASTA record must have the same aligned length.");
-    if (!records.some((record) => record.name === GERMLINE_OUTGROUP)) throw new Error(`Keep the ${GERMLINE_OUTGROUP} row so the tree can be rooted on the N-masked germline.`);
-    const normalized = records.map((record) => `>${record.name}\n${record.sequence}`).join("\n") + "\n";
-    setAlignment(normalized);
-    setTreeNewick("");
-    setTreeError("");
+  function importEditedAlignment(text: string, source = "Alivibe-corrected alignment") {
+    if (!alignment) throw new Error("Create a lineage alignment before importing a correction.");
+    const inspected = validateCorrectedAlignment(alignment, text);
+    installAlignment(inspected.fasta, source);
     setAlignmentEditorError("");
-    setAlignmentEditorStatus(`Imported ${records.length.toLocaleString()} edited rows × ${width.toLocaleString()} columns from Alivibe.`);
+    setAlignmentEditorStatus(`Accepted the complete corrected alignment: ${inspected.rows.toLocaleString()} rows × ${inspected.columns.toLocaleString()} columns · fingerprint ${inspected.fingerprint}. FastTree will use these exact aligned rows.`);
   }
 
   function openAlivibeEditor() {
@@ -557,7 +615,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       attempts += 1;
       if (popup.closed) {
         window.clearInterval(timer);
-        setAlignmentEditorStatus("Alivibe closed. Use Import from Alivibe if the corrected FASTA is on the clipboard.");
+        setAlignmentEditorStatus("Alivibe closed. Import its downloaded full-alignment FASTA; clipboard import is also accepted when it contains every complete row.");
         return;
       }
       try {
@@ -597,7 +655,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         window.clearInterval(timer);
       } catch {
         if (attempts < 20) return;
-        setAlignmentEditorStatus("Alivibe is on a different origin. The FASTA was copied locally: paste it into Alivibe, edit it, use Copy, then return here and press Import from Alivibe.");
+        setAlignmentEditorStatus("Alivibe is on a different origin. The FASTA was copied locally: paste and edit it there, download the complete alignment, then use Import corrected FASTA. Alivibe’s Copy action may contain only a selection.");
         window.clearInterval(timer);
       }
     }, 250);
@@ -612,7 +670,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         try { corrected = editor.getClipboardContent?.(false) ?? ""; } catch { /* cross-origin fallback below */ }
       }
       if (!corrected && navigator.clipboard?.readText) corrected = await navigator.clipboard.readText();
-      if (!corrected) throw new Error("No corrected FASTA was available. In Alivibe, use Copy before returning to Swig.");
+      if (!corrected) throw new Error("No complete corrected FASTA was available. Download the full alignment from Alivibe, then use Import corrected FASTA.");
       importEditedAlignment(corrected);
     } catch (importError) {
       setAlignmentEditorError(importError instanceof Error ? importError.message : String(importError));
@@ -624,7 +682,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     event.target.value = "";
     if (!file) return;
     try {
-      importEditedAlignment(await file.text());
+      importEditedAlignment(await file.text(), `Corrected alignment imported from ${file.name}`);
     } catch (importError) {
       setAlignmentEditorError(importError instanceof Error ? importError.message : String(importError));
     }
@@ -710,8 +768,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     }]);
     setLineages(null);
     setSelectedLineage(null);
-    setAlignment("");
-    setTreeNewick("");
+    clearAlignmentArtifacts();
     setTreeError("");
     setQueryHits([]);
     setExpanded(null);
@@ -943,13 +1000,13 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `first ${lineageRows.length}; alignment remains on-demand` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)}>{row.record.sequenceId}</button>)}</div></div>
       <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">AIRR-anchored quick view</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><input type="number" min="2" max="500" value={alignmentLimit} onChange={(event) => setAlignmentLimit(Number(event.target.value))} /></label><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runAlignment()}>Align selected lineage</button>{alignment && <button type="button" onClick={() => downloadText(alignment, `${baseName(inputName)}.lineage-${selectedLineage.id}.alignment.fasta`)}>Alignment FASTA ↓</button>}</div>
       {alignment && <>
-        <div className="alignment-editor-transfer"><div><span className="section-kicker">Manual correction</span><h4>Round trip through Alivibe</h4><p>Swig keeps its internal aligners. For manual correction, the nucleotide FASTA is transferred locally to Alivibe; the corrected alignment replaces this view and is used for tree inference.</p></div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={() => void importFromAlivibe()}>Import from Alivibe</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label></div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>No sequence is placed in a URL or submitted by Swig. Direct return is available when both pages share the MurrellGroup GitHub Pages origin; clipboard/file import is the fallback.</small></div>
-        <div className="alignment-view-controls"><div className="mode-toggle"><button className={alignmentMode === "nt" ? "active" : ""} type="button" onClick={() => setAlignmentMode("nt")}>Nucleotide</button><button className={alignmentMode === "aa" ? "active" : ""} type="button" onClick={() => setAlignmentMode("aa")}>Amino acid</button></div><span>{parseFasta(alignment, true).length.toLocaleString()} aligned rows · N-masked germline included · standard Alivibe palette</span></div>
+        <div className="alignment-editor-transfer"><div><span className="section-kicker">Manual correction</span><h4>Round trip through Alivibe</h4><p>Swig keeps its internal aligners. A returned alignment is accepted only if it contains every original row and every ungapped nucleotide sequence is unchanged; selected or truncated exports are rejected.</p></div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={() => void importFromAlivibe()}>Import full alignment</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label></div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>For the cross-origin fallback, use Alivibe’s full-alignment download. Its Copy action can be selection-sensitive. Sequence data remain in the browser.</small></div>
+        <div className="alignment-view-controls"><div className="mode-toggle"><button className={alignmentMode === "nt" ? "active" : ""} type="button" onClick={() => setAlignmentMode("nt")}>Nucleotide</button><button className={alignmentMode === "aa" ? "active" : ""} type="button" onClick={() => setAlignmentMode("aa")}>Amino acid</button></div><span>{alignmentInfo?.rows.toLocaleString() ?? parseFasta(alignment, true).length.toLocaleString()} aligned rows · {alignmentInfo?.columns.toLocaleString() ?? "—"} columns · {alignmentSource || "alignment"} · fingerprint {alignmentInfo?.fingerprint ?? "—"}</span></div>
         <AlignmentPreview fasta={alignment} mode={alignmentMode} />
         <div ref={treeResultRef} className="tree-operation-region">
-          <div className="tree-controls"><div><span className="section-kicker">On-demand tree</span><h4>FastTree 2.1.11 WASM</h4><p>Nucleotide inference only; the N-masked germline is used as the outgroup after inference.</p></div><label><span>Model</span><select value={treeModel} onChange={(event) => setTreeModel(event.target.value as "gtr" | "jc")}><option value="gtr">GTR</option><option value="jc">Jukes–Cantor</option></select></label><label className="check-line"><input type="checkbox" checked={treeFast} onChange={(event) => setTreeFast(event.target.checked)} /><span>Fastest heuristic</span></label><button className="post-primary dark" type="button" disabled={Boolean(busy)} onClick={() => void inferTree()}>{busy.startsWith("Running FastTree") ? "Inferring tree…" : "Infer + root tree"}</button></div>
+          <div className="tree-controls"><div><span className="section-kicker">On-demand tree</span><h4>FastTree 2.1.11 double-precision WASM</h4><p>The exact current nucleotide alignment is rewritten into the WASM filesystem before every run. Rooting is a separate post-inference operation.</p></div><label><span>Model</span><select value={treeModel} onChange={(event) => setTreeModel(event.target.value as "gtr" | "jc")}><option value="gtr">GTR</option><option value="jc">Jukes–Cantor</option></select></label><label className="check-line"><input type="checkbox" checked={treeFast} onChange={(event) => setTreeFast(event.target.checked)} /><span>Fastest heuristic</span></label><button className="post-primary dark" type="button" disabled={Boolean(busy)} onClick={() => void inferTree()}>{busy.startsWith("Running FastTree") ? "Inferring tree…" : "Infer tree"}</button></div>
           {treeError && <div className="inline-method-error tree-error" role="alert"><strong>Tree inference stopped</strong><span>{treeError}</span><button type="button" onClick={() => setTreeError("")}>Dismiss</button></div>}
-          {treeNewick && <TreeView newick={treeNewick} name={`${baseName(inputName)}.lineage-${selectedLineage.id}.rooted-tree`} />}
+          {treeRun && <><div className="tree-provenance"><div><span className="section-kicker">Executed input</span><strong>{treeRun.rows.toLocaleString()} rows × {treeRun.columns.toLocaleString()} columns</strong><small>{treeRun.source} · alignment fingerprint {treeRun.fingerprint}</small><code>{treeRun.command}</code></div><div className="result-actions"><button type="button" onClick={() => downloadText(treeRun.alignmentFasta, `${baseName(inputName)}.lineage-${selectedLineage.id}.fasttree-alignment.fasta`)}>Named input FASTA ↓</button><button type="button" onClick={() => downloadText(treeRun.inputFasta, `${baseName(inputName)}.lineage-${selectedLineage.id}.fasttree-exact-input.fasta`)}>Exact numeric input ↓</button></div></div><div className="tree-output-switch"><div className="mode-toggle"><button className={treeViewMode === "stable" ? "active" : ""} type="button" onClick={() => setTreeViewMode("stable")}>Rooted · stable</button><button className={treeViewMode === "rooted" ? "active" : ""} type="button" onClick={() => setTreeViewMode("rooted")}>Rooted · resolved</button><button className={treeViewMode === "raw" ? "active" : ""} type="button" onClick={() => setTreeViewMode("raw")}>Raw FastTree</button></div><span>{treeRun.collapsedEdges.toLocaleString()} internal edges at the FastTreeDbl numerical floor are collapsed only in the stable view.</span></div><TreeView newick={treeViewMode === "stable" ? treeRun.stableNewick : treeViewMode === "rooted" ? treeRun.rootedNewick : treeRun.newick} variant={treeViewMode} collapsedEdges={treeRun.collapsedEdges} collapseThreshold={treeRun.collapseThreshold} name={`${baseName(inputName)}.lineage-${selectedLineage.id}.${treeViewMode === "stable" ? "rooted-stable" : treeViewMode === "rooted" ? "rooted-resolved" : "raw-fasttree"}-tree`} /></>}
         </div>
       </>}
     </section>}
