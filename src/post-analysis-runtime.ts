@@ -21,6 +21,8 @@ export interface DedupDashboard {
   largestGroups: Array<{ ordinal: number; count: number }>;
   partitions: number;
   candidateComparisons: number;
+  indelMergedVariants: number;
+  substitutionMergedVariants: number;
   excludedAmbiguous: number;
   unresolvedRecords: number;
   warnings: string[];

@@ -8,6 +8,8 @@ import {
 } from "react";
 
 import { AlignmentViewer } from "./alignment-view";
+import { CommitNumberInput } from "./commit-number-input";
+import { CommitTextInput } from "./commit-text-input";
 import type { GermlinePreprocessReport, MetadataAllele } from "./germline-preprocess";
 import { preprocessGermlinesInWorker } from "./germline-preprocess-client";
 import { RepertoireDashboard } from "./repertoire-charts";
@@ -774,8 +776,8 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
       <section className="explorer-shell">
         <aside className="filter-panel">
           <div className="filter-heading"><div><span className="section-kicker">Local query</span><h2>Filter results</h2></div>{filtered && <button type="button" onClick={() => { setFilters({ ...EMPTY_FILTERS }); setPage(0); }}>Clear</button>}</div>
-          <label className="filter-field"><span>Sequence ID contains</span><input type="search" value={filters.sequenceId} placeholder="e.g. clonotype_104" onChange={(event) => updateFilter("sequenceId", event.target.value)} /></label>
-          <label className="filter-field"><span>CDR3 substring <small>nt or AA</small></span><input className="monospace" type="search" value={filters.cdr3} placeholder="CARDR / TGTGCC…" onChange={(event) => updateFilter("cdr3", event.target.value)} /></label>
+          <label className="filter-field"><span>Sequence ID contains</span><CommitTextInput type="search" value={filters.sequenceId} placeholder="e.g. clonotype_104" onCommit={(value) => updateFilter("sequenceId", value)} /></label>
+          <label className="filter-field"><span>CDR3 substring <small>nt or AA</small></span><CommitTextInput className="monospace" type="search" value={filters.cdr3} placeholder="CARDR / TGTGCC…" onCommit={(value) => updateFilter("cdr3", value)} /></label>
           <div className="filter-row">
             <label className="filter-field"><span>Locus</span><select value={filters.locus} onChange={(event) => updateFilter("locus", event.target.value)}><option value="">Any locus</option>{session.facets.loci.map((item) => <option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label>
             <label className="filter-field"><span>Productivity</span><select value={filters.productive} onChange={(event) => updateFilter("productive", event.target.value)}><option value="">Either</option><option value="T">Productive</option><option value="F">Non-productive</option></select></label>
@@ -787,8 +789,8 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
             <label className="identity-filter"><span>Minimum J identity <b>{Math.round(filters.minJIdentity * 100)}%</b></span><input type="range" min="0" max="1" step="0.01" value={filters.minJIdentity} onChange={(event) => updateFilter("minJIdentity", Number(event.target.value))} /></label>
             <label className="identity-filter"><span>Minimum C identity <b>{Math.round(filters.minCIdentity * 100)}%</b></span><input type="range" min="0" max="1" step="0.01" value={filters.minCIdentity} onChange={(event) => updateFilter("minCIdentity", Number(event.target.value))} /></label>
             <div className="length-filters">
-              <label><span>CDR3 AA min</span><input type="number" min="0" max="250" value={filters.minCdr3AaLength || ""} placeholder="Any" onChange={(event) => updateFilter("minCdr3AaLength", Math.max(0, Number(event.target.value) || 0))} /></label>
-              <label><span>CDR3 AA max</span><input type="number" min="0" max="250" value={filters.maxCdr3AaLength || ""} placeholder="Any" onChange={(event) => updateFilter("maxCdr3AaLength", Math.max(0, Number(event.target.value) || 0))} /></label>
+              <label><span>CDR3 AA min</span><CommitNumberInput min="0" max="250" value={filters.minCdr3AaLength} blankWhenZero placeholder="Any" onCommit={(value) => updateFilter("minCdr3AaLength", value)} /></label>
+              <label><span>CDR3 AA max</span><CommitNumberInput min="0" max="250" value={filters.maxCdr3AaLength} blankWhenZero placeholder="Any" onCommit={(value) => updateFilter("maxCdr3AaLength", value)} /></label>
             </div>
             <div className="qc-filter-grid">
               <label><span>VJ frame</span><select value={filters.vjInFrame} onChange={(event) => updateFilter("vjInFrame", event.target.value)}><option value="">Either</option><option value="T">In frame</option><option value="F">Out of frame</option></select></label>
@@ -1300,7 +1302,7 @@ export default function SwigApp() {
                 <section className="analysis-card settings-card">
                   <header><span className="card-number">03</span><div><h2>Analysis parameters</h2><p>Review sampling, strand, identity, worker, and output settings.</p></div><button className="reset-button" type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} controls</button></header>
                   <div className="settings-strip"><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "adaptive"}</span><span><b>Input</b> {subsampleEnabled ? `random ${Math.floor(subsampleSize || 0).toLocaleString()}` : "all records"}</span></div>
-                  <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records in memory and output.</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>Records to analyze</span><input type="number" min="1" step="1000" value={subsampleSize} onChange={(event) => setSubsampleSize(Math.max(1, Number(event.target.value) || 1))} /></label><label><span>Random seed</span><input type="number" step="1" value={subsampleSeed} onChange={(event) => setSubsampleSeed(Number(event.target.value) || 0)} /></label></div>}</div>
+                  <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records in memory and output.</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>Records to analyze</span><CommitNumberInput min="1" step="1000" value={subsampleSize} onCommit={setSubsampleSize} /></label><label><span>Random seed</span><CommitNumberInput step="1" value={subsampleSeed} onCommit={setSubsampleSeed} /></label></div>}</div>
                   {showAdvanced && <div className="advanced-settings">
                     <label><span>Search strand</span><select value={strand} onChange={(event) => setStrand(Number(event.target.value) as 0 | 1 | 2)}><option value={0}>Both orientations</option><option value={1}>Plus only</option><option value={2}>Minus only</option></select></label>
                     <label><span>Parallel WASM workers</span><select value={workerCount} onChange={(event) => setWorkerCount(Number(event.target.value))}>{Array.from({ length: browserWorkerLimit() }, (_, index) => index + 1).map((count) => <option value={count} key={count}>{count}{count === recommendedWorkerCount() ? " · recommended" : ""}</option>)}</select></label>
@@ -1332,7 +1334,7 @@ export default function SwigApp() {
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
         <p className="output-safety"><span>i</span> Query sequences remain in this browser and are not transmitted by Swig.</p>
       </section></div>}
-      <footer className="site-footer"><Brand /><p>Swig 0.10.0 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      <footer className="site-footer"><Brand /><p>Swig 0.11.0 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }

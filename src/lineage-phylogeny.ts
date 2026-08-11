@@ -167,6 +167,25 @@ export function translateAlignedNucleotides(sequence: string): string {
   return result;
 }
 
+/**
+ * Project a reconstructed nucleotide branch onto amino-acid replacements.
+ * Multiple nucleotide events in one codon become one amino-acid event;
+ * synonymous events and codons with an unresolved translation are omitted.
+ */
+export function aminoAcidBranchMutations(parentSequence: string, childSequence: string, childClade = ""): BranchMutation[] {
+  if (parentSequence.length !== childSequence.length) throw new Error("Amino-acid branch mapping requires equal-length nucleotide states.");
+  const parent = translateAlignedNucleotides(parentSequence);
+  const child = translateAlignedNucleotides(childSequence);
+  const mutations: BranchMutation[] = [];
+  for (let column = 0; column < Math.min(parent.length, child.length); column += 1) {
+    const from = parent[column];
+    const to = child[column];
+    if (from === to || from === "X" || to === "X") continue;
+    mutations.push({ column, from, to, childClade });
+  }
+  return mutations;
+}
+
 export function ordinalFromAlignmentName(name: string): number | null {
   const match = name.match(/__(\d+)$/);
   return match ? Number(match[1]) - 1 : null;
@@ -244,6 +263,15 @@ export function columnsForRegionPreset(regions: Array<VariableRegion | null>, pr
   if (preset === "cdrs") return regions.flatMap((region, index) => region?.startsWith("cdr") ? [index] : []);
   if (preset === "custom") return [];
   return regions.flatMap((region, index) => region === preset ? [index] : []);
+}
+
+/** Display offsets with a half-cell separator at every non-contiguous run. */
+export function spacedColumnOffsets(columns: number[], cellWidth: number): number[] {
+  let discontinuityOffset = 0;
+  return columns.map((column, index) => {
+    if (index > 0 && column !== columns[index - 1] + 1) discontinuityOffset += cellWidth * 0.5;
+    return index * cellWidth + discontinuityOffset;
+  });
 }
 
 /** Parse 1-based coordinates, ranges, or numbering labels such as 31, 31A, 32-35B. */

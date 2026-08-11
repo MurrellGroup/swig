@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   assignLineages,
+  boundedEditProfile,
   chmmairraDistanceFromReference,
   DenoiseAccumulator,
   deduplicate,
@@ -79,6 +80,8 @@ test("FAD-compatible denoising preserves multiplicity and partitions by V/J call
     fadMethod: 2,
     expectedZeroErrorFraction: 1,
     maximumHammingDistance: 1,
+    maximumEditDistance: 2,
+    minimumIndelParentRatio: 2,
     maxCandidatesPerVariant: 10_000,
   });
   records.forEach((value) => accumulator.add(value.ordinal, value.ordinal ? child : parent));
@@ -112,6 +115,8 @@ test("conservative denoising merges plausible one-base errors but retains isolat
     fadMethod: 2,
     expectedZeroErrorFraction: 1,
     maximumHammingDistance: 1,
+    maximumEditDistance: 2,
+    minimumIndelParentRatio: 2,
     maxCandidatesPerVariant: 10_000,
   });
   [parent, child, isolated].forEach((sequence, ordinal) => accumulator.add(ordinal, sequence));
@@ -120,6 +125,87 @@ test("conservative denoising merges plausible one-base errors but retains isolat
   assert.equal(result.uniqueRecords, 2);
   assert.deepEqual([...result.counts], [101, 0, 1]);
   assert.deepEqual([...result.representatives], [0, 0, 2]);
+});
+
+test("bounded edit profiling distinguishes substitutions, insertions, deletions and mixed paths", () => {
+  assert.deepEqual(boundedEditProfile("ACGT", "AGGT", 1), { distance: 1, substitutions: 1, insertions: 0, deletions: 0 });
+  assert.deepEqual(boundedEditProfile("ACGT", "ACGGT", 1), { distance: 1, substitutions: 0, insertions: 1, deletions: 0 });
+  assert.deepEqual(boundedEditProfile("ACGGT", "ACGT", 1), { distance: 1, substitutions: 0, insertions: 0, deletions: 1 });
+  assert.deepEqual(boundedEditProfile("ACGT", "ATGGT", 2), { distance: 2, substitutions: 1, insertions: 1, deletions: 0 });
+  assert.equal(boundedEditProfile("ACGT", "ATGGGT", 1), null);
+});
+
+test("method D completely finds one-base insertions and deletions at every sequence boundary", () => {
+  const parent = "ACGTCAGTGCATGACCTGATCGTACGATGCCTAGTCGATGCTACGTAGCTGACGTAGCATGCTAGCATCGATGC";
+  const sequences = [parent];
+  for (let position = 0; position <= parent.length; position += 1) {
+    const inserted = "ACGT"[(position + 1) % 4];
+    sequences.push(`${parent.slice(0, position)}${inserted}${parent.slice(position)}`);
+  }
+  for (let position = 0; position < parent.length; position += 1) sequences.push(`${parent.slice(0, position)}${parent.slice(position + 1)}`);
+  const records = sequences.map((sequence, ordinal) => record(ordinal, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", sequence));
+  records[0].inputCount = 1_000;
+  const accumulator = new DenoiseAccumulator(records, {
+    mode: "indel",
+    errorRate: 0.00473,
+    alpha: 0.01,
+    callResolution: "allele",
+    ambiguity: "strict",
+    minimumParentCount: 2,
+    ambiguousPolicy: "retain",
+    fadNeighborThreshold: 1,
+    fadMethod: 2,
+    expectedZeroErrorFraction: 1,
+    maximumHammingDistance: 1,
+    maximumEditDistance: 1,
+    minimumIndelParentRatio: 2,
+    maxCandidatesPerVariant: 10_000,
+  });
+  sequences.forEach((sequence, ordinal) => accumulator.add(ordinal, sequence));
+  const result = accumulator.finish();
+  assert.equal(result.mode, "indel");
+  assert.equal(result.uniqueRecords, 1);
+  assert.equal(result.counts[0], 1_000 + sequences.length - 1);
+  assert.ok(result.indelMergedVariants > 0);
+  assert.equal(result.substitutionMergedVariants, 0);
+});
+
+test("method D verifies two-edit paths and preserves similarly abundant indel variants", () => {
+  const parent = "ACGT".repeat(20);
+  const mixed = `${parent.slice(0, 23)}A${parent.slice(23, 48)}${parent[48] === "A" ? "C" : "A"}${parent.slice(49)}`;
+  const abundantIndel = `${parent.slice(0, 12)}G${parent.slice(12)}`;
+  const otherPartition = `${parent.slice(0, 30)}T${parent.slice(30)}`;
+  const records = [
+    record(0, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", parent),
+    record(1, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", mixed),
+    record(2, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", abundantIndel),
+    record(3, "TGTGCCAAA", "IGHV1-2*01", "IGHJ6*02", otherPartition),
+  ];
+  records[0].inputCount = 100;
+  records[2].inputCount = 60;
+  const accumulator = new DenoiseAccumulator(records, {
+    mode: "indel",
+    errorRate: 0.00473,
+    alpha: 0.01,
+    callResolution: "allele",
+    ambiguity: "strict",
+    minimumParentCount: 2,
+    ambiguousPolicy: "retain",
+    fadNeighborThreshold: 1,
+    fadMethod: 2,
+    expectedZeroErrorFraction: 1,
+    maximumHammingDistance: 1,
+    maximumEditDistance: 2,
+    minimumIndelParentRatio: 2,
+    maxCandidatesPerVariant: 10_000,
+  });
+  [parent, mixed, abundantIndel, otherPartition].forEach((sequence, ordinal) => accumulator.add(ordinal, sequence));
+  const result = accumulator.finish();
+  assert.equal(result.uniqueRecords, 3);
+  assert.equal(result.representatives[1], 0);
+  assert.equal(result.representatives[2], 2);
+  assert.equal(result.representatives[3], 3);
+  assert.equal(result.indelMergedVariants, 1);
 });
 
 test("deduplicated active representatives retain collapsed abundance in lineage summaries", () => {

@@ -1,7 +1,7 @@
 export type CallResolution = "gene" | "allele";
 export type AmbiguityPolicy = "overlap" | "top" | "strict";
 export type DedupKey = "sequence" | "trimmed" | "cdr3" | "rearrangement";
-export type CollapseMode = "exact" | "fad" | "conservative";
+export type CollapseMode = "exact" | "fad" | "conservative" | "indel";
 
 export interface PostAnalysisRecord {
   ordinal: number;
@@ -31,13 +31,15 @@ export interface DedupResult {
   largestGroups: Array<{ ordinal: number; count: number }>;
   partitions: number;
   candidateComparisons: number;
+  indelMergedVariants: number;
+  substitutionMergedVariants: number;
   excludedAmbiguous: number;
   unresolvedRecords: number;
   warnings: string[];
 }
 
 export interface DenoiseOptions {
-  mode: "fad" | "conservative";
+  mode: "fad" | "conservative" | "indel";
   errorRate: number;
   alpha: number;
   callResolution: CallResolution;
@@ -51,6 +53,10 @@ export interface DenoiseOptions {
   expectedZeroErrorFraction: number;
   /** Exact Hamming radius for the conservative error model. */
   maximumHammingDistance: number;
+  /** Complete bounded Levenshtein radius for indel-aware method D. */
+  maximumEditDistance: number;
+  /** Required abundance ratio for an indel-containing child to collapse. */
+  minimumIndelParentRatio: number;
   maxCandidatesPerVariant: number;
 }
 
@@ -324,6 +330,8 @@ export function deduplicate(records: PostAnalysisRecord[], key: DedupKey): Dedup
     largestGroups,
     partitions: 1,
     candidateComparisons: 0,
+    indelMergedVariants: 0,
+    substitutionMergedVariants: 0,
     excludedAmbiguous: 0,
     unresolvedRecords: 0,
     warnings: [],
@@ -395,6 +403,13 @@ interface DenoiseVariant {
   representative: number;
   count: number;
   target: number;
+}
+
+interface DenoisePartitionStats {
+  comparisons: number;
+  truncated: number;
+  indelMergedVariants: number;
+  substitutionMergedVariants: number;
 }
 
 interface KmerProfile {
@@ -589,6 +604,139 @@ function sequenceBlocks(sequence: string, count: number): string[] {
   return result;
 }
 
+interface IndexedEditSegment {
+  index: number;
+  start: number;
+  length: number;
+  value: string;
+}
+
+function indexedEditSegments(sequence: string, count: number): IndexedEditSegment[] {
+  const result: IndexedEditSegment[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const start = Math.floor(index * sequence.length / count);
+    const end = Math.floor((index + 1) * sequence.length / count);
+    result.push({ index, start, length: end - start, value: sequence.slice(start, end) });
+  }
+  return result;
+}
+
+export interface BoundedEditProfile {
+  distance: number;
+  substitutions: number;
+  insertions: number;
+  deletions: number;
+}
+
+/**
+ * Allocation-bounded Ukkonen-style edit profiler. The narrow diagonal band is
+ * O(length × maximum), and tie-breaking chooses fewer indels when two optimal
+ * paths exist so the aggressive indel rule is not triggered by an arbitrary
+ * alignment of equal-length sequences.
+ */
+function createBoundedEditProfiler(maximum: number): (parent: string, child: string) => BoundedEditProfile | null {
+  const width = maximum * 2 + 3;
+  const infinity = maximum + 1;
+  let previousCost = new Int16Array(width);
+  let previousSubstitutions = new Int16Array(width);
+  let previousInsertions = new Int16Array(width);
+  let previousDeletions = new Int16Array(width);
+  let currentCost = new Int16Array(width);
+  let currentSubstitutions = new Int16Array(width);
+  let currentInsertions = new Int16Array(width);
+  let currentDeletions = new Int16Array(width);
+
+  return (parent: string, child: string): BoundedEditProfile | null => {
+    if (Math.abs(parent.length - child.length) > maximum) return null;
+    previousCost.fill(infinity);
+    previousSubstitutions.fill(0);
+    previousInsertions.fill(0);
+    previousDeletions.fill(0);
+    for (let column = 0; column <= Math.min(child.length, maximum); column += 1) {
+      const offset = column + maximum + 1;
+      previousCost[offset] = column;
+      previousInsertions[offset] = column;
+    }
+
+    for (let row = 1; row <= parent.length; row += 1) {
+      currentCost.fill(infinity);
+      currentSubstitutions.fill(0);
+      currentInsertions.fill(0);
+      currentDeletions.fill(0);
+      const firstColumn = Math.max(0, row - maximum);
+      const lastColumn = Math.min(child.length, row + maximum);
+      for (let column = firstColumn; column <= lastColumn; column += 1) {
+        const offset = column - row + maximum + 1;
+        let bestCost = infinity;
+        let bestSubstitutions = 0;
+        let bestInsertions = 0;
+        let bestDeletions = 0;
+        const consider = (cost: number, substitutions: number, insertions: number, deletions: number) => {
+          const indels = insertions + deletions;
+          const bestIndels = bestInsertions + bestDeletions;
+          if (cost < bestCost ||
+            (cost === bestCost && indels < bestIndels) ||
+            (cost === bestCost && indels === bestIndels && substitutions < bestSubstitutions) ||
+            (cost === bestCost && indels === bestIndels && substitutions === bestSubstitutions && deletions < bestDeletions)) {
+            bestCost = cost;
+            bestSubstitutions = substitutions;
+            bestInsertions = insertions;
+            bestDeletions = deletions;
+          }
+        };
+
+        if (column > 0 && previousCost[offset] <= maximum) {
+          const mismatch = parent[row - 1] === child[column - 1] ? 0 : 1;
+          consider(
+            previousCost[offset] + mismatch,
+            previousSubstitutions[offset] + mismatch,
+            previousInsertions[offset],
+            previousDeletions[offset],
+          );
+        }
+        if (previousCost[offset + 1] <= maximum) {
+          consider(
+            previousCost[offset + 1] + 1,
+            previousSubstitutions[offset + 1],
+            previousInsertions[offset + 1],
+            previousDeletions[offset + 1] + 1,
+          );
+        }
+        if (column > 0 && currentCost[offset - 1] <= maximum) {
+          consider(
+            currentCost[offset - 1] + 1,
+            currentSubstitutions[offset - 1],
+            currentInsertions[offset - 1] + 1,
+            currentDeletions[offset - 1],
+          );
+        }
+        currentCost[offset] = bestCost;
+        currentSubstitutions[offset] = bestSubstitutions;
+        currentInsertions[offset] = bestInsertions;
+        currentDeletions[offset] = bestDeletions;
+      }
+      [previousCost, currentCost] = [currentCost, previousCost];
+      [previousSubstitutions, currentSubstitutions] = [currentSubstitutions, previousSubstitutions];
+      [previousInsertions, currentInsertions] = [currentInsertions, previousInsertions];
+      [previousDeletions, currentDeletions] = [currentDeletions, previousDeletions];
+    }
+    const offset = child.length - parent.length + maximum + 1;
+    const distance = previousCost[offset];
+    if (distance > maximum) return null;
+    return {
+      distance,
+      substitutions: previousSubstitutions[offset],
+      insertions: previousInsertions[offset],
+      deletions: previousDeletions[offset],
+    };
+  };
+}
+
+export function boundedEditProfile(parent: string, child: string, maximum: number): BoundedEditProfile | null {
+  if (!Number.isInteger(maximum) || maximum < 0 || maximum > 8) throw new Error("The bounded edit maximum must be an integer from 0 to 8.");
+  return createBoundedEditProfiler(maximum)(parent, child);
+}
+
 /**
  * Streaming builder used by the post-analysis worker. Exact variants are
  * dereplicated while batches are scanned, sequences live in a compact 2-bit
@@ -618,6 +766,8 @@ export class DenoiseAccumulator {
     if (!(options.alpha > 0 && options.alpha < 1)) throw new Error("The denoising alpha must be between 0 and 1.");
     if (options.fadNeighborThreshold < 0) throw new Error("The FAD neighbor threshold cannot be negative.");
     if (options.maximumHammingDistance < 1 || options.maximumHammingDistance > 4) throw new Error("The conservative Hamming radius must be from 1 to 4.");
+    if (!Number.isInteger(options.maximumEditDistance) || options.maximumEditDistance < 1 || options.maximumEditDistance > 2) throw new Error("The indel-aware edit radius must be 1 or 2.");
+    if (!(options.minimumIndelParentRatio > 1)) throw new Error("The indel parent:child abundance ratio must be greater than 1.");
   }
 
   add(ordinal: number, rawSequence: string) {
@@ -673,10 +823,18 @@ export class DenoiseAccumulator {
     });
     let candidateComparisons = 0;
     let truncated = 0;
+    let indelMergedVariants = 0;
+    let substitutionMergedVariants = 0;
     for (const group of partitions.values()) {
-      const result = this.options.mode === "fad" ? this.processFadPartition(group) : this.processConservativePartition(group);
+      const result = this.options.mode === "fad"
+        ? this.processFadPartition(group)
+        : this.options.mode === "indel"
+          ? this.processIndelPartition(group)
+          : this.processConservativePartition(group);
       candidateComparisons += result.comparisons;
       truncated += result.truncated;
+      indelMergedVariants += result.indelMergedVariants;
+      substitutionMergedVariants += result.substitutionMergedVariants;
     }
 
     const representatives = new Int32Array(this.records.length);
@@ -712,7 +870,11 @@ export class DenoiseAccumulator {
     return {
       mode: this.options.mode,
       key: "trimmed",
-      algorithm: this.options.mode === "fad" ? `FAD-compatible corrected 6-mer / method ${this.options.fadMethod}` : "Conservative exact-neighbor error model",
+      algorithm: this.options.mode === "fad"
+        ? `FAD-compatible corrected 6-mer / method ${this.options.fadMethod}`
+        : this.options.mode === "indel"
+          ? "Indel-aware bounded edit model"
+          : "Conservative exact-neighbor error model",
       inputRecords: this.records.length,
       inputAbundance,
       uniqueRecords,
@@ -722,13 +884,15 @@ export class DenoiseAccumulator {
       largestGroups,
       partitions: partitions.size,
       candidateComparisons,
+      indelMergedVariants,
+      substitutionMergedVariants,
       excludedAmbiguous: this.excludedAmbiguous,
       unresolvedRecords: this.unresolvedRecords,
       warnings,
     };
   }
 
-  private processFadPartition(group: number[]): { comparisons: number; truncated: number } {
+  private processFadPartition(group: number[]): DenoisePartitionStats {
     const maximumSquared = Math.max(0, Math.floor(12 * this.options.fadNeighborThreshold + 1e-9));
     const blockCount = Math.max(1, maximumSquared + 1);
     const profiles = new Map<number, KmerProfile>();
@@ -797,10 +961,121 @@ export class DenoiseAccumulator {
       }
       this.variants[variantIndex].target = vpTree ? nearestKmerPoint(vpTree, variantIndex, profiles, (point) => this.variants[point].count, () => { comparisons += 1; }) : variantIndex;
     }
-    return { comparisons, truncated };
+    return { comparisons, truncated, indelMergedVariants: 0, substitutionMergedVariants: 0 };
   }
 
-  private processConservativePartition(group: number[]): { comparisons: number; truncated: number } {
+  private processIndelPartition(group: number[]): DenoisePartitionStats {
+    const distanceLimit = this.options.maximumEditDistance;
+    const blockCount = distanceLimit + 1;
+    const sequences = new Map(group.map((index) => [index, this.arena.decode(this.variants[index].location)]));
+    const ordered = [...group].sort((left, right) => this.variants[right].count - this.variants[left].count || this.variants[left].representative - this.variants[right].representative);
+    const parentIndex = new Map<string, number[]>();
+    const shortParentsByLength = new Map<number, number[]>();
+    const profileEdit = createBoundedEditProfiler(distanceLimit);
+    let comparisons = 0;
+    let truncated = 0;
+    let indelMergedVariants = 0;
+    let substitutionMergedVariants = 0;
+
+    const addParent = (variantIndex: number) => {
+      if (this.variants[variantIndex].count < this.options.minimumParentCount) return;
+      const sequence = sequences.get(variantIndex)!;
+      const segments = indexedEditSegments(sequence, blockCount);
+      if (segments.some((segment) => segment.length === 0)) {
+        const values = shortParentsByLength.get(sequence.length);
+        if (values) values.push(variantIndex);
+        else shortParentsByLength.set(sequence.length, [variantIndex]);
+        return;
+      }
+      for (const segment of segments) {
+        const key = `${sequence.length}:${segment.index}:${segment.value}`;
+        const values = parentIndex.get(key);
+        if (values) values.push(variantIndex);
+        else parentIndex.set(key, [variantIndex]);
+      }
+    };
+
+    for (const variantIndex of ordered) {
+      const child = this.variants[variantIndex];
+      const sequence = sequences.get(variantIndex)!;
+      const candidates = new Set<number>();
+      let capped = false;
+      const addCandidates = (values: number[]) => {
+        for (const candidate of values) {
+          if (candidates.has(candidate)) continue;
+          if (candidates.size >= this.options.maxCandidatesPerVariant) {
+            capped = true;
+            return;
+          }
+          candidates.add(candidate);
+        }
+      };
+
+      // Complete bounded-edit join: a parent split into d+1 disjoint segments
+      // must retain at least one exact segment under at most d edits. Probe the
+      // segment at every legal length and shifted start; verification below is
+      // exact and allocation-bounded.
+      const minimumParentLength = Math.max(1, sequence.length - distanceLimit);
+      const maximumParentLength = sequence.length + distanceLimit;
+      for (let parentLength = minimumParentLength; parentLength <= maximumParentLength && !capped; parentLength += 1) {
+        addCandidates(shortParentsByLength.get(parentLength) ?? []);
+        for (let segmentIndex = 0; segmentIndex < blockCount && !capped; segmentIndex += 1) {
+          const parentStart = Math.floor(segmentIndex * parentLength / blockCount);
+          const parentEnd = Math.floor((segmentIndex + 1) * parentLength / blockCount);
+          const segmentLength = parentEnd - parentStart;
+          if (!segmentLength) continue;
+          const firstStart = Math.max(0, parentStart - distanceLimit);
+          const lastStart = Math.min(sequence.length - segmentLength, parentStart + distanceLimit);
+          for (let queryStart = firstStart; queryStart <= lastStart && !capped; queryStart += 1) {
+            addCandidates(parentIndex.get(`${parentLength}:${segmentIndex}:${sequence.slice(queryStart, queryStart + segmentLength)}`) ?? []);
+          }
+        }
+      }
+      if (capped) truncated += 1;
+
+      let best = -1;
+      let bestProfile: BoundedEditProfile | null = null;
+      for (const candidate of candidates) {
+        const parent = this.variants[candidate];
+        if (parent.count <= child.count) continue;
+        comparisons += 1;
+        const profile = profileEdit(sequences.get(candidate)!, sequence);
+        if (!profile || profile.distance < 1) continue;
+        const indels = profile.insertions + profile.deletions;
+        let plausible = false;
+        if (indels > 0) {
+          plausible = parent.count / child.count >= this.options.minimumIndelParentRatio;
+        } else {
+          const exactErrorProbability = (this.options.errorRate / 3) ** profile.substitutions * (1 - this.options.errorRate) ** Math.max(0, sequence.length - profile.substitutions);
+          const lambda = parent.count * exactErrorProbability;
+          const adjusted = Math.min(1, poissonStrictUpperTail(child.count, lambda) * alternativeCount(sequence.length, profile.substitutions));
+          plausible = adjusted >= this.options.alpha;
+        }
+        if (!plausible) continue;
+        const bestParent = best >= 0 ? this.variants[best] : null;
+        const isBetter = !bestProfile ||
+          profile.distance < bestProfile.distance ||
+          (profile.distance === bestProfile.distance && profile.substitutions < bestProfile.substitutions) ||
+          (profile.distance === bestProfile.distance && profile.substitutions === bestProfile.substitutions && parent.count > (bestParent?.count ?? -1)) ||
+          (profile.distance === bestProfile.distance && profile.substitutions === bestProfile.substitutions && parent.count === bestParent?.count && parent.representative < (bestParent?.representative ?? Number.POSITIVE_INFINITY));
+        if (isBetter) {
+          best = candidate;
+          bestProfile = profile;
+        }
+      }
+      if (best >= 0 && bestProfile) {
+        child.target = best;
+        if (bestProfile.insertions + bestProfile.deletions > 0) indelMergedVariants += 1;
+        else substitutionMergedVariants += 1;
+      } else {
+        child.target = variantIndex;
+        addParent(variantIndex);
+      }
+    }
+    return { comparisons, truncated, indelMergedVariants, substitutionMergedVariants };
+  }
+
+  private processConservativePartition(group: number[]): DenoisePartitionStats {
     const distanceLimit = this.options.maximumHammingDistance;
     const blockCount = distanceLimit + 1;
     const sequences = new Map(group.map((index) => [index, this.arena.decode(this.variants[index].location)]));
@@ -808,6 +1083,7 @@ export class DenoiseAccumulator {
     const parentIndex = new Map<string, number[]>();
     let comparisons = 0;
     let truncated = 0;
+    let substitutionMergedVariants = 0;
     const addParent = (variantIndex: number) => {
       if (this.variants[variantIndex].count < this.options.minimumParentCount) return;
       const sequence = sequences.get(variantIndex)!;
@@ -849,13 +1125,16 @@ export class DenoiseAccumulator {
           bestDistance = distance;
         }
       }
-      if (best >= 0) child.target = best;
+      if (best >= 0) {
+        child.target = best;
+        substitutionMergedVariants += 1;
+      }
       else {
         child.target = variantIndex;
         addParent(variantIndex);
       }
     }
-    return { comparisons, truncated };
+    return { comparisons, truncated, indelMergedVariants: 0, substitutionMergedVariants };
   }
 }
 

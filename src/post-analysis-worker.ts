@@ -97,6 +97,8 @@ function compactDedupResult(result: DedupResult) {
     largestGroups: result.largestGroups,
     partitions: result.partitions,
     candidateComparisons: result.candidateComparisons,
+    indelMergedVariants: result.indelMergedVariants,
+    substitutionMergedVariants: result.substitutionMergedVariants,
     excludedAmbiguous: result.excludedAmbiguous,
     unresolvedRecords: result.unresolvedRecords,
     warnings: result.warnings,

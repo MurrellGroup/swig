@@ -7,6 +7,7 @@ const TOTAL = 50_000;
 const PARTITIONS = 100;
 const CENTROIDS_PER_PARTITION = 10;
 const READS_PER_CENTROID = TOTAL / PARTITIONS / CENTROIDS_PER_PARTITION;
+const INDEL = process.argv.includes("--indel");
 
 function sequence(seed, length = 120) {
   let state = seed >>> 0;
@@ -26,7 +27,9 @@ for (let partition = 0; partition < PARTITIONS; partition += 1) {
     const parent = sequence(partition * 10_000 + centroid * 101 + 17);
     const position = 30 + centroid;
     const replacement = parent[position] === "A" ? "C" : "A";
-    const child = `${parent.slice(0, position)}${replacement}${parent.slice(position + 1)}`;
+    const child = INDEL
+      ? `${parent.slice(0, position)}A${parent.slice(position)}`
+      : `${parent.slice(0, position)}${replacement}${parent.slice(position + 1)}`;
     for (let read = 0; read < READS_PER_CENTROID; read += 1) {
       const value = read === READS_PER_CENTROID - 1 ? child : parent;
       records.push({
@@ -50,7 +53,7 @@ for (let partition = 0; partition < PARTITIONS; partition += 1) {
 const before = getHeapStatistics().used_heap_size;
 const started = performance.now();
 const accumulator = new DenoiseAccumulator(records, {
-  mode: "fad",
+  mode: INDEL ? "indel" : "fad",
   errorRate: 0.00473,
   alpha: 0.01,
   callResolution: "allele",
@@ -61,6 +64,8 @@ const accumulator = new DenoiseAccumulator(records, {
   fadMethod: 2,
   expectedZeroErrorFraction: 1,
   maximumHammingDistance: 1,
+  maximumEditDistance: 2,
+  minimumIndelParentRatio: 2,
   maxCandidatesPerVariant: 50_000,
 });
 for (let index = 0; index < sequences.length; index += 1) accumulator.add(index, sequences[index]);
@@ -70,6 +75,7 @@ const after = getHeapStatistics().used_heap_size;
 
 console.log(JSON.stringify({
   records: TOTAL,
+  mode: INDEL ? "indel-aware" : "FAD-compatible",
   retained: result.uniqueRecords,
   partitions: result.partitions,
   verifiedCandidates: result.candidateComparisons,

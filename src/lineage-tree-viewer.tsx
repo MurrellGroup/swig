@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { inferKabatColumns, type KabatColumnMap } from "./kabat-numbering";
+import { CommitTextInput } from "./commit-text-input";
 import { GERMLINE_OUTGROUP } from "./lineage-alignment";
 import {
+  aminoAcidBranchMutations,
   alignmentRegionMap,
   aminoAcidRegionMap,
   cladeSignature,
@@ -11,6 +13,7 @@ import {
   motifCellMap,
   ordinalFromAlignmentName,
   parseColumnSelection,
+  spacedColumnOffsets,
   translateAlignedNucleotides,
   type RegionPreset,
   type VariableRegion,
@@ -163,6 +166,17 @@ export function LineageTreeViewer({
     if (variant === "raw") return null;
     try { return mapParsimonyMutations(displayTree, nucleotideByName, GERMLINE_OUTGROUP); } catch { return null; }
   }, [displayTree, nucleotideByName, variant]);
+  const aminoMutationsByClade = useMemo(() => {
+    const result = new Map<string, ReturnType<typeof aminoAcidBranchMutations>>();
+    if (!parsimony) return result;
+    for (const edge of layout.edges) {
+      const childSignature = cladeSignature(edge.child);
+      const parentSequence = parsimony.sequencesByClade.get(cladeSignature(edge.parent));
+      const childSequence = parsimony.sequencesByClade.get(childSignature);
+      if (parentSequence && childSequence) result.set(childSignature, aminoAcidBranchMutations(parentSequence, childSequence, childSignature));
+    }
+    return result;
+  }, [parsimony, layout]);
 
   useEffect(() => {
     if (numbering !== "kabat" || mode !== "aa" || isTcr || kabat) return;
@@ -188,7 +202,9 @@ export function LineageTreeViewer({
 
   const labelWidth = 208;
   const matrixX = treeWidth + labelWidth;
-  const svgWidth = matrixX + Math.max(1, selectedColumns.length) * cellWidth + 34;
+  const displayColumnX = spacedColumnOffsets(selectedColumns, cellWidth);
+  const matrixWidth = selectedColumns.length ? displayColumnX.at(-1)! + cellWidth : cellWidth;
+  const svgWidth = matrixX + matrixWidth + 34;
   const svgHeight = layout.height;
   const runs = regionRuns(selectedColumns, regions);
   const leaves = layout.nodes.filter((node) => !node.children.length);
@@ -204,10 +220,8 @@ export function LineageTreeViewer({
 
   const mutationLabel = (column: number, from: string, to: string) => {
     if (mode === "nt") return `${column + 1} ${from}→${to}`;
-    const aaColumn = Math.floor(column / 3);
-    const codonOffset = column % 3 + 1;
-    const position = numbering === "kabat" && kabat?.labels[aaColumn] ? `${kabat.chain}${kabat.labels[aaColumn]}` : String(aaColumn + 1);
-    return `${position}.${codonOffset} ${from}→${to}`;
+    const position = numbering === "kabat" && kabat?.labels[column] ? `${kabat.chain}${kabat.labels[column]}` : String(column + 1);
+    return `${position} ${from}→${to}`;
   };
 
   const toggleFullscreen = async () => {
@@ -223,15 +237,15 @@ export function LineageTreeViewer({
     <div className="coordinated-tree-controls">
       <div className="mode-toggle"><button className={mode === "nt" ? "active" : ""} type="button" onClick={() => onModeChange("nt")}>Nucleotide</button><button className={mode === "aa" ? "active" : ""} type="button" onClick={() => onModeChange("aa")}>Amino acid</button></div>
       <div className="mode-toggle"><button className={layoutMode === "phylogram" ? "active" : ""} type="button" onClick={() => setLayoutMode("phylogram")}>Branch lengths</button><button className={layoutMode === "cladogram" ? "active" : ""} type="button" onClick={() => setLayoutMode("cladogram")}>Topology</button></div>
-      <label className="check-line"><input type="checkbox" checked={showMutations} disabled={!parsimony} onChange={(event) => setShowMutations(event.target.checked)} /><span>Branch mutations</span></label>
+      <label className="check-line"><input type="checkbox" checked={showMutations} disabled={!parsimony} onChange={(event) => setShowMutations(event.target.checked)} /><span>{mode === "nt" ? "Nucleotide branch mutations" : "AA replacements only"}</span></label>
       {mode === "aa" && <div className="mode-toggle"><button className={numbering === "alignment" ? "active" : ""} type="button" onClick={() => setNumbering("alignment")}>Alignment positions</button><button className={numbering === "kabat" ? "active" : ""} type="button" disabled={isTcr} title={isTcr ? "Kabat numbering is defined for IGH, IGK and IGL, not TCR chains." : "Number IG variable domains with Kabat positions"} onClick={() => setNumbering("kabat")}>Kabat</button></div>}
     </div>
     <div className="coordinated-tree-options">
       <label><span>Alignment region</span><select value={preset} onChange={(event) => { const value = event.target.value as RegionPreset | "motifs"; setPreset(value); if (value === "motifs") setColorMode("motif"); }}><option value="full">Full alignment</option><option value="variable">Annotated variable domain</option><option value="cdrs">All CDRs</option><option value="fwr1">FWR1</option><option value="cdr1">CDR1</option><option value="fwr2">FWR2</option><option value="cdr2">CDR2</option><option value="fwr3">FWR3</option><option value="cdr3">CDR3</option><option value="fwr4">FWR4</option><option value="motifs">Motif-matched columns</option><option value="custom">Positions / ranges</option></select></label>
-      {preset === "custom" && <label className="wide-option"><span>{numbering === "kabat" && mode === "aa" ? "Kabat positions or ranges" : "1-based columns or ranges"}</span><input value={customColumns} onChange={(event) => setCustomColumns(event.target.value)} placeholder={numbering === "kabat" && mode === "aa" ? "31-35B, 50, 95-102" : "95-110, 145, 220-235"} /></label>}
+      {preset === "custom" && <label className="wide-option"><span>{numbering === "kabat" && mode === "aa" ? "Kabat positions or ranges" : "1-based columns or ranges"}</span><CommitTextInput value={customColumns} onCommit={setCustomColumns} placeholder={numbering === "kabat" && mode === "aa" ? "31-35B, 50, 95-102" : "95-110, 145, 220-235"} /><small>Applied on Enter or when focus leaves the field.</small></label>}
       <label><span>Cell colors</span><select value={colorMode} onChange={(event) => setColorMode(event.target.value as "residue" | "motif")}><option value="residue">Standard residue colors</option><option value="motif">Motif colors</option></select></label>
       <label><span>Tip order</span><select value={ladderization} onChange={(event) => setLadderization(event.target.value as "none" | "large-first" | "small-first")}><option value="none">Newick order</option><option value="large-first">Ladderize · large clades first</option><option value="small-first">Ladderize · small clades first</option></select></label>
-      {(colorMode === "motif" || preset === "motifs") && <label className="wide-option"><span>Motifs · comma/newline separated</span><input value={motifText} onChange={(event) => setMotifText(event.target.value)} placeholder={mode === "aa" ? "YYC, AR..Y, WGQ" : "TGT, AAR, TGG"} /></label>}
+      {(colorMode === "motif" || preset === "motifs") && <label className="wide-option"><span>Motifs · comma/newline separated</span><CommitTextInput value={motifText} onCommit={setMotifText} placeholder={mode === "aa" ? "YYC, AR..Y, WGQ" : "TGT, AAR, TGG"} /><small>Applied on Enter or when focus leaves the field.</small></label>}
       <label><span>Tree width · {treeWidth}px</span><input type="range" min="0" max="1400" step="10" value={treeWidth} onChange={(event) => setTreeWidth(Number(event.target.value))} /></label>
       <label><span>Tip spacing · {rowHeight}px</span><input type="range" min="0" max="64" step="1" value={rowHeight} onChange={(event) => setRowHeight(Number(event.target.value))} /></label>
       <label><span>Residue width · {cellWidth}px</span><input type="range" min="9" max="24" step="1" value={cellWidth} onChange={(event) => setCellWidth(Number(event.target.value))} /></label>
@@ -241,7 +255,7 @@ export function LineageTreeViewer({
     {mode === "aa" && numbering === "kabat" && kabat?.warnings.map((warning) => <div key={warning} className="viewer-numbering-status warning">{warning}</div>)}
     <div className="coordinated-tree-legend">
       <span><i className="bubble-key" />tip bubble area is proportional to multiplicity (maximum {maximumMultiplicity.toLocaleString()}; radius capped at 14 px)</span>
-      {parsimony && <span><i className="mutation-key" />germline-constrained nucleotide parsimony · {parsimony.score.toLocaleString()} steps · {inferredN.toLocaleString()} germline N sites inferred</span>}
+      {parsimony && <span><i className="mutation-key" />{mode === "nt" ? "germline-constrained nucleotide mutations" : "nonsynonymous amino-acid replacements"} · {parsimony.score.toLocaleString()} nucleotide parsimony steps · {inferredN.toLocaleString()} germline N sites inferred</span>}
       {variant === "stable" && <span>{collapsedEdges.toLocaleString()} internal edges ≤ {collapseThreshold.toExponential(0)} shown as polytomies</span>}
       {colorMode === "motif" && motifs.map((motif, index) => <span key={`${motif}-${index}`}><i style={{ background: MOTIF_COLORS[index % MOTIF_COLORS.length] }} />{index + 1}. {motif}</span>)}
     </div>
@@ -255,18 +269,19 @@ export function LineageTreeViewer({
         <text x={horizontalPadding + scalePixels / 2} y="41" textAnchor="middle" fontFamily="Inter,Arial,sans-serif" fontSize="8" fill="#4e5d58">{formatBranchScale(scaleDistance)} substitutions/site</text>
       </g>}
       {runs.map((run, index) => {
-        const x = matrixX + run.start * cellWidth;
-        const width = (run.end - run.start + 1) * cellWidth;
+        const x = matrixX + displayColumnX[run.start];
+        const width = displayColumnX[run.end] - displayColumnX[run.start] + cellWidth;
         return <g key={`${run.start}-${index}`}><rect x={x} y="24" width={width} height="17" fill={run.region ? REGION_COLORS[run.region] : "#eceeea"} /><text x={x + width / 2} y="36" textAnchor="middle" fontFamily="Inter,Arial,sans-serif" fontSize="7" fontWeight="700" fill="#364640">{run.region && width >= 25 ? REGION_LABELS[run.region] : ""}</text></g>;
       })}
       {selectedColumns.map((column, displayIndex) => {
         const label = coordinateLabels[column] || String(column + 1);
         const show = displayIndex === 0 || displayIndex === selectedColumns.length - 1 || displayIndex % Math.max(1, Math.ceil(45 / cellWidth)) === 0 || selectedColumns[displayIndex - 1] + 1 !== column;
-        return show ? <text key={`tick-${column}`} transform={`translate(${matrixX + displayIndex * cellWidth + cellWidth / 2},67) rotate(-55)`} textAnchor="end" fontFamily="ui-monospace,monospace" fontSize="7" fill="#65736e">{label}</text> : null;
+        return show ? <text key={`tick-${column}`} transform={`translate(${matrixX + displayColumnX[displayIndex] + cellWidth / 2},67) rotate(-55)`} textAnchor="end" fontFamily="ui-monospace,monospace" fontSize="7" fill="#65736e">{label}</text> : null;
       })}
       <line x1={treeWidth} x2={treeWidth} y1="23" y2={svgHeight - 10} stroke="#c9d0ca" />
       {layout.edges.map((edge, index) => {
-        const mutations = parsimony?.mutationsByClade.get(cladeSignature(edge.child))?.filter((mutation) => mode === "nt" ? selectedColumnSet.has(mutation.column) : selectedColumnSet.has(Math.floor(mutation.column / 3))) ?? [];
+        const childSignature = cladeSignature(edge.child);
+        const mutations = (mode === "nt" ? parsimony?.mutationsByClade.get(childSignature) : aminoMutationsByClade.get(childSignature))?.filter((mutation) => selectedColumnSet.has(mutation.column)) ?? [];
         const label = mutations.slice(0, 2).map((mutation) => mutationLabel(mutation.column, mutation.from, mutation.to)).join(" · ") + (mutations.length > 2 ? ` · +${mutations.length - 2}` : "");
         const labelX = edge.parent.x + (edge.child.x - edge.parent.x) * 0.5;
         return <g key={`edge-${index}`}>
@@ -292,12 +307,12 @@ export function LineageTreeViewer({
             const value = recordSequence[column] ?? "-";
             const motif = motifsForRecord?.[column] ?? 0;
             const background = colorMode === "motif" ? motif ? MOTIF_COLORS[(motif - 1) % MOTIF_COLORS.length] : value === "-" ? "#ffffff" : "#eceeea" : sequenceColor(value, mode);
-            const x = matrixX + displayIndex * cellWidth;
-            return <g key={`${node.name}-${column}`}><rect x={x} y={node.y - rowHeight * 0.4} width={cellWidth} height={rowHeight * 0.8} fill={background} stroke="#ffffff" strokeWidth="0.35" /><text x={x + cellWidth / 2} y={node.y + Math.min(4, rowHeight * 0.16)} textAnchor="middle" fontFamily="ui-monospace,monospace" fontSize={Math.min(10.5, cellWidth - 2)} fontWeight="700" fill={textColor(background)}>{value}</text><title>{node.name} · {coordinateLabels[column] || column + 1} · {value}{motif ? ` · motif ${motif}` : ""}</title></g>;
+            const x = matrixX + displayColumnX[displayIndex];
+            return <g key={`${node.name}-${column}`}><rect x={x} y={node.y - rowHeight / 2} width={cellWidth} height={rowHeight} fill={background} /><text x={x + cellWidth / 2} y={node.y + Math.min(4, rowHeight * 0.16)} textAnchor="middle" fontFamily="ui-monospace,monospace" fontSize={Math.min(10.5, cellWidth - 2)} fontWeight="700" fill={textColor(background)}>{value}</text><title>{node.name} · {coordinateLabels[column] || column + 1} · {value}{motif ? ` · motif ${motif}` : ""}</title></g>;
           })}
         </g>;
       })}
     </svg></div>
-    <p className="scientific-note"><span>i</span>{variant === "raw" ? "Mutation mapping is disabled for the unrooted raw tree. Choose a germline-rooted view to reconstruct the UCA and branch changes." : "Equal-cost nucleotide parsimony is reconstructed on demand. Known germline bases constrain the UCA; N bases are unknown A/C/G/T states inferred from descendants, and gaps are explicit indel states."} {isTcr ? "Kabat is not defined for TCR chains, so TCR amino-acid views use alignment positions." : "Kabat numbering is computed in-browser from a multi-member consensus of IG variable-domain assignments."}</p>
+    <p className="scientific-note"><span>i</span>{variant === "raw" ? "Mutation mapping is disabled for the unrooted raw tree. Choose a germline-rooted view to reconstruct the UCA and branch changes." : mode === "nt" ? "Equal-cost nucleotide parsimony is reconstructed on demand. Known germline bases constrain the UCA; N bases are unknown A/C/G/T states inferred from descendants, and gaps are explicit indel states." : "Amino-acid branch labels are translated from the reconstructed parent and child codons. Synonymous nucleotide changes and unresolved X codons are omitted; multiple nucleotide changes in one codon are shown as one replacement."} {isTcr ? "Kabat is not defined for TCR chains, so TCR amino-acid views use alignment positions." : "Kabat numbering is computed in-browser from a multi-member consensus of IG variable-domain assignments."}</p>
   </div>;
 }

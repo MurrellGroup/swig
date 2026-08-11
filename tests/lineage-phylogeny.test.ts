@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  aminoAcidBranchMutations,
   mapParsimonyMutations,
   motifCellMap,
   parseColumnSelection,
+  spacedColumnOffsets,
   translateAlignedNucleotides,
 } from "../src/lineage-phylogeny.ts";
 import { parseNewick } from "../src/phylogeny.ts";
@@ -39,8 +41,17 @@ test("codon translation preserves codon columns", () => {
   assert.equal(translateAlignedNucleotides("ATG---GCNTA-"), "M-XX");
 });
 
+test("amino-acid branch mapping omits synonymous nucleotide changes", () => {
+  const mutations = aminoAcidBranchMutations("GCTAAATTT", "GCCAGATTC", "tip-a");
+  assert.deepEqual(mutations, [{ column: 1, from: "K", to: "R", childClade: "tip-a" }]);
+});
+
 test("custom selection accepts alignment ranges and Kabat-style labels", () => {
   assert.deepEqual(parseColumnSelection("1, 3-4, 31A", ["1", "2", "30", "31A", "31B"], 5), [0, 2, 3]);
+});
+
+test("non-contiguous alignment runs receive a half-cell visual separator", () => {
+  assert.deepEqual(spacedColumnOffsets([0, 1, 5, 6, 10], 10), [0, 10, 25, 35, 50]);
 });
 
 test("motif mapping supports ungapped AA motifs and nucleotide IUPAC codes", () => {
