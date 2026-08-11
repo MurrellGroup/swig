@@ -8,6 +8,7 @@ export interface ReferenceLocus {
   V: Allele[];
   D?: Allele[];
   J: Allele[];
+  C?: Allele[];
 }
 
 export interface ReferenceSpecies {
@@ -85,17 +86,18 @@ export function compileReferences(
     segments.V.push(...reference.V);
     segments.D.push(...(reference.D ?? []));
     segments.J.push(...reference.J);
+    segments.C.push(...(reference.C ?? []));
   }
   const compiled: CompiledReferences = {
     V: overrides.V ?? allelesToFasta(segments.V),
     D: overrides.D ?? allelesToFasta(segments.D),
     J: overrides.J ?? allelesToFasta(segments.J),
-    C: overrides.C ?? "",
+    C: overrides.C ?? allelesToFasta(segments.C),
     counts: {
       V: overrides.V ? countFastaRecords(overrides.V) : segments.V.length,
       D: overrides.D ? countFastaRecords(overrides.D) : segments.D.length,
       J: overrides.J ? countFastaRecords(overrides.J) : segments.J.length,
-      C: overrides.C ? countFastaRecords(overrides.C) : 0,
+      C: overrides.C ? countFastaRecords(overrides.C) : segments.C.length,
     },
     loci,
   };

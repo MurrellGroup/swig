@@ -51,6 +51,10 @@ test("50k AIRR records are committed, filtered, retrieved, and exported batchwis
   assert.equal(store.summary.assigned, 50_000);
   assert.equal(store.summary.withCdr3, 50_000);
   assert.equal(store.facets().loci.reduce((sum, value) => sum + value.count, 0), 50_000);
+  const repertoire = store.repertoire({ locus: "IGH", ambiguity: "fractional" });
+  assert.equal(repertoire.records, 25_000);
+  assert.equal(repertoire.vCalls.reduce((sum, value) => sum + value.count, 0), 25_000);
+  assert.ok(repertoire.vjPairs.length > 0);
 
   const page = await store.page({ ...EMPTY_FILTERS, locus: "IGK" }, 0, 25);
   assert.equal(page.rows.length, 25);
@@ -64,6 +68,28 @@ test("50k AIRR records are committed, filtered, retrieved, and exported batchwis
     exportedBytes += typeof part === "string" ? encoder.encode(part).byteLength : part instanceof Blob ? part.size : part.byteLength;
   });
   assert.equal(exportedBytes, store.outputBytes);
+  await store.clear();
+});
+
+test("constant-region evidence yields isotype facets and repertoire summaries", async () => {
+  const store = new AirrResultStore();
+  const constantHeader = [
+    "sequence_id", "sequence", "locus", "v_call", "d_call", "j_call", "c_call",
+    "productive", "cdr3_aa", "v_identity", "d_identity", "j_identity", "c_identity",
+    "c_sequence_alignment", "vj_in_frame", "stop_codon", "complete_vdj", "rev_comp",
+  ].join("\t");
+  const constantBody = [
+    "ig_m\tACGT\tIGH\tIGHV1*01\tIGHD1*01\tIGHJ1*01\tIGHM*01\tT\tCARDR\t.98\t1\t.97\t.99\tAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\tT\tF\tT\tF",
+    "ig_g_short\tACGT\tIGH\tIGHV1*01\tIGHD1*01\tIGHJ1*01\tIGHG1*01\tT\tCARDR\t.98\t1\t.97\t.99\tAAAAAAAAAAAAAAAAAA\tT\tF\tT\tF",
+    "ig_a\tACGT\tIGH\tIGHV2*01\tIGHD1*01\tIGHJ2*01\tIGHA2*01\tF\tCARDRR\t.95\t1\t.96\t.97\tAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\tT\tF\tT\tF",
+  ].join("\n") + "\n";
+  await store.appendBatch(constantHeader, encoder.encode(constantBody));
+  await store.finalize();
+  assert.deepEqual(store.facets().isotypes.map((item) => item.value).sort(), ["IgA2", "IgM"]);
+  assert.equal(store.repertoire().isotypes.reduce((sum, item) => sum + item.count, 0), 2);
+  const page = await store.page({ ...EMPTY_FILTERS, isotype: "IgM" }, 0, 10);
+  assert.equal(page.rows.length, 1);
+  assert.equal(page.rows[0].cCall, "IGHM*01");
   await store.clear();
 });
 

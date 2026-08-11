@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import { AlignmentViewer } from "./alignment-view";
+import { RepertoireDashboard } from "./repertoire-charts";
 import {
   availableScopes,
   compileReferences,
@@ -22,6 +23,7 @@ import {
 import {
   AirrResultStore,
   EMPTY_FILTERS,
+  inferIsotype,
   type AirrOutputHandle,
   type AirrOutputWritable,
   type AirrIndexRecord,
@@ -67,9 +69,12 @@ interface ResultSession {
   workers: number;
   outputBytes: number;
   streamedDirectly: boolean;
+  inputTotal: number;
+  subsampleSize: number | null;
+  subsampleSeed: number | null;
 }
 
-const SEGMENTS: SegmentKey[] = ["V", "D", "J"];
+const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
 const DIRECT_OUTPUT_COUNT = 100_000;
@@ -103,7 +108,8 @@ function outputName(inputName: string): string {
   return `${inputName.replace(/(\.gz)?\.[^.]+$/, "") || "swig"}.airr.tsv`;
 }
 
-function likelyLargeInput(input: InputData): boolean {
+function likelyLargeInput(input: InputData, selectedCount?: number | null): boolean {
+  if (selectedCount) return selectedCount >= DIRECT_OUTPUT_COUNT;
   if (input.count !== null) return input.count >= DIRECT_OUTPUT_COUNT;
   const gzipThreshold = 8 * 1024 * 1024;
   return input.size >= (input.name.toLowerCase().endsWith(".gz") ? gzipThreshold : DIRECT_OUTPUT_INPUT_BYTES);
@@ -361,13 +367,13 @@ function ReferenceSegment({ segment, count, override, optional, onFile, onClear 
   return (
     <article className={`reference-segment ${override ? "custom" : ""}`}>
       <span className={`segment-symbol segment-${segment.toLowerCase()}`}>{segment}</span>
-      <div><strong>{segment} germlines {optional && <small>optional</small>}</strong><span title={override?.name}>{override?.name ?? (count ? "Built-in IMGT set" : "Not used for this locus")}</span><b>{count.toLocaleString()} alleles</b></div>
+      <div><strong>{segment} germlines {optional && <small>optional</small>}</strong><span title={override?.name}>{override?.name ?? (count ? "Built-in IMGT set" : segment === "C" ? "Upload to enable constant calls" : "Not used for this locus")}</span><b>{count.toLocaleString()} alleles</b></div>
       <input ref={input} className="visually-hidden" type="file" accept=".fa,.fasta,.fna,.fas,.txt,.gz" onChange={(event) => {
         const file = event.target.files?.[0];
         if (file) onFile(segment, file);
         event.target.value = "";
       }} />
-      {override ? <button className="segment-action remove" type="button" onClick={() => onClear(segment)} aria-label={`Remove custom ${segment} set`}>×</button> : <button className="segment-action" type="button" onClick={() => input.current?.click()}>Replace</button>}
+      {override ? <button className="segment-action remove" type="button" onClick={() => onClear(segment)} aria-label={`Remove custom ${segment} set`}>×</button> : <button className="segment-action" type="button" onClick={() => input.current?.click()}>{count ? "Replace" : "Upload"}</button>}
     </article>
   );
 }
@@ -392,6 +398,29 @@ function AnalysisProgress({ stage, value, onCancel }: { stage: string; value: nu
   );
 }
 
+interface AlternativeHit {
+  call: string;
+  score: number;
+  identity: number;
+  queryStart: number;
+  queryEnd: number;
+  germlineStart: number;
+  germlineEnd: number;
+}
+
+function splitCalls(value: string): string[] {
+  return value.split(",").map((call) => call.trim()).filter(Boolean);
+}
+
+function parseAlternatives(value: string): AlternativeHit[] {
+  if (!value) return [];
+  return value.split(";").flatMap((entry) => {
+    const [call, score, identity, queryStart, queryEnd, germlineStart, germlineEnd] = entry.split("|");
+    const parsed = { call, score: Number(score), identity: Number(identity), queryStart: Number(queryStart), queryEnd: Number(queryEnd), germlineStart: Number(germlineStart), germlineEnd: Number(germlineEnd) };
+    return call && Number.isFinite(parsed.score) ? [parsed] : [];
+  });
+}
+
 function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
   const [mode, setMode] = useState<"nt" | "aa">("nt");
   const sequenceLength = row.sequence?.length ?? 0;
@@ -402,11 +431,17 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
     return [{ segment, call: row[`${segment}_call`], left: (start - 1) / sequenceLength * 100, width: Math.max(1.5, (end - start + 1) / sequenceLength * 100) }];
   });
   const regions = ["fwr1", "cdr1", "fwr2", "cdr2", "fwr3", "cdr3", "fwr4"];
+  const isotype = row.isotype || inferIsotype(row.c_call, row.c_sequence_alignment, row.c_identity ? Number(row.c_identity) : null);
+  const uncertainSegments = ["v", "d", "j", "c"].flatMap((segment) => {
+    const selected = splitCalls(row[`${segment}_call`] || "");
+    const alternatives = parseAlternatives(row[`${segment}_alternatives`] || "");
+    return selected.length > 1 || alternatives.length ? [{ segment, selected, alternatives }] : [];
+  });
 
   return (
     <article className="detail-panel">
       <header className="detail-header">
-        <div><span className="section-kicker">Selected rearrangement</span><h2>{row.sequence_id}</h2><div className="detail-tags"><span>{row.locus || "unassigned"}</span><span className={row.productive === "T" ? "good" : "warn"}>{row.productive === "T" ? "Productive" : "Non-productive"}</span>{row.rev_comp === "T" && <span>Reverse complement</span>}</div></div>
+        <div><span className="section-kicker">Selected rearrangement</span><h2>{row.sequence_id}</h2><div className="detail-tags"><span>{row.locus || "unassigned"}</span><span className={row.productive === "T" ? "good" : "warn"}>{row.productive === "T" ? "Productive" : "Non-productive"}</span>{isotype && <span className="isotype-tag">{isotype}</span>}{row.rev_comp === "T" && <span>Reverse complement</span>}</div></div>
         <button className="close-detail" type="button" onClick={onClose}>Close <span>×</span></button>
       </header>
 
@@ -417,9 +452,22 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
           {mapSegments.map((segment) => <span key={segment.segment} className={`map-segment ${segment.segment}`} style={{ left: `${segment.left}%`, width: `${segment.width}%` }} title={segment.call}>{segment.segment.toUpperCase()}</span>)}
         </div>
         <div className="call-grid">
-          {["v", "d", "j", "c"].map((segment) => <div key={segment}><span>{segment.toUpperCase()} call</span><strong>{row[`${segment}_call`] || "—"}</strong><small>{row[`${segment}_identity`] ? `${(Number(row[`${segment}_identity`]) * 100).toFixed(1)}% identity` : "not assigned"}</small></div>)}
+          {["v", "d", "j", "c"].map((segment) => {
+            const selected = splitCalls(row[`${segment}_call`] || "");
+            const alternatives = parseAlternatives(row[`${segment}_alternatives`] || "");
+            return <div key={segment}><span>{segment.toUpperCase()} call</span><strong>{selected[0] || "—"}</strong><small>{row[`${segment}_identity`] ? `${(Number(row[`${segment}_identity`]) * 100).toFixed(1)}% identity` : "not assigned"}{selected.length > 1 ? ` · ${selected.length} co-optimal` : alternatives.length ? ` · ${alternatives.length} near-tied` : ""}</small></div>;
+          })}
         </div>
       </section>
+
+      {uncertainSegments.length > 0 && <section className="uncertainty-panel">
+        <div className="uncertainty-heading"><div><span className="section-kicker">Call uncertainty</span><h3>Co-optimal and near-tied hits</h3></div><p>Comma-separated calls are exact co-optima. Alternate rows are retained only within SwiftIG’s uncertainty window; full alignment strings stay selected-call-only so million-read AIRR output remains bounded.</p></div>
+        <div className="uncertainty-stack">{uncertainSegments.map(({ segment, selected, alternatives }) => <article key={segment}>
+          <header><span className={`segment-symbol segment-${segment}`}>{segment.toUpperCase()}</span><div><strong>{selected.length > 1 ? `${selected.length} co-optimal calls` : "Selected + alternate evidence"}</strong><small>Ranked alignment evidence for this segment</small></div></header>
+          <div className="cooptimal-calls">{selected.map((call, index) => <span key={call} className={index === 0 ? "primary" : ""}>{call}{index === 0 ? " · reported first" : " · tied"}</span>)}</div>
+          {alternatives.length > 0 && <div className="alternate-table"><div className="alternate-head"><span>Alternative</span><span>Score</span><span>Identity</span><span>Query</span><span>Germline</span></div>{alternatives.map((hit) => <div key={`${hit.call}-${hit.queryStart}`}><strong>{hit.call}</strong><span>{hit.score}</span><span>{(hit.identity * 100).toFixed(1)}%</span><span>{hit.queryStart}–{hit.queryEnd}</span><span>{hit.germlineStart}–{hit.germlineEnd}</span></div>)}</div>}
+        </article>)}</div>
+      </section>}
 
       <section className="junction-panel">
         <div><span className="section-kicker">Junction evidence</span><h3>{row.junction_aa || "No translated junction"}</h3><code>{row.junction || "—"}</code></div>
@@ -442,6 +490,7 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
 }
 
 function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNewAnalysis: () => void }) {
+  const [view, setView] = useState<"repertoire" | "sequences">(session.total <= 3 ? "sequences" : "repertoire");
   const [filters, setFilters] = useState<ResultFilters>({ ...EMPTY_FILTERS });
   const [page, setPage] = useState(0);
   const [results, setResults] = useState<ResultPage>({ rows: [], hasMore: false, totalMatches: session.total, scanned: 0 });
@@ -452,6 +501,8 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
   const autoOpened = useRef(false);
+  const detailRef = useRef<HTMLElement>(null);
+  const scrollToDetail = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -491,6 +542,32 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     session.store.detail(selected).then((row) => { if (!cancelled) setDetail(row); });
     return () => { cancelled = true; };
   }, [selected, session]);
+
+  useEffect(() => {
+    if (!selected || !scrollToDetail.current) return;
+    scrollToDetail.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      detailRef.current?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "start",
+      });
+      detailRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selected]);
+
+  function openRecord(row: AirrIndexRecord) {
+    if (selected?.ordinal === row.ordinal) {
+      window.requestAnimationFrame(() => detailRef.current?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "start",
+      }));
+      return;
+    }
+    setDetail(null);
+    scrollToDetail.current = true;
+    setSelected(row);
+  }
 
   function updateFilter<K extends keyof ResultFilters>(key: K, value: ResultFilters[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -549,7 +626,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     <main className="results-page">
       <section className="results-hero">
         <WorkflowStepper active={3} />
-        <div className="results-title"><div><p className="eyebrow"><span>Analysis complete · {session.seconds.toFixed(2)} s · {Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s</span></p><h1>{session.total.toLocaleString()} rearrangements,<br /><em>ready to interrogate.</em></h1><p>{friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR</p></div><div className="results-actions"><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing AIRR…" : session.streamedDirectly ? "Save another AIRR copy" : "Download AIRR TSV"}<span>↓</span></button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
+        <div className="results-title"><div><p className="eyebrow"><span>Analysis complete · {session.seconds.toFixed(2)} s · {Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s</span></p><h1>{session.total.toLocaleString()} analyzed rearrangements,<br /><em>ready to interrogate.</em></h1><p>{friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize ? ` · exact random sample from ${session.inputTotal.toLocaleString()} input records (seed ${session.subsampleSeed})` : ""}</p></div><div className="results-actions"><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing AIRR…" : session.streamedDirectly ? "Save another AIRR copy" : "Download AIRR TSV"}<span>↓</span></button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
         <div className="result-summary">
           <article><span>V + J assigned</span><strong>{session.summary.assigned.toLocaleString()}</strong><small>{percentage(session.summary.assigned, session.total)} of input</small></article>
           <article><span>Productive</span><strong>{session.summary.productive.toLocaleString()}</strong><small>{percentage(session.summary.productive, session.total)} of input</small></article>
@@ -557,6 +634,10 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
           <article><span>Loci observed</span><strong>{session.facets.loci.length}</strong><small>{session.facets.loci.map((item) => item.value).join(" · ") || "none"}</small></article>
         </div>
       </section>
+
+      <nav className="results-view-tabs" aria-label="Results view"><button className={view === "repertoire" ? "active" : ""} type="button" onClick={() => setView("repertoire")}><span>Repertoire</span><small>Figures + composition</small></button><button className={view === "sequences" ? "active" : ""} type="button" onClick={() => setView("sequences")}><span>Sequences</span><small>Filter + inspect calls</small></button></nav>
+
+      {view === "repertoire" ? <RepertoireDashboard store={session.store} loci={session.facets.loci} inputName={session.inputName} /> : <>
 
       <section className="explorer-shell">
         <aside className="filter-panel">
@@ -567,11 +648,12 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
             <label className="filter-field"><span>Locus</span><select value={filters.locus} onChange={(event) => updateFilter("locus", event.target.value)}><option value="">Any locus</option>{session.facets.loci.map((item) => <option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label>
             <label className="filter-field"><span>Productivity</span><select value={filters.productive} onChange={(event) => updateFilter("productive", event.target.value)}><option value="">Either</option><option value="T">Productive</option><option value="F">Non-productive</option></select></label>
           </div>
-          {[{ key: "vCall", label: "V allele", values: session.facets.vCalls }, { key: "dCall", label: "D allele", values: session.facets.dCalls }, { key: "jCall", label: "J allele", values: session.facets.jCalls }].map((field) => <label className="filter-field" key={field.key}><span>{field.label}</span><select value={filters[field.key as keyof ResultFilters] as string} onChange={(event) => updateFilter(field.key as "vCall" | "dCall" | "jCall", event.target.value)}><option value="">Any call</option>{field.values.map((item) => <option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label>)}
+          {[{ key: "vCall", label: "V allele", values: session.facets.vCalls }, { key: "dCall", label: "D allele", values: session.facets.dCalls }, { key: "jCall", label: "J allele", values: session.facets.jCalls }, { key: "cCall", label: "C allele", values: session.facets.cCalls }, { key: "isotype", label: "Isotype / constant class", values: session.facets.isotypes }].map((field) => <label className="filter-field" key={field.key}><span>{field.label}</span><select value={filters[field.key as keyof ResultFilters] as string} onChange={(event) => updateFilter(field.key as "vCall" | "dCall" | "jCall" | "cCall" | "isotype", event.target.value)}><option value="">Any call</option>{field.values.map((item) => <option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label>)}
           <details className="filter-advanced"><summary>Identity, junction + QC</summary><div>
             <label className="identity-filter"><span>Minimum V identity <b>{Math.round(filters.minVIdentity * 100)}%</b></span><input type="range" min="0" max="1" step="0.01" value={filters.minVIdentity} onChange={(event) => updateFilter("minVIdentity", Number(event.target.value))} /></label>
             <label className="identity-filter"><span>Minimum D identity <b>{Math.round(filters.minDIdentity * 100)}%</b></span><input type="range" min="0" max="1" step="0.01" value={filters.minDIdentity} onChange={(event) => updateFilter("minDIdentity", Number(event.target.value))} /></label>
             <label className="identity-filter"><span>Minimum J identity <b>{Math.round(filters.minJIdentity * 100)}%</b></span><input type="range" min="0" max="1" step="0.01" value={filters.minJIdentity} onChange={(event) => updateFilter("minJIdentity", Number(event.target.value))} /></label>
+            <label className="identity-filter"><span>Minimum C identity <b>{Math.round(filters.minCIdentity * 100)}%</b></span><input type="range" min="0" max="1" step="0.01" value={filters.minCIdentity} onChange={(event) => updateFilter("minCIdentity", Number(event.target.value))} /></label>
             <div className="length-filters">
               <label><span>CDR3 AA min</span><input type="number" min="0" max="250" value={filters.minCdr3AaLength || ""} placeholder="Any" onChange={(event) => updateFilter("minCdr3AaLength", Math.max(0, Number(event.target.value) || 0))} /></label>
               <label><span>CDR3 AA max</span><input type="number" min="0" max="250" value={filters.maxCdr3AaLength || ""} placeholder="Any" onChange={(event) => updateFilter("maxCdr3AaLength", Math.max(0, Number(event.target.value) || 0))} /></label>
@@ -592,11 +674,11 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
           <header className="browser-heading"><div><span className="section-kicker">AIRR records</span><h2>{searching ? "Searching local index…" : results.totalMatches !== null ? `${results.totalMatches.toLocaleString()} matching records` : `${(pageEnd + (results.hasMore ? 1 : 0)).toLocaleString()}+ matching records`}</h2><p>{searching && scanCount ? `${scanCount.toLocaleString()} candidates scanned` : results.rows.length ? `Showing ${pageStart.toLocaleString()}–${pageEnd.toLocaleString()}` : "Adjust filters to broaden the query."}</p></div><span className="scale-mode">{session.total <= 3 ? "detail mode" : session.total >= 100000 ? "large-run index" : "paged index"}</span></header>
           <div className={`results-table-wrap ${searching ? "loading" : ""}`}>
             <table className="results-table">
-              <thead><tr><th>Sequence</th><th>Locus</th><th>V call</th><th>D call</th><th>J call</th><th>CDR3 AA</th><th>Productive</th><th /></tr></thead>
-              <tbody>{results.rows.map((row) => <tr className={selected?.ordinal === row.ordinal ? "selected" : ""} key={row.ordinal} onClick={() => setSelected(row)}>
+              <thead><tr><th>Sequence</th><th>Locus</th><th>V call</th><th>D call</th><th>J call</th><th>Isotype</th><th>CDR3 AA</th><th>Productive</th><th /></tr></thead>
+              <tbody>{results.rows.map((row) => <tr className={selected?.ordinal === row.ordinal ? "selected" : ""} key={row.ordinal} tabIndex={0} onClick={() => openRecord(row)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openRecord(row); } }}>
                 <td><strong title={row.sequenceId}>{row.sequenceId}</strong><small>#{(row.ordinal + 1).toLocaleString()}</small></td>
                 <td><span className="locus-pill">{row.locus || "—"}</span></td>
-                <td title={row.vCall}>{row.vCall || <i>—</i>}</td><td title={row.dCall}>{row.dCall || <i>—</i>}</td><td title={row.jCall}>{row.jCall || <i>—</i>}</td>
+                <td title={row.vCall}>{row.vCall || <i>—</i>}</td><td title={row.dCall}>{row.dCall || <i>—</i>}</td><td title={row.jCall}>{row.jCall || <i>—</i>}</td><td>{row.isotype || <i>—</i>}</td>
                 <td><code title={row.cdr3Aa}>{row.cdr3Aa || "—"}</code></td>
                 <td><span className={`productive-dot ${row.productive === "T" ? "yes" : "no"}`} />{row.productive === "T" ? "Yes" : row.productive === "F" ? "No" : "—"}</td>
                 <td><button type="button" aria-label={`Open ${row.sequenceId}`}>→</button></td>
@@ -608,7 +690,8 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         </div>
       </section>
 
-      {selected && <section className="detail-shell">{detail ? <ResultDetail row={detail} onClose={() => setSelected(null)} /> : <div className="detail-loading">Loading selected AIRR record…</div>}</section>}
+      {selected && <section ref={detailRef} className="detail-shell" tabIndex={-1} aria-label={`Details for ${selected.sequenceId}`}>{detail ? <ResultDetail row={detail} onClose={() => setSelected(null)} /> : <div className="detail-loading">Loading selected AIRR record…</div>}</section>}
+      </>}
     </main>
   );
 }
@@ -628,6 +711,10 @@ export default function SwigApp() {
   const [strand, setStrand] = useState<0 | 1 | 2>(0);
   const [workerCount, setWorkerCount] = useState(recommendedWorkerCount);
   const [outputStorage, setOutputStorage] = useState<OutputStorageMode>("auto");
+  const [subsampleEnabled, setSubsampleEnabled] = useState(false);
+  const [subsampleSize, setSubsampleSize] = useState(10_000);
+  const [subsampleSeed, setSubsampleSeed] = useState(1);
+  const [outputPrompt, setOutputPrompt] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ stage: "Preparing analysis", value: 0 });
@@ -708,36 +795,51 @@ export default function SwigApp() {
     navigate("analyze");
   }
 
-  async function run() {
+  function requestRun() {
     if (!activeInput || !compiled || !species) return;
     if (!compiled.counts.V || !compiled.counts.J) {
       setRunError("This reference selection requires both V and J germline records.");
       return;
     }
+    if (subsampleEnabled && (!Number.isFinite(subsampleSize) || subsampleSize < 1)) {
+      setRunError("Random subsample size must be at least one record.");
+      return;
+    }
+    const selectedCount = subsampleEnabled ? Math.floor(subsampleSize) : null;
+    const wantsDisk = outputStorage === "disk" || (outputStorage === "auto" && likelyLargeInput(activeInput, selectedCount));
+    if (wantsDisk && !savePicker() && outputStorage === "disk") {
+      setRunError("Direct-to-disk streaming is unavailable in this browser. Use Auto/browser storage or a Chromium-based browser.");
+      return;
+    }
+    if (wantsDisk && savePicker()) {
+      setOutputPrompt(true);
+      return;
+    }
+    void run("browser");
+  }
+
+  async function run(outputDestination: "browser" | "disk") {
+    if (!activeInput || !compiled || !species) return;
+    setOutputPrompt(false);
 
     let directOutput: DirectAirrOutput | undefined;
-    const wantsDisk = outputStorage === "disk" || (outputStorage === "auto" && likelyLargeInput(activeInput));
-    if (wantsDisk) {
+    if (outputDestination === "disk") {
       const picker = savePicker();
-      if (!picker && outputStorage === "disk") {
+      if (!picker) {
         setRunError("Direct-to-disk streaming is unavailable in this browser. Use Auto/browser storage or a Chromium-based browser.");
         return;
       }
-      if (picker) {
-        try {
-          const handle = await picker.call(window, {
-            suggestedName: outputName(activeInput.name),
-            types: [{ description: "AIRR rearrangement table", accept: { "text/tab-separated-values": [".tsv"] } }],
-          });
-          directOutput = { handle, writable: await handle.createWritable() };
-        } catch (error) {
-          if (!(error instanceof DOMException && error.name === "AbortError") || outputStorage === "disk") {
-            if (!(error instanceof DOMException && error.name === "AbortError")) {
-              setRunError(error instanceof Error ? error.message : String(error));
-            }
-            return;
-          }
+      try {
+        const handle = await picker.call(window, {
+          suggestedName: outputName(activeInput.name),
+          types: [{ description: "Swig AIRR analysis output", accept: { "text/tab-separated-values": [".tsv"] } }],
+        });
+        directOutput = { handle, writable: await handle.createWritable() };
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setRunError(error instanceof Error ? error.message : String(error));
         }
+        return;
       }
     }
 
@@ -760,6 +862,7 @@ export default function SwigApp() {
         strand,
         workers: workerCount,
         countHint: activeInput.count,
+        subsample: subsampleEnabled ? { size: Math.floor(subsampleSize), seed: Math.trunc(subsampleSeed) } : undefined,
         signal: controller.signal,
         onProgress: (stage, value) => setProgress({ stage, value }),
         onBatch: async (batch) => {
@@ -787,6 +890,9 @@ export default function SwigApp() {
         workers: result.workers,
         outputBytes: store.outputBytes,
         streamedDirectly: store.streamedDirectly,
+        inputTotal: result.inputRecords,
+        subsampleSize: subsampleEnabled ? result.count : null,
+        subsampleSeed: subsampleEnabled ? Math.trunc(subsampleSeed) : null,
       });
       setPage("results");
       window.scrollTo({ top: 0 });
@@ -853,29 +959,29 @@ export default function SwigApp() {
                     <label><span>Chain / locus</span><select value={activeScope} onChange={(event) => setScope(event.target.value as ScopeKey)}>{receptorScopes.map((value) => <option value={value} key={value}>{LOCUS_LABELS[value]}</option>)}</select></label>
                   </div>
                   {packError && <p className="inline-error" role="alert">{packError}</p>}
-                  <div className="reference-segments">{SEGMENTS.map((segment) => <ReferenceSegment key={segment} segment={segment} count={compiled?.counts[segment] ?? 0} override={overrides[segment]} optional={segment === "D"} onFile={(key, file) => void acceptReferenceFile(key, file)} onClear={(key) => setOverrides((current) => { const next = { ...current }; delete next[key]; return next; })} />)}</div>
-                  <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · IMGT/GENE-DB {pack?.release ?? "…"}. A custom upload replaces only its matching segment.</p>
+                  <div className="reference-segments">{SEGMENTS.map((segment) => <ReferenceSegment key={segment} segment={segment} count={compiled?.counts[segment] ?? 0} override={overrides[segment]} optional={segment === "D" || segment === "C"} onFile={(key, file) => void acceptReferenceFile(key, file)} onClear={(key) => setOverrides((current) => { const next = { ...current }; delete next[key]; return next; })} />)}</div>
+                  <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · IMGT/GENE-DB {pack?.release ?? "…"}. Each upload replaces only that segment. C references enable constant-region and isotype calls when ≥30 nt align.</p>
                 </section>
 
                 <section className="analysis-card settings-card">
                   <header><span className="card-number">03</span><div><h2>Analysis behavior</h2><p>Defaults are tuned for rearranged repertoire sequences.</p></div><button className="reset-button" type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} controls</button></header>
-                  <div className="settings-strip"><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "adaptive"}</span><span><b>Execution</b> {workerCount} parallel WASM worker{workerCount === 1 ? "" : "s"}</span></div>
+                  <div className="settings-strip"><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "adaptive"}</span><span><b>Input</b> {subsampleEnabled ? `random ${Math.floor(subsampleSize || 0).toLocaleString()}` : "all records"}</span></div>
+                  <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records in memory and output.</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>Records to analyze</span><input type="number" min="1" step="1000" value={subsampleSize} onChange={(event) => setSubsampleSize(Math.max(1, Number(event.target.value) || 1))} /></label><label><span>Random seed</span><input type="number" step="1" value={subsampleSeed} onChange={(event) => setSubsampleSeed(Number(event.target.value) || 0)} /></label></div>}</div>
                   {showAdvanced && <div className="advanced-settings">
                     <label><span>Search strand</span><select value={strand} onChange={(event) => setStrand(Number(event.target.value) as 0 | 1 | 2)}><option value={0}>Both orientations</option><option value={1}>Plus only</option><option value={2}>Minus only</option></select></label>
                     <label><span>Parallel WASM workers</span><select value={workerCount} onChange={(event) => setWorkerCount(Number(event.target.value))}>{Array.from({ length: browserWorkerLimit() }, (_, index) => index + 1).map((count) => <option value={count} key={count}>{count}{count === recommendedWorkerCount() ? " · recommended" : ""}</option>)}</select></label>
-                    <label><span>AIRR output storage</span><select value={outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}><option value="auto">Auto · disk for large runs</option><option value="browser">Compressed browser index</option><option value="disk">Stream directly to a file</option></select></label>
+                    <label><span>AIRR results destination</span><select value={outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}><option value="auto">Auto · ask to save large results</option><option value="browser">Browser · compressed local index</option><option value="disk">File · save while analyzing</option></select></label>
                     <label className="minimum-slider"><span>Minimum alignment identity <b>{Math.round(minimumIdentity * 100)}%</b></span><input type="range" min="0.45" max="0.9" step="0.01" value={minimumIdentity} onChange={(event) => setMinimumIdentity(Number(event.target.value))} /></label>
-                    <div className="constant-reference"><div><span>Optional C germlines</span><small>Add constant-region calls</small></div><label>{overrides.C ? overrides.C.name : "Upload C FASTA"}<input className="visually-hidden" type="file" accept=".fa,.fasta,.fna,.txt,.gz" onChange={(event) => { const file = event.target.files?.[0]; if (file) void acceptReferenceFile("C", file); event.target.value = ""; }} /></label></div>
                   </div>}
                 </section>
               </div>
 
               <aside className="run-summary">
-                <span className="section-kicker">Run manifest</span><h2>{activeInput ? activeInput.count === null ? "Large file" : `${activeInput.count?.toLocaleString()} sequences` : "Awaiting data"}</h2><p>{activeInput?.name ?? "Add an input to unlock analysis."}</p>
-                <dl><div><dt>Reference</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>V / D / J</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J}` : "—"}</dd></div><div><dt>Custom</dt><dd>{Object.keys(overrides).length ? Object.keys(overrides).join(" + ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · bounded queue</dd></div><div><dt>Storage</dt><dd>{outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
+                <span className="section-kicker">Run manifest</span><h2>{activeInput ? subsampleEnabled ? `${Math.floor(subsampleSize).toLocaleString()}-read sample` : activeInput.count === null ? "Large file" : `${activeInput.count?.toLocaleString()} sequences` : "Awaiting data"}</h2><p>{activeInput?.name ?? "Add an input to unlock analysis."}</p>
+                <dl><div><dt>Reference</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>V / D / J / C</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J} / ${compiled.counts.C}` : "—"}</dd></div><div><dt>Custom</dt><dd>{Object.keys(overrides).length ? Object.keys(overrides).join(" + ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · bounded queue</dd></div><div><dt>Storage</dt><dd>{outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
                 {runError && <p className="run-error" role="alert">{runError}</p>}
-                <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError)} onClick={() => void run()}><span>Analyze with SwiftIG</span><b>→</b></button>
-                <p className="privacy-copy"><span>⌁</span> Query data, custom germlines, and AIRR output remain on this device. Large runs can be committed to disk while analysis is still running.</p>
+                <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError)} onClick={requestRun}><span>Analyze with SwiftIG</span><b>→</b></button>
+                <p className="privacy-copy"><span>⌁</span> Query data, custom germlines, and AIRR output remain on this device. For large runs, Swig clearly asks where to save a new output file before analysis starts.</p>
               </aside>
             </div>
           )}
@@ -883,7 +989,16 @@ export default function SwigApp() {
       )}
 
       {page === "results" && session && <ResultsPage session={session} onNewAnalysis={() => navigate("analyze")} />}
-      <footer className="site-footer"><Brand /><p>SwiftIG 0.3 · parallel streaming WebAssembly · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      {outputPrompt && activeInput && <div className="output-modal-backdrop" role="presentation"><section className="output-modal" role="dialog" aria-modal="true" aria-labelledby="output-dialog-title">
+        <button className="output-modal-close" type="button" onClick={() => setOutputPrompt(false)} aria-label="Cancel output selection">×</button>
+        <span className="output-direction">OUTPUT · SAVE RESULTS</span>
+        <h2 id="output-dialog-title">Choose where Swig will <em>write the AIRR output.</em></h2>
+        <p>The next system window is a <b>Save As</b> dialog. You are naming a new results file—this is not another sequence import.</p>
+        <div className="output-flow"><div><span>Input already selected</span><strong>{activeInput.name}</strong></div><b>→</b><div className="destination"><span>New output file</span><strong>{outputName(activeInput.name)}</strong><small>Written incrementally during analysis</small></div></div>
+        <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
+        <p className="output-safety"><span>i</span> Your sequence data still never leave this device.</p>
+      </section></div>}
+      <footer className="site-footer"><Brand /><p>Swig 0.4 · parallel streaming WebAssembly · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }

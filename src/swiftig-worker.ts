@@ -12,6 +12,7 @@ interface StartRequest {
   strand: 0 | 1 | 2;
   workers: number;
   countHint: number | null;
+  subsample?: { size: number; seed: number };
 }
 
 interface AckRequest {
@@ -60,8 +61,11 @@ async function compileCore(): Promise<WebAssembly.Module> {
 
 function effectiveWorkerCount(request: StartRequest): number {
   const requested = Math.max(1, Math.min(16, Math.floor(request.workers || 1)));
-  if (request.countHint !== null && request.countHint <= 3) return 1;
-  if (request.countHint !== null && request.countHint <= 500) return Math.min(2, requested);
+  const effectiveCount = request.subsample
+    ? Math.min(request.countHint ?? request.subsample.size, request.subsample.size)
+    : request.countHint;
+  if (effectiveCount !== null && effectiveCount <= 3) return 1;
+  if (effectiveCount !== null && effectiveCount <= 500) return Math.min(2, requested);
   return requested;
 }
 
@@ -163,6 +167,7 @@ async function handleRequest(request: StartRequest) {
     let lastProgress = 0.14;
     let bytesRead = 0;
     let totalBytes = typeof request.query === "string" ? request.query.length : request.query.size;
+    let inputRecords = 0;
 
     const fail = (error: Error) => {
       if (fatalError) return;
@@ -175,9 +180,17 @@ async function handleRequest(request: StartRequest) {
 
     const report = (stage: string) => {
       const inputFraction = totalBytes ? Math.min(1, bytesRead / totalBytes) : 0;
-      const completion = inputDone
-        ? (parsed ? committed / parsed : 0)
-        : Math.min(0.96, inputFraction * 0.92 + (parsed ? committed / parsed : 0) * 0.08);
+      let completion: number;
+      if (request.subsample) {
+        const selected = Math.max(1, Math.min(inputRecords || request.subsample.size, request.subsample.size));
+        completion = parsed === 0
+          ? inputFraction * 0.48
+          : 0.48 + Math.min(1, committed / selected) * 0.52;
+      } else {
+        completion = inputDone
+          ? (parsed ? committed / parsed : 0)
+          : Math.min(0.96, inputFraction * 0.92 + (parsed ? committed / parsed : 0) * 0.08);
+      }
       lastProgress = Math.max(lastProgress, 0.14 + completion * 0.82);
       postProgress(request.id, stage, Math.min(0.96, lastProgress));
     };
@@ -246,12 +259,18 @@ async function handleRequest(request: StartRequest) {
     for await (const batch of streamSequenceBatches({
       source: request.query,
       format: request.format,
-      batchSize: batchSize(request.countHint),
+      batchSize: batchSize(request.subsample
+        ? Math.min(request.countHint ?? request.subsample.size, request.subsample.size)
+        : request.countHint),
+      subsample: request.subsample,
       onProgress: (state) => {
         bytesRead = state.bytesRead;
         totalBytes = state.totalBytes;
+        inputRecords = state.recordsRead;
         if (state.recordsRead && state.recordsRead % 1000 === 0) {
-          report(`Streaming input · ${state.recordsRead.toLocaleString()} sequences parsed`);
+          report(request.subsample
+            ? `Random subsample · ${state.recordsRead.toLocaleString()} scanned · retaining ${state.recordsSelected.toLocaleString()}`
+            : `Streaming input · ${state.recordsRead.toLocaleString()} sequences parsed`);
         }
       },
     })) {
@@ -276,6 +295,7 @@ async function handleRequest(request: StartRequest) {
       type: "result",
       count: committed,
       total: parsed,
+      inputRecords,
       workers: workerCount,
     });
   } catch (error) {

@@ -7,6 +7,8 @@ export interface AirrIndexRecord {
   vCall: string;
   dCall: string;
   jCall: string;
+  cCall: string;
+  isotype: string;
   productive: string;
   cdr3: string;
   cdr3Aa: string;
@@ -14,6 +16,7 @@ export interface AirrIndexRecord {
   vIdentity: number | null;
   dIdentity: number | null;
   jIdentity: number | null;
+  cIdentity: number | null;
   cdr3AaLength: number | null;
   vjInFrame: string;
   stopCodon: string;
@@ -29,9 +32,12 @@ export interface ResultFilters {
   vCall: string;
   dCall: string;
   jCall: string;
+  cCall: string;
+  isotype: string;
   minVIdentity: number;
   minDIdentity: number;
   minJIdentity: number;
+  minCIdentity: number;
   minCdr3AaLength: number;
   maxCdr3AaLength: number;
   vjInFrame: string;
@@ -53,6 +59,32 @@ export interface ResultFacets {
   vCalls: FacetValue[];
   dCalls: FacetValue[];
   jCalls: FacetValue[];
+  cCalls: FacetValue[];
+  isotypes: FacetValue[];
+}
+
+export interface RepertoireOptions {
+  locus?: string;
+  productiveOnly?: boolean;
+  ambiguity?: "top" | "fractional";
+}
+
+export interface RepertoirePair {
+  v: string;
+  j: string;
+  count: number;
+}
+
+export interface RepertoireSnapshot {
+  records: number;
+  vCalls: FacetValue[];
+  dCalls: FacetValue[];
+  jCalls: FacetValue[];
+  cCalls: FacetValue[];
+  isotypes: FacetValue[];
+  cdr3Lengths: FacetValue[];
+  vIdentityBins: FacetValue[];
+  vjPairs: RepertoirePair[];
 }
 
 export interface ResultPage {
@@ -73,6 +105,8 @@ interface PackedIndexRecord {
   v: string;
   d: string;
   j: string;
+  k: string;
+  y: string;
   p: string;
   r: string;
   a: string;
@@ -80,6 +114,7 @@ interface PackedIndexRecord {
   vi: number | null;
   di: number | null;
   ji: number | null;
+  ci: number | null;
   z: number | null;
   f: string;
   s: string;
@@ -143,6 +178,76 @@ function bump(map: Map<string, number>, value: string) {
   map.set(value, (map.get(value) ?? 0) + 1);
 }
 
+function bumpBy(map: Map<string, number>, value: string, count: number) {
+  if (!value || !count) return;
+  map.set(value, (map.get(value) ?? 0) + count);
+}
+
+function calls(value: string): string[] {
+  return value.split(",").map((call) => call.trim()).filter(Boolean);
+}
+
+function topCall(value: string): string {
+  return calls(value)[0] ?? "";
+}
+
+function addCallCounts(top: Map<string, number>, fractional: Map<string, number>, value: string) {
+  const values = calls(value);
+  if (!values.length) return;
+  bump(top, values[0]);
+  const weight = 1 / values.length;
+  values.forEach((call) => bumpBy(fractional, call, weight));
+}
+
+function isotypeLabel(call: string): string {
+  const gene = topCall(call).toUpperCase().replace(/\*.*$/, "");
+  const heavy = gene.match(/IGH([MDE])(?:\d+)?$/) ?? gene.match(/IGH(G|A)(\d+)?$/);
+  if (heavy) return `Ig${heavy[1]}${heavy[2] ?? ""}`;
+  if (gene.startsWith("IGKC")) return "Igκ constant";
+  if (gene.startsWith("IGLC")) return "Igλ constant";
+  if (gene.startsWith("TR") && gene.includes("C")) return gene;
+  return gene;
+}
+
+export function inferIsotype(
+  call: string,
+  alignedSequence: string,
+  identity: number | null,
+): string {
+  const alignedBases = alignedSequence.replace(/[-.\s]/g, "").length;
+  if (!call || alignedBases < 30 || (identity ?? 0) < 0.65) return "";
+  return isotypeLabel(call);
+}
+
+interface RepertoireBucket {
+  records: number;
+  vTop: Map<string, number>;
+  vFractional: Map<string, number>;
+  dTop: Map<string, number>;
+  dFractional: Map<string, number>;
+  jTop: Map<string, number>;
+  jFractional: Map<string, number>;
+  cTop: Map<string, number>;
+  cFractional: Map<string, number>;
+  isotypes: Map<string, number>;
+  cdr3Lengths: Map<string, number>;
+  vIdentityBins: Map<string, number>;
+  vjPairsTop: Map<string, number>;
+  vjPairsFractional: Map<string, number>;
+}
+
+function makeRepertoireBucket(): RepertoireBucket {
+  return {
+    records: 0,
+    vTop: new Map(), vFractional: new Map(),
+    dTop: new Map(), dFractional: new Map(),
+    jTop: new Map(), jFractional: new Map(),
+    cTop: new Map(), cFractional: new Map(),
+    isotypes: new Map(), cdr3Lengths: new Map(), vIdentityBins: new Map(),
+    vjPairsTop: new Map(), vjPairsFractional: new Map(),
+  };
+}
+
 function facet(map: Map<string, number>): FacetValue[] {
   return [...map.entries()]
     .map(([value, count]) => ({ value, count }))
@@ -158,8 +263,9 @@ function packRecord(record: AirrIndexRecord): PackedIndexRecord {
   return {
     o: record.ordinal, c: record.chunk, n: record.line, i: record.sequenceId,
     l: record.locus, v: record.vCall, d: record.dCall, j: record.jCall,
+    k: record.cCall, y: record.isotype,
     p: record.productive, r: record.cdr3, a: record.cdr3Aa, u: record.junctionAa,
-    vi: record.vIdentity, di: record.dIdentity, ji: record.jIdentity,
+    vi: record.vIdentity, di: record.dIdentity, ji: record.jIdentity, ci: record.cIdentity,
     z: record.cdr3AaLength, f: record.vjInFrame, s: record.stopCodon,
     q: record.completeVdj, x: record.revComp,
   };
@@ -169,8 +275,9 @@ function unpackRecord(record: PackedIndexRecord): AirrIndexRecord {
   return {
     ordinal: record.o, chunk: record.c, line: record.n, sequenceId: record.i,
     locus: record.l, vCall: record.v, dCall: record.d, jCall: record.j,
+    cCall: record.k, isotype: record.y,
     productive: record.p, cdr3: record.r, cdr3Aa: record.a, junctionAa: record.u,
-    vIdentity: record.vi, dIdentity: record.di, jIdentity: record.ji,
+    vIdentity: record.vi, dIdentity: record.di, jIdentity: record.ji, cIdentity: record.ci,
     cdr3AaLength: record.z, vjInFrame: record.f, stopCodon: record.s,
     completeVdj: record.q, revComp: record.x,
   };
@@ -184,9 +291,12 @@ export const EMPTY_FILTERS: ResultFilters = {
   vCall: "",
   dCall: "",
   jCall: "",
+  cCall: "",
+  isotype: "",
   minVIdentity: 0,
   minDIdentity: 0,
   minJIdentity: 0,
+  minCIdentity: 0,
   minCdr3AaLength: 0,
   maxCdr3AaLength: 0,
   vjInFrame: "",
@@ -206,7 +316,10 @@ export class AirrResultStore {
     vCalls: new Map<string, number>(),
     dCalls: new Map<string, number>(),
     jCalls: new Map<string, number>(),
+    cCalls: new Map<string, number>(),
+    isotypes: new Map<string, number>(),
   };
+  private readonly repertoireBuckets = new Map<string, RepertoireBucket>();
   private headerLine = "";
   private headers: string[] = [];
   private nextChunk = 0;
@@ -232,6 +345,8 @@ export class AirrResultStore {
         records.createIndex("vCall", "v");
         records.createIndex("dCall", "d");
         records.createIndex("jCall", "j");
+        records.createIndex("cCall", "k");
+        records.createIndex("isotype", "y");
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error("Could not create the local result index."));
@@ -265,12 +380,82 @@ export class AirrResultStore {
       vCalls: facet(this.facetMaps.vCalls),
       dCalls: facet(this.facetMaps.dCalls),
       jCalls: facet(this.facetMaps.jCalls),
+      cCalls: facet(this.facetMaps.cCalls),
+      isotypes: facet(this.facetMaps.isotypes),
     };
+  }
+
+  repertoire(options: RepertoireOptions = {}): RepertoireSnapshot {
+    const key = `${options.productiveOnly ? "productive" : "all"}|${options.locus || "*"}`;
+    const bucket = this.repertoireBuckets.get(key) ?? makeRepertoireBucket();
+    const fractional = options.ambiguity === "fractional";
+    return {
+      records: bucket.records,
+      vCalls: facet(fractional ? bucket.vFractional : bucket.vTop),
+      dCalls: facet(fractional ? bucket.dFractional : bucket.dTop),
+      jCalls: facet(fractional ? bucket.jFractional : bucket.jTop),
+      cCalls: facet(fractional ? bucket.cFractional : bucket.cTop),
+      isotypes: facet(bucket.isotypes),
+      cdr3Lengths: facet(bucket.cdr3Lengths).sort((a, b) => Number(a.value) - Number(b.value)),
+      vIdentityBins: facet(bucket.vIdentityBins).sort((a, b) => Number(a.value) - Number(b.value)),
+      vjPairs: [...(fractional ? bucket.vjPairsFractional : bucket.vjPairsTop).entries()]
+        .map(([value, count]) => {
+          const [v, j] = value.split("\u0000");
+          return { v, j, count };
+        })
+        .sort((a, b) => b.count - a.count || a.v.localeCompare(b.v) || a.j.localeCompare(b.j)),
+    };
+  }
+
+  private accumulateRepertoire(record: AirrIndexRecord) {
+    const keys = [`all|*`];
+    if (record.locus) keys.push(`all|${record.locus}`);
+    if (record.productive === "T") {
+      keys.push("productive|*");
+      if (record.locus) keys.push(`productive|${record.locus}`);
+    }
+    for (const key of keys) {
+      let bucket = this.repertoireBuckets.get(key);
+      if (!bucket) {
+        bucket = makeRepertoireBucket();
+        this.repertoireBuckets.set(key, bucket);
+      }
+      bucket.records += 1;
+      addCallCounts(bucket.vTop, bucket.vFractional, record.vCall);
+      addCallCounts(bucket.dTop, bucket.dFractional, record.dCall);
+      addCallCounts(bucket.jTop, bucket.jFractional, record.jCall);
+      addCallCounts(bucket.cTop, bucket.cFractional, record.cCall);
+      bump(bucket.isotypes, record.isotype);
+      if (record.cdr3AaLength !== null) bump(bucket.cdr3Lengths, String(record.cdr3AaLength));
+      if (record.vIdentity !== null) bump(bucket.vIdentityBins, String(Math.round(record.vIdentity * 100)));
+      const vValues = calls(record.vCall);
+      const jValues = calls(record.jCall);
+      if (vValues.length && jValues.length) {
+        bump(bucket.vjPairsTop, `${vValues[0]}\u0000${jValues[0]}`);
+        const weight = 1 / (vValues.length * jValues.length);
+        for (const v of vValues) for (const j of jValues) {
+          bumpBy(bucket.vjPairsFractional, `${v}\u0000${j}`, weight);
+        }
+      }
+    }
   }
 
   async appendBatch(headerLine: string, body: string | Uint8Array): Promise<void> {
     if (this.finalized) throw new Error("Cannot append to a finalized AIRR result store.");
-    const normalizedHeader = headerLine.replace(/\r$/, "");
+    let normalizedHeader = headerLine.replace(/\r$/, "");
+    let bodyText = typeof body === "string" ? body : decoder.decode(body);
+    const incomingHeaders = normalizedHeader.split("\t");
+    if (!incomingHeaders.includes("isotype")) {
+      const incomingPositions = Object.fromEntries(incomingHeaders.map((name, index) => [name, index]));
+      bodyText = bodyText.split("\n").map((line) => {
+        const clean = line.replace(/\r$/, "");
+        if (!clean) return "";
+        const values = clean.split("\t");
+        const at = (name: string) => values[incomingPositions[name]] ?? "";
+        return `${clean}\t${inferIsotype(at("c_call"), at("c_sequence_alignment"), numeric(at("c_identity")))}`;
+      }).join("\n");
+      normalizedHeader += "\tisotype";
+    }
     if (!this.headerLine) {
       this.headerLine = normalizedHeader;
       this.headers = this.headerLine.split("\t");
@@ -281,8 +466,7 @@ export class AirrResultStore {
       throw new Error("SwiftIG returned inconsistent AIRR columns between batches.");
     }
 
-    const bodyBytes = typeof body === "string" ? encoder.encode(body) : body;
-    const bodyText = typeof body === "string" ? body : decoder.decode(body);
+    const bodyBytes = encoder.encode(bodyText);
     const lines = bodyText.split("\n").map((line) => line.replace(/\r$/, "")).filter(Boolean);
     if (!lines.length) return;
     const chunkIndex = this.nextChunk;
@@ -324,6 +508,12 @@ export class AirrResultStore {
         vCall: at(values, "v_call"),
         dCall: at(values, "d_call"),
         jCall: at(values, "j_call"),
+        cCall: at(values, "c_call"),
+        isotype: at(values, "isotype") || inferIsotype(
+          at(values, "c_call"),
+          at(values, "c_sequence_alignment"),
+          numeric(at(values, "c_identity")),
+        ),
         productive: at(values, "productive"),
         cdr3: at(values, "cdr3"),
         cdr3Aa: at(values, "cdr3_aa"),
@@ -331,6 +521,7 @@ export class AirrResultStore {
         vIdentity: numeric(at(values, "v_identity")),
         dIdentity: numeric(at(values, "d_identity")),
         jIdentity: numeric(at(values, "j_identity")),
+        cIdentity: numeric(at(values, "c_identity")),
         cdr3AaLength: at(values, "cdr3_aa") ? at(values, "cdr3_aa").length : null,
         vjInFrame: at(values, "vj_in_frame"),
         stopCodon: at(values, "stop_codon"),
@@ -346,6 +537,9 @@ export class AirrResultStore {
       bump(this.facetMaps.vCalls, record.vCall);
       bump(this.facetMaps.dCalls, record.dCall);
       bump(this.facetMaps.jCalls, record.jCall);
+      bump(this.facetMaps.cCalls, record.cCall);
+      bump(this.facetMaps.isotypes, record.isotype);
+      this.accumulateRepertoire(record);
     }
     try {
       await transactionDone(transaction);
@@ -372,8 +566,8 @@ export class AirrResultStore {
     const normalizedCdr3 = filters.cdr3.trim().toUpperCase();
     const filtered = Boolean(
       normalizedId || normalizedCdr3 || filters.locus || filters.productive ||
-      filters.vCall || filters.dCall || filters.jCall || filters.minVIdentity ||
-      filters.minDIdentity || filters.minJIdentity || filters.minCdr3AaLength ||
+      filters.vCall || filters.dCall || filters.jCall || filters.cCall || filters.isotype ||
+      filters.minVIdentity || filters.minDIdentity || filters.minJIdentity || filters.minCIdentity || filters.minCdr3AaLength ||
       filters.maxCdr3AaLength || filters.vjInFrame || filters.stopCodon ||
       filters.completeVdj || filters.revComp || filters.hasD || filters.hasCdr3,
     );
@@ -390,6 +584,7 @@ export class AirrResultStore {
     let range: IDBKeyRange | undefined;
     const exactCandidates: Array<[keyof ResultFilters, string]> = [
       ["vCall", "vCall"], ["jCall", "jCall"], ["dCall", "dCall"],
+      ["cCall", "cCall"], ["isotype", "isotype"],
       ["locus", "locus"], ["productive", "productive"],
     ];
     for (const [filterName, indexName] of exactCandidates) {
@@ -410,9 +605,12 @@ export class AirrResultStore {
       if (filters.vCall && record.vCall !== filters.vCall) return false;
       if (filters.dCall && record.dCall !== filters.dCall) return false;
       if (filters.jCall && record.jCall !== filters.jCall) return false;
+      if (filters.cCall && record.cCall !== filters.cCall) return false;
+      if (filters.isotype && record.isotype !== filters.isotype) return false;
       if (filters.minVIdentity && (record.vIdentity ?? 0) < filters.minVIdentity) return false;
       if (filters.minDIdentity && (record.dIdentity ?? 0) < filters.minDIdentity) return false;
       if (filters.minJIdentity && (record.jIdentity ?? 0) < filters.minJIdentity) return false;
+      if (filters.minCIdentity && (record.cIdentity ?? 0) < filters.minCIdentity) return false;
       if (filters.minCdr3AaLength && (record.cdr3AaLength ?? 0) < filters.minCdr3AaLength) return false;
       if (filters.maxCdr3AaLength && (record.cdr3AaLength ?? Number.POSITIVE_INFINITY) > filters.maxCdr3AaLength) return false;
       if (filters.vjInFrame && record.vjInFrame !== filters.vjInFrame) return false;

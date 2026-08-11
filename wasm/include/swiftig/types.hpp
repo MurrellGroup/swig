@@ -10,7 +10,7 @@
 
 namespace swiftig {
 
-inline constexpr const char* kVersion = "0.2.0";
+inline constexpr const char* kVersion = "0.3.0";
 
 enum class Segment : std::uint8_t { V = 0, D = 1, J = 2, C = 3 };
 
@@ -107,6 +107,10 @@ struct Annotation {
     std::optional<SegmentHit> d;
     std::optional<SegmentHit> j;
     std::optional<SegmentHit> c;
+    std::vector<SegmentHit> v_alternatives;
+    std::vector<SegmentHit> d_alternatives;
+    std::vector<SegmentHit> j_alternatives;
+    std::vector<SegmentHit> c_alternatives;
     std::string sequence_alignment;
     std::string sequence_alignment_aa;
     std::string germline_alignment;
@@ -140,7 +144,7 @@ struct EngineOptions {
     std::size_t min_v_length = 24;
     std::size_t min_d_match = 5;
     std::size_t min_j_length = 10;
-    std::size_t min_c_length = 18;
+    std::size_t min_c_length = 30;
     double min_identity = 0.60;
     int band_width = 28;
     int max_band_width = 256;

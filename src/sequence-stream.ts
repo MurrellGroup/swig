@@ -11,14 +11,21 @@ export interface SequenceStreamProgress {
   bytesRead: number;
   totalBytes: number;
   recordsRead: number;
+  recordsSelected: number;
   maxBatchCharacters: number;
   maxCarryCharacters: number;
+}
+
+export interface SequenceSubsample {
+  size: number;
+  seed: number;
 }
 
 export interface SequenceStreamOptions {
   source: string | File;
   format: SequenceFormat;
   batchSize?: number;
+  subsample?: SequenceSubsample;
   signal?: AbortSignal;
   onProgress?: (progress: SequenceStreamProgress) => void;
 }
@@ -199,17 +206,39 @@ async function* airrRecords(source: AsyncIterable<string>): AsyncGenerator<{ hea
   }
 }
 
+interface StreamRecord {
+  ordinal: number;
+  text: string;
+  header?: string;
+}
+
+function seededRandom(seed: number): () => number {
+  let value = Math.trunc(seed) >>> 0;
+  return () => {
+    value = (value + 0x6d2b79f5) >>> 0;
+    let mixed = value;
+    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export async function* streamSequenceBatches(options: SequenceStreamOptions): AsyncGenerator<SequenceBatch> {
   const batchSize = Math.max(1, Math.floor(options.batchSize ?? 1000));
+  const subsampleSize = options.subsample
+    ? Math.max(1, Math.floor(options.subsample.size))
+    : 0;
   let bytesRead = 0;
   let totalBytes = typeof options.source === "string" ? options.source.length : options.source.size;
   let recordsRead = 0;
+  let recordsSelected = 0;
   let maxBatchCharacters = 0;
   let maxCarryCharacters = 0;
   const report = () => options.onProgress?.({
     bytesRead,
     totalBytes,
     recordsRead,
+    recordsSelected,
     maxBatchCharacters,
     maxCarryCharacters,
   });
@@ -226,10 +255,49 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
     },
   );
 
+  const parsedRecords = async function* (): AsyncGenerator<StreamRecord> {
+    if (options.format === 3) {
+      for await (const record of airrRecords(inputLines)) {
+        abortIfNeeded(options.signal);
+        recordsRead += 1;
+        if (recordsRead % 1000 === 0) report();
+        yield { ordinal: recordsRead - 1, text: `${record.row}\n`, header: record.header };
+      }
+      return;
+    }
+    const recordSource = options.format === 1 ? fastaRecords(inputLines) : fastqRecords(inputLines);
+    for await (const record of recordSource) {
+      abortIfNeeded(options.signal);
+      recordsRead += 1;
+      if (recordsRead % 1000 === 0) report();
+      yield { ordinal: recordsRead - 1, text: record };
+    }
+  };
+
+  let selected: AsyncIterable<StreamRecord> = parsedRecords();
+  if (subsampleSize) {
+    const random = seededRandom(options.subsample?.seed ?? 1);
+    const reservoir: StreamRecord[] = [];
+    for await (const record of selected) {
+      if (reservoir.length < subsampleSize) {
+        reservoir.push(record);
+      } else {
+        const replacement = Math.floor(random() * recordsRead);
+        if (replacement < subsampleSize) reservoir[replacement] = record;
+      }
+      recordsSelected = Math.min(recordsRead, subsampleSize);
+    }
+    reservoir.sort((a, b) => a.ordinal - b.ordinal);
+    selected = (async function* () { yield* reservoir; })();
+    report();
+  }
+
   let batchIndex = 0;
-  let records: string[] = [];
+  let records: StreamRecord[] = [];
   const emit = (): SequenceBatch => {
-    const text = records.join("");
+    const header = options.format === 3 ? records[0]?.header : undefined;
+    const body = records.map((record) => record.text).join("");
+    const text = header ? `${header}\n${body}` : body;
     maxBatchCharacters = Math.max(maxBatchCharacters, text.length);
     const batch = { index: batchIndex++, text, count: records.length, format: options.format };
     records = [];
@@ -237,40 +305,16 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
     return batch;
   };
 
-  if (options.format === 3) {
-    let header = "";
-    for await (const record of airrRecords(inputLines)) {
-      abortIfNeeded(options.signal);
-      header = record.header;
-      records.push(`${record.row}\n`);
-      recordsRead += 1;
-      if (records.length === batchSize) {
-        records.unshift(`${header}\n`);
-        const count = records.length - 1;
-        const batch = emit();
-        batch.count = count;
-        yield batch;
-      }
-    }
-    if (records.length) {
-      records.unshift(`${header}\n`);
-      const count = records.length - 1;
-      const batch = emit();
-      batch.count = count;
-      yield batch;
-    }
-  } else {
-    const recordSource = options.format === 1 ? fastaRecords(inputLines) : fastqRecords(inputLines);
-    for await (const record of recordSource) {
-      abortIfNeeded(options.signal);
-      records.push(record);
-      recordsRead += 1;
-      if (records.length === batchSize) yield emit();
-    }
-    if (records.length) yield emit();
+  for await (const record of selected) {
+    abortIfNeeded(options.signal);
+    records.push(record);
+    recordsSelected = subsampleSize ? Math.min(recordsRead, subsampleSize) : recordsRead;
+    if (records.length === batchSize) yield emit();
   }
+  if (records.length) yield emit();
 
   bytesRead = totalBytes;
+  recordsSelected = subsampleSize ? Math.min(recordsRead, subsampleSize) : recordsRead;
   report();
   if (!recordsRead) throw new Error("No sequence records were found in the input.");
 }

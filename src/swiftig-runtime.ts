@@ -16,6 +16,7 @@ export interface RunOptions {
   strand: 0 | 1 | 2;
   workers: number;
   countHint?: number | null;
+  subsample?: { size: number; seed: number };
   onProgress?: (stage: string, value: number) => void;
   onBatch?: (batch: ResultBatch) => void | Promise<void>;
   signal?: AbortSignal;
@@ -24,6 +25,7 @@ export interface RunOptions {
 export interface RunResult {
   count: number;
   total: number;
+  inputRecords: number;
   workers: number;
 }
 
@@ -61,6 +63,7 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
         processed?: number;
         total?: number | null;
         workers?: number;
+        inputRecords?: number;
         message?: string;
       };
       if (message.id !== id || finished) return;
@@ -87,7 +90,12 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
       finished = true;
       options.signal?.removeEventListener("abort", abort);
       worker.terminate();
-      resolve({ count: message.count ?? 0, total: message.total ?? 0, workers: message.workers ?? 1 });
+      resolve({
+        count: message.count ?? 0,
+        total: message.total ?? 0,
+        inputRecords: message.inputRecords ?? message.total ?? 0,
+        workers: message.workers ?? 1,
+      });
     };
     worker.onerror = (event) => fail(new Error(event.message || "The SwiftIG worker stopped unexpectedly."));
     worker.postMessage({
@@ -105,6 +113,7 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
       strand: options.strand,
       workers: options.workers,
       countHint: options.countHint ?? null,
+      subsample: options.subsample,
     });
   });
 }

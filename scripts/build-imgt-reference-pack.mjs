@@ -20,7 +20,7 @@ if (!/^\d{4}-\d{2}-\d{2}$/.test(retrieved)) {
 }
 
 const LOCI = ["IGH", "IGK", "IGL", "TRA", "TRB", "TRD", "TRG"];
-const SEGMENTS = ["V", "D", "J"];
+const SEGMENTS = ["V", "D", "J", "C"];
 
 function compareText(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -51,7 +51,7 @@ for (const [header, rawSequence] of parseFasta(input)) {
   const gene = fields[1]?.trim();
   const species = fields[2]?.trim();
   const region = fields[4]?.trim();
-  const segmentMatch = /^([VDJ])-REGION$/.exec(region ?? "");
+  const segmentMatch = /^([VDJC])-REGION$/.exec(region ?? "");
   const locus = LOCI.find((candidate) => gene?.toUpperCase().startsWith(candidate));
   if (!gene || !species || !segmentMatch || !locus) continue;
 
@@ -68,7 +68,7 @@ for (const [header, rawSequence] of parseFasta(input)) {
   }
   let locusEntry = speciesEntry.get(locus);
   if (!locusEntry) {
-    locusEntry = { V: new Map(), D: new Map(), J: new Map() };
+    locusEntry = { V: new Map(), D: new Map(), J: new Map(), C: new Map() };
     speciesEntry.set(locus, locusEntry);
   }
   const segment = segmentMatch[1];
@@ -117,4 +117,3 @@ const alleleCount = species.reduce(
   0,
 );
 console.log(`Wrote ${species.length} species/strain sets and ${alleleCount} alleles to ${outputPath}`);
-

@@ -141,6 +141,28 @@ void merge_equivalent_calls(SegmentHit& selected, const std::vector<SegmentHit>&
     }
 }
 
+std::vector<SegmentHit> uncertain_alternatives(
+    const SegmentHit& selected,
+    const std::vector<SegmentHit>& hits) {
+    std::unordered_set<std::string> selected_calls;
+    std::size_t start = 0;
+    while (start <= selected.call.size()) {
+        const auto end = selected.call.find(',', start);
+        selected_calls.insert(selected.call.substr(
+            start, end == std::string::npos ? std::string::npos : end - start));
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    const int tolerance = std::max(2, std::abs(selected.alignment.score) / 100);
+    std::vector<SegmentHit> alternatives;
+    for (const auto& hit : hits) {
+        if (!hit.gene || selected_calls.contains(hit.gene->name)) continue;
+        if (hit.alignment.score + tolerance < selected.alignment.score) continue;
+        alternatives.push_back(hit);
+    }
+    return alternatives;
+}
+
 std::optional<std::pair<std::size_t, std::size_t>> map_reference_interval(
     const Alignment& alignment,
     std::size_t start,
@@ -292,14 +314,18 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation(
                 auto d_hits = align_candidates(
                     window, database_.d, options_.top_d, options_.d_scoring,
                     options_.min_d_match, locus);
-                for (auto& hit : d_hits) {
+                std::vector<SegmentHit> viable_d_hits;
+                for (auto hit : d_hits) {
                     if (longest_exact_run(hit.alignment) < options_.min_d_match) continue;
-                    merge_equivalent_calls(hit, d_hits);
                     hit.alignment.query_start += window_start;
                     hit.alignment.query_end += window_start;
                     refresh_airr_cigar(hit.alignment, sequence.size(), hit.gene->sequence.size());
-                    result.d = std::move(hit);
-                    break;
+                    viable_d_hits.push_back(std::move(hit));
+                }
+                if (!viable_d_hits.empty()) {
+                    result.d = viable_d_hits.front();
+                    merge_equivalent_calls(*result.d, viable_d_hits);
+                    result.d_alternatives = uncertain_alternatives(*result.d, viable_d_hits);
                 }
             }
         }
@@ -309,19 +335,29 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation(
     if (!database_.c.empty() && result.j) {
         auto c_hits = align_candidates(
             sequence, database_.c, options_.top_c, options_.c_scoring, options_.min_c_length, locus);
+        std::vector<SegmentHit> viable_c_hits;
         for (const auto& hit : c_hits) {
             // NCBI C references may carry one leading J-derived base to complete a codon.
             if (!result.j || hit.alignment.query_start + 1 >= result.j->alignment.query_end) {
-                result.c = hit;
-                merge_equivalent_calls(*result.c, c_hits);
-                break;
+                viable_c_hits.push_back(hit);
             }
+        }
+        if (!viable_c_hits.empty()) {
+            result.c = viable_c_hits.front();
+            merge_equivalent_calls(*result.c, viable_c_hits);
+            result.c_alternatives = uncertain_alternatives(*result.c, viable_c_hits);
         }
     }
 
     result.rank_score = best_pair_score;
-    if (result.v) merge_equivalent_calls(*result.v, v_hits);
-    if (result.j) merge_equivalent_calls(*result.j, j_hits);
+    if (result.v) {
+        merge_equivalent_calls(*result.v, v_hits);
+        result.v_alternatives = uncertain_alternatives(*result.v, v_hits);
+    }
+    if (result.j) {
+        merge_equivalent_calls(*result.j, j_hits);
+        result.j_alternatives = uncertain_alternatives(*result.j, j_hits);
+    }
     if (result.d) result.rank_score += result.d->alignment.score * 0.5;
     if (result.c) result.rank_score += result.c->alignment.score * 0.25;
     return result;
@@ -357,6 +393,10 @@ Annotation AnnotationEngine::annotate(const SequenceRecord& record, const Annota
     annotation.d = std::move(chosen.d);
     annotation.j = std::move(chosen.j);
     annotation.c = std::move(chosen.c);
+    annotation.v_alternatives = std::move(chosen.v_alternatives);
+    annotation.d_alternatives = std::move(chosen.d_alternatives);
+    annotation.j_alternatives = std::move(chosen.j_alternatives);
+    annotation.c_alternatives = std::move(chosen.c_alternatives);
     if (annotation.v && !annotation.v->gene->locus.empty()) annotation.locus = annotation.v->gene->locus;
     else if (annotation.j) annotation.locus = annotation.j->gene->locus;
 

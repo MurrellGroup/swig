@@ -33,6 +33,10 @@ private:
         std::optional<SegmentHit> d;
         std::optional<SegmentHit> j;
         std::optional<SegmentHit> c;
+        std::vector<SegmentHit> v_alternatives;
+        std::vector<SegmentHit> d_alternatives;
+        std::vector<SegmentHit> j_alternatives;
+        std::vector<SegmentHit> c_alternatives;
         double rank_score = 0.0;
     };
 

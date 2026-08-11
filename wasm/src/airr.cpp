@@ -33,7 +33,8 @@ const std::vector<std::string>& columns() {
         "v_sequence_alignment", "d_sequence_alignment", "j_sequence_alignment", "c_sequence_alignment",
         "v_germline_alignment", "d_germline_alignment", "j_germline_alignment", "c_germline_alignment",
         "junction_length", "junction_aa_length", "np1_length", "np2_length",
-        "v_frameshift", "j_frameshift", "d_frame"};
+        "v_frameshift", "j_frameshift", "d_frame",
+        "v_alternatives", "d_alternatives", "j_alternatives", "c_alternatives"};
     return names;
 }
 
@@ -70,6 +71,19 @@ std::string hit_identity(const std::optional<SegmentHit>& hit) {
 
 std::string hit_cigar(const std::optional<SegmentHit>& hit) {
     return hit ? hit->alignment.cigar : std::string{};
+}
+
+std::string alternative_evidence(const std::vector<SegmentHit>& hits) {
+    std::ostringstream stream;
+    for (std::size_t i = 0; i < hits.size(); ++i) {
+        if (i) stream << ';';
+        const auto& hit = hits[i];
+        stream << hit.gene->name << '|' << hit.alignment.score << '|'
+               << number(hit.alignment.identity()) << '|'
+               << hit.alignment.query_start + 1 << '|' << hit.alignment.query_end << '|'
+               << hit.alignment.reference_start + 1 << '|' << hit.alignment.reference_end;
+    }
+    return stream.str();
 }
 
 std::string query_start(const std::optional<SegmentHit>& hit) {
@@ -159,7 +173,9 @@ void write_airr_record(std::ostream& output, const Annotation& a) {
         a.junction_aa.empty() ? std::string{} : std::to_string(a.junction_aa.size()),
         np1_length(a), np2_length(a),
         optional_boolean(a.v_frameshift), optional_boolean(a.j_frameshift),
-        a.d_frame ? std::to_string(*a.d_frame) : std::string{}};
+        a.d_frame ? std::to_string(*a.d_frame) : std::string{},
+        alternative_evidence(a.v_alternatives), alternative_evidence(a.d_alternatives),
+        alternative_evidence(a.j_alternatives), alternative_evidence(a.c_alternatives)};
     write_row(output, values);
 }
 
