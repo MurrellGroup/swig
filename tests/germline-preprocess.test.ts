@@ -14,10 +14,23 @@ import {
   REFERENCE_DATABASES,
 } from "../src/reference-catalog.ts";
 
-const pack = JSON.parse(zlib.gunzipSync(fs.readFileSync(new URL("../public/references/imgt-202632-7.json.gz", import.meta.url))).toString());
+const pack = JSON.parse(zlib.gunzipSync(fs.readFileSync(new URL("../public/references/imgt-202632-7-swig-0.7.json.gz", import.meta.url))).toString());
 const human = pack.species.find((entry: { name: string }) => entry.name === "Homo sapiens");
 const humanIghV = human.loci.IGH.V as MetadataAllele[];
 const humanIghJ = human.loci.IGH.J as MetadataAllele[];
+
+function imgtTemplateTiers(speciesName: string, segment: "V" | "J"): MetadataAllele[][] {
+  const selected = pack.species.find((entry: { name: string }) => entry.name === speciesName);
+  assert.ok(selected);
+  const baseTaxon = speciesName.split("_", 1)[0];
+  const genus = baseTaxon.split(" ", 1)[0];
+  return [
+    [selected],
+    pack.species.filter((entry: { name: string }) => entry.name !== speciesName && entry.name.split("_", 1)[0] === baseTaxon),
+    pack.species.filter((entry: { name: string }) => entry.name.split("_", 1)[0] !== baseTaxon && entry.name.startsWith(`${genus} `)),
+    pack.species.filter((entry: { name: string }) => !entry.name.startsWith(`${genus} `)),
+  ].map((group) => group.flatMap((entry: { loci: { IGH?: Record<string, MetadataAllele[]> } }) => entry.loci.IGH?.[segment] ?? [])).filter((group) => group.length);
+}
 
 function firstAnnotated(alleles: MetadataAllele[], segment: "V" | "J"): MetadataAllele {
   const allele = alleles.find((entry) => segment === "V"
@@ -127,6 +140,36 @@ test("bundled KIMDB files are intact FASTA exports", () => {
       const text = fs.readFileSync(new URL(`../public/references/kimdb-1.1/${species}/IGH/${segment}.fasta`, import.meta.url), "utf8");
       assert.ok(text.startsWith(">"));
       assert.ok((text.match(/^>/gm) ?? []).length >= (segment === "V" ? 600 : 14));
+    }
+  }
+});
+
+test("the built IMGT pack includes assembled heavy-chain and TCR constant references", () => {
+  const rhesus = pack.species.find((entry: { name: string }) => entry.name === "Macaca mulatta_AG07107");
+  const cynomolgus = pack.species.find((entry: { name: string }) => entry.name === "Macaca fascicularis");
+  assert.ok(human.loci.IGH.C.length > 50);
+  for (const prefix of ["IGHM", "IGHD", "IGHG", "IGHA", "IGHE"]) {
+    assert.ok(human.loci.IGH.C.some(([name]: MetadataAllele) => name.startsWith(prefix)), prefix);
+  }
+  assert.ok(human.loci.TRA.C.length > 0);
+  assert.ok(human.loci.TRB.C.length > 0);
+  assert.ok(rhesus.loci.IGH.C.length > 0);
+  assert.ok(cynomolgus.loci.IGH.C.length > 0);
+  assert.ok((rhesus.loci.IGH.C as MetadataAllele[]).every((allele) => allele[1].length >= 300));
+});
+
+test("every bundled KIMDB macaque V and J record receives validated in-browser annotation", { timeout: 30_000 }, () => {
+  for (const [speciesName, slug] of [["Macaca mulatta_AG07107", "Macaca_mulatta"], ["Macaca fascicularis", "Macaca_fascicularis"]]) {
+    for (const segment of ["V", "J"] as const) {
+      let text = fs.readFileSync(new URL(`../public/references/kimdb-1.1/${slug}/IGH/${segment}.fasta`, import.meta.url), "utf8");
+      let report;
+      for (const templates of imgtTemplateTiers(speciesName, segment)) {
+        report = preprocessGermlineFasta(report?.fasta ?? text, segment, templates, ["IGH"]);
+        if (report.annotated === report.count) break;
+      }
+      assert.ok(report);
+      assert.equal(report.annotated, report.count, `${speciesName} ${segment}: ${report.warnings.join("; ")}`);
+      assert.equal((report.fasta.match(/SWIGMETA=/g) ?? []).length, report.count);
     }
   }
 });

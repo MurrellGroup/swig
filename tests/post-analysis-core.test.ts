@@ -96,6 +96,28 @@ test("sequence query and single-linkage expansion recover a transitive CDR3 neig
   assert.deepEqual(expanded.ordinals.sort((a, b) => a - b), [0, 1, 2]);
 });
 
+test("per-query inferred V/J constraints preserve seed-specific V-J combinations", () => {
+  const records = [
+    record(0, "AAAAAAAAAA", "IGHV1*01", "IGHJ4*01"),
+    record(1, "AAAAAAAAAA", "IGHV2*01", "IGHJ6*01"),
+    record(2, "AAAAAAAAAA", "IGHV1*01", "IGHJ6*01"),
+  ];
+  const hits = queryRecords(records, ["AAAAAAAAAA", "AAAAAAAAAA"], {
+    target: "cdr3_nt",
+    metric: "exact",
+    identity: 1,
+    maxResults: 100,
+    callResolution: "gene",
+    ambiguity: "overlap",
+    productiveOnly: true,
+    queryConstraints: [
+      { locus: "IGH", vCall: "IGHV1*01", jCall: "IGHJ4*01" },
+      { locus: "IGH", vCall: "IGHV2*01", jCall: "IGHJ6*01" },
+    ],
+  });
+  assert.deepEqual(hits.map((hit) => [hit.ordinal, hit.queryIndex]), [[0, 0], [1, 1]]);
+});
+
 test("CHMMera BW port separates the published chimera and non-chimera example", () => {
   const msa = prepareReferenceMsa(">ref1\nACGTACGTACGT\n>ref2\nACCACCACCAAT\n");
   const options = {
@@ -105,12 +127,15 @@ test("CHMMera BW port separates the published chimera and non-chimera example", 
     mutationRates: [0.005],
     mutationSwitchProbability: 0,
     detailed: true,
+    tracePath: true,
   };
   const chimera = runChmm(msa, "ACGTACACCAAT", "ACGTACACCAAT", "ACGTACGTACGT", options);
   const nonChimera = runChmm(msa, "ACCACCACCAGT", "ACCACCACCAGT", "ACCACCACCAAT", options);
   assert.ok(chimera.probability > 0.95, `${chimera.probability}`);
   assert.ok(nonChimera.probability < 0.1, `${nonChimera.probability}`);
   assert.equal(chimera.recombinations.length, 1);
+  assert.deepEqual([...chimera.referencePath!].slice(0, 4), [0, 0, 0, 0]);
+  assert.deepEqual([...chimera.referencePath!].slice(-4), [1, 1, 1, 1]);
 });
 
 test("CHMMera discretized Bayesian mode reports detailed parent switches", () => {
@@ -122,10 +147,13 @@ test("CHMMera discretized Bayesian mode reports detailed parent switches", () =>
     mutationRates: [0.005],
     mutationSwitchProbability: 0,
     detailed: true,
+    tracePath: true,
   });
   assert.ok(result.probability > 0.95, `${result.probability}`);
   assert.ok(result.recombinations.length >= 1);
-  assert.notEqual(result.startReference, result.recombinations[0].right);
+  assert.notEqual(result.startingReference, result.recombinations[0].right);
+  assert.equal(result.referencePath?.length, 12);
+  assert.equal(new Set(result.referencePath).size, 2);
 });
 
 test("AIRR local alignments are threaded onto an uploaded reference MSA", () => {

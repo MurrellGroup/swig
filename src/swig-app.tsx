@@ -98,6 +98,8 @@ interface ResultSession {
   subsampleSize: number | null;
   subsampleSeed: number | null;
   references: CompiledReferences;
+  minimumIdentity: number;
+  strand: 0 | 1 | 2;
 }
 
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
@@ -822,7 +824,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
 
       {selected && <section ref={detailRef} className="detail-shell" tabIndex={-1} aria-label={`Details for ${selected.sequenceId}`}>{detail ? <ResultDetail row={detail} onClose={() => setSelected(null)} /> : <div className="detail-loading">Loading selected AIRR record…</div>}</section>}
       </> : null}
-      {postOpened && <div hidden={view !== "post"}><PostAnalysisWorkbench store={session.store} references={session.references} scope={session.scope} loci={session.facets.loci} inputName={session.inputName} workers={session.workers} onInspect={(ordinal) => void inspectOrdinal(ordinal)} /></div>}
+      {postOpened && <div hidden={view !== "post"}><PostAnalysisWorkbench store={session.store} references={session.references} scope={session.scope} loci={session.facets.loci} inputName={session.inputName} workers={session.workers} minimumIdentity={session.minimumIdentity} strand={session.strand} onInspect={(ordinal) => void inspectOrdinal(ordinal)} /></div>}
     </main>
   );
 }
@@ -1221,6 +1223,8 @@ export default function SwigApp() {
         subsampleSize: subsampleEnabled ? result.count : null,
         subsampleSeed: subsampleEnabled ? Math.trunc(subsampleSeed) : null,
         references: compiled,
+        minimumIdentity,
+        strand,
       });
       setPage("results");
       window.scrollTo({ top: 0 });
@@ -1328,7 +1332,7 @@ export default function SwigApp() {
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
         <p className="output-safety"><span>i</span> Query sequences remain in this browser and are not transmitted by Swig.</p>
       </section></div>}
-      <footer className="site-footer"><Brand /><p>Swig 0.5.2 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      <footer className="site-footer"><Brand /><p>Swig 0.7.0 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }

@@ -171,14 +171,30 @@ function validateMetadata(metadata: CompactMetadata, sequenceLength: number, seg
   return true;
 }
 
+function nearestFrameCysEnd(sequence: string, predictedEnd: number, frame: number, maximumDistance = 60): number | undefined {
+  const candidates: number[] = [];
+  const start = Math.max(0, predictedEnd - maximumDistance);
+  const stop = Math.min(sequence.length - 2, predictedEnd + maximumDistance);
+  for (let index = start; index <= stop; index += 1) {
+    const codon = sequence.slice(index, index + 3);
+    if (codon !== "TGT" && codon !== "TGC") continue;
+    if (frame >= 0 && positiveModulo(index - frame, 3) !== 0) continue;
+    candidates.push(index + 3);
+  }
+  return candidates.sort((left, right) => Math.abs(left - predictedEnd) - Math.abs(right - predictedEnd) || right - left)[0];
+}
+
 function imgtVMetadata(rawSequence: string, fields: string[] | null): CompactMetadata | undefined {
   if (fields?.[4]?.toUpperCase() !== "V-REGION") return undefined;
   const gapped = rawSequence.toUpperCase().replaceAll("U", "T").replace(/\s/g, "");
   if (gapped.length < IMGT_V_GAPPED_ENDS.at(-1)!) return undefined;
+  const sequence = gapped.replace(/[.\-]/g, "");
   const ends = IMGT_V_GAPPED_ENDS.map((end) => gapped.slice(0, end).replace(/[.\-]/g, "").length);
+  const anchorEnd = nearestFrameCysEnd(sequence, ends[4], imgtFrame(fields));
+  if (anchorEnd && anchorEnd > ends[3]) ends[4] = anchorEnd;
   const bounds = [0, ends[0], ends[0], ends[1], ends[1], ends[2], ends[2], ends[3], ends[3], ends[4]];
   const result = compactMetadata(imgtFrame(fields), -1, bounds, SOURCE_IMGT_GAPPED);
-  return validateMetadata(result, gapped.replace(/[.\-]/g, "").length, "V") ? result : undefined;
+  return validateMetadata(result, sequence.length, "V") ? result : undefined;
 }
 
 function isJAnchor(sequence: string, index: number): boolean {
@@ -271,12 +287,32 @@ function kmerSet(sequence: string, size = 9): Set<string> {
   return output;
 }
 
-function templateCandidates(
+function nearestTemplates(
+  query: string,
+  templates: MetadataAllele[],
+  limit = 12,
+): MetadataAllele[] {
+  const queryKmers = kmerSet(query);
+  return templates
+    .map((template) => {
+      const templateKmers = kmerSet(template[1]);
+      let shared = 0;
+      for (const kmer of templateKmers) if (queryKmers.has(kmer)) shared += 1;
+      const union = queryKmers.size + templateKmers.size - shared;
+      const similarity = union ? shared / union : 0;
+      return { template, similarity, lengthDelta: Math.abs(query.length - template[1].length) };
+    })
+    .sort((a, b) => b.similarity - a.similarity || a.lengthDelta - b.lengthDelta)
+    .slice(0, limit)
+    .map(({ template }) => template);
+}
+
+function templateCandidateTiers(
   queryName: string,
   query: string,
   templates: MetadataAllele[],
   eligible: (metadata?: CompactMetadata) => boolean = hasRegionMetadata,
-): MetadataAllele[] {
+): MetadataAllele[][] {
   // Functional/pseudogene labels are deliberately irrelevant here. Any locus-matched
   // template with a complete IMGT delineation may transfer coordinates after the
   // sequence-level validation below.
@@ -284,19 +320,11 @@ function templateCandidates(
   const alleleName = canonicalAllele(queryName);
   const geneName = canonicalGene(queryName);
   const exactAllele = delineated.filter(([name]) => canonicalAllele(name) === alleleName);
-  if (exactAllele.length) return exactAllele;
   const exactGene = delineated.filter(([name]) => canonicalGene(name) === geneName);
-  if (exactGene.length) return exactGene;
-  const queryKmers = kmerSet(query);
-  return delineated
-    .map((template) => {
-      let shared = 0;
-      for (const kmer of kmerSet(template[1])) if (queryKmers.has(kmer)) shared += 1;
-      return { template, shared };
-    })
-    .sort((a, b) => b.shared - a.shared)
-    .slice(0, 6)
-    .map(({ template }) => template);
+  const preferred = exactAllele.length ? exactAllele : exactGene;
+  const preferredKeys = new Set(preferred.map(([name, sequence]) => `${name}\u0000${sequence}`));
+  const nearest = nearestTemplates(query, delineated.filter(([name, sequence]) => !preferredKeys.has(`${name}\u0000${sequence}`)));
+  return [preferred, nearest].filter((tier) => tier.length);
 }
 
 function mapReferenceCoordinates(alignment: Alignment, referenceLength: number): number[] {
@@ -321,49 +349,57 @@ function mapReferenceCoordinates(alignment: Alignment, referenceLength: number):
 }
 
 function transferMetadata(name: string, sequence: string, templates: MetadataAllele[]): CompactMetadata | undefined {
-  const candidates = templateCandidates(name, sequence, templates);
-  let selected: { template: MetadataAllele; alignment: Alignment } | undefined;
-  for (const template of candidates) {
-    const alignment = globalAlignment(sequence, template[1]);
-    if (!selected || alignment.identity > selected.alignment.identity) selected = { template, alignment };
+  for (const candidates of templateCandidateTiers(name, sequence, templates)) {
+    let selected: { metadata: CompactMetadata; identity: number } | undefined;
+    for (const template of candidates) {
+      const alignment = globalAlignment(sequence, template[1]);
+      const named = canonicalGene(template[0]) === canonicalGene(name);
+      if (alignment.identity < (named ? 0.80 : 0.72)) continue;
+      const templateMetadata = template[2]!;
+      const templateBounds = templateMetadata.slice(2, 12);
+      const mapped = mapReferenceCoordinates(alignment, template[1].length);
+      const bounds = templateBounds.map((boundary) => mapped[boundary]);
+      if (bounds.some((value, index) => value < 0 || value > sequence.length || (index && value < bounds[index - 1]))) continue;
+      let valid = true;
+      for (let index = 0; index < bounds.length; index += 2) {
+        if (bounds[index + 1] <= bounds[index]) valid = false;
+      }
+      if (!valid) continue;
+      const templateFrame = templateMetadata[0] >= 0 ? templateMetadata[0] : templateBounds[0] % 3;
+      const frame = positiveModulo(bounds[0] + templateFrame - templateBounds[0], 3);
+      const anchorEnd = nearestFrameCysEnd(sequence, bounds[9], frame, 24);
+      if (!anchorEnd || anchorEnd <= bounds[8]) continue;
+      bounds[9] = anchorEnd;
+      const metadata = compactMetadata(frame, -1, bounds, SOURCE_TRANSFERRED_IMGT);
+      if (!validateMetadata(metadata, sequence.length, "V")) continue;
+      if (!selected || alignment.identity > selected.identity) selected = { metadata, identity: alignment.identity };
+    }
+    if (selected) return selected.metadata;
   }
-  if (!selected) return undefined;
-  const named = canonicalGene(selected.template[0]) === canonicalGene(name);
-  if (selected.alignment.identity < (named ? 0.80 : 0.72)) return undefined;
-
-  const templateMetadata = selected.template[2]!;
-  const templateBounds = templateMetadata.slice(2, 12);
-  const mapped = mapReferenceCoordinates(selected.alignment, selected.template[1].length);
-  const bounds = templateBounds.map((boundary) => mapped[boundary]);
-  if (bounds.some((value, index) => value < 0 || value > sequence.length || (index && value < bounds[index - 1]))) return undefined;
-  for (let index = 0; index < bounds.length; index += 2) {
-    if (bounds[index + 1] <= bounds[index]) return undefined;
-  }
-  const templateFrame = templateMetadata[0] >= 0 ? templateMetadata[0] : templateBounds[0] % 3;
-  const frame = positiveModulo(bounds[0] + templateFrame - templateBounds[0], 3);
-  const result = compactMetadata(frame, -1, bounds, SOURCE_TRANSFERRED_IMGT);
-  return validateMetadata(result, sequence.length, "V") ? result : undefined;
+  return undefined;
 }
 
 function transferJMetadata(name: string, sequence: string, templates: MetadataAllele[]): CompactMetadata | undefined {
-  const candidates = templateCandidates(name, sequence, templates, hasJMetadata);
-  let selected: { template: MetadataAllele; alignment: Alignment } | undefined;
-  for (const template of candidates) {
-    const alignment = globalAlignment(sequence, template[1]);
-    if (!selected || alignment.identity > selected.alignment.identity) selected = { template, alignment };
+  for (const candidates of templateCandidateTiers(name, sequence, templates, hasJMetadata)) {
+    let selected: { metadata: CompactMetadata; identity: number } | undefined;
+    for (const template of candidates) {
+      const alignment = globalAlignment(sequence, template[1]);
+      const named = canonicalGene(template[0]) === canonicalGene(name);
+      if (alignment.identity < (named ? 0.75 : 0.68)) continue;
+      const metadata = template[2]!;
+      const referenceAnchor = metadata[1] + 1;
+      if (referenceAnchor < 0 || referenceAnchor + 6 > template[1].length) continue;
+      const mapped = mapReferenceCoordinates(alignment, template[1].length);
+      const anchor = mapped[referenceAnchor];
+      const anchorEnd = mapped[referenceAnchor + 6];
+      if (anchor < 0 || anchorEnd - anchor !== 6 || !isJAnchor(sequence, anchor)) continue;
+      const transferred = compactMetadata(anchor % 3, anchor - 1, EMPTY_BOUNDS, SOURCE_TRANSFERRED_J);
+      if (!validateMetadata(transferred, sequence.length, "J")) continue;
+      if (!selected || alignment.identity > selected.identity) selected = { metadata: transferred, identity: alignment.identity };
+    }
+    if (selected) return selected.metadata;
   }
-  if (!selected) return undefined;
-  const named = canonicalGene(selected.template[0]) === canonicalGene(name);
-  if (selected.alignment.identity < (named ? 0.75 : 0.68)) return undefined;
-  const metadata = selected.template[2]!;
-  const referenceAnchor = metadata[1] + 1;
-  if (referenceAnchor < 0 || referenceAnchor + 6 > selected.template[1].length) return undefined;
-  const mapped = mapReferenceCoordinates(selected.alignment, selected.template[1].length);
-  const anchor = mapped[referenceAnchor];
-  const anchorEnd = mapped[referenceAnchor + 6];
-  if (anchor < 0 || anchorEnd - anchor !== 6 || !isJAnchor(sequence, anchor)) return undefined;
-  const result = compactMetadata(anchor % 3, anchor - 1, EMPTY_BOUNDS, SOURCE_TRANSFERRED_J);
-  return validateMetadata(result, sequence.length, "J") ? result : undefined;
+  return undefined;
 }
 
 function annotationPresent(segment: GermlineSegment, metadata?: CompactMetadata): boolean {

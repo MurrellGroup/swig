@@ -10,8 +10,11 @@ import {
 import { runCodonAwareKalign, runFastTree, runKalign } from "./biowasm-runtime";
 import {
   runChmmairra,
+  runChmmairraDetail,
   writeChmmairraTsv,
   type ChmmDashboard,
+  type ChmmDetail,
+  type ChmmRunOptions,
   type ChmmSegment,
 } from "./chmmairra-runtime";
 import { GERMLINE_OUTGROUP, lineageInputFasta, quickAirrAlignment } from "./lineage-alignment";
@@ -24,6 +27,7 @@ import {
   type DedupKey,
   type LineageSummary,
   type QueryHit,
+  type QueryConstraint,
   type QueryMetric,
   type QueryTarget,
 } from "./post-analysis-core";
@@ -32,6 +36,7 @@ import {
   type DedupDashboard,
   type LineageDashboard,
 } from "./post-analysis-runtime";
+import { inferQueryAssignments, type InferredQueryAssignment } from "./query-inference-runtime";
 import type { CompiledReferences, ScopeKey } from "./reference-pack";
 import type { AirrDetailRow, AirrIndexRecord, AirrResultStore, FacetValue } from "./result-store";
 
@@ -42,6 +47,8 @@ interface Props {
   loci: FacetValue[];
   inputName: string;
   workers: number;
+  minimumIdentity: number;
+  strand: 0 | 1 | 2;
   onInspect: (ordinal: number) => void;
 }
 
@@ -177,12 +184,66 @@ function AlignmentPreview({ fasta, mode }: { fasta: string; mode: "nt" | "aa" })
   </div>;
 }
 
+const CHIMERA_COLORS = ["#0b8f83", "#e2a51d", "#7857a8", "#c65a72", "#3477b8", "#7a8f35"];
+
+function ChimeraHighlighter({ detail, name, onInspect }: { detail: ChmmDetail; name: string; onInspect: (ordinal: number) => void }) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const cellWidth = 12;
+  const labelWidth = 210;
+  const rowHeight = 27;
+  const top = 45;
+  const rows = [
+    ...(detail.parents.length ? [{ kind: "parent" as const, parent: 0 }] : []),
+    { kind: "query" as const, parent: -1 },
+    ...detail.parents.slice(1).map((_, index) => ({ kind: "parent" as const, parent: index + 1 })),
+  ];
+  const width = labelWidth + detail.threadedObservation.length * cellWidth + 18;
+  const height = top + rows.length * rowHeight + 58;
+  const parentCounts = new Uint32Array(detail.parents.length);
+  detail.parentPath.forEach((parent) => { if (parent < parentCounts.length) parentCounts[parent] += 1; });
+  const informative = [...detail.threadedObservation].filter((base) => base !== "-" && base !== "N").length;
+  return <section className="chimera-detail" tabIndex={-1}>
+    <header><div><span className="section-kicker">On-demand Viterbi reconstruction · record #{(detail.ordinal + 1).toLocaleString()}</span><h4>{detail.sequenceId}</h4><p>{detail.segment} call {detail.call || "unassigned"} · posterior {(detail.probability * 100).toFixed(3)}% · DFR {detail.dfr} · {informative} informative MSA columns</p></div><div className="post-chart-actions"><button type="button" onClick={() => onInspect(detail.ordinal)}>Open AIRR record</button><button type="button" onClick={() => saveSvg(svgRef.current, name)}>SVG ↓</button></div></header>
+    <div className="chimera-breakpoint-strip">{detail.parents.map((parent, index) => <span key={parent.name} style={{ borderColor: CHIMERA_COLORS[index % CHIMERA_COLORS.length] }}><i style={{ background: CHIMERA_COLORS[index % CHIMERA_COLORS.length] }} />{parent.name}<b>{parentCounts[index].toLocaleString()} columns</b></span>)}</div>
+    <div className="chimera-alignment-scroll"><svg ref={svgRef} width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Viterbi parent highlighter nucleotide alignment">
+      <rect width={width} height={height} fill="#fbfaf5" />
+      <text x="12" y="22" fontFamily="Inter,Arial,sans-serif" fontSize="10" fontWeight="700" fill="#34433e">CHMMAIRRa Viterbi parent path</text>
+      {Array.from({ length: Math.ceil(detail.threadedObservation.length / 10) }, (_, tick) => tick * 10).map((position) => <g key={position}><line x1={labelWidth + position * cellWidth} x2={labelWidth + position * cellWidth} y1={top - 11} y2={height - 42} stroke={position % 50 === 0 ? "#9aa7a1" : "#d9ddd8"} strokeWidth={position % 50 === 0 ? 1 : 0.5} /><text x={labelWidth + position * cellWidth + 2} y={top - 16} fontFamily="ui-monospace,monospace" fontSize="8" fill="#6b7974">{position + 1}</text></g>)}
+      {rows.map((row, rowIndex) => {
+        const y = top + rowIndex * rowHeight;
+        const label = row.kind === "query" ? `QUERY · ${detail.sequenceId}` : `${row.parent === 0 ? "PARENT A" : `PARENT ${String.fromCharCode(65 + row.parent)}`} · ${detail.parents[row.parent]?.name ?? ""}`;
+        const sequence = row.kind === "query" ? detail.threadedObservation : detail.parents[row.parent]?.sequence ?? "";
+        return <g key={`${row.kind}-${row.parent}`}>
+          <rect x="0" y={y - 14} width={labelWidth - 5} height={rowHeight - 2} fill={row.kind === "query" ? "#172622" : "#e9ece7"} />
+          <text x="10" y={y + 3} fontFamily="ui-monospace,monospace" fontSize="8" fontWeight="700" fill={row.kind === "query" ? "#f4f6f3" : "#384842"}>{label.length > 31 ? `${label.slice(0, 29)}…` : label}<title>{label}</title></text>
+          {[...sequence].map((base, position) => {
+            const selectedParent = detail.parentPath[position] ?? 0;
+            const color = CHIMERA_COLORS[selectedParent % CHIMERA_COLORS.length];
+            const selectedBase = detail.parents[selectedParent]?.sequence[position] ?? "N";
+            const mismatch = row.kind === "query" && base !== "N" && base !== "-" && selectedBase !== "-" && base !== selectedBase;
+            const activeParent = row.kind === "parent" && row.parent === selectedParent;
+            return <g key={position}>
+              <rect x={labelWidth + position * cellWidth} y={y - 14} width={cellWidth} height={rowHeight - 2} fill={row.kind === "query" ? color : activeParent ? `${color}45` : "#f7f6f1"} opacity={row.kind === "query" && (base === "N" || base === "-") ? 0.25 : 1} />
+              <text x={labelWidth + position * cellWidth + cellWidth / 2} y={y + 4} textAnchor="middle" fontFamily="ui-monospace,monospace" fontSize="10" fontWeight={mismatch ? "900" : "600"} fill={row.kind === "query" ? mismatch ? "#5d101d" : "#ffffff" : activeParent ? "#17231f" : "#8a9691"}>{base}</text>
+            </g>;
+          })}
+        </g>;
+      })}
+      {detail.recombinations.map((event, index) => {
+        const x = labelWidth + Math.max(0, event.position - 1) * cellWidth;
+        return <g key={`${event.position}-${index}`}><line x1={x} x2={x} y1={top - 12} y2={height - 42} stroke="#9a2e42" strokeWidth="2" strokeDasharray="4 3" /><text x={x + 4} y={height - 27} fontFamily="ui-monospace,monospace" fontSize="8" fontWeight="700" fill="#84253a">break {event.position}: {event.left.replace(/\s.*/, "")} → {event.right.replace(/\s.*/, "")}</text></g>;
+      })}
+      <text x="12" y={height - 11} fontFamily="Inter,Arial,sans-serif" fontSize="8" fill="#65736e">Query background = Viterbi parent; dark query letters = mismatch to selected parent; N and gap columns are de-emphasized.</text>
+    </svg></div>
+  </section>;
+}
+
 function parseQueries(text: string): string[] {
   if (text.trimStart().startsWith(">")) return parseFasta(text).map((record) => record.sequence).filter(Boolean);
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).map((line) => line.replace(/\s/g, ""));
 }
 
-export function PostAnalysisWorkbench({ store, references, scope, loci, inputName, workers, onInspect }: Props) {
+export function PostAnalysisWorkbench({ store, references, scope, loci, inputName, workers, minimumIdentity, strand, onInspect }: Props) {
   const runtime = useMemo(() => new PostAnalysisRuntime(store), [store]);
   useEffect(() => () => runtime.terminate(), [runtime]);
   const [busy, setBusy] = useState("");
@@ -228,6 +289,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [chmmDetailed, setChmmDetailed] = useState(false);
   const [mutationRates, setMutationRates] = useState(isTcr ? "0.005" : "0,0.0179,0.0357,0.0536,0.0714,0.0893,0.1071,0.125,0.1429,0.1607,0.1786,0.1964,0.2143,0.2321,0.25");
   const [chmm, setChmm] = useState<ChmmDashboard | null>(null);
+  const [chmmRun, setChmmRun] = useState<{ msa: string; options: ChmmRunOptions } | null>(null);
+  const [chimeraDetail, setChimeraDetail] = useState<ChmmDetail | null>(null);
+  const chimeraDetailRef = useRef<HTMLDivElement>(null);
 
   const [queryText, setQueryText] = useState("");
   const [queryTarget, setQueryTarget] = useState<QueryTarget>("cdr3_nt");
@@ -237,6 +301,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [queryLocus, setQueryLocus] = useState("");
   const [queryV, setQueryV] = useState("");
   const [queryJ, setQueryJ] = useState("");
+  const [queryConstraintMode, setQueryConstraintMode] = useState<"manual" | "infer">("manual");
+  const [queryInference, setQueryInference] = useState<InferredQueryAssignment[]>([]);
   const [queryHits, setQueryHits] = useState<QueryHit[]>([]);
   const [queryRecords, setQueryRecords] = useState<Map<number, AirrIndexRecord>>(new Map());
   const [expanded, setExpanded] = useState<{ ordinals: number[]; comparisons: number; capped: boolean } | null>(null);
@@ -391,7 +457,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       setBusy(`Running CHMMAIRRa ${chmmSegment} model with ${Math.min(workers, 16)} workers`);
       const rates = mutationRates.split(/[\s,;]+/).map(Number).filter((value) => Number.isFinite(value) && value >= 0 && value < 1);
       if (chmmMethod === "DB" && !rates.length) throw new Error("Provide at least one mutation-rate state for the discretized Bayesian model.");
-      const result = await runChmmairra(store, msa, {
+      const options: ChmmRunOptions = {
         segment: chmmSegment,
         method: chmmMethod,
         priorProbability: chmmPrior,
@@ -402,8 +468,29 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         minDfr: chmmMinDfr,
         threshold: chmmThreshold,
         workers,
-      }, (processed, total) => setProgress({ processed, total }));
+      };
+      const result = await runChmmairra(store, msa, options, (processed, total) => setProgress({ processed, total }));
       setChmm(result);
+      setChmmRun({ msa, options });
+      setChimeraDetail(null);
+    } catch (operationError) {
+      setError(operationError instanceof Error ? operationError.message : String(operationError));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function openChimera(ordinal: number) {
+    if (!chmmRun) {
+      setError("Run CHMMAIRRa before opening a Viterbi parent reconstruction.");
+      return;
+    }
+    setBusy("Running the selected record's detailed CHMMAIRRa Viterbi path");
+    setError("");
+    try {
+      const detail = await runChmmairraDetail(store, chmmRun.msa, chmmRun.options, ordinal);
+      setChimeraDetail(detail);
+      window.requestAnimationFrame(() => chimeraDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     } catch (operationError) {
       setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
@@ -430,23 +517,61 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       return;
     }
     const metric = queryTarget === "trimmed" ? "sketch" : queryMetric;
-    const hits = await operation("Searching the assigned repertoire", () => runtime.query(queries, {
-      target: queryTarget,
-      metric,
-      identity: queryIdentity,
-      maxResults: queryLimit,
-      locus: queryLocus || undefined,
-      vCall: queryV || undefined,
-      jCall: queryJ || undefined,
-      callResolution: resolution,
-      ambiguity,
-      productiveOnly,
-    }));
+    const hits = await operation(queryConstraintMode === "infer" ? "Assigning query V/J calls with SwiftIG, then searching" : "Searching the assigned repertoire", async () => {
+      let searchQueries = queries;
+      let queryConstraints: QueryConstraint[] | undefined;
+      if (queryConstraintMode === "infer") {
+        const inferred = await inferQueryAssignments(queries, queryTarget, references, minimumIdentity, strand, workers);
+        setQueryInference(inferred);
+        const usable = inferred.filter((assignment) => assignment.searchSequence && (queryV || assignment.vCall) && (queryJ || assignment.jCall));
+        if (!usable.length) {
+          throw new Error("SwiftIG could not infer both V and J for any query. Use complete rearranged nucleotide sequences, lower the main identity floor in a new run, or provide manual V/J overrides.");
+        }
+        searchQueries = usable.map((assignment) => assignment.searchSequence);
+        queryConstraints = usable.map((assignment) => ({
+          locus: queryLocus || assignment.locus || undefined,
+          vCall: queryV || assignment.vCall || undefined,
+          jCall: queryJ || assignment.jCall || undefined,
+        }));
+      } else {
+        setQueryInference([]);
+      }
+      return runtime.query(searchQueries, {
+        target: queryTarget,
+        metric,
+        identity: queryIdentity,
+        maxResults: queryLimit,
+        locus: queryConstraintMode === "manual" ? queryLocus || undefined : undefined,
+        vCall: queryConstraintMode === "manual" ? queryV || undefined : undefined,
+        jCall: queryConstraintMode === "manual" ? queryJ || undefined : undefined,
+        queryConstraints,
+        callResolution: resolution,
+        ambiguity,
+        productiveOnly,
+      });
+    });
     if (!hits) return;
     setQueryHits(hits);
     setExpanded(null);
     const indexRows = await store.indexRecords([...new Set(hits.map((hit) => hit.ordinal))]);
     setQueryRecords(new Map(indexRows.map((record) => [record.ordinal, record])));
+  }
+
+  async function previewQueryInference() {
+    const queries = parseQueries(queryText);
+    if (!queries.length) {
+      setError("Paste at least one complete rearranged nucleotide sequence or FASTA record.");
+      return;
+    }
+    setBusy("Assigning seed V/J calls with the main SwiftIG configuration");
+    setError("");
+    try {
+      setQueryInference(await inferQueryAssignments(queries, queryTarget, references, minimumIdentity, strand, workers));
+    } catch (operationError) {
+      setError(operationError instanceof Error ? operationError.message : String(operationError));
+    } finally {
+      setBusy("");
+    }
   }
 
   async function expandMatches() {
@@ -497,16 +622,17 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       <header><div className="module-number amber">02</div><div><span className="section-kicker">Optional PCR-chimera model</span><h3>CHMMAIRRa after V(D)J assignment</h3><p>The browser port threads each AIRR local V or J alignment onto a reference MSA, then evaluates the CHMMera posterior. V is the manuscript default; D is not modeled.</p></div><a href="https://github.com/MurrellGroup/CHMMAIRRa.jl" target="_blank" rel="noreferrer">Method source ↗</a></header>
       <div className="chmm-grid">
         <div className="chmm-config">
-          <div className="control-grid three"><label><span>Segment</span><select value={chmmSegment} onChange={(event) => { setChmmSegment(event.target.value as ChmmSegment); setPreparedMsa(""); setChmm(null); }}><option value="V">V (recommended)</option><option value="J">J (optional)</option></select></label><label><span>Model</span><select value={chmmMethod} onChange={(event) => setChmmMethod(event.target.value as "BW" | "DB")}><option value="BW">Baum–Welch · IG default</option><option value="DB">Discretized Bayesian · TCR default</option></select></label><label><span>Posterior threshold</span><input type="number" min="0" max="1" step="0.01" value={chmmThreshold} onChange={(event) => setChmmThreshold(Number(event.target.value))} /></label></div>
+          <div className="control-grid three"><label><span>Segment</span><select value={chmmSegment} onChange={(event) => { setChmmSegment(event.target.value as ChmmSegment); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }}><option value="V">V (recommended)</option><option value="J">J (optional)</option></select></label><label><span>Model</span><select value={chmmMethod} onChange={(event) => setChmmMethod(event.target.value as "BW" | "DB")}><option value="BW">Baum–Welch · IG default</option><option value="DB">Discretized Bayesian · TCR default</option></select></label><label><span>Posterior threshold</span><input type="number" min="0" max="1" step="0.01" value={chmmThreshold} onChange={(event) => setChmmThreshold(Number(event.target.value))} /></label></div>
           <fieldset className="msa-source"><legend>Reference multiple-sequence alignment</legend><label className={chmmSource === "selected" ? "selected" : ""}><input type="radio" checked={chmmSource === "selected"} onChange={() => setChmmSource("selected")} /><span><strong>Build from this run’s {chmmSegment} references</strong><small>Kalign 3.3.1 WASM; preserves selected IMGT/KI/uploaded composition.</small></span></label><label className={chmmSource === "upload" ? "selected" : ""}><input type="radio" checked={chmmSource === "upload"} onChange={() => setChmmSource("upload")} /><span><strong>Use an aligned FASTA MSA</strong><small>{uploadedMsaName || "Every record must have equal aligned length and names matching AIRR calls."}</small></span><input className="file-inline" type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptMsa(event)} /></label></fieldset>
-          <details className="post-advanced"><summary>Model parameters</summary><div className="control-grid three"><label><span>Chimera prior</span><input type="number" min="0.00001" max="0.5" step="0.01" value={chmmPrior} onChange={(event) => setChmmPrior(Number(event.target.value))} /></label><label><span>Minimum DFR</span><input type="number" min="0" max="100" step="1" value={chmmMinDfr} onChange={(event) => setChmmMinDfr(Number(event.target.value))} /></label><label><span>DB mutation rates</span><input type="text" value={mutationRates} onChange={(event) => setMutationRates(event.target.value)} /></label><label className="check-line"><input type="checkbox" checked={chmmDetailed} onChange={(event) => setChmmDetailed(event.target.checked)} /><span>Infer Viterbi parents and breakpoints for evaluated records</span></label></div></details>
+          <details className="post-advanced"><summary>Model parameters</summary><div className="control-grid three"><label><span>Chimera prior</span><input type="number" min="0.00001" max="0.5" step="0.01" value={chmmPrior} onChange={(event) => setChmmPrior(Number(event.target.value))} /></label><label><span>Minimum DFR</span><input type="number" min="0" max="100" step="1" value={chmmMinDfr} onChange={(event) => setChmmMinDfr(Number(event.target.value))} /></label><label><span>DB mutation rates</span><input type="text" value={mutationRates} onChange={(event) => setMutationRates(event.target.value)} /></label><label className="check-line"><input type="checkbox" checked={chmmDetailed} onChange={(event) => setChmmDetailed(event.target.checked)} /><span>Precompute breakpoint labels during the repertoire scan (the full path remains on-demand)</span></label></div></details>
           <div className="scientific-note warning"><span>!</span><p>Reference completeness matters: an absent true V/J allele can produce a false switch signal. Uploaded MSAs are never silently supplemented. Low-DFR records are reported as unevaluated rather than forced through the model.</p></div>
           <div className="result-actions"><button className="post-primary amber" type="button" disabled={Boolean(busy) || (chmmSource === "upload" && !uploadedMsa)} onClick={() => void runChmmAnalysis()}>Run CHMMAIRRa</button>{preparedMsa && <button type="button" onClick={() => downloadText(preparedMsa, `${baseName(inputName)}.${chmmSegment.toLowerCase()}-reference-msa.fasta`)}>Download reference MSA</button>}</div>
         </div>
         <div className="chmm-result-panel">
-          {chmm ? <><div className="post-stat-grid compact"><article><span>Evaluated</span><strong>{chmm.evaluated.toLocaleString()}</strong></article><article><span>Posterior ≥ {chmm.threshold}</span><strong>{chmm.flagged.toLocaleString()}</strong></article><article><span>Below DFR</span><strong>{chmm.lowDfr.toLocaleString()}</strong></article><article><span>Missing reference</span><strong>{chmm.missingReference.toLocaleString()}</strong></article></div><BarChart title={`${chmm.segment} chimera posterior`} subtitle="Evaluated rearrangements by posterior interval" data={chmm.histogram.map((item) => ({ label: item.label, value: item.count }))} color="#d49a19" name={`${baseName(inputName)}.chmmairra-posterior.svg`} />{chmm.top.length > 0 && <div className="chmm-top-list"><header><strong>Highest posteriors</strong><span>Click a record for AIRR evidence</span></header>{chmm.top.slice(0, 12).map((record) => <button type="button" key={record.ordinal} onClick={() => onInspect(record.ordinal)}><b>#{(record.ordinal + 1).toLocaleString()}</b><span>{(record.probability * 100).toFixed(2)}%</span><small>DFR {record.dfr}{record.recombinations.length ? ` · ${record.recombinations.map((event) => `${event.left}→${event.right}@${event.position}`).join("; ")}` : ""}</small></button>)}</div>}<button type="button" onClick={() => void downloadChmm()}>Download CHMMAIRRa TSV</button></> : <div className="method-placeholder"><span>HMM</span><h4>No CHMMAIRRa run</h4><p>{isTcr ? "TCR mode defaults to a fixed 0.005 mutation-rate state (DB)." : "IG mode defaults to per-reference Baum–Welch mutation estimates."}</p></div>}
+          {chmm ? <><div className="post-stat-grid compact"><article><span>Evaluated</span><strong>{chmm.evaluated.toLocaleString()}</strong></article><article><span>Posterior ≥ {chmm.threshold}</span><strong>{chmm.flagged.toLocaleString()}</strong></article><article><span>Below DFR</span><strong>{chmm.lowDfr.toLocaleString()}</strong></article><article><span>Missing reference</span><strong>{chmm.missingReference.toLocaleString()}</strong></article></div><BarChart title={`${chmm.segment} chimera posterior`} subtitle="Evaluated rearrangements by posterior interval" data={chmm.histogram.map((item) => ({ label: item.label, value: item.count }))} color="#d49a19" name={`${baseName(inputName)}.chmmairra-posterior.svg`} />{chmm.top.length > 0 && <div className="chmm-top-list"><header><strong>Highest posteriors</strong><span>Click to run the detailed Viterbi parent view</span></header>{chmm.top.slice(0, 12).map((record) => <button type="button" key={record.ordinal} onClick={() => void openChimera(record.ordinal)}><b>#{(record.ordinal + 1).toLocaleString()}</b><span>{(record.probability * 100).toFixed(2)}%</span><small>DFR {record.dfr}{record.recombinations.length ? ` · ${record.recombinations.map((event) => `${event.left}→${event.right}@${event.position}`).join("; ")}` : " · Viterbi path on click"}</small></button>)}</div>}<button type="button" onClick={() => void downloadChmm()}>Download CHMMAIRRa TSV</button></> : <div className="method-placeholder"><span>HMM</span><h4>No CHMMAIRRa run</h4><p>{isTcr ? "TCR mode defaults to a fixed 0.005 mutation-rate state (DB)." : "IG mode defaults to per-reference Baum–Welch mutation estimates."}</p></div>}
         </div>
       </div>
+      {chimeraDetail && <div ref={chimeraDetailRef}><ChimeraHighlighter detail={chimeraDetail} name={`${baseName(inputName)}.record-${chimeraDetail.ordinal + 1}.chmmairra-viterbi.svg`} onInspect={onInspect} /></div>}
     </section>
 
     <section className="post-module lineage-module">
@@ -516,8 +642,26 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     </section>
 
     <section className="post-module query-module">
-      <header><div className="module-number dark">04</div><div><span className="section-kicker">Targeted repertoire search</span><h3>Query sequences, then expand the matched set</h3><p>Paste one or more sequences or FASTA records. Search CDR3 directly or use a compact k-mer sketch of the VDJ-aligned sequence; expansion follows exact CDR3 single-linkage edges from the current seed set.</p></div></header>
-      <div className="query-layout"><div className="query-input"><label><span>Query sequence(s) or FASTA</span><textarea value={queryText} onChange={(event) => setQueryText(event.target.value)} placeholder=">seed_1\nTGTGCGAGAGAT…\n>seed_2\nTGTGCGAGGGAT…" /></label><div className="control-grid three"><label><span>Target</span><select value={queryTarget} onChange={(event) => setQueryTarget(event.target.value as QueryTarget)}><option value="cdr3_nt">CDR3 nucleotide</option><option value="cdr3_aa">CDR3 amino acid</option><option value="trimmed">VDJ-aligned k-mer sketch</option></select></label><label><span>Metric</span><select disabled={queryTarget === "trimmed"} value={queryTarget === "trimmed" ? "sketch" : queryMetric} onChange={(event) => setQueryMetric(event.target.value as QueryMetric)}><option value="exact">Exact</option><option value="substring">Substring</option><option value="hamming">Hamming</option><option value="edit">Banded edit distance</option><option value="sketch">MinHash k-mer estimate</option></select></label><label><span>Identity / similarity</span><input type="number" min="0" max="1" step="0.01" value={queryIdentity} onChange={(event) => setQueryIdentity(Number(event.target.value))} /></label><label><span>Locus constraint</span><select value={queryLocus} onChange={(event) => setQueryLocus(event.target.value)}><option value="">Any locus</option>{loci.map((item) => <option value={item.value} key={item.value}>{item.value}</option>)}</select></label><label><span>V constraint</span><input value={queryV} onChange={(event) => setQueryV(event.target.value)} placeholder="optional IGHV…" /></label><label><span>J constraint</span><input value={queryJ} onChange={(event) => setQueryJ(event.target.value)} placeholder="optional IGHJ…" /></label><label><span>Maximum initial hits</span><input type="number" min="1" max="10000" value={queryLimit} onChange={(event) => setQueryLimit(Number(event.target.value))} /></label></div><div className="result-actions"><button className="post-primary dark" type="button" disabled={Boolean(busy)} onClick={() => void runQuery()}>Search repertoire</button><button type="button" disabled={Boolean(busy) || !queryHits.length} onClick={() => void expandMatches()}>Single-linkage expand set</button></div><p className="scientific-note"><span>i</span>{queryTarget === "trimmed" ? "VDJ searches lazily build a packed index of eight independent 7-mer MinHash values per record. Scores are approximate and intended for candidate retrieval." : "Hamming search requires equal length. Edit distance is banded by the selected identity. Expansion always uses equal-length CDR3 nucleotide Hamming edges."}</p></div><div className="query-results"><header><div><span className="section-kicker">Matched set</span><h4>{expanded ? `${expanded.ordinals.length.toLocaleString()} expanded records` : `${queryHits.length.toLocaleString()} initial hits`}</h4><p>{expanded ? `${expanded.comparisons.toLocaleString()} exact edge checks${expanded.capped ? " · result cap reached" : " · fixed point reached"}` : "Ranked by similarity, then distance."}</p></div></header><div className="query-result-list">{displayedQueryRows.slice(0, 100).map((record) => { const hit = queryHits.find((value) => value.ordinal === record.ordinal); return <button type="button" key={record.ordinal} onClick={() => onInspect(record.ordinal)}><span><strong>{record.sequenceId}</strong><small>{record.locus} · {record.vCall || "V—"} · {record.jCall || "J—"}</small></span><code>{record.cdr3 || record.cdr3Aa || "—"}</code><b>{hit ? `${(hit.score * 100).toFixed(1)}%` : "expanded"}</b></button>; })}{!displayedQueryRows.length && <div className="method-placeholder small"><span>⌕</span><h4>No query results</h4><p>Provide a sequence and search the assigned repertoire.</p></div>}</div></div></div>
+      <header><div className="module-number dark">04</div><div><span className="section-kicker">Targeted repertoire search</span><h3>Query sequences, then expand the matched set</h3><p>Paste one or more sequences or FASTA records. V/J constraints can be supplied directly or inferred per seed with the same SwiftIG references and assignment parameters as the main analysis.</p></div></header>
+      <div className="query-layout">
+        <div className="query-input">
+          <label><span>Query sequence(s) or FASTA</span><textarea value={queryText} onChange={(event) => setQueryText(event.target.value)} placeholder=">seed_1\nTGTGCGAGAGAT…\n>seed_2\nTGTGCGAGGGAT…" /></label>
+          <div className="control-grid three">
+            <label><span>Target</span><select value={queryTarget} onChange={(event) => setQueryTarget(event.target.value as QueryTarget)}><option value="cdr3_nt">CDR3 nucleotide</option><option value="cdr3_aa">CDR3 amino acid</option><option value="trimmed">VDJ-aligned k-mer sketch</option></select></label>
+            <label><span>Metric</span><select disabled={queryTarget === "trimmed"} value={queryTarget === "trimmed" ? "sketch" : queryMetric} onChange={(event) => setQueryMetric(event.target.value as QueryMetric)}><option value="exact">Exact</option><option value="substring">Substring</option><option value="hamming">Hamming</option><option value="edit">Banded edit distance</option><option value="sketch">MinHash k-mer estimate</option></select></label>
+            <label><span>Identity / similarity</span><input type="number" min="0" max="1" step="0.01" value={queryIdentity} onChange={(event) => setQueryIdentity(Number(event.target.value))} /></label>
+            <label><span>V/J constraint source</span><select value={queryConstraintMode} onChange={(event) => { setQueryConstraintMode(event.target.value as "manual" | "infer"); setQueryInference([]); }}><option value="manual">Manual / unconstrained</option><option value="infer">Infer per query with SwiftIG</option></select></label>
+            <label><span>{queryConstraintMode === "infer" ? "Locus override" : "Locus constraint"}</span><select value={queryLocus} onChange={(event) => setQueryLocus(event.target.value)}><option value="">{queryConstraintMode === "infer" ? "Use each inferred locus" : "Any locus"}</option>{loci.map((item) => <option value={item.value} key={item.value}>{item.value}</option>)}</select></label>
+            <label><span>{queryConstraintMode === "infer" ? "V override" : "V constraint"}</span><input value={queryV} onChange={(event) => setQueryV(event.target.value)} placeholder={queryConstraintMode === "infer" ? "otherwise inferred per seed" : "optional IGHV…"} /></label>
+            <label><span>{queryConstraintMode === "infer" ? "J override" : "J constraint"}</span><input value={queryJ} onChange={(event) => setQueryJ(event.target.value)} placeholder={queryConstraintMode === "infer" ? "otherwise inferred per seed" : "optional IGHJ…"} /></label>
+            <label><span>Maximum initial hits</span><input type="number" min="1" max="10000" value={queryLimit} onChange={(event) => setQueryLimit(Number(event.target.value))} /></label>
+          </div>
+          {queryInference.length > 0 && <div className="query-inference"><header><strong>SwiftIG seed assignments</strong><span>{queryInference.filter((item) => item.assigned).length} / {queryInference.length} with both V and J</span></header>{queryInference.slice(0, 20).map((assignment) => <div className={assignment.assigned ? "assigned" : "unassigned"} key={assignment.queryIndex}><b>Seed {assignment.queryIndex + 1}</b><span>{assignment.locus || "locus —"}</span><code>{assignment.vCall || "V —"}</code><code>{assignment.jCall || "J —"}</code><small>{assignment.searchSequence ? `${assignment.searchSequence.length} ${queryTarget === "cdr3_aa" ? "aa" : "nt"} search target` : "no target derived"}</small></div>)}</div>}
+          <div className="result-actions">{queryConstraintMode === "infer" && <button type="button" disabled={Boolean(busy)} onClick={() => void previewQueryInference()}>Preview inferred V/J</button>}<button className="post-primary dark" type="button" disabled={Boolean(busy)} onClick={() => void runQuery()}>{queryConstraintMode === "infer" ? "Assign seeds + search" : "Search repertoire"}</button><button type="button" disabled={Boolean(busy) || !queryHits.length} onClick={() => void expandMatches()}>Single-linkage expand set</button></div>
+          <p className="scientific-note"><span>i</span>{queryConstraintMode === "infer" ? `Input is interpreted as rearranged nucleotide sequence. SwiftIG uses this run’s composed references, ${Math.round(minimumIdentity * 100)}% identity floor, and ${strand === 0 ? "both strands" : strand === 1 ? "plus strand" : "minus strand"}; ambiguous V/J calls remain ambiguity-aware and are applied per seed. Non-empty override fields replace the inferred value.` : queryTarget === "trimmed" ? "VDJ searches lazily build a packed index of eight independent 7-mer MinHash values per record. Scores are approximate and intended for candidate retrieval." : "Hamming search requires equal length. Edit distance is banded by the selected identity. Expansion always uses equal-length CDR3 nucleotide Hamming edges."}</p>
+        </div>
+        <div className="query-results"><header><div><span className="section-kicker">Matched set</span><h4>{expanded ? `${expanded.ordinals.length.toLocaleString()} expanded records` : `${queryHits.length.toLocaleString()} initial hits`}</h4><p>{expanded ? `${expanded.comparisons.toLocaleString()} exact edge checks${expanded.capped ? " · result cap reached" : " · fixed point reached"}` : "Ranked by similarity, then distance."}</p></div></header><div className="query-result-list">{displayedQueryRows.slice(0, 100).map((record) => { const hit = queryHits.find((value) => value.ordinal === record.ordinal); return <button type="button" key={record.ordinal} onClick={() => onInspect(record.ordinal)}><span><strong>{record.sequenceId}</strong><small>{record.locus} · {record.vCall || "V—"} · {record.jCall || "J—"}</small></span><code>{record.cdr3 || record.cdr3Aa || "—"}</code><b>{hit ? `${(hit.score * 100).toFixed(1)}%` : "expanded"}</b></button>; })}{!displayedQueryRows.length && <div className="method-placeholder small"><span>⌕</span><h4>No query results</h4><p>Provide a sequence and search the assigned repertoire.</p></div>}</div></div>
+      </div>
     </section>
 
     {selectedLineage && <section ref={workbenchRef} className="post-module lineage-workbench" tabIndex={-1}>

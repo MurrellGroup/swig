@@ -12,7 +12,7 @@ const WORKERS = requestedWorkers || Math.max(1, Math.min(8, os.availableParallel
 const encoder = new TextEncoder();
 
 const pack = JSON.parse(zlib.gunzipSync(
-  fs.readFileSync(new URL("../public/references/imgt-202632-7.json.gz", import.meta.url)),
+  fs.readFileSync(new URL("../public/references/imgt-202632-7-swig-0.7.json.gz", import.meta.url)),
 ));
 const human = pack.species.find((entry) => entry.name === "Homo sapiens");
 assert.ok(human?.loci?.IGH, "Human IGH references are unavailable");

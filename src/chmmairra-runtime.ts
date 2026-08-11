@@ -49,6 +49,32 @@ export interface ChmmDashboard {
   dfr: Uint16Array;
 }
 
+export interface ChmmDetail {
+  ordinal: number;
+  sequenceId: string;
+  segment: ChmmSegment;
+  call: string;
+  probability: number;
+  dfr: number;
+  startingReference: string;
+  recombinations: Array<{ position: number; left: string; right: string }>;
+  threadedObservation: string;
+  parentPath: Uint16Array;
+  parents: Array<{ name: string; sequence: string }>;
+}
+
+function modelOptions(options: ChmmRunOptions): ChmmOptions {
+  return {
+    method: options.method,
+    priorProbability: options.priorProbability,
+    baseMutationProbability: options.baseMutationProbability,
+    mutationRates: options.mutationRates,
+    mutationSwitchProbability: options.mutationSwitchProbability,
+    detailed: options.detailed,
+    tracePath: false,
+  };
+}
+
 function makeClient(): ChmmClient {
   const worker = new Worker(new URL("./chmmairra-worker.ts", import.meta.url), { type: "module" });
   const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -87,16 +113,9 @@ export async function runChmmairra(
 ): Promise<ChmmDashboard> {
   const workerCount = Math.max(1, Math.min(options.workers, 16, store.count || 1));
   const clients = Array.from({ length: workerCount }, makeClient);
-  const modelOptions: ChmmOptions = {
-    method: options.method,
-    priorProbability: options.priorProbability,
-    baseMutationProbability: options.baseMutationProbability,
-    mutationRates: options.mutationRates,
-    mutationSwitchProbability: options.mutationSwitchProbability,
-    detailed: options.detailed,
-  };
+  const workerOptions = modelOptions(options);
   try {
-    await Promise.all(clients.map((client) => client.request({ type: "init", msa, options: modelOptions, minDfr: options.minDfr })));
+    await Promise.all(clients.map((client) => client.request({ type: "init", msa, options: workerOptions, minDfr: options.minDfr })));
     const probabilities = new Float32Array(store.count);
     probabilities.fill(Number.NaN);
     const dfr = new Uint16Array(store.count);
@@ -178,6 +197,39 @@ export async function runChmmairra(
     };
   } finally {
     clients.forEach((client) => client.terminate());
+  }
+}
+
+export async function runChmmairraDetail(
+  store: AirrResultStore,
+  msa: string,
+  options: ChmmRunOptions,
+  ordinal: number,
+): Promise<ChmmDetail> {
+  const [detail] = await store.detailMany([ordinal]);
+  if (!detail) throw new Error("That CHMMAIRRa record is no longer present in the local result index.");
+  const prefix = options.segment.toLowerCase();
+  const call = detail.values[`${prefix}_call`] ?? "";
+  const client = makeClient();
+  try {
+    await client.request({ type: "init", msa, options: modelOptions(options), minDfr: options.minDfr });
+    const result = await client.request<Omit<ChmmDetail, "sequenceId" | "segment" | "call">>({
+      type: "detail",
+      row: {
+        ordinal,
+        call,
+        sequenceAlignment: detail.values[`${prefix}_sequence_alignment`] ?? "",
+        germlineAlignment: detail.values[`${prefix}_germline_alignment`] ?? "",
+      },
+    });
+    return {
+      ...result,
+      sequenceId: detail.values.sequence_id || detail.record.sequenceId,
+      segment: options.segment,
+      call,
+    };
+  } finally {
+    client.terminate();
   }
 }
 

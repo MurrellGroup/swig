@@ -46,7 +46,7 @@ const BCR_LOCI: LocusKey[] = ["IGH", "IGK", "IGL"];
 const TCR_LOCI: LocusKey[] = ["TRA", "TRB", "TRD", "TRG"];
 
 export async function loadReferencePack(): Promise<ReferencePack> {
-  const response = await fetch(`${import.meta.env.BASE_URL}references/imgt-202632-7.json.gz`);
+  const response = await fetch(`${import.meta.env.BASE_URL}references/imgt-202632-7-swig-0.7.json.gz`);
   if (!response.ok) {
     throw new Error("The built-in reference library could not be loaded.");
   }

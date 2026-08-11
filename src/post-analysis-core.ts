@@ -62,6 +62,12 @@ export interface LineageResult {
 export type QueryTarget = "cdr3_nt" | "cdr3_aa" | "trimmed";
 export type QueryMetric = "exact" | "substring" | "hamming" | "edit" | "sketch";
 
+export interface QueryConstraint {
+  locus?: string;
+  vCall?: string;
+  jCall?: string;
+}
+
 export interface QueryOptions {
   target: QueryTarget;
   metric: QueryMetric;
@@ -73,6 +79,7 @@ export interface QueryOptions {
   callResolution: CallResolution;
   ambiguity: AmbiguityPolicy;
   productiveOnly: boolean;
+  queryConstraints?: QueryConstraint[];
 }
 
 export interface QueryHit {
@@ -484,12 +491,16 @@ function queryValue(record: PostAnalysisRecord, target: QueryTarget): string {
   return "";
 }
 
+function matchesOneQueryConstraint(record: PostAnalysisRecord, constraint: QueryConstraint | undefined, options: QueryOptions): boolean {
+  if (constraint?.locus && record.locus !== constraint.locus) return false;
+  if (constraint?.vCall && !callsCompatible(record.vCall, constraint.vCall, options.callResolution, options.ambiguity)) return false;
+  if (constraint?.jCall && !callsCompatible(record.jCall, constraint.jCall, options.callResolution, options.ambiguity)) return false;
+  return true;
+}
+
 function matchesQueryConstraints(record: PostAnalysisRecord, options: QueryOptions): boolean {
   if (options.productiveOnly && !record.productive) return false;
-  if (options.locus && record.locus !== options.locus) return false;
-  if (options.vCall && !callsCompatible(record.vCall, options.vCall, options.callResolution, options.ambiguity)) return false;
-  if (options.jCall && !callsCompatible(record.jCall, options.jCall, options.callResolution, options.ambiguity)) return false;
-  return true;
+  return matchesOneQueryConstraint(record, options, options);
 }
 
 export function queryRecords(records: PostAnalysisRecord[], queries: string[], options: QueryOptions, packedSketches?: Uint32Array): QueryHit[] {
@@ -499,6 +510,7 @@ export function queryRecords(records: PostAnalysisRecord[], queries: string[], o
   for (const record of records) {
     if (!matchesQueryConstraints(record, options)) continue;
     for (let queryIndex = 0; queryIndex < normalizedQueries.length; queryIndex += 1) {
+      if (!matchesOneQueryConstraint(record, options.queryConstraints?.[queryIndex], options)) continue;
       const query = normalizedQueries[queryIndex];
       if (!query) continue;
       if (options.target === "trimmed") {
@@ -694,6 +706,7 @@ export interface ChmmOptions {
   mutationRates: number[];
   mutationSwitchProbability: number;
   detailed: boolean;
+  tracePath?: boolean;
 }
 
 export interface ChmmResult {
@@ -701,6 +714,7 @@ export interface ChmmResult {
   dfr: number;
   startingReference: string;
   recombinations: Array<{ position: number; left: string; right: string }>;
+  referencePath?: Int32Array;
 }
 
 function informativeMismatchCount(query: string, germline: string): number {
@@ -875,13 +889,17 @@ function fullProbability(msa: ReferenceMsa, observation: string, options: ChmmOp
   return total ? chimericTotal / total : 0;
 }
 
-function fullViterbi(msa: ReferenceMsa, observation: string, options: ChmmOptions): Pick<ChmmResult, "startingReference" | "recombinations"> {
+function fullViterbi(msa: ReferenceMsa, observation: string, options: ChmmOptions): Pick<ChmmResult, "startingReference" | "recombinations" | "referencePath"> {
   const references = msa.sequences.length;
   const rates = options.mutationRates.length ? options.mutationRates : [0.005];
   const rateCount = rates.length;
   const states = references * rateCount;
   const length = msa.length;
-  if (references < 2) return { startingReference: msa.names[0] ?? "", recombinations: [] };
+  if (references < 2) return {
+    startingReference: msa.names[0] ?? "",
+    recombinations: [],
+    referencePath: options.tracePath ? new Int32Array(length) : undefined,
+  };
   const previous = new Float64Array(states);
   const next = new Float64Array(states);
   const from = new Int32Array(states * length);
@@ -945,17 +963,20 @@ function fullViterbi(msa: ReferenceMsa, observation: string, options: ChmmOption
   let current = 0;
   for (let state = 1; state < states; state += 1) if (previous[state] > previous[current]) current = state;
   const recombinations: Array<{ position: number; left: string; right: string }> = [];
+  const referencePath = options.tracePath ? new Int32Array(length) : undefined;
+  if (referencePath) referencePath[length - 1] = Math.floor(current / rateCount);
   for (let site = length - 1; site >= 1; site -= 1) {
     const parent = from[current * length + site];
     const leftReference = Math.floor(parent / rateCount);
     const rightReference = Math.floor(current / rateCount);
     if (leftReference !== rightReference) recombinations.push({ position: site + 1, left: msa.names[leftReference], right: msa.names[rightReference] });
     current = parent;
+    if (referencePath) referencePath[site - 1] = Math.floor(current / rateCount);
   }
-  return { startingReference: msa.names[Math.floor(current / rateCount)], recombinations: recombinations.reverse() };
+  return { startingReference: msa.names[Math.floor(current / rateCount)], recombinations: recombinations.reverse(), referencePath };
 }
 
-function approximateViterbi(msa: ReferenceMsa, observation: string, prior: number, mutations: Float64Array): Pick<ChmmResult, "startingReference" | "recombinations"> {
+function approximateViterbi(msa: ReferenceMsa, observation: string, prior: number, mutations: Float64Array, tracePath = false): Pick<ChmmResult, "startingReference" | "recombinations" | "referencePath"> {
   const states = msa.sequences.length;
   const length = msa.length;
   const emissions = approximateEmissions(msa, observation, mutations);
@@ -983,12 +1004,15 @@ function approximateViterbi(msa: ReferenceMsa, observation: string, prior: numbe
   let current = 0;
   for (let state = 1; state < states; state += 1) if (previous[state] > previous[current]) current = state;
   const reverse: Array<{ position: number; left: string; right: string }> = [];
+  const referencePath = tracePath ? new Int32Array(length) : undefined;
+  if (referencePath) referencePath[length - 1] = current;
   for (let site = length - 1; site >= 1; site -= 1) {
     const parent = from[current * length + site];
     if (parent !== current) reverse.push({ position: site + 1, left: msa.names[parent], right: msa.names[current] });
     current = parent;
+    if (referencePath) referencePath[site - 1] = current;
   }
-  return { startingReference: msa.names[current], recombinations: reverse.reverse() };
+  return { startingReference: msa.names[current], recombinations: reverse.reverse(), referencePath };
 }
 
 export function runChmm(
@@ -1010,6 +1034,6 @@ export function runChmm(
   }
   const mutations = estimateMutationProbabilities(msa, threadedObservation, options.priorProbability, options.baseMutationProbability);
   const probability = approximateProbability(msa, threadedObservation, options.priorProbability, mutations);
-  const path = options.detailed ? approximateViterbi(msa, threadedObservation, options.priorProbability, mutations) : { startingReference: "", recombinations: [] };
+  const path = options.detailed ? approximateViterbi(msa, threadedObservation, options.priorProbability, mutations, options.tracePath) : { startingReference: "", recombinations: [] };
   return { probability, dfr, ...path };
 }

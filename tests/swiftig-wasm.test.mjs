@@ -4,9 +4,10 @@ import test from "node:test";
 import zlib from "node:zlib";
 
 import { WASI } from "@bjorn3/browser_wasi_shim";
+import { preprocessGermlineFasta } from "../src/germline-preprocess.ts";
 
 const pack = JSON.parse(
-  zlib.gunzipSync(fs.readFileSync(new URL("../public/references/imgt-202632-7.json.gz", import.meta.url))),
+  zlib.gunzipSync(fs.readFileSync(new URL("../public/references/imgt-202632-7-swig-0.7.json.gz", import.meta.url))),
 );
 const wasmBytes = fs.readFileSync(new URL("../public/swiftig.wasm", import.meta.url));
 const encoder = new TextEncoder();
@@ -77,15 +78,59 @@ function referenceFor(locus, customJName) {
   const d = locus.D?.[0];
   const originalJ = locus.J.find((allele) => allele[2]?.[0] >= 0 && allele[2]?.[1] >= 0) ?? locus.J[0];
   const j = customJName ? [customJName, originalJ[1], originalJ[2]] : originalJ;
+  const c = locus.C?.[0];
   return {
     references: {
       V: asFasta([v]),
       D: d ? asFasta([d]) : "",
       J: asFasta([j]),
+      C: c ? asFasta([c]) : "",
     },
-    sequence: `${v[1]}AACCGG${d?.[1] ?? ""}TTG${j[1]}`,
-    names: { V: v[0], D: d?.[0] ?? "", J: j[0] },
+    sequence: `${v[1]}AACCGG${d?.[1] ?? ""}TTG${j[1]}${c?.[1] ?? ""}`,
+    names: { V: v[0], D: d?.[0] ?? "", J: j[0], C: c?.[0] ?? "" },
   };
+}
+
+function referenceCount(reference) {
+  return Object.values(reference).reduce((count, fasta) => count + (fasta.match(/^>/gm) ?? []).length, 0);
+}
+
+function fastaRecords(text) {
+  const records = [];
+  let name = "";
+  let sequence = "";
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith(">")) {
+      if (name) records.push({ name, sequence });
+      name = line.slice(1).split(/\s+/, 1)[0];
+      sequence = "";
+    } else sequence += line.trim();
+  }
+  if (name) records.push({ name, sequence });
+  return records;
+}
+
+function imgtTiers(speciesName, segment) {
+  const selected = pack.species.find((entry) => entry.name === speciesName);
+  const baseTaxon = speciesName.split("_", 1)[0];
+  const genus = baseTaxon.split(" ", 1)[0];
+  return [
+    [selected],
+    pack.species.filter((entry) => entry.name !== speciesName && entry.name.split("_", 1)[0] === baseTaxon),
+    pack.species.filter((entry) => entry.name.split("_", 1)[0] !== baseTaxon && entry.name.startsWith(`${genus} `)),
+    pack.species.filter((entry) => !entry.name.startsWith(`${genus} `)),
+  ].map((group) => group.flatMap((entry) => entry?.loci.IGH?.[segment] ?? [])).filter((group) => group.length);
+}
+
+function preprocessTiered(text, speciesName, segment) {
+  let report;
+  for (const templates of imgtTiers(speciesName, segment)) {
+    report = preprocessGermlineFasta(report?.fasta ?? text, segment, templates, ["IGH"]);
+    if (report.annotated === report.count) break;
+  }
+  assert.ok(report);
+  assert.equal(report.annotated, report.count, `${speciesName} ${segment}`);
+  return report.fasta;
 }
 
 test("reference pack covers complete IG and TR loci", () => {
@@ -108,7 +153,7 @@ test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, 
 
   const customJName = "IGHJ_SWIGTEST*01";
   const heavy = referenceFor(human.loci.IGH, customJName);
-  assert.equal(runtime.initialize(heavy.references), heavy.names.D ? 3 : 2);
+  assert.equal(runtime.initialize(heavy.references), referenceCount(heavy.references));
 
   const fasta = runtime.annotate(`>fasta_case\n${heavy.sequence}\n`, 1);
   assert.equal(fasta.count, 1);
@@ -120,6 +165,7 @@ test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, 
   assert.equal(fasta.rows[0].region_definition, "IMGT");
   assert.equal(fasta.rows[0].v_annotation_source, "IMGT-gapped");
   assert.equal(fasta.rows[0].j_annotation_source, "validated-J-motif");
+  assert.equal(fasta.rows[0].c_call, heavy.names.C);
   assert.ok(Number(fasta.rows[0].sequence_frame) >= 1 && Number(fasta.rows[0].sequence_frame) <= 3);
   for (const region of ["fwr1", "cdr1", "fwr2", "cdr2", "fwr3"]) {
     assert.ok(fasta.rows[0][region], `${region.toUpperCase()} nucleotide sequence is empty`);
@@ -160,18 +206,50 @@ test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, 
   assert.equal(reverse.rows[0].j_call, customJName);
 
   const light = referenceFor(human.loci.IGK);
-  assert.equal(runtime.initialize(light.references), 2);
+  assert.equal(runtime.initialize(light.references), referenceCount(light.references));
   const lightResult = runtime.annotate(`>light_case\n${light.sequence}\n`, 1);
   assert.equal(lightResult.rows[0].locus, "IGK");
   assert.equal(lightResult.rows[0].d_call, "");
   assert.ok(lightResult.rows[0].v_call);
   assert.ok(lightResult.rows[0].j_call);
+  assert.equal(lightResult.rows[0].c_call, light.names.C);
 
   const tcr = referenceFor(human.loci.TRB);
-  assert.equal(runtime.initialize(tcr.references), tcr.names.D ? 3 : 2);
+  assert.equal(runtime.initialize(tcr.references), referenceCount(tcr.references));
   const tcrResult = runtime.annotate(`sequence_id\tsequence\ntrb_case\t${tcr.sequence}\n`, 3);
   assert.equal(tcrResult.rows[0].locus, "TRB");
   assert.ok(tcrResult.rows[0].v_call);
   assert.ok(tcrResult.rows[0].j_call);
+  assert.equal(tcrResult.rows[0].c_call, tcr.names.C);
   if (tcr.names.D) assert.ok(tcrResult.rows[0].d_call);
+});
+
+test("bundled macaque KIMDB references produce complete IMGT region and CDR calls end to end", { timeout: 45_000 }, async () => {
+  const runtime = await makeRuntime();
+  for (const [speciesName, slug] of [["Macaca mulatta_AG07107", "Macaca_mulatta"], ["Macaca fascicularis", "Macaca_fascicularis"]]) {
+    const species = pack.species.find((entry) => entry.name === speciesName);
+    assert.ok(species?.loci.IGH);
+    const root = new URL(`../public/references/kimdb-1.1/${slug}/IGH/`, import.meta.url);
+    const V = preprocessTiered(fs.readFileSync(new URL("V.fasta", root), "utf8"), speciesName, "V");
+    const J = preprocessTiered(fs.readFileSync(new URL("J.fasta", root), "utf8"), speciesName, "J");
+    const D = preprocessGermlineFasta(fs.readFileSync(new URL("D.fasta", root), "utf8"), "D", [], ["IGH"]).fasta;
+    const C = asFasta(species.loci.IGH.C ?? []);
+    const v = fastaRecords(V)[0];
+    const d = fastaRecords(D)[0];
+    const j = fastaRecords(J)[0];
+    const c = fastaRecords(C)[0];
+    assert.ok(v && d && j && c);
+    const references = { V, D, J, C };
+    assert.equal(runtime.initialize(references), referenceCount(references));
+    const result = runtime.annotate(`>${slug}_kimdb\n${v.sequence}AACCGG${d.sequence}TTG${j.sequence}${c.sequence}\n`, 1);
+    const row = result.rows[0];
+    assert.equal(row.region_definition, "IMGT");
+    assert.equal(row.v_annotation_source, "IMGT-boundary-transfer");
+    assert.equal(row.j_annotation_source, "J-anchor-transfer");
+    for (const region of ["fwr1", "cdr1", "fwr2", "cdr2", "fwr3", "cdr3"]) {
+      assert.ok(row[region], `${speciesName} ${region} is empty`);
+      assert.ok(row[`${region}_aa`], `${speciesName} ${region}_aa is empty`);
+    }
+    assert.ok(row.c_call, `${speciesName} constant call is empty`);
+  }
 });

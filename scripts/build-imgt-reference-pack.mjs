@@ -40,9 +40,26 @@ function ungappedLengthBefore(sequence, end) {
   return sequence.slice(0, end).replace(/[.\-]/g, "").length;
 }
 
+function nearestFrameCysEnd(sequence, predictedEnd, frame) {
+  const candidates = [];
+  const start = Math.max(0, predictedEnd - 60);
+  const stop = Math.min(sequence.length - 2, predictedEnd + 60);
+  for (let index = start; index <= stop; index += 1) {
+    const codon = sequence.slice(index, index + 3);
+    if (codon !== "TGT" && codon !== "TGC") continue;
+    if (frame >= 0 && ((index - frame) % 3 + 3) % 3 !== 0) continue;
+    candidates.push(index + 3);
+  }
+  candidates.sort((left, right) => Math.abs(left - predictedEnd) - Math.abs(right - predictedEnd) || right - left);
+  return candidates[0];
+}
+
 function imgtVMetadata(rawSequence, fields) {
   if (rawSequence.length < IMGT_V_GAPPED_ENDS.at(-1)) return undefined;
   const ends = IMGT_V_GAPPED_ENDS.map((end) => ungappedLengthBefore(rawSequence, end));
+  const sequence = rawSequence.replace(/[.\-]/g, "");
+  const anchorEnd = nearestFrameCysEnd(sequence, ends[4], codonFrame(fields));
+  if (anchorEnd && anchorEnd > ends[3]) ends[4] = anchorEnd;
   const bounds = [0, ends[0], ends[0], ends[1], ends[1], ends[2], ends[2], ends[3], ends[3], ends[4]];
   if (bounds.some((value, index) => index && value < bounds[index - 1])) return undefined;
   return metadata(codonFrame(fields), -1, bounds, 1);
@@ -86,33 +103,30 @@ function parseFasta(text) {
   return records;
 }
 
-const input = fs.readFileSync(inputPath, "utf8");
-const speciesMap = new Map();
-
-for (const [header, rawSequence] of parseFasta(input)) {
-  const fields = header.split("|");
-  const gene = fields[1]?.trim();
-  const species = fields[2]?.trim();
-  const region = fields[4]?.trim();
-  const segmentMatch = /^([VDJC])-REGION$/.exec(region ?? "");
-  const locus = LOCI.find((candidate) => gene?.toUpperCase().startsWith(candidate));
-  if (!gene || !species || !segmentMatch || !locus) continue;
-
-  const gappedSequence = rawSequence
+function normalizedSequence(rawSequence) {
+  const gapped = rawSequence
     .toUpperCase()
     .replaceAll("U", "T")
     .replace(/\s/g, "");
-  const sequence = gappedSequence.replace(/[.\-]/g, "");
-  if (!sequence) continue;
+  return { gapped, ungapped: gapped.replace(/[.\-]/g, "") };
+}
 
-  let annotation;
-  if (segmentMatch[1] === "V") annotation = imgtVMetadata(gappedSequence, fields);
-  else if (segmentMatch[1] === "J") annotation = jMetadata(sequence, fields);
-  else {
-    const frame = codonFrame(fields);
-    if (frame >= 0) annotation = metadata(frame, -1, Array(10).fill(-1), 1);
+// IMGT/GENE-DB exports light-chain constants as one C-REGION record, but
+// heavy-chain and TCR constants as individual exon records.  SwiftIG expects
+// one reference per allele, so assemble the coding exons in the biological
+// order used by the IMGT export.  Membrane/UTR exons are intentionally omitted:
+// the secreted coding path is long enough for isotype calling and does not mix
+// mutually exclusive transcript tails.
+function constantExonKind(locus, region) {
+  if (region === "C-REGION") return "direct";
+  if (locus === "IGH" && /^(?:CH(?:\d+(?:D\d*)?|X)|H\d*|CHS)(?:-(?:CH(?:\d+(?:D\d*)?|X)|H\d*|CHS))*$/.test(region)) {
+    return "exon";
   }
+  if (locus.startsWith("TR") && /^EX(?:[1-3](?:[A-Z]+)?|4)$/.test(region)) return "exon";
+  return undefined;
+}
 
+function ensureLocusEntry(species, locus) {
   let speciesEntry = speciesMap.get(species);
   if (!speciesEntry) {
     speciesEntry = new Map();
@@ -123,11 +137,74 @@ for (const [header, rawSequence] of parseFasta(input)) {
     locusEntry = { V: new Map(), D: new Map(), J: new Map(), C: new Map() };
     speciesEntry.set(locus, locusEntry);
   }
-  const segment = segmentMatch[1];
-  const previous = locusEntry[segment].get(gene);
-  if (!previous || sequence.length > previous[0].length) {
-    locusEntry[segment].set(gene, [sequence, annotation]);
+  return locusEntry;
+}
+
+function retainAllele(species, locus, segment, gene, sequence, annotation, score = sequence.length) {
+  const target = ensureLocusEntry(species, locus)[segment];
+  const previous = target.get(gene);
+  if (!previous || score > previous[2] || (score === previous[2] && sequence.length > previous[0].length)) {
+    target.set(gene, [sequence, annotation, score]);
   }
+}
+
+const input = fs.readFileSync(inputPath, "utf8");
+const speciesMap = new Map();
+const constantGroups = new Map();
+
+for (const [order, [header, rawSequence]] of parseFasta(input).entries()) {
+  const fields = header.split("|");
+  const gene = fields[1]?.trim();
+  const species = fields[2]?.trim();
+  const region = fields[4]?.trim();
+  const segmentMatch = /^([VDJC])-REGION$/.exec(region ?? "");
+  const locus = LOCI.find((candidate) => gene?.toUpperCase().startsWith(candidate));
+  if (!gene || !species || !locus || !region) continue;
+
+  const { gapped: gappedSequence, ungapped: sequence } = normalizedSequence(rawSequence);
+  if (!sequence) continue;
+
+  const constantKind = constantExonKind(locus, region);
+  if (!segmentMatch && constantKind === "exon") {
+    const key = `${species}\u0000${locus}\u0000${gene}`;
+    let group = constantGroups.get(key);
+    if (!group) {
+      group = { species, locus, gene, parts: new Map() };
+      constantGroups.set(key, group);
+    }
+    const previous = group.parts.get(region);
+    if (!previous || sequence.length > previous.sequence.length) {
+      group.parts.set(region, { order, sequence, fields });
+    }
+    continue;
+  }
+  if (!segmentMatch) continue;
+
+  let annotation;
+  if (segmentMatch[1] === "V") annotation = imgtVMetadata(gappedSequence, fields);
+  else if (segmentMatch[1] === "J") annotation = jMetadata(sequence, fields);
+  else {
+    const frame = codonFrame(fields);
+    if (frame >= 0) annotation = metadata(frame, -1, Array(10).fill(-1), 1);
+  }
+
+  const segment = segmentMatch[1];
+  retainAllele(species, locus, segment, gene, sequence, annotation);
+}
+
+for (const group of constantGroups.values()) {
+  const parts = [...group.parts.values()].sort((left, right) => left.order - right.order);
+  if (!parts.length) continue;
+  const sequence = parts.map((part) => part.sequence).join("");
+  const frame = parts.map((part) => codonFrame(part.fields)).find((value) => value >= 0) ?? -1;
+  const annotation = frame >= 0 ? metadata(frame, -1, Array(10).fill(-1), 1) : undefined;
+  const hasFirstDomain = group.locus === "IGH"
+    ? group.parts.has("CH1")
+    : group.parts.has("EX1");
+  // Prefer a complete multi-exon path over a longer partial source when the
+  // same allele appears more than once in the IMGT export.
+  const score = (hasFirstDomain ? 1_000_000_000 : 0) + parts.length * 1_000_000 + sequence.length;
+  retainAllele(group.species, group.locus, "C", group.gene, sequence, annotation, score);
 }
 
 const species = [];

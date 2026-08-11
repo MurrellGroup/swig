@@ -27,7 +27,8 @@ interface ChmmWorkerResult {
 
 type Request =
   | { id: number; type: "init"; msa: string; options: ChmmOptions; minDfr: number }
-  | { id: number; type: "batch"; rows: ChmmRow[] };
+  | { id: number; type: "batch"; rows: ChmmRow[] }
+  | { id: number; type: "detail"; row: ChmmRow };
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 let msa: ReferenceMsa | null = null;
@@ -58,6 +59,37 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       return;
     }
     if (!msa || !options) throw new Error("CHMMAIRRa worker is not initialized.");
+    if (request.type === "detail") {
+      const row = request.row;
+      if (!row.call || !row.sequenceAlignment || !row.germlineAlignment) {
+        throw new Error("This record does not contain the selected segment alignment.");
+      }
+      const threadedObservation = threadSequenceToMsa(row.sequenceAlignment, row.germlineAlignment, row.call, msa);
+      const result = runChmm(msa, threadedObservation, row.sequenceAlignment, row.germlineAlignment, {
+        ...options,
+        detailed: true,
+        tracePath: true,
+      });
+      if (!result.referencePath) throw new Error("The CHMMAIRRa Viterbi trace was not produced.");
+      const used = [...new Set(result.referencePath)].sort((left, right) => {
+        const leftFirst = result.referencePath!.indexOf(left);
+        const rightFirst = result.referencePath!.indexOf(right);
+        return leftFirst - rightFirst;
+      });
+      const remap = new Map(used.map((reference, index) => [reference, index]));
+      const parentPath = Uint16Array.from(result.referencePath, (reference) => remap.get(reference) ?? 0);
+      worker.postMessage({ id: request.id, result: {
+        ordinal: row.ordinal,
+        probability: result.probability,
+        dfr: result.dfr,
+        startingReference: result.startingReference,
+        recombinations: result.recombinations,
+        threadedObservation,
+        parentPath,
+        parents: used.map((reference) => ({ name: msa!.names[reference], sequence: msa!.sequences[reference] })),
+      } });
+      return;
+    }
     const results: ChmmWorkerResult[] = [];
     for (const row of request.rows) {
       if (!row.call || !row.sequenceAlignment || !row.germlineAlignment) {
