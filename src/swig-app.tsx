@@ -8,18 +8,27 @@ import {
 } from "react";
 
 import { AlignmentViewer } from "./alignment-view";
+import type { GermlinePreprocessReport, MetadataAllele } from "./germline-preprocess";
+import { preprocessGermlinesInWorker } from "./germline-preprocess-client";
 import { RepertoireDashboard } from "./repertoire-charts";
 import {
+  allelesForScope,
   availableScopes,
   compileReferences,
-  countFastaRecords,
   loadReferencePack,
+  lociForScope,
   makeDemoFasta,
   type ReferencePack,
   type ReferenceSpecies,
+  type LocusKey,
   type ScopeKey,
   type SegmentKey,
 } from "./reference-pack";
+import {
+  collectionsFor,
+  loadCollectionSegment,
+  type ReferenceCollection,
+} from "./reference-catalog";
 import {
   AirrResultStore,
   EMPTY_FILTERS,
@@ -54,6 +63,8 @@ interface ReferenceOverride {
   text: string;
   count: number;
   size: number;
+  report: GermlinePreprocessReport;
+  collectionId?: string;
 }
 
 interface ResultSession {
@@ -179,6 +190,29 @@ function favoriteSpecies(species: ReferenceSpecies[]): ReferenceSpecies[] {
   });
 }
 
+function templateTiers(
+  pack: ReferencePack,
+  selected: ReferenceSpecies,
+  scope: ScopeKey,
+  segment: SegmentKey,
+): MetadataAllele[][] {
+  const baseTaxon = selected.name.split("_", 1)[0];
+  const genus = baseTaxon.split(" ", 1)[0];
+  const groups = [
+    [selected],
+    pack.species.filter((entry) => entry.name !== selected.name && entry.name.split("_", 1)[0] === baseTaxon),
+    pack.species.filter((entry) => entry.name.split("_", 1)[0] !== baseTaxon && entry.name.startsWith(`${genus} `)),
+    pack.species.filter((entry) => !entry.name.startsWith(`${genus} `)),
+  ];
+  const seen = new Set<string>();
+  return groups.map((group) => group.flatMap((entry) => allelesForScope(entry, scope, segment)).filter((allele) => {
+    const key = `${allele[0]}\u0000${allele[1]}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  })).filter((group) => group.length);
+}
+
 function formatFromName(name: string): { format: InputFormat; formatCode: 1 | 2 | 3 } | null {
   const plain = name.toLowerCase().replace(/\.gz$/, "");
   if (/\.(fa|fasta|fna|fas)$/.test(plain)) return { format: "FASTA", formatCode: 1 };
@@ -284,7 +318,7 @@ function AppHeader({ page, hasResults, onNavigate }: {
         <button className={page === "analyze" ? "active" : ""} type="button" onClick={() => onNavigate("analyze")}>Analyze</button>
         {hasResults && <button className={page === "results" ? "active" : ""} type="button" onClick={() => onNavigate("results")}>Results</button>}
       </nav>
-      <span className="local-badge"><i /> Local-only</span>
+      <span className="local-badge"><i /> Query data · browser only</span>
     </header>
   );
 }
@@ -309,9 +343,9 @@ function LandingPage({ references, onStart, onDemo }: {
     <main className="landing-page">
       <section className="landing-hero">
         <div className="hero-copy">
-          <p className="eyebrow"><span>Browser-native immunogenetics</span></p>
-          <h1>From rearranged reads<br />to <em>inspectable evidence.</em></h1>
-          <p className="hero-lede">Call V(D)J genes across BCR and TCR loci, then interrogate every assignment down to the nucleotide or translated alignment—without uploading a base.</p>
+          <p className="eyebrow"><span>V(D)J sequence annotation</span></p>
+          <h1>Local annotation of<br /><em>BCR and TCR sequences.</em></h1>
+          <p className="hero-lede">Swig runs the SwiftIG annotation core as WebAssembly for IG and TR loci. Query records, uploaded germlines, and AIRR results are processed in the browser and are not transmitted by Swig.</p>
           <div className="hero-actions">
             <button className="primary-cta" type="button" onClick={onStart}>Start an analysis <span>→</span></button>
             <button className="secondary-cta" type="button" onClick={onDemo}>Explore with demo data</button>
@@ -319,7 +353,7 @@ function LandingPage({ references, onStart, onDemo }: {
           <div className="hero-proof">
             <span><b>FASTA</b> / FASTQ / AIRR · gzip</span>
             <span><b>7</b> IG + TR loci</span>
-            <span><b>0</b> bases uploaded</span>
+            <span><b>Query</b> records not transmitted</span>
           </div>
         </div>
         <div className="hero-instrument" aria-label="Example VDJ assignment">
@@ -332,32 +366,33 @@ function LandingPage({ references, onStart, onDemo }: {
       </section>
 
       <section className="workflow-story">
-        <div className="section-heading"><p className="eyebrow"><span>A clear path through the data</span></p><h2>Three stages, no mystery state.</h2><p>Each run moves from configuration to measured progress to a durable local result index.</p></div>
+        <div className="section-heading"><p className="eyebrow"><span>Analysis workflow</span></p><h2>Input, annotation, and results.</h2><p>Each run has an explicit configuration, measured progress, and a browser-local result index.</p></div>
         <div className="workflow-cards">
-          <article><span>01</span><div className="workflow-icon upload-icon" /><h3>Bring sequences</h3><p>Upload or paste FASTA, FASTQ, or AIRR. Gzip is accepted, and large files remain out of the main UI thread.</p></article>
-          <article><span>02</span><div className="workflow-icon engine-icon" /><h3>Annotate locally</h3><p>Choose species, BCR/TCR locus, and germlines. Swap V, D, J, or C independently. Use multiple isolated WASM workers across CPU cores.</p></article>
-          <article><span>03</span><div className="workflow-icon result-icon" /><h3>Interrogate calls</h3><p>Filter a million records without rendering them all, then open any read for nucleotide or on-demand protein alignments.</p></article>
+          <article><span>01</span><div className="workflow-icon upload-icon" /><h3>Provide sequences</h3><p>Upload or paste FASTA, FASTQ, or an AIRR table. Gzip inputs are decompressed incrementally.</p></article>
+          <article><span>02</span><div className="workflow-icon engine-icon" /><h3>Set references</h3><p>Choose a species and IG/TR locus. V, D, J, and C sets can be replaced independently before parallel WASM annotation.</p></article>
+          <article><span>03</span><div className="workflow-icon result-icon" /><h3>Review results</h3><p>Download AIRR TSV, inspect repertoire summaries, filter records, and open nucleotide or amino-acid alignment layers.</p></article>
         </div>
       </section>
 
       <section className="scale-section">
-        <div className="scale-copy"><p className="eyebrow"><span>Designed across scales</span></p><h2>One read gets a microscope.<br />A million reads get a pipeline.</h2><p>Small runs open directly into detailed evidence. Large runs are decompressed, parsed, annotated, indexed, and optionally written to disk under one bounded backpressure queue.</p></div>
+        <div className="scale-copy"><p className="eyebrow"><span>Dataset-size behavior</span></p><h2>Detailed review for small runs;<br />bounded streaming for large runs.</h2><p>Runs of up to three records open at the record view. Larger inputs are decompressed, parsed, annotated, indexed, and optionally written to disk through a bounded queue.</p></div>
         <div className="scale-grid">
-          <article><strong>1–3</strong><span>Auto-open individual calls</span><small>Alignment-first review</small></article>
-          <article><strong>10³</strong><span>Facets + paged table</span><small>Instant categorical filters</small></article>
-          <article><strong>10⁶</strong><span>Streaming local batches</span><small>No million-row DOM or full-file buffer</small></article>
-          <article><strong>{references ?? "—"}</strong><span>Reference sets</span><small>Plus arbitrary custom FASTA</small></article>
+          <article><strong>1–3</strong><span>Record detail opens automatically</span><small>Region and alignment layers</small></article>
+          <article><strong>10³</strong><span>Facets and paged records</span><small>Indexed categorical filters</small></article>
+          <article><strong>10⁶</strong><span>Bounded local batches</span><small>No full-table DOM or full-input buffer</small></article>
+          <article><strong>{references ?? "—"}</strong><span>IMGT species/strain sets</span><small>Custom and selected KI FASTA supported</small></article>
         </div>
       </section>
 
-      <section className="landing-final"><div><span>Ready when your sequences are.</span><h2>Keep the data. See the evidence.</h2></div><button className="primary-cta light" type="button" onClick={onStart}>Open the analysis workspace <span>→</span></button></section>
+      <section className="landing-final"><div><span>Annotation setup</span><h2>Configure input, locus, and germline references.</h2></div><button className="primary-cta light" type="button" onClick={onStart}>Open analysis workspace <span>→</span></button></section>
     </main>
   );
 }
 
-function ReferenceSegment({ segment, count, override, optional, onFile, onClear }: {
+function ReferenceSegment({ segment, count, coverage, override, optional, onFile, onClear }: {
   segment: SegmentKey;
   count: number;
+  coverage?: { annotated: number; total: number };
   override?: ReferenceOverride;
   optional?: boolean;
   onFile: (segment: SegmentKey, file: File) => void;
@@ -367,7 +402,12 @@ function ReferenceSegment({ segment, count, override, optional, onFile, onClear 
   return (
     <article className={`reference-segment ${override ? "custom" : ""}`}>
       <span className={`segment-symbol segment-${segment.toLowerCase()}`}>{segment}</span>
-      <div><strong>{segment} germlines {optional && <small>optional</small>}</strong><span title={override?.name}>{override?.name ?? (count ? "Built-in IMGT set" : segment === "C" ? "Upload to enable constant calls" : "Not used for this locus")}</span><b>{count.toLocaleString()} alleles</b></div>
+      <div>
+        <strong>{segment} germlines {optional && <small>optional</small>}</strong>
+        <span title={override?.name}>{override?.name ?? (count ? "Built-in IMGT set" : segment === "C" ? "Upload to enable constant calls" : "Not used for this locus")}</span>
+        <b>{count.toLocaleString()} alleles</b>
+        {(segment === "V" || segment === "J") && coverage && <em className={coverage.annotated === coverage.total ? "complete" : coverage.annotated ? "partial" : "missing"} title={override?.report.warnings.join("\n")}>{coverage.annotated.toLocaleString()}/{coverage.total.toLocaleString()} with validated {segment === "V" ? "region boundaries" : "frame + motif"}</em>}
+      </div>
       <input ref={input} className="visually-hidden" type="file" accept=".fa,.fasta,.fna,.fas,.txt,.gz" onChange={(event) => {
         const file = event.target.files?.[0];
         if (file) onFile(segment, file);
@@ -375,6 +415,41 @@ function ReferenceSegment({ segment, count, override, optional, onFile, onClear 
       }} />
       {override ? <button className="segment-action remove" type="button" onClick={() => onClear(segment)} aria-label={`Remove custom ${segment} set`}>×</button> : <button className="segment-action" type="button" onClick={() => input.current?.click()}>{count ? "Replace" : "Upload"}</button>}
     </article>
+  );
+}
+
+function ReferenceCollectionPanel({
+  collections,
+  selected,
+  busy,
+  combinedScope,
+  onSelect,
+  onApply,
+}: {
+  collections: ReferenceCollection[];
+  selected?: ReferenceCollection;
+  busy: string;
+  combinedScope: boolean;
+  onSelect: (id: string) => void;
+  onApply: (collection: ReferenceCollection, segment?: SegmentKey) => void;
+}) {
+  const availableSegments = selected ? SEGMENTS.filter((segment) => selected.segments[segment]) : [];
+  return (
+    <section className="reference-collection-panel" aria-label="Published reference collections">
+      <div className="collection-heading">
+        <div><span>Published collections</span><strong>KI germline databases</strong></div>
+        <small>Each segment is independently replaceable.</small>
+      </div>
+      {combinedScope ? <p className="collection-note">Select an individual chain/locus to apply a locus-specific KI collection. The combined BCR/TCR modes retain the selected IMGT sets.</p> : collections.length ? <>
+        <label className="collection-select"><span>Collection</span><select value={selected?.id ?? ""} onChange={(event) => onSelect(event.target.value)}><option value="">Choose a collection…</option>{collections.map((collection) => <option value={collection.id} key={collection.id}>{collection.name}</option>)}</select></label>
+        {selected && <div className="collection-detail">
+          <div><strong>{selected.name}</strong><p>{selected.summary}</p><small>{selected.provider} · {selected.version}</small></div>
+          <div className="collection-links"><a href={selected.sourceUrl} target="_blank" rel="noreferrer">Source ↗</a><a href={selected.citationUrl} target="_blank" rel="noreferrer">Citation ↗</a>{selected.terms && <a href={selected.terms.url} target="_blank" rel="noreferrer">{selected.terms.label} ↗</a>}</div>
+          <div className="collection-actions"><button type="button" disabled={Boolean(busy)} onClick={() => onApply(selected)}>{busy === `${selected.id}:all` ? "Validating…" : `Use all ${availableSegments.join(" + ")}`}</button>{availableSegments.map((segment) => <button type="button" disabled={Boolean(busy)} onClick={() => onApply(selected, segment)} key={segment}>{busy === `${selected.id}:${segment}` ? "Validating…" : `Use ${segment} only`}</button>)}</div>
+          <p className="collection-processing"><span>i</span>Swig downloads only the selected germline FASTA, then validates names, loci, nucleotide content, V-region boundaries, and J frame/motif evidence in this browser.</p>
+        </div>}
+      </> : <p className="collection-note">No KI collection is available for this species and locus. IMGT/GENE-DB and custom FASTA remain available.</p>}
+    </section>
   );
 }
 
@@ -430,7 +505,6 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
     if (!row[`${segment}_call`] || !start || !end || !sequenceLength) return [];
     return [{ segment, call: row[`${segment}_call`], left: (start - 1) / sequenceLength * 100, width: Math.max(1.5, (end - start + 1) / sequenceLength * 100) }];
   });
-  const regions = ["fwr1", "cdr1", "fwr2", "cdr2", "fwr3", "cdr3", "fwr4"];
   const isotype = row.isotype || inferIsotype(row.c_call, row.c_sequence_alignment, row.c_identity ? Number(row.c_identity) : null);
   const uncertainSegments = ["v", "d", "j", "c"].flatMap((segment) => {
     const selected = splitCalls(row[`${segment}_call`] || "");
@@ -461,7 +535,7 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
       </section>
 
       {uncertainSegments.length > 0 && <section className="uncertainty-panel">
-        <div className="uncertainty-heading"><div><span className="section-kicker">Call uncertainty</span><h3>Co-optimal and near-tied hits</h3></div><p>Comma-separated calls are exact co-optima. Alternate rows are retained only within SwiftIG’s uncertainty window; full alignment strings stay selected-call-only so million-read AIRR output remains bounded.</p></div>
+        <div className="uncertainty-heading"><div><span className="section-kicker">Call uncertainty</span><h3>Co-optimal and near-tied hits</h3></div><p>Comma-separated calls have the same optimal score. Additional candidates are retained within SwiftIG’s configured uncertainty window. Full alignment strings are stored only for the selected call to bound per-record output size.</p></div>
         <div className="uncertainty-stack">{uncertainSegments.map(({ segment, selected, alternatives }) => <article key={segment}>
           <header><span className={`segment-symbol segment-${segment}`}>{segment.toUpperCase()}</span><div><strong>{selected.length > 1 ? `${selected.length} co-optimal calls` : "Selected + alternate evidence"}</strong><small>Ranked alignment evidence for this segment</small></div></header>
           <div className="cooptimal-calls">{selected.map((call, index) => <span key={call} className={index === 0 ? "primary" : ""}>{call}{index === 0 ? " · reported first" : " · tied"}</span>)}</div>
@@ -472,11 +546,6 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
       <section className="junction-panel">
         <div><span className="section-kicker">Junction evidence</span><h3>{row.junction_aa || "No translated junction"}</h3><code>{row.junction || "—"}</code></div>
         <dl><div><dt>CDR3 AA</dt><dd>{row.cdr3_aa || "—"}</dd></div><div><dt>Length</dt><dd>{row.junction_aa_length ? `${row.junction_aa_length} aa` : "—"}</dd></div><div><dt>In frame</dt><dd>{row.vj_in_frame || "—"}</dd></div><div><dt>Stop codon</dt><dd>{row.stop_codon || "—"}</dd></div></dl>
-      </section>
-
-      <section className="region-section">
-        <div className="region-heading"><div><span className="section-kicker">Translated regions</span><h3>Framework + CDR sequence</h3></div><button type="button" onClick={() => void navigator.clipboard.writeText(`>${row.sequence_id}\n${row.sequence}\n`)}>Copy FASTA</button></div>
-        <div className="region-strip">{regions.map((region) => <article className={region.startsWith("cdr") ? "cdr" : "fwr"} key={region}><span>{region.toUpperCase()}</span><code>{row[`${region}_aa`] || "—"}</code><small>{row[region]?.length ? `${row[region].length} nt` : "not called"}</small></article>)}</div>
       </section>
 
       <AlignmentViewer row={row} mode={mode} onMode={setMode} />
@@ -626,7 +695,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     <main className="results-page">
       <section className="results-hero">
         <WorkflowStepper active={3} />
-        <div className="results-title"><div><p className="eyebrow"><span>Analysis complete · {session.seconds.toFixed(2)} s · {Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s</span></p><h1>{session.total.toLocaleString()} analyzed rearrangements,<br /><em>ready to interrogate.</em></h1><p>{friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize ? ` · exact random sample from ${session.inputTotal.toLocaleString()} input records (seed ${session.subsampleSeed})` : ""}</p></div><div className="results-actions"><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing AIRR…" : session.streamedDirectly ? "Save another AIRR copy" : "Download AIRR TSV"}<span>↓</span></button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
+        <div className="results-title"><div><p className="eyebrow"><span>Analysis complete · {session.seconds.toFixed(2)} s · {Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s</span></p><h1>{session.total.toLocaleString()} analyzed<br /><em>rearrangements.</em></h1><p>{friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize ? ` · exact random sample from ${session.inputTotal.toLocaleString()} input records (seed ${session.subsampleSeed})` : ""}</p></div><div className="results-actions"><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing AIRR…" : session.streamedDirectly ? "Save another AIRR copy" : "Download AIRR TSV"}<span>↓</span></button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
         <div className="result-summary">
           <article><span>V + J assigned</span><strong>{session.summary.assigned.toLocaleString()}</strong><small>{percentage(session.summary.assigned, session.total)} of input</small></article>
           <article><span>Productive</span><strong>{session.summary.productive.toLocaleString()}</strong><small>{percentage(session.summary.productive, session.total)} of input</small></article>
@@ -667,7 +736,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
             <label className="check-filter"><input type="checkbox" checked={filters.hasD} onChange={(event) => updateFilter("hasD", event.target.checked)} /><span>Require a D assignment</span></label>
             <label className="check-filter"><input type="checkbox" checked={filters.hasCdr3} onChange={(event) => updateFilter("hasCdr3", event.target.checked)} /><span>Require a CDR3 call</span></label>
           </div></details>
-          <p className="index-note"><span>⌁</span> Exact gene and locus filters use local indexes. Substring filters scan candidates on demand and never leave this device.</p>
+          <p className="index-note"><span>i</span> Exact gene and locus filters use browser-local indexes. Substring filters scan candidate records on demand within the browser.</p>
         </aside>
 
         <div className="result-browser">
@@ -707,6 +776,8 @@ export default function SwigApp() {
   const [pasteText, setPasteText] = useState("");
   const [inputError, setInputError] = useState("");
   const [overrides, setOverrides] = useState<Partial<Record<SegmentKey, ReferenceOverride>>>({});
+  const [collectionId, setCollectionId] = useState("");
+  const [collectionBusy, setCollectionBusy] = useState("");
   const [minimumIdentity, setMinimumIdentity] = useState(0.6);
   const [strand, setStrand] = useState<0 | 1 | 2>(0);
   const [workerCount, setWorkerCount] = useState(recommendedWorkerCount);
@@ -740,6 +811,9 @@ export default function SwigApp() {
   const scopes = useMemo(() => species ? availableScopes(species) : [], [species]);
   const activeScope = scopes.includes(scope) ? scope : scopes[0] ?? "BCR";
   const compiled = useMemo(() => species ? compileReferences(species, activeScope, Object.fromEntries(Object.entries(overrides).map(([key, value]) => [key, value?.text]))) : null, [activeScope, overrides, species]);
+  const activeLocus = activeScope === "BCR" || activeScope === "TCR" ? null : activeScope as LocusKey;
+  const referenceCollections = useMemo(() => collectionsFor(species?.name ?? "", activeLocus), [activeLocus, species?.name]);
+  const selectedCollection = referenceCollections.find((collection) => collection.id === collectionId);
   const receptor = activeScope.startsWith("IG") || activeScope === "BCR" ? "BCR" : "TCR";
   const receptorScopes = scopes.filter((value) => receptor === "BCR" ? value === "BCR" || value.startsWith("IG") : value === "TCR" || value.startsWith("TR"));
   const pasteInput = useMemo(() => {
@@ -747,6 +821,10 @@ export default function SwigApp() {
     try { return inspectText("pasted-sequences.txt", pasteText); } catch { return null; }
   }, [pasteText]);
   const activeInput = inputSource === "upload" ? fileInput : pasteInput;
+
+  useEffect(() => {
+    if (collectionId && !referenceCollections.some((collection) => collection.id === collectionId)) setCollectionId("");
+  }, [collectionId, referenceCollections]);
 
   function navigate(next: AppPage) {
     if (next === "results" && !session) next = "analyze";
@@ -765,16 +843,66 @@ export default function SwigApp() {
     }
   }
 
+  async function prepareReferenceOverride(
+    segment: SegmentKey,
+    text: string,
+    name: string,
+    sourceCollectionId?: string,
+  ): Promise<ReferenceOverride> {
+    if (!pack || !species) throw new Error("The baseline reference pack is not ready.");
+    const allowedLoci = lociForScope(species, activeScope);
+    if (!allowedLoci.length) throw new Error("Choose a supported locus before adding germlines.");
+    const report = await preprocessGermlinesInWorker(
+      text,
+      segment,
+      templateTiers(pack, species, activeScope, segment),
+      allowedLoci,
+    );
+    return {
+      name,
+      text: report.fasta,
+      count: report.count,
+      size: new Blob([report.fasta]).size,
+      report,
+      collectionId: sourceCollectionId,
+    };
+  }
+
   async function acceptReferenceFile(segment: SegmentKey, file: File) {
     try {
       setRunError("");
       const text = await readUploadedText(file);
       if (text.trimStart()[0] !== ">") throw new Error(`${segment} references must be FASTA.`);
-      const count = countFastaRecords(text);
-      if (!count) throw new Error(`No ${segment} germline records were found.`);
-      setOverrides((current) => ({ ...current, [segment]: { name: file.name, text, count, size: file.size } }));
+      const override = await prepareReferenceOverride(segment, text, file.name);
+      setOverrides((current) => ({ ...current, [segment]: override }));
     } catch (error) {
       setRunError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function applyReferenceCollection(collection: ReferenceCollection, onlySegment?: SegmentKey) {
+    const segments = onlySegment ? [onlySegment] : SEGMENTS.filter((segment) => collection.segments[segment]);
+    setCollectionBusy(`${collection.id}:${onlySegment ?? "all"}`);
+    setRunError("");
+    try {
+      const downloaded = await Promise.all(segments.map(async (segment) => ({
+        segment,
+        text: await loadCollectionSegment(collection, segment),
+      })));
+      const prepared: Partial<Record<SegmentKey, ReferenceOverride>> = {};
+      for (const item of downloaded) {
+        prepared[item.segment] = await prepareReferenceOverride(
+          item.segment,
+          item.text,
+          `${collection.name} · ${item.segment}`,
+          collection.id,
+        );
+      }
+      setOverrides((current) => ({ ...current, ...prepared }));
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCollectionBusy("");
     }
   }
 
@@ -799,6 +927,14 @@ export default function SwigApp() {
     if (!activeInput || !compiled || !species) return;
     if (!compiled.counts.V || !compiled.counts.J) {
       setRunError("This reference selection requires both V and J germline records.");
+      return;
+    }
+    if (!compiled.annotation.V.annotated) {
+      setRunError("None of the selected V records has a validated FWR/CDR delineation. Provide IMGT-gapped records, SWIGMETA/AIRR-C metadata, or a sufficiently close annotated V reference.");
+      return;
+    }
+    if (!compiled.annotation.J.annotated) {
+      setRunError("None of the selected J records has a validated coding frame and conserved F/W–G anchor. Junction and CDR3 calls cannot be made from this set.");
       return;
     }
     if (subsampleEnabled && (!Number.isFinite(subsampleSize) || subsampleSize < 1)) {
@@ -918,7 +1054,7 @@ export default function SwigApp() {
 
       {page === "analyze" && (
         <main className="analysis-page">
-          <section className="analysis-intro"><WorkflowStepper active={running ? 2 : 1} /><div><p className="eyebrow"><span>Analysis workspace</span></p><h1>{running ? "Calling rearrangements…" : "Configure one local run."}</h1><p>{running ? "SwiftIG is processing bounded batches and writing AIRR records into a local index." : "Add sequences, choose the biological search space, and make any germline substitutions explicit."}</p></div></section>
+          <section className="analysis-intro"><WorkflowStepper active={running ? 2 : 1} /><div><p className="eyebrow"><span>Analysis workspace</span></p><h1>{running ? "Calling rearrangements…" : "Configure an annotation run."}</h1><p>{running ? "SwiftIG is processing bounded batches and writing AIRR records into a browser-local index." : "Provide sequences, select the biological search space, and specify any germline replacements."}</p></div></section>
 
           {running ? <AnalysisProgress stage={progress.stage} value={progress.value} onCancel={() => abortRef.current?.abort()} /> : (
             <div className="analysis-layout">
@@ -946,7 +1082,7 @@ export default function SwigApp() {
                 </section>
 
                 <section className="analysis-card reference-card">
-                  <header><span className="card-number">02</span><div><h2>Biological search space</h2><p>Choose a baseline, then replace any segment independently.</p></div>{Object.keys(overrides).length > 0 && <button className="reset-button" type="button" onClick={() => setOverrides({})}>Reset custom sets</button>}</header>
+                  <header><span className="card-number">02</span><div><h2>Biological search space</h2><p>Select a baseline reference and, if required, replace individual segments.</p></div>{Object.keys(overrides).length > 0 && <button className="reset-button" type="button" onClick={() => setOverrides({})}>Reset replacements</button>}</header>
                   <div className="reference-selectors">
                     <label><span>Species / strain</span><select value={species?.name ?? ""} disabled={!pack} onChange={(event) => {
                       setSpeciesName(event.target.value);
@@ -954,17 +1090,19 @@ export default function SwigApp() {
                       const nextScopes = next ? availableScopes(next) : [];
                       if (!nextScopes.includes(activeScope)) setScope(nextScopes[0] ?? "BCR");
                       setOverrides({});
+                      setCollectionId("");
                     }}>{!pack && <option>Loading IMGT references…</option>}{speciesList.map((item) => <option value={item.name} key={item.name}>{friendlySpecies(item.name)}</option>)}</select></label>
-                    <div className="receptor-selector"><span>Receptor</span><div><button className={receptor === "BCR" ? "active" : ""} type="button" disabled={!hasBcr} onClick={() => setScope("BCR")}>BCR <small>IG</small></button><button className={receptor === "TCR" ? "active" : ""} type="button" disabled={!hasTcr} onClick={() => setScope("TCR")}>TCR <small>TR</small></button></div></div>
-                    <label><span>Chain / locus</span><select value={activeScope} onChange={(event) => setScope(event.target.value as ScopeKey)}>{receptorScopes.map((value) => <option value={value} key={value}>{LOCUS_LABELS[value]}</option>)}</select></label>
+                    <div className="receptor-selector"><span>Receptor</span><div><button className={receptor === "BCR" ? "active" : ""} type="button" disabled={!hasBcr} onClick={() => { setScope("BCR"); setCollectionId(""); }}>BCR <small>IG</small></button><button className={receptor === "TCR" ? "active" : ""} type="button" disabled={!hasTcr} onClick={() => { setScope("TCR"); setCollectionId(""); }}>TCR <small>TR</small></button></div></div>
+                    <label><span>Chain / locus</span><select value={activeScope} onChange={(event) => { setScope(event.target.value as ScopeKey); setCollectionId(""); }}>{receptorScopes.map((value) => <option value={value} key={value}>{LOCUS_LABELS[value]}</option>)}</select></label>
                   </div>
                   {packError && <p className="inline-error" role="alert">{packError}</p>}
-                  <div className="reference-segments">{SEGMENTS.map((segment) => <ReferenceSegment key={segment} segment={segment} count={compiled?.counts[segment] ?? 0} override={overrides[segment]} optional={segment === "D" || segment === "C"} onFile={(key, file) => void acceptReferenceFile(key, file)} onClear={(key) => setOverrides((current) => { const next = { ...current }; delete next[key]; return next; })} />)}</div>
-                  <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · IMGT/GENE-DB {pack?.release ?? "…"}. Each upload replaces only that segment. C references enable constant-region and isotype calls when ≥30 nt align.</p>
+                  <ReferenceCollectionPanel collections={referenceCollections} selected={selectedCollection} busy={collectionBusy} combinedScope={!activeLocus} onSelect={setCollectionId} onApply={(collection, segment) => void applyReferenceCollection(collection, segment)} />
+                  <div className="reference-segments">{SEGMENTS.map((segment) => <ReferenceSegment key={segment} segment={segment} count={compiled?.counts[segment] ?? 0} coverage={segment === "V" || segment === "J" ? compiled?.annotation[segment] : undefined} override={overrides[segment]} optional={segment === "D" || segment === "C"} onFile={(key, file) => void acceptReferenceFile(key, file)} onClear={(key) => setOverrides((current) => { const next = { ...current }; delete next[key]; return next; })} />)}</div>
+                  <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · IMGT/GENE-DB {pack?.release ?? "…"}. A replacement affects only the selected segment. Uploaded V/J records are aligned to the nearest delineated, locus-matched IMGT relative; coordinates are retained only when the mapped intervals and conserved anchors validate. C references enable constant-region and isotype calls when ≥30 nt align.</p>
                 </section>
 
                 <section className="analysis-card settings-card">
-                  <header><span className="card-number">03</span><div><h2>Analysis behavior</h2><p>Defaults are tuned for rearranged repertoire sequences.</p></div><button className="reset-button" type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} controls</button></header>
+                  <header><span className="card-number">03</span><div><h2>Analysis parameters</h2><p>Review sampling, strand, identity, worker, and output settings.</p></div><button className="reset-button" type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} controls</button></header>
                   <div className="settings-strip"><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "adaptive"}</span><span><b>Input</b> {subsampleEnabled ? `random ${Math.floor(subsampleSize || 0).toLocaleString()}` : "all records"}</span></div>
                   <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records in memory and output.</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>Records to analyze</span><input type="number" min="1" step="1000" value={subsampleSize} onChange={(event) => setSubsampleSize(Math.max(1, Number(event.target.value) || 1))} /></label><label><span>Random seed</span><input type="number" step="1" value={subsampleSeed} onChange={(event) => setSubsampleSeed(Number(event.target.value) || 0)} /></label></div>}</div>
                   {showAdvanced && <div className="advanced-settings">
@@ -977,11 +1115,11 @@ export default function SwigApp() {
               </div>
 
               <aside className="run-summary">
-                <span className="section-kicker">Run manifest</span><h2>{activeInput ? subsampleEnabled ? `${Math.floor(subsampleSize).toLocaleString()}-read sample` : activeInput.count === null ? "Large file" : `${activeInput.count?.toLocaleString()} sequences` : "Awaiting data"}</h2><p>{activeInput?.name ?? "Add an input to unlock analysis."}</p>
+                <span className="section-kicker">Run manifest</span><h2>{activeInput ? subsampleEnabled ? `${Math.floor(subsampleSize).toLocaleString()}-read sample` : activeInput.count === null ? "Large file" : `${activeInput.count?.toLocaleString()} sequences` : "Awaiting data"}</h2><p>{activeInput?.name ?? "Add an input to configure the run."}</p>
                 <dl><div><dt>Reference</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>V / D / J / C</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J} / ${compiled.counts.C}` : "—"}</dd></div><div><dt>Custom</dt><dd>{Object.keys(overrides).length ? Object.keys(overrides).join(" + ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · bounded queue</dd></div><div><dt>Storage</dt><dd>{outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
                 {runError && <p className="run-error" role="alert">{runError}</p>}
                 <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError)} onClick={requestRun}><span>Analyze with SwiftIG</span><b>→</b></button>
-                <p className="privacy-copy"><span>⌁</span> Query data, custom germlines, and AIRR output remain on this device. For large runs, Swig clearly asks where to save a new output file before analysis starts.</p>
+                <p className="privacy-copy"><span>i</span> Query sequences, uploaded germlines, and AIRR results are processed in this browser; Swig does not transmit them. Selecting an online KI collection downloads only the chosen germline FASTA from its provider.</p>
               </aside>
             </div>
           )}
@@ -996,9 +1134,9 @@ export default function SwigApp() {
         <p>The next system window is a <b>Save As</b> dialog. You are naming a new results file—this is not another sequence import.</p>
         <div className="output-flow"><div><span>Input already selected</span><strong>{activeInput.name}</strong></div><b>→</b><div className="destination"><span>New output file</span><strong>{outputName(activeInput.name)}</strong><small>Written incrementally during analysis</small></div></div>
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
-        <p className="output-safety"><span>i</span> Your sequence data still never leave this device.</p>
+        <p className="output-safety"><span>i</span> Query sequences remain in this browser and are not transmitted by Swig.</p>
       </section></div>}
-      <footer className="site-footer"><Brand /><p>Swig 0.4 · parallel streaming WebAssembly · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      <footer className="site-footer"><Brand /><p>Swig 0.5 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }

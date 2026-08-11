@@ -34,6 +34,7 @@ const std::vector<std::string>& columns() {
         "v_germline_alignment", "d_germline_alignment", "j_germline_alignment", "c_germline_alignment",
         "junction_length", "junction_aa_length", "np1_length", "np2_length",
         "v_frameshift", "j_frameshift", "d_frame",
+        "sequence_frame", "region_definition", "v_annotation_source", "j_annotation_source",
         "v_alternatives", "d_alternatives", "j_alternatives", "c_alternatives"};
     return names;
 }
@@ -174,6 +175,8 @@ void write_airr_record(std::ostream& output, const Annotation& a) {
         np1_length(a), np2_length(a),
         optional_boolean(a.v_frameshift), optional_boolean(a.j_frameshift),
         a.d_frame ? std::to_string(*a.d_frame) : std::string{},
+        a.sequence_frame ? std::to_string(*a.sequence_frame) : std::string{},
+        a.region_definition, a.v_annotation_source, a.j_annotation_source,
         alternative_evidence(a.v_alternatives), alternative_evidence(a.d_alternatives),
         alternative_evidence(a.j_alternatives), alternative_evidence(a.c_alternatives)};
     write_row(output, values);

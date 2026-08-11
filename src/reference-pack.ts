@@ -1,8 +1,16 @@
+import {
+  alleleMetadataHeader,
+  annotationCoverage,
+  type CompactMetadata,
+  type MetadataAllele,
+} from "./germline-preprocess";
+
 export type SegmentKey = "V" | "D" | "J" | "C";
 export type LocusKey = "IGH" | "IGK" | "IGL" | "TRA" | "TRB" | "TRD" | "TRG";
 export type ScopeKey = "BCR" | "TCR" | LocusKey;
 
-export type Allele = [name: string, sequence: string];
+export type AlleleMetadata = CompactMetadata;
+export type Allele = MetadataAllele;
 
 export interface ReferenceLocus {
   V: Allele[];
@@ -17,6 +25,7 @@ export interface ReferenceSpecies {
 }
 
 export interface ReferencePack {
+  schemaVersion?: number;
   source: string;
   release: string;
   retrieved: string;
@@ -29,6 +38,7 @@ export interface CompiledReferences {
   J: string;
   C: string;
   counts: Record<SegmentKey, number>;
+  annotation: { V: { annotated: number; total: number }; J: { annotated: number; total: number } };
   loci: LocusKey[];
 }
 
@@ -69,8 +79,16 @@ export function lociForScope(species: ReferenceSpecies, scope: ScopeKey): LocusK
   return requested.filter((locus) => species.loci[locus]);
 }
 
+export function allelesForScope(
+  species: ReferenceSpecies,
+  scope: ScopeKey,
+  segment: SegmentKey,
+): Allele[] {
+  return lociForScope(species, scope).flatMap((locus) => species.loci[locus]?.[segment] ?? []);
+}
+
 export function allelesToFasta(alleles: Allele[]): string {
-  return alleles.map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+  return alleles.map(alleleMetadataHeader).join("");
 }
 
 export function compileReferences(
@@ -79,15 +97,12 @@ export function compileReferences(
   overrides: Partial<Record<SegmentKey, string>> = {},
 ): CompiledReferences {
   const loci = lociForScope(species, scope);
-  const segments: Record<SegmentKey, Allele[]> = { V: [], D: [], J: [], C: [] };
-  for (const locus of loci) {
-    const reference = species.loci[locus];
-    if (!reference) continue;
-    segments.V.push(...reference.V);
-    segments.D.push(...(reference.D ?? []));
-    segments.J.push(...reference.J);
-    segments.C.push(...(reference.C ?? []));
-  }
+  const segments: Record<SegmentKey, Allele[]> = {
+    V: allelesForScope(species, scope, "V"),
+    D: allelesForScope(species, scope, "D"),
+    J: allelesForScope(species, scope, "J"),
+    C: allelesForScope(species, scope, "C"),
+  };
   const compiled: CompiledReferences = {
     V: overrides.V ?? allelesToFasta(segments.V),
     D: overrides.D ?? allelesToFasta(segments.D),
@@ -98,6 +113,14 @@ export function compileReferences(
       D: overrides.D ? countFastaRecords(overrides.D) : segments.D.length,
       J: overrides.J ? countFastaRecords(overrides.J) : segments.J.length,
       C: overrides.C ? countFastaRecords(overrides.C) : segments.C.length,
+    },
+    annotation: {
+      V: overrides.V
+        ? annotationCoverage(overrides.V, "V")
+        : { annotated: segments.V.filter((allele) => allele[2]?.slice(2, 12).every((value) => value >= 0)).length, total: segments.V.length },
+      J: overrides.J
+        ? annotationCoverage(overrides.J, "J")
+        : { annotated: segments.J.filter((allele) => Boolean(allele[2] && allele[2]![0] >= 0 && allele[2]![1] >= 0)).length, total: segments.J.length },
     },
     loci,
   };

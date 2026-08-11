@@ -214,7 +214,57 @@ bool parse_germline(
         }
         auto locus = swiftig::infer_locus(record.id + " " + record.description);
         if (locus.empty()) locus = swiftig::infer_locus(name);
-        genes.push_back(Gene{std::move(name), record.sequence, std::move(locus), -1, -1, {}});
+        Gene gene;
+        gene.name = std::move(name);
+        gene.sequence = record.sequence;
+        gene.locus = std::move(locus);
+        const auto marker = record.description.find("SWIGMETA=");
+        if (marker != std::string::npos) {
+            std::array<int, 13> values{};
+            std::size_t cursor = marker + 9;
+            bool valid = true;
+            for (std::size_t index = 0; index < values.size(); ++index) {
+                bool negative = cursor < record.description.size() && record.description[cursor] == '-';
+                if (negative) ++cursor;
+                if (cursor >= record.description.size() ||
+                    record.description[cursor] < '0' || record.description[cursor] > '9') {
+                    valid = false;
+                    break;
+                }
+                int value = 0;
+                while (cursor < record.description.size() &&
+                    record.description[cursor] >= '0' && record.description[cursor] <= '9') {
+                    value = value * 10 + (record.description[cursor] - '0');
+                    ++cursor;
+                }
+                values[index] = negative ? -value : value;
+                if (index + 1 < values.size()) {
+                    if (cursor >= record.description.size() || record.description[cursor] != ',') {
+                        valid = false;
+                        break;
+                    }
+                    ++cursor;
+                }
+            }
+            if (!valid || values[0] < -1 || values[0] > 2 || values[1] < -1) {
+                return fail(std::string("invalid SWIGMETA annotation for ") + gene.name);
+            }
+            gene.coding_frame_start = values[0];
+            gene.cdr3_stop = values[1];
+            for (std::size_t index = 0; index < gene.region_bounds.size(); ++index) {
+                gene.region_bounds[index] = values[index + 2];
+            }
+            switch (values[12]) {
+                case 1: gene.annotation_source = "IMGT-gapped"; break;
+                case 2: gene.annotation_source = "AIRR-C"; break;
+                case 3: gene.annotation_source = "IMGT-boundary-transfer"; break;
+                case 4: gene.annotation_source = "validated-J-motif"; break;
+                case 5: gene.annotation_source = "provided"; break;
+                case 6: gene.annotation_source = "J-anchor-transfer"; break;
+                default: gene.annotation_source = "unclassified"; break;
+            }
+        }
+        genes.push_back(std::move(gene));
     }
     return true;
 }

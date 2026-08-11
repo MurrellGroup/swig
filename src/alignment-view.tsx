@@ -1,94 +1,12 @@
 import { useMemo } from "react";
-
-type AirrRow = Record<string, string>;
-type AlignmentMode = "nt" | "aa";
-
-interface AlignmentResult {
-  query: string;
-  reference: string;
-  score: number;
-  queryFrame: number;
-  referenceFrame: number;
-}
-
-const CODONS: Record<string, string> = {
-  TTT: "F", TTC: "F", TTA: "L", TTG: "L", TCT: "S", TCC: "S", TCA: "S", TCG: "S",
-  TAT: "Y", TAC: "Y", TAA: "*", TAG: "*", TGT: "C", TGC: "C", TGA: "*", TGG: "W",
-  CTT: "L", CTC: "L", CTA: "L", CTG: "L", CCT: "P", CCC: "P", CCA: "P", CCG: "P",
-  CAT: "H", CAC: "H", CAA: "Q", CAG: "Q", CGT: "R", CGC: "R", CGA: "R", CGG: "R",
-  ATT: "I", ATC: "I", ATA: "I", ATG: "M", ACT: "T", ACC: "T", ACA: "T", ACG: "T",
-  AAT: "N", AAC: "N", AAA: "K", AAG: "K", AGT: "S", AGC: "S", AGA: "R", AGG: "R",
-  GTT: "V", GTC: "V", GTA: "V", GTG: "V", GCT: "A", GCC: "A", GCA: "A", GCG: "A",
-  GAT: "D", GAC: "D", GAA: "E", GAG: "E", GGT: "G", GGC: "G", GGA: "G", GGG: "G",
-};
-
-function translate(sequence: string, frame: number): string {
-  const clean = sequence.toUpperCase().replace(/[^ACGTN]/g, "");
-  let protein = "";
-  for (let index = frame; index + 2 < clean.length; index += 3) {
-    protein += CODONS[clean.slice(index, index + 3)] ?? "X";
-  }
-  return protein;
-}
-
-function proteinAlign(query: string, reference: string): Omit<AlignmentResult, "queryFrame" | "referenceFrame"> {
-  const columns = reference.length + 1;
-  const rows = query.length + 1;
-  const scores = new Int16Array(rows * columns);
-  const trace = new Uint8Array(rows * columns);
-  for (let row = 1; row < rows; row += 1) {
-    scores[row * columns] = -2 * row;
-    trace[row * columns] = 1;
-  }
-  for (let column = 1; column < columns; column += 1) {
-    scores[column] = -2 * column;
-    trace[column] = 2;
-  }
-  for (let row = 1; row < rows; row += 1) {
-    for (let column = 1; column < columns; column += 1) {
-      const diagonal = scores[(row - 1) * columns + column - 1] +
-        (query[row - 1] === reference[column - 1] ? 3 : -1);
-      const up = scores[(row - 1) * columns + column] - 2;
-      const left = scores[row * columns + column - 1] - 2;
-      const best = Math.max(diagonal, up, left);
-      scores[row * columns + column] = best;
-      trace[row * columns + column] = best === diagonal ? 0 : best === up ? 1 : 2;
-    }
-  }
-  let row = query.length;
-  let column = reference.length;
-  let alignedQuery = "";
-  let alignedReference = "";
-  while (row || column) {
-    const direction = trace[row * columns + column];
-    if (row && column && direction === 0) {
-      alignedQuery = query[--row] + alignedQuery;
-      alignedReference = reference[--column] + alignedReference;
-    } else if (row && (direction === 1 || !column)) {
-      alignedQuery = query[--row] + alignedQuery;
-      alignedReference = `-${alignedReference}`;
-    } else {
-      alignedQuery = `-${alignedQuery}`;
-      alignedReference = reference[--column] + alignedReference;
-    }
-  }
-  return { query: alignedQuery, reference: alignedReference, score: scores[scores.length - 1] };
-}
-
-function bestProteinAlignment(queryNucleotides: string, referenceNucleotides: string): AlignmentResult | null {
-  const queryClean = queryNucleotides.replace(/[-.]/g, "");
-  const referenceClean = referenceNucleotides.replace(/[-.]/g, "");
-  if (queryClean.length < 3 || referenceClean.length < 3) return null;
-  let best: AlignmentResult | null = null;
-  for (let queryFrame = 0; queryFrame < 3; queryFrame += 1) {
-    for (let referenceFrame = 0; referenceFrame < 3; referenceFrame += 1) {
-      const aligned = proteinAlign(translate(queryClean, queryFrame), translate(referenceClean, referenceFrame));
-      const candidate = { ...aligned, queryFrame, referenceFrame };
-      if (!best || candidate.score > best.score) best = candidate;
-    }
-  }
-  return best;
-}
+import {
+  ALIGNMENT_SEGMENTS,
+  REGIONS,
+  biologicalSegmentAlignment,
+  buildTrackFeatures,
+  type AirrRow,
+  type AlignmentMode,
+} from "./alignment-model";
 
 function matchLine(query: string, reference: string): string {
   return [...query].map((value, index) => {
@@ -98,12 +16,12 @@ function matchLine(query: string, reference: string): string {
   }).join("");
 }
 
-function blocks(query: string, reference: string, width = 72) {
-  const output: Array<{ query: string; reference: string; match: string }> = [];
+function alignmentBlocks(query: string, reference: string, width = 72) {
+  const output: Array<{ query: string; reference: string; match: string; offset: number }> = [];
   for (let index = 0; index < Math.max(query.length, reference.length); index += width) {
     const queryBlock = query.slice(index, index + width);
     const referenceBlock = reference.slice(index, index + width);
-    output.push({ query: queryBlock, reference: referenceBlock, match: matchLine(queryBlock, referenceBlock) });
+    output.push({ query: queryBlock, reference: referenceBlock, match: matchLine(queryBlock, referenceBlock), offset: index });
   }
   return output;
 }
@@ -113,30 +31,76 @@ function percent(value: string): string {
   return Number.isFinite(parsed) && value !== "" ? `${(parsed * 100).toFixed(1)}%` : "—";
 }
 
-const SEGMENTS = [
-  { key: "v", label: "V", color: "var(--segment-v)" },
-  { key: "d", label: "D", color: "var(--segment-d)" },
-  { key: "j", label: "J", color: "var(--segment-j)" },
-  { key: "c", label: "C", color: "var(--segment-c)" },
-] as const;
+function coordinate(value: number, mode: AlignmentMode, frameOneBased: number): string {
+  if (mode === "nt" || !frameOneBased) return value.toLocaleString();
+  const frame = frameOneBased - 1;
+  if (value - 1 < frame) return "pre-frame";
+  return `${Math.floor((value - 1 - frame) / 3) + 1} aa`;
+}
+
+function FeatureTracks({ row, mode }: { row: AirrRow; mode: AlignmentMode }) {
+  const tracks = useMemo(() => buildTrackFeatures(row), [row]);
+  const length = row.sequence?.length ?? 0;
+  const frame = Number(row.sequence_frame);
+  const middle = Math.max(1, Math.ceil(length / 2));
+  return (
+    <section className="layered-tracks" aria-label="Query feature tracks">
+      <div className="track-ruler"><span>{coordinate(1, mode, frame)}</span><i /><span>{coordinate(middle, mode, frame)}</span><i /><span>{coordinate(length, mode, frame)}</span></div>
+      <div className="feature-track query-track"><b>Query</b><div><i /></div></div>
+      <div className="feature-track region-track"><b>IMGT regions</b><div>{tracks.regions.map((item) => <span className={item.key.startsWith("cdr") ? "cdr" : "fwr"} key={item.key} style={{ left: `${item.left}%`, width: `${item.width}%` }} title={`${item.label}: ${item.start}–${item.end} nt`}>{item.label}</span>)}</div></div>
+      <div className="feature-track germline-track"><b>Germline hits</b><div>{tracks.segments.map((item) => <span className={item.key} key={item.key} style={{ left: `${item.left}%`, width: `${item.width}%` }} title={`${row[`${item.key}_call`]}: ${item.start}–${item.end} nt`}>{item.label}</span>)}</div></div>
+      {!tracks.regions.length && <p className="track-warning">No validated FWR/CDR coordinates were reported for the selected V call.</p>}
+    </section>
+  );
+}
+
+function RegionSequences({ row, mode }: { row: AirrRow; mode: AlignmentMode }) {
+  return (
+    <div className="layer-region-grid">
+      {REGIONS.map((region) => {
+        const value = row[mode === "aa" ? `${region}_aa` : region] || "";
+        const start = Number(row[`${region}_start`]);
+        const end = Number(row[`${region}_end`]);
+        return <article className={region.startsWith("cdr") ? "cdr" : "fwr"} key={region}><span>{region.toUpperCase()}</span><code>{value || "—"}</code><small>{start && end ? `${coordinate(start, mode, Number(row.sequence_frame))}–${coordinate(end, mode, Number(row.sequence_frame))}` : "not assigned"}</small></article>;
+      })}
+    </div>
+  );
+}
+
+function CompositeAlignment({ row, mode }: { row: AirrRow; mode: AlignmentMode }) {
+  const query = mode === "aa" ? row.sequence_alignment_aa : row.sequence_alignment;
+  const reference = mode === "aa" ? row.germline_alignment_aa : row.germline_alignment;
+  const rendered = alignmentBlocks(query || "", reference || "");
+  return (
+    <article className="composite-alignment">
+      <header><div><span className="section-kicker">Combined V(D)J layer</span><h4>Query ↔ composite germline</h4></div><small>{mode === "aa" ? `Shared biological frame ${row.sequence_frame ? `+${row.sequence_frame}` : "not available"}` : "AIRR stitched nucleotide alignment"}</small></header>
+      {rendered.length ? rendered.map((block) => <div className="alignment-block" key={block.offset}>
+        <div><span>query</span><code>{block.query}</code></div>
+        <div className="match-row"><span /><code>{block.match}</code></div>
+        <div><span>V(D)J ref</span><code>{block.reference}</code></div>
+      </div>) : <p className="empty-alignment">{mode === "aa" ? "A shared coding frame could not be established for this record." : "No stitched V(D)J alignment was reported."}</p>}
+    </article>
+  );
+}
 
 function SegmentAlignment({ row, segment, mode }: {
   row: AirrRow;
-  segment: typeof SEGMENTS[number];
+  segment: typeof ALIGNMENT_SEGMENTS[number];
   mode: AlignmentMode;
 }) {
   const call = row[`${segment.key}_call`];
   const nucleotideQuery = row[`${segment.key}_sequence_alignment`] ?? "";
   const nucleotideReference = row[`${segment.key}_germline_alignment`] ?? "";
-  const protein = useMemo(
-    () => mode === "aa" ? bestProteinAlignment(nucleotideQuery, nucleotideReference) : null,
-    [mode, nucleotideQuery, nucleotideReference],
-  );
+  const protein = useMemo(() => mode === "aa" ? biologicalSegmentAlignment(
+    nucleotideQuery,
+    nucleotideReference,
+    Number(row[`${segment.key}_sequence_start`]),
+    Number(row.sequence_frame),
+  ) : null, [mode, nucleotideQuery, nucleotideReference, row, segment.key]);
   if (!call) return null;
   const query = mode === "aa" ? protein?.query ?? "" : nucleotideQuery;
   const reference = mode === "aa" ? protein?.reference ?? "" : nucleotideReference;
-  const renderedBlocks = blocks(query, reference);
-
+  const rendered = alignmentBlocks(query, reference);
   return (
     <article className="alignment-card" style={{ "--segment-color": segment.color } as React.CSSProperties}>
       <header>
@@ -148,16 +112,11 @@ function SegmentAlignment({ row, segment, mode }: {
           <div><dt>Score</dt><dd>{row[`${segment.key}_score`] || "—"}</dd></div>
         </dl>
       </header>
-      {mode === "aa" && protein && (
-        <p className="translation-note">On-demand translation · query frame +{protein.queryFrame + 1}, germline frame +{protein.referenceFrame + 1}</p>
-      )}
-      {renderedBlocks.length ? renderedBlocks.map((block, index) => (
-        <div className="alignment-block" key={index}>
-          <div><span>query</span><code>{block.query}</code></div>
-          <div className="match-row"><span /><code>{block.match}</code></div>
-          <div><span>{segment.label.toLowerCase()} ref</span><code>{block.reference}</code></div>
-        </div>
-      )) : <p className="empty-alignment">No aligned sequence was reported for this segment.</p>}
+      {rendered.length ? rendered.map((block) => <div className="alignment-block" key={block.offset}>
+        <div><span>query</span><code>{block.query}</code></div>
+        <div className="match-row"><span /><code>{block.match}</code></div>
+        <div><span>{segment.label.toLowerCase()} ref</span><code>{block.reference}</code></div>
+      </div>) : <p className="empty-alignment">{mode === "aa" ? "No frame-consistent translated alignment is available." : "No aligned sequence was reported for this segment."}</p>}
     </article>
   );
 }
@@ -167,25 +126,20 @@ export function AlignmentViewer({ row, mode, onMode }: {
   mode: AlignmentMode;
   onMode: (mode: AlignmentMode) => void;
 }) {
+  const hasRegions = Boolean(row.region_definition && row.fwr1_start && row.fwr3_end);
   return (
     <section className="alignment-viewer">
       <div className="alignment-toolbar">
-        <div>
-          <span className="section-kicker">Per-segment evidence</span>
-          <h3>Query ↔ germline alignments</h3>
-        </div>
-        <div className="mode-toggle" role="group" aria-label="Alignment alphabet">
-          <button className={mode === "nt" ? "active" : ""} type="button" onClick={() => onMode("nt")}>Nucleotide</button>
-          <button className={mode === "aa" ? "active" : ""} type="button" onClick={() => onMode("aa")}>Amino acid</button>
-        </div>
+        <div><span className="section-kicker">Layered sequence annotation</span><h3>Query, IMGT regions, and V(D)J germlines</h3></div>
+        <div className="alignment-actions"><button className="copy-fasta" type="button" onClick={() => void navigator.clipboard.writeText(`>${row.sequence_id}\n${row.sequence}\n`)}>Copy query FASTA</button><div className="mode-toggle" role="group" aria-label="Alignment alphabet"><button className={mode === "nt" ? "active" : ""} type="button" onClick={() => onMode("nt")}>Nucleotide</button><button className={mode === "aa" ? "active" : ""} type="button" onClick={() => onMode("aa")}>Amino acid</button></div></div>
       </div>
-      {mode === "aa" && (
-        <p className="alignment-explainer">Protein views are calculated only for the open record by translating all frame pairs and retaining the highest-scoring alignment.</p>
-      )}
-      <div className="alignment-stack">
-        {SEGMENTS.map((segment) => <SegmentAlignment key={segment.key} row={row} segment={segment} mode={mode} />)}
-      </div>
+      <div className={`annotation-status ${hasRegions ? "valid" : "incomplete"}`}><span>{hasRegions ? "Validated region map" : "Region map unavailable"}</span><p>{hasRegions ? `${row.region_definition} boundaries · V: ${row.v_annotation_source || "unspecified"} · J: ${row.j_annotation_source || "unspecified"}${row.sequence_frame ? ` · query frame +${row.sequence_frame}` : ""}` : "No V-region delineation passed validation for the selected allele. A closest-relative transfer is accepted only when the sequence spans the mapped IMGT intervals."}</p></div>
+      {mode === "aa" && <p className="alignment-explainer">All translated layers use the single rearrangement frame anchored by the mapped V cysteine and J F/W-G motif. Frames are not optimized independently per segment.</p>}
+      <FeatureTracks row={row} mode={mode} />
+      <RegionSequences row={row} mode={mode} />
+      <CompositeAlignment row={row} mode={mode} />
+      <div className="segment-evidence-heading"><span className="section-kicker">Per-segment alignments</span><h4>Selected germline calls</h4></div>
+      <div className="alignment-stack">{ALIGNMENT_SEGMENTS.map((segment) => <SegmentAlignment key={segment.key} row={row} segment={segment} mode={mode} />)}</div>
     </section>
   );
 }
-

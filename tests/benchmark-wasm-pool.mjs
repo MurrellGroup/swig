@@ -19,7 +19,7 @@ assert.ok(human?.loci?.IGH, "Human IGH references are unavailable");
 const locus = human.loci.IGH;
 
 function fasta(records) {
-  return records.map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+  return records.map(([name, sequence, metadata]) => `>${name}${metadata ? ` SWIGMETA=${metadata.join(",")}` : ""}\n${sequence}\n`).join("");
 }
 
 const references = {
@@ -28,7 +28,9 @@ const references = {
   J: fasta(locus.J),
   C: "",
 };
-const template = `${locus.V[0][1]}AACCGG${locus.D?.[0]?.[1] || ""}TTG${locus.J[0][1]}`;
+const templateV = locus.V.find((allele) => allele[2]?.slice(2, 12).every((value) => value >= 0)) ?? locus.V[0];
+const templateJ = locus.J.find((allele) => allele[2]?.[0] >= 0 && allele[2]?.[1] >= 0) ?? locus.J[0];
+const template = `${templateV[1]}AACCGG${locus.D?.[0]?.[1] || ""}TTG${templateJ[1]}`;
 
 class Client {
   constructor(index) {

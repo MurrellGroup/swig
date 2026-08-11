@@ -13,7 +13,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 function asFasta(alleles) {
-  return alleles.map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+  return alleles.map(([name, sequence, metadata]) => `>${name}${metadata ? ` SWIGMETA=${metadata.join(",")}` : ""}\n${sequence}\n`).join("");
 }
 
 function reverseComplement(sequence) {
@@ -73,10 +73,10 @@ async function makeRuntime() {
 }
 
 function referenceFor(locus, customJName) {
-  const v = locus.V[0];
+  const v = locus.V.find((allele) => allele[2]?.slice(2, 12).every((value) => value >= 0)) ?? locus.V[0];
   const d = locus.D?.[0];
-  const originalJ = locus.J[0];
-  const j = customJName ? [customJName, originalJ[1]] : originalJ;
+  const originalJ = locus.J.find((allele) => allele[2]?.[0] >= 0 && allele[2]?.[1] >= 0) ?? locus.J[0];
+  const j = customJName ? [customJName, originalJ[1], originalJ[2]] : originalJ;
   return {
     references: {
       V: asFasta([v]),
@@ -117,6 +117,19 @@ test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, 
   assert.equal(fasta.rows[0].j_call, customJName);
   assert.ok(fasta.headers.includes("junction_aa"));
   assert.ok(fasta.headers.includes("germline_alignment"));
+  assert.equal(fasta.rows[0].region_definition, "IMGT");
+  assert.equal(fasta.rows[0].v_annotation_source, "IMGT-gapped");
+  assert.equal(fasta.rows[0].j_annotation_source, "validated-J-motif");
+  assert.ok(Number(fasta.rows[0].sequence_frame) >= 1 && Number(fasta.rows[0].sequence_frame) <= 3);
+  for (const region of ["fwr1", "cdr1", "fwr2", "cdr2", "fwr3"]) {
+    assert.ok(fasta.rows[0][region], `${region.toUpperCase()} nucleotide sequence is empty`);
+    assert.ok(fasta.rows[0][`${region}_aa`], `${region.toUpperCase()} amino-acid sequence is empty`);
+    assert.ok(Number(fasta.rows[0][`${region}_start`]) > 0);
+    assert.ok(Number(fasta.rows[0][`${region}_end`]) >= Number(fasta.rows[0][`${region}_start`]));
+  }
+  assert.ok(fasta.rows[0].cdr3);
+  assert.ok(fasta.rows[0].cdr3_aa);
+  assert.equal(fasta.rows[0].sequence_alignment_aa.length, fasta.rows[0].germline_alignment_aa.length);
   for (const segment of ["v", "j"]) {
     assert.ok(fasta.rows[0][`${segment}_sequence_alignment`], `${segment.toUpperCase()} query alignment is empty`);
     assert.ok(fasta.rows[0][`${segment}_germline_alignment`], `${segment.toUpperCase()} germline alignment is empty`);

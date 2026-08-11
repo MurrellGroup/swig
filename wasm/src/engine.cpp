@@ -399,6 +399,11 @@ Annotation AnnotationEngine::annotate(const SequenceRecord& record, const Annota
     annotation.c_alternatives = std::move(chosen.c_alternatives);
     if (annotation.v && !annotation.v->gene->locus.empty()) annotation.locus = annotation.v->gene->locus;
     else if (annotation.j) annotation.locus = annotation.j->gene->locus;
+    if (annotation.v) {
+        annotation.v_annotation_source = annotation.v->gene->annotation_source;
+        if (annotation.v->gene->region_bounds[9] > 0) annotation.region_definition = "IMGT";
+    }
+    if (annotation.j) annotation.j_annotation_source = annotation.j->gene->annotation_source;
 
     if (annotation.v && annotation.j) {
         const auto v_end = annotation.v->alignment.query_end;
@@ -413,14 +418,17 @@ Annotation AnnotationEngine::annotate(const SequenceRecord& record, const Annota
         }
     }
     stitch_alignment(annotation);
-    annotate_v_regions(annotation);
     annotate_junction(annotation);
     if (annotation.v && annotation.sequence_aa.empty()) {
-        const auto frame = (annotation.v->alignment.query_start + 3 -
-            (annotation.v->alignment.reference_start % 3)) % 3;
+        const auto coding_frame = annotation.v->gene->coding_frame_start >= 0
+            ? static_cast<std::size_t>(annotation.v->gene->coding_frame_start) : 0;
+        const auto reference_phase = (annotation.v->alignment.reference_start + 3 - coding_frame) % 3;
+        const auto frame = (annotation.v->alignment.query_start + 3 - reference_phase) % 3;
         annotation.sequence_aa = translate_dna(annotation.oriented_sequence, frame);
+        annotation.sequence_frame = static_cast<int>(frame + 1);
         annotation.v_frameshift = net_frameshift(annotation.v->alignment);
     }
+    annotate_v_regions(annotation);
     return annotation;
 }
 
@@ -439,7 +447,12 @@ void AnnotationEngine::annotate_v_regions(Annotation& annotation) const {
         auto& region = *regions[i];
         region.sequence = annotation.oriented_sequence.substr(
             interval->first, interval->second - interval->first);
-        region.sequence_aa = translate_dna(region.sequence);
+        std::size_t region_frame = 0;
+        if (annotation.sequence_frame) {
+            const auto sequence_frame = static_cast<std::size_t>(*annotation.sequence_frame - 1);
+            region_frame = (sequence_frame + 3 - interval->first % 3) % 3;
+        }
+        region.sequence_aa = translate_dna(region.sequence, region_frame);
         region.start = interval->first + 1;
         region.end = interval->second;
     }
@@ -484,14 +497,12 @@ void AnnotationEngine::annotate_junction(Annotation& annotation) const {
     std::optional<std::size_t> cys;
     std::optional<std::size_t> v_reference_anchor;
     if (annotation.v->gene->region_bounds[9] >= 3) {
-        v_reference_anchor = static_cast<std::size_t>(annotation.v->gene->region_bounds[9] - 3);
-    } else {
-        v_reference_anchor = v_anchor_in_reference(*annotation.v->gene);
+        const auto candidate = static_cast<std::size_t>(annotation.v->gene->region_bounds[9] - 3);
+        if (is_cys_codon(annotation.v->gene->sequence, candidate)) v_reference_anchor = candidate;
     }
     if (v_reference_anchor) {
         cys = map_reference_to_query(annotation.v->alignment, *v_reference_anchor);
     }
-    if (!cys) cys = fallback_v_anchor(sequence, annotation.v->alignment);
 
     std::optional<std::size_t> j_anchor;
     std::optional<std::size_t> j_reference_anchor;
@@ -500,14 +511,15 @@ void AnnotationEngine::annotate_junction(Annotation& annotation) const {
             annotation.j->gene->sequence.size()) {
         // IgBLAST .aux stores the 0-based final CDR3 base, immediately before
         // the conserved J W/F anchor codon.
-        j_reference_anchor = static_cast<std::size_t>(annotation.j->gene->cdr3_stop) + 1;
-    } else {
-        j_reference_anchor = j_anchor_in_reference(annotation.j->gene->sequence);
+        const auto candidate = static_cast<std::size_t>(annotation.j->gene->cdr3_stop) + 1;
+        if (is_w_or_f_codon(annotation.j->gene->sequence, candidate) &&
+            is_gly_codon(annotation.j->gene->sequence, candidate + 3)) {
+            j_reference_anchor = candidate;
+        }
     }
     if (j_reference_anchor) {
         j_anchor = map_reference_to_query(annotation.j->alignment, *j_reference_anchor);
     }
-    if (!j_anchor) j_anchor = fallback_j_anchor(sequence, annotation.j->alignment, cys);
     if (!cys || !j_anchor || *j_anchor <= *cys || *j_anchor + 3 > sequence.size() ||
         *j_anchor - *cys > options_.max_junction_span + 6) return;
 
@@ -530,6 +542,7 @@ void AnnotationEngine::annotate_junction(Annotation& annotation) const {
     }
 
     const std::size_t frame = *cys % 3;
+    annotation.sequence_frame = static_cast<int>(frame + 1);
     annotation.sequence_aa = translate_dna(sequence, frame);
     std::size_t coding_start = annotation.v->alignment.query_start;
     while (coding_start < *j_anchor && coding_start % 3 != frame) ++coding_start;
@@ -552,7 +565,18 @@ void AnnotationEngine::annotate_junction(Annotation& annotation) const {
 
     if (!annotation.sequence_alignment.empty() && annotation.v) {
         const auto alignment_start = annotation.v->alignment.query_start;
-        const auto alignment_frame = (*cys - alignment_start) % 3;
+        std::size_t query_position = alignment_start;
+        std::optional<std::size_t> cys_column;
+        for (std::size_t column = 0; column < annotation.sequence_alignment.size(); ++column) {
+            if (annotation.sequence_alignment[column] == '-') continue;
+            if (query_position == *cys) {
+                cys_column = column;
+                break;
+            }
+            ++query_position;
+        }
+        if (!cys_column) return;
+        const auto alignment_frame = *cys_column % 3;
         annotation.sequence_alignment_aa = translate_dna(
             annotation.sequence_alignment, alignment_frame, true);
         annotation.germline_alignment_aa = translate_dna(

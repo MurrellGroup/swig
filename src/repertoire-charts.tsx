@@ -260,7 +260,7 @@ export function RepertoireDashboard({ store, loci, inputName }: {
 
   return (
     <section className="repertoire-dashboard">
-      <header className="repertoire-heading"><div><span className="section-kicker">Repertoire analysis</span><h2>Composition without a million-row rescan.</h2><p>These summaries were accumulated as AIRR batches arrived. Frequencies are per input record—not deduplicated clonotypes—and update only through the controls below.</p></div><span className="aggregate-badge">{snapshot.records.toLocaleString()} records in view</span></header>
+      <header className="repertoire-heading"><div><span className="section-kicker">Repertoire analysis</span><h2>Repertoire-level summaries</h2><p>Summaries are accumulated as AIRR batches arrive. Frequencies are calculated per input record, not per deduplicated clonotype, and are modified only by the controls below.</p></div><span className="aggregate-badge">{snapshot.records.toLocaleString()} records in view</span></header>
 
       <div className="figure-controls" aria-label="Repertoire figure controls">
         <label><span>Population</span><select value={productiveOnly ? "productive" : "all"} onChange={(event) => setProductiveOnly(event.target.value === "productive")}><option value="all">All records</option><option value="productive">Productive only</option></select></label>

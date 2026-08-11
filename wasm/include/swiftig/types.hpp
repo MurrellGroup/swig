@@ -10,7 +10,7 @@
 
 namespace swiftig {
 
-inline constexpr const char* kVersion = "0.3.0";
+inline constexpr const char* kVersion = "0.5.0";
 
 enum class Segment : std::uint8_t { V = 0, D = 1, J = 2, C = 3 };
 
@@ -29,6 +29,7 @@ struct Gene {
     int cdr3_stop = -1;
     std::string chain_type;
     std::array<int, 10> region_bounds{{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1}};
+    std::string annotation_source;
 };
 
 struct RegionCall {
@@ -130,6 +131,10 @@ struct Annotation {
     std::optional<std::size_t> cdr3_start;
     std::optional<std::size_t> cdr3_end;
     std::optional<int> d_frame;
+    std::optional<int> sequence_frame;
+    std::string region_definition;
+    std::string v_annotation_source;
+    std::string j_annotation_source;
 };
 
 struct EngineOptions {
