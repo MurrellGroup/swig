@@ -20,11 +20,10 @@ import {
   type ChmmSegment,
 } from "./chmmairra-runtime";
 import { GERMLINE_OUTGROUP, lineageInputFasta, quickAirrAlignment } from "./lineage-alignment";
+import { LineageTreeViewer } from "./lineage-tree-viewer";
 import {
   canonicalizeTree,
   collapseShortInternalBranches,
-  FASTTREE_AMBIGUOUS_BRANCH_THRESHOLD,
-  layoutTree,
   parseNewick,
   rootOnOutgroup,
   serializeNewick,
@@ -177,34 +176,6 @@ function BarChart({ title, subtitle, data, color, name, controls }: {
   </article>;
 }
 
-function TreeView({
-  newick,
-  name,
-  variant,
-  collapsedEdges = 0,
-  collapseThreshold = FASTTREE_AMBIGUOUS_BRANCH_THRESHOLD,
-}: {
-  newick: string;
-  name: string;
-  variant: TreeViewMode;
-  collapsedEdges?: number;
-  collapseThreshold?: number;
-}) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [layoutMode, setLayoutMode] = useState<"phylogram" | "cladogram">("phylogram");
-  const tree = useMemo(() => layoutTree(parseNewick(newick), 980, 24, layoutMode), [newick, layoutMode]);
-  const label = variant === "stable" ? "Germline-rooted · ambiguous edges collapsed" : variant === "rooted" ? "Germline-rooted · complete FastTree resolution" : "Raw FastTree output";
-  return <section className="tree-viewer">
-    <header><div><span className="section-kicker">{label}</span><h4>{tree.leaves.toLocaleString()} tips · {tree.mode}{variant === "stable" ? ` · ${collapsedEdges.toLocaleString()} minimum-length edges collapsed` : ""}</h4></div><div className="tree-header-actions"><div className="mode-toggle"><button className={layoutMode === "phylogram" ? "active" : ""} type="button" onClick={() => setLayoutMode("phylogram")}>Branch lengths</button><button className={layoutMode === "cladogram" ? "active" : ""} type="button" onClick={() => setLayoutMode("cladogram")}>Topology only</button></div><button type="button" onClick={() => saveSvg(svgRef.current, `${name}.svg`)}>Download SVG</button><button type="button" onClick={() => downloadText(`${newick.replace(/;?$/, ";")}\n`, `${name}.nwk`)}>Newick</button></div></header>
-    <div className="tree-scroll"><svg ref={svgRef} viewBox={`0 0 ${tree.width} ${tree.height}`} role="img" aria-label={`${label} lineage tree`}>
-      <rect width={tree.width} height={tree.height} fill="#fbfaf5" />
-      {tree.edges.map((edge, index) => <g key={index} stroke="#49605a" strokeWidth="1.2" fill="none"><path d={`M${edge.parent.x},${edge.parent.y} V${edge.child.y} H${edge.child.x}`} /></g>)}
-      {tree.nodes.map((node, index) => <g key={index}><circle cx={node.x} cy={node.y} r={node.children.length ? 2.2 : 2.8} fill={node.name === GERMLINE_OUTGROUP ? "#d49a19" : "#08796f"} />{!node.children.length && <text x={node.x + 7} y={node.y + 4} fontFamily="ui-monospace,monospace" fontSize="10" fontWeight={node.name === GERMLINE_OUTGROUP ? "700" : "500"} fill="#1a2925">{node.name}</text>}</g>)}
-    </svg></div>
-    <p className="scientific-note"><span>i</span>{variant === "stable" ? `Internal branches at or below ${collapseThreshold.toExponential(0)} substitutions/site are numerical-floor resolutions and are shown as polytomies. Retained branch lengths are unchanged; the complete resolved and raw trees remain available.` : tree.mode === "phylogram" ? "FastTree branch lengths are drawn exactly; minimum-length edges remain visible." : "Cladogram mode draws every edge at equal depth and does not represent evolutionary distance."} {variant === "raw" ? "This is the unmodified Newick returned by FastTree before germline rooting." : "The germline edge defines the root; rerooting does not change the inferred unrooted splits."}</p>
-  </section>;
-}
-
 function translateAligned(sequence: string): string {
   const codons: Record<string, string> = {
     TTT: "F", TTC: "F", TTA: "L", TTG: "L", TCT: "S", TCC: "S", TCA: "S", TCG: "S", TAT: "Y", TAC: "Y", TAA: "*", TAG: "*", TGT: "C", TGC: "C", TGA: "*", TGG: "W",
@@ -332,6 +303,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
 
   const [selectedLineage, setSelectedLineage] = useState<LineageSummary | null>(null);
   const [lineageRows, setLineageRows] = useState<AirrDetailRow[]>([]);
+  const [lineageMultiplicity, setLineageMultiplicity] = useState<Map<number, number>>(new Map());
   const [lineageTotal, setLineageTotal] = useState(0);
   const workbenchRef = useRef<HTMLElement>(null);
   const [alignment, setAlignment] = useState("");
@@ -341,7 +313,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [alignmentSource, setAlignmentSource] = useState("");
   const alignmentRevisionRef = useRef(0);
   const [treeRun, setTreeRun] = useState<TreeSnapshot | null>(null);
-  const [treeViewMode, setTreeViewMode] = useState<TreeViewMode>("stable");
+  const [treeViewMode, setTreeViewMode] = useState<TreeViewMode>("rooted");
   const [treeError, setTreeError] = useState("");
   const [treeModel, setTreeModel] = useState<"gtr" | "jc">("gtr");
   const [treeFast, setTreeFast] = useState(false);
@@ -430,6 +402,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       setChimeraDetail(null);
       setLineages(null);
       setSelectedLineage(null);
+      setLineageMultiplicity(new Map());
       setQueryHits([]);
       setExpanded(null);
     }
@@ -453,6 +426,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setChimeraDetail(null);
     setLineages(null);
     setSelectedLineage(null);
+    setLineageMultiplicity(new Map());
     clearAlignmentArtifacts();
     setQueryHits([]);
     setExpanded(null);
@@ -468,6 +442,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setChimeraDetail(null);
     setLineages(null);
     setSelectedLineage(null);
+    setLineageMultiplicity(new Map());
     clearAlignmentArtifacts();
     setQueryHits([]);
     setExpanded(null);
@@ -499,6 +474,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       setLineages(result);
       setSelectedLineage(null);
       setLineageRows([]);
+      setLineageMultiplicity(new Map());
       clearAlignmentArtifacts();
     }
   }
@@ -522,8 +498,16 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     try {
       const members = await runtime.lineageMembers(summary.id, 0, 500);
       const rows = await store.detailMany(members.ordinals);
+      const deduplicationApplied = workingStages.some((stage) => stage.id === "dedup");
+      const counts = deduplicationApplied ? await runtime.dedupCounts() : null;
+      const multiplicity = new Map(rows.map((row) => {
+        const imported = Number(row.values.duplicate_count);
+        const value = counts?.[row.record.ordinal] || (Number.isFinite(imported) && imported > 0 ? imported : 1);
+        return [row.record.ordinal, Math.max(1, Math.floor(value))] as const;
+      }));
       setSelectedLineage(summary);
       setLineageRows(rows);
+      setLineageMultiplicity(multiplicity);
       setLineageTotal(members.total);
       clearAlignmentArtifacts();
       setAlignmentEditorStatus("");
@@ -579,7 +563,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         collapseThreshold: stable.threshold,
         source: sourceSnapshot,
       });
-      setTreeViewMode("stable");
+      setTreeViewMode("rooted");
       window.requestAnimationFrame(() => treeResultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     } catch (operationError) {
       setTreeError(operationError instanceof Error ? operationError.message : String(operationError));
@@ -768,6 +752,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     }]);
     setLineages(null);
     setSelectedLineage(null);
+    setLineageMultiplicity(new Map());
     clearAlignmentArtifacts();
     setTreeError("");
     setQueryHits([]);
@@ -996,7 +981,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     </section>
 
     {selectedLineage && <section ref={workbenchRef} className="post-module lineage-workbench" tabIndex={-1}>
-      <header><div className="module-number dark">05</div><div><span className="section-kicker">Selected lineage {selectedLineage.id}</span><h3>Alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · abundance {selectedLineage.abundance.toLocaleString()} · {selectedLineage.locus} · {selectedLineage.vCalls.join(", ")} / {selectedLineage.jCalls.join(", ")}</p></div><button type="button" onClick={() => { setSelectedLineage(null); setLineageRows([]); }}>Close lineage</button></header>
+      <header><div className="module-number dark">05</div><div><span className="section-kicker">Selected lineage {selectedLineage.id}</span><h3>Alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · abundance {selectedLineage.abundance.toLocaleString()} · {selectedLineage.locus} · {selectedLineage.vCalls.join(", ")} / {selectedLineage.jCalls.join(", ")}</p></div><button type="button" onClick={() => { setSelectedLineage(null); setLineageRows([]); setLineageMultiplicity(new Map()); }}>Close lineage</button></header>
       <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `first ${lineageRows.length}; alignment remains on-demand` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)}>{row.record.sequenceId}</button>)}</div></div>
       <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">AIRR-anchored quick view</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><input type="number" min="2" max="500" value={alignmentLimit} onChange={(event) => setAlignmentLimit(Number(event.target.value))} /></label><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runAlignment()}>Align selected lineage</button>{alignment && <button type="button" onClick={() => downloadText(alignment, `${baseName(inputName)}.lineage-${selectedLineage.id}.alignment.fasta`)}>Alignment FASTA ↓</button>}</div>
       {alignment && <>
@@ -1006,7 +991,23 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         <div ref={treeResultRef} className="tree-operation-region">
           <div className="tree-controls"><div><span className="section-kicker">On-demand tree</span><h4>FastTree 2.1.11 double-precision WASM</h4><p>The exact current nucleotide alignment is rewritten into the WASM filesystem before every run. Rooting is a separate post-inference operation.</p></div><label><span>Model</span><select value={treeModel} onChange={(event) => setTreeModel(event.target.value as "gtr" | "jc")}><option value="gtr">GTR</option><option value="jc">Jukes–Cantor</option></select></label><label className="check-line"><input type="checkbox" checked={treeFast} onChange={(event) => setTreeFast(event.target.checked)} /><span>Fastest heuristic</span></label><button className="post-primary dark" type="button" disabled={Boolean(busy)} onClick={() => void inferTree()}>{busy.startsWith("Running FastTree") ? "Inferring tree…" : "Infer tree"}</button></div>
           {treeError && <div className="inline-method-error tree-error" role="alert"><strong>Tree inference stopped</strong><span>{treeError}</span><button type="button" onClick={() => setTreeError("")}>Dismiss</button></div>}
-          {treeRun && <><div className="tree-provenance"><div><span className="section-kicker">Executed input</span><strong>{treeRun.rows.toLocaleString()} rows × {treeRun.columns.toLocaleString()} columns</strong><small>{treeRun.source} · alignment fingerprint {treeRun.fingerprint}</small><code>{treeRun.command}</code></div><div className="result-actions"><button type="button" onClick={() => downloadText(treeRun.alignmentFasta, `${baseName(inputName)}.lineage-${selectedLineage.id}.fasttree-alignment.fasta`)}>Named input FASTA ↓</button><button type="button" onClick={() => downloadText(treeRun.inputFasta, `${baseName(inputName)}.lineage-${selectedLineage.id}.fasttree-exact-input.fasta`)}>Exact numeric input ↓</button></div></div><div className="tree-output-switch"><div className="mode-toggle"><button className={treeViewMode === "stable" ? "active" : ""} type="button" onClick={() => setTreeViewMode("stable")}>Rooted · stable</button><button className={treeViewMode === "rooted" ? "active" : ""} type="button" onClick={() => setTreeViewMode("rooted")}>Rooted · resolved</button><button className={treeViewMode === "raw" ? "active" : ""} type="button" onClick={() => setTreeViewMode("raw")}>Raw FastTree</button></div><span>{treeRun.collapsedEdges.toLocaleString()} internal edges at the FastTreeDbl numerical floor are collapsed only in the stable view.</span></div><TreeView newick={treeViewMode === "stable" ? treeRun.stableNewick : treeViewMode === "rooted" ? treeRun.rootedNewick : treeRun.newick} variant={treeViewMode} collapsedEdges={treeRun.collapsedEdges} collapseThreshold={treeRun.collapseThreshold} name={`${baseName(inputName)}.lineage-${selectedLineage.id}.${treeViewMode === "stable" ? "rooted-stable" : treeViewMode === "rooted" ? "rooted-resolved" : "raw-fasttree"}-tree`} /></>}
+          {treeRun && <>
+            <div className="tree-provenance"><div><span className="section-kicker">Executed input</span><strong>{treeRun.rows.toLocaleString()} rows × {treeRun.columns.toLocaleString()} columns</strong><small>{treeRun.source} · alignment fingerprint {treeRun.fingerprint}</small><code>{treeRun.command}</code></div><div className="result-actions"><button type="button" onClick={() => downloadText(treeRun.alignmentFasta, `${baseName(inputName)}.lineage-${selectedLineage.id}.fasttree-alignment.fasta`)}>Named input FASTA ↓</button><button type="button" onClick={() => downloadText(treeRun.inputFasta, `${baseName(inputName)}.lineage-${selectedLineage.id}.fasttree-exact-input.fasta`)}>Exact numeric input ↓</button></div></div>
+            <div className="tree-output-switch"><div className="mode-toggle"><button className={treeViewMode === "rooted" ? "active" : ""} type="button" onClick={() => setTreeViewMode("rooted")}>Rooted · resolved</button><button className={treeViewMode === "stable" ? "active" : ""} type="button" onClick={() => setTreeViewMode("stable")}>Rooted · floor-collapsed</button><button className={treeViewMode === "raw" ? "active" : ""} type="button" onClick={() => setTreeViewMode("raw")}>Raw FastTree</button></div><span>{treeRun.collapsedEdges.toLocaleString()} numerical-floor internal edges can optionally be displayed as polytomies; the complete resolved tree is the default.</span></div>
+            <LineageTreeViewer
+              newick={treeViewMode === "stable" ? treeRun.stableNewick : treeViewMode === "rooted" ? treeRun.rootedNewick : treeRun.newick}
+              alignmentFasta={treeRun.alignmentFasta}
+              rows={lineageRows}
+              multiplicityByOrdinal={lineageMultiplicity}
+              variant={treeViewMode}
+              collapsedEdges={treeRun.collapsedEdges}
+              collapseThreshold={treeRun.collapseThreshold}
+              mode={alignmentMode}
+              onModeChange={setAlignmentMode}
+              isTcr={isTcr}
+              name={`${baseName(inputName)}.lineage-${selectedLineage.id}.${treeViewMode === "stable" ? "rooted-floor-collapsed" : treeViewMode === "rooted" ? "rooted-resolved" : "raw-fasttree"}-tree`}
+            />
+          </>}
         </div>
       </>}
     </section>}

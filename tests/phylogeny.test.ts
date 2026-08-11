@@ -89,6 +89,25 @@ test("phylogram layout preserves FastTree zero-length branches", () => {
   assert.ok(cladogram.nodes.find((node) => node.name === "a")!.x > 24);
 });
 
+test("Newick serialization writes an explicit length for every edge, including zero-length tips", () => {
+  const parsed = parseNewick("((a:0,b:5e-9)0.91:0,c:1);");
+  const serialized = `${serializeNewick(parsed)};`;
+  assert.equal((serialized.match(/:/g) ?? []).length, 4);
+  assert.match(serialized, /a:0(?:,|\))/);
+  assert.match(serialized, /b:5e-9(?:,|\))/);
+  assert.match(serialized, /\)0\.91:0(?:,|\))/);
+  assert.match(serialized, /c:1(?:,|\))/);
+
+  const roundTrip = parseNewick(serialized);
+  const lengths = new Map<string, number>();
+  const collect = (node: TreeNode) => {
+    if (!node.children.length) lengths.set(node.name, node.length);
+    node.children.forEach(collect);
+  };
+  collect(roundTrip);
+  assert.deepEqual([...lengths], [["a", 0], ["b", 5e-9], ["c", 1]]);
+});
+
 test("germline rerooting preserves every pairwise patristic distance", () => {
   const parsed = parseNewick("(((a:0.1,b:0.2):0.3,c:0.4):0.2,GERMLINE_OUTGROUP:0.5);");
   const before = pairwiseLeafDistances(parsed);

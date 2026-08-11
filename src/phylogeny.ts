@@ -136,10 +136,16 @@ export function parseNewick(text: string): TreeNode {
 }
 
 export function serializeNewick(node: TreeNode): string {
-  const children = node.children.length ? `(${node.children.map(serializeNewick).join(",")})` : "";
-  const name = node.name.replace(/[\s():;,]/g, "_");
-  const length = node.length > 0 ? `:${node.length.toPrecision(8).replace(/0+$/, "").replace(/\.$/, "")}` : "";
-  return `${children}${name}${length}`;
+  const formatLength = (value: number) => Number.isFinite(value) && value !== 0 ? String(value) : "0";
+  const visit = (current: TreeNode, isRoot: boolean): string => {
+    const children = current.children.length ? `(${current.children.map((child) => visit(child, false)).join(",")})` : "";
+    const name = current.name.replace(/[\s():;,]/g, "_");
+    // A missing Newick length means "unspecified", not reliably zero. Emit an
+    // explicit value for every edge, including FastTree's zero-length tips.
+    const length = isRoot ? "" : `:${formatLength(current.length)}`;
+    return `${children}${name}${length}`;
+  };
+  return visit(node, true);
 }
 
 export function rootOnOutgroup(root: TreeNode, outgroupName: string): TreeNode {
@@ -215,7 +221,14 @@ export function collapseShortInternalBranches(
   return { root: canonicalizeTree(visit(root)), collapsedEdges, threshold };
 }
 
-export function layoutTree(root: TreeNode, width = 900, rowHeight = 24, requestedMode: TreeLayoutMode = "phylogram"): TreeLayout {
+export function layoutTree(
+  root: TreeNode,
+  width = 900,
+  rowHeight = 24,
+  requestedMode: TreeLayoutMode = "phylogram",
+  rightPadding = 220,
+  topPadding = 28,
+): TreeLayout {
   let hasPositiveLength = false;
   const detectLengths = (node: TreeNode) => {
     for (const child of node.children) {
@@ -236,7 +249,7 @@ export function layoutTree(root: TreeNode, width = 900, rowHeight = 24, requeste
   };
   measure(root, 0);
   const leaves = [...distances.keys()].filter((node) => !node.children.length);
-  const leafY = new Map(leaves.map((leaf, index) => [leaf, 28 + index * rowHeight]));
+  const leafY = new Map(leaves.map((leaf, index) => [leaf, topPadding + index * rowHeight]));
   const nodes: TreeLayoutNode[] = [];
   const edges: Array<{ parent: TreeLayoutNode; child: TreeLayoutNode }> = [];
   const build = (node: TreeNode): TreeLayoutNode => {
@@ -245,7 +258,7 @@ export function layoutTree(root: TreeNode, width = 900, rowHeight = 24, requeste
     const layout: TreeLayoutNode = {
       ...node,
       children,
-      x: 24 + (distances.get(node) ?? 0) / Math.max(maximum, 1) * (width - 220),
+      x: 24 + (distances.get(node) ?? 0) / Math.max(maximum, 1) * Math.max(24, width - 24 - rightPadding),
       y,
     };
     nodes.push(layout);
@@ -253,5 +266,5 @@ export function layoutTree(root: TreeNode, width = 900, rowHeight = 24, requeste
     return layout;
   };
   build(root);
-  return { nodes, edges, width, height: Math.max(90, leaves.length * rowHeight + 50), leaves: leaves.length, mode };
+  return { nodes, edges, width, height: Math.max(90, topPadding + Math.max(0, leaves.length - 1) * rowHeight + 32), leaves: leaves.length, mode };
 }

@@ -1,6 +1,6 @@
 {
   "name": "swig-github-pages",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -16,7 +16,7 @@
     "test:store": "node --experimental-strip-types --test tests/result-store.test.ts",
     "test:germline": "node --experimental-strip-types --test tests/germline-preprocess.test.ts",
     "test:alignment": "node --experimental-strip-types --test tests/alignment-model.test.ts",
-    "test:post": "node --experimental-strip-types --test tests/post-analysis-core.test.ts tests/alignment-provenance.test.ts tests/phylogeny.test.ts tests/chimera-view-model.test.ts",
+    "test:post": "node --experimental-strip-types --test tests/post-analysis-core.test.ts tests/alignment-provenance.test.ts tests/phylogeny.test.ts tests/lineage-phylogeny.test.ts tests/kabat-numbering.test.ts tests/chimera-view-model.test.ts",
     "test:wasm": "node --experimental-strip-types --test tests/swiftig-wasm.test.mjs",
     "benchmark:50k": "node tests/benchmark-wasm-pool.mjs",
     "build:wasm": "bash scripts/build-swiftig-wasm.sh",
@@ -25,6 +25,7 @@
   "dependencies": {
     "@biowasm/aioli": "^3.2.3",
     "@bjorn3/browser_wasi_shim": "0.4.2",
+    "immunum": "^1.2.0",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
