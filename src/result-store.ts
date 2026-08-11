@@ -64,10 +64,64 @@ export interface ResultPage {
 
 type AirrRow = Record<string, string>;
 
+interface PackedIndexRecord {
+  o: number;
+  c: number;
+  n: number;
+  i: string;
+  l: string;
+  v: string;
+  d: string;
+  j: string;
+  p: string;
+  r: string;
+  a: string;
+  u: string;
+  vi: number | null;
+  di: number | null;
+  ji: number | null;
+  z: number | null;
+  f: string;
+  s: string;
+  q: string;
+  x: string;
+}
+
 interface ChunkRecord {
   index: number;
-  text: string;
+  storage: "indexed" | "external";
+  data?: Blob;
+  compressed?: boolean;
+  start?: number;
+  length?: number;
 }
+
+interface ManifestRecord {
+  key: "manifest";
+  headerLine: string;
+  chunks: number;
+  records: number;
+  outputBytes: number;
+}
+
+export interface AirrOutputWritable {
+  write: (data: string | Blob | Uint8Array) => Promise<void>;
+  close: () => Promise<void>;
+  abort?: () => Promise<void>;
+}
+
+export interface AirrOutputHandle {
+  getFile: () => Promise<File>;
+}
+
+export interface DirectAirrOutput {
+  handle: AirrOutputHandle;
+  writable: AirrOutputWritable;
+}
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const MAX_FALLBACK_BLOB_BYTES = 256 * 1024 * 1024;
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -98,6 +152,28 @@ function facet(map: Map<string, number>): FacetValue[] {
 function numeric(value: string): number | null {
   const parsed = Number(value);
   return value !== "" && Number.isFinite(parsed) ? parsed : null;
+}
+
+function packRecord(record: AirrIndexRecord): PackedIndexRecord {
+  return {
+    o: record.ordinal, c: record.chunk, n: record.line, i: record.sequenceId,
+    l: record.locus, v: record.vCall, d: record.dCall, j: record.jCall,
+    p: record.productive, r: record.cdr3, a: record.cdr3Aa, u: record.junctionAa,
+    vi: record.vIdentity, di: record.dIdentity, ji: record.jIdentity,
+    z: record.cdr3AaLength, f: record.vjInFrame, s: record.stopCodon,
+    q: record.completeVdj, x: record.revComp,
+  };
+}
+
+function unpackRecord(record: PackedIndexRecord): AirrIndexRecord {
+  return {
+    ordinal: record.o, chunk: record.c, line: record.n, sequenceId: record.i,
+    locus: record.l, vCall: record.v, dCall: record.d, jCall: record.j,
+    productive: record.p, cdr3: record.r, cdr3Aa: record.a, junctionAa: record.u,
+    vIdentity: record.vi, dIdentity: record.di, jIdentity: record.ji,
+    cdr3AaLength: record.z, vjInFrame: record.f, stopCodon: record.s,
+    completeVdj: record.q, revComp: record.x,
+  };
 }
 
 export const EMPTY_FILTERS: ResultFilters = {
@@ -138,24 +214,24 @@ export class AirrResultStore {
   private assigned = 0;
   private productive = 0;
   private withCdr3 = 0;
+  private readonly directOutput?: DirectAirrOutput;
+  private outputByteCount = 0;
+  private finalized = false;
 
-  constructor() {
+  constructor(directOutput?: DirectAirrOutput) {
+    this.directOutput = directOutput;
     this.database = new Promise((resolve, reject) => {
       const request = indexedDB.open(this.databaseName, 1);
       request.onupgradeneeded = () => {
         const database = request.result;
         database.createObjectStore("chunks", { keyPath: "index" });
-        const records = database.createObjectStore("records", { keyPath: "ordinal" });
-        records.createIndex("sequenceId", "sequenceId");
-        records.createIndex("locus", "locus");
-        records.createIndex("productive", "productive");
-        records.createIndex("vCall", "vCall");
-        records.createIndex("dCall", "dCall");
-        records.createIndex("jCall", "jCall");
-        records.createIndex("vjInFrame", "vjInFrame");
-        records.createIndex("stopCodon", "stopCodon");
-        records.createIndex("completeVdj", "completeVdj");
-        records.createIndex("revComp", "revComp");
+        database.createObjectStore("meta", { keyPath: "key" });
+        const records = database.createObjectStore("records", { keyPath: "o" });
+        records.createIndex("locus", "l");
+        records.createIndex("productive", "p");
+        records.createIndex("vCall", "v");
+        records.createIndex("dCall", "d");
+        records.createIndex("jCall", "j");
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error("Could not create the local result index."));
@@ -168,6 +244,14 @@ export class AirrResultStore {
 
   get airrHeaders(): string[] {
     return this.headers;
+  }
+
+  get outputBytes(): number {
+    return this.outputByteCount;
+  }
+
+  get streamedDirectly(): boolean {
+    return Boolean(this.directOutput);
   }
 
   get summary() {
@@ -184,22 +268,48 @@ export class AirrResultStore {
     };
   }
 
-  async appendBatch(headerLine: string, body: string): Promise<void> {
+  async appendBatch(headerLine: string, body: string | Uint8Array): Promise<void> {
+    if (this.finalized) throw new Error("Cannot append to a finalized AIRR result store.");
+    const normalizedHeader = headerLine.replace(/\r$/, "");
     if (!this.headerLine) {
-      this.headerLine = headerLine.replace(/\r$/, "");
+      this.headerLine = normalizedHeader;
       this.headers = this.headerLine.split("\t");
-    } else if (this.headerLine !== headerLine.replace(/\r$/, "")) {
+      const headerBytes = encoder.encode(`${this.headerLine}\n`);
+      this.outputByteCount += headerBytes.byteLength;
+      if (this.directOutput) await this.directOutput.writable.write(headerBytes);
+    } else if (this.headerLine !== normalizedHeader) {
       throw new Error("SwiftIG returned inconsistent AIRR columns between batches.");
     }
 
-    const lines = body.split("\n").map((line) => line.replace(/\r$/, "")).filter(Boolean);
+    const bodyBytes = typeof body === "string" ? encoder.encode(body) : body;
+    const bodyText = typeof body === "string" ? body : decoder.decode(body);
+    const lines = bodyText.split("\n").map((line) => line.replace(/\r$/, "")).filter(Boolean);
     if (!lines.length) return;
+    const chunkIndex = this.nextChunk;
+    let chunk: ChunkRecord;
+    if (this.directOutput) {
+      const start = this.outputByteCount;
+      await this.directOutput.writable.write(bodyBytes);
+      chunk = { index: chunkIndex, storage: "external", start, length: bodyBytes.byteLength };
+    } else {
+      let data: Blob;
+      let compressed = false;
+      if ("CompressionStream" in globalThis) {
+        const raw = new Blob([bodyBytes.slice().buffer]);
+        data = await new Response(raw.stream().pipeThrough(new CompressionStream("gzip"))).blob();
+        compressed = true;
+      } else {
+        data = new Blob([bodyBytes.slice().buffer]);
+      }
+      chunk = { index: chunkIndex, storage: "indexed", data, compressed };
+    }
+    this.outputByteCount += bodyBytes.byteLength;
+
     const database = await this.database;
     const transaction = database.transaction(["chunks", "records"], "readwrite");
     const chunks = transaction.objectStore("chunks");
     const records = transaction.objectStore("records");
-    const chunkIndex = this.nextChunk++;
-    chunks.put({ index: chunkIndex, text: body } satisfies ChunkRecord);
+    chunks.put(chunk);
 
     const positions = Object.fromEntries(this.headers.map((name, index) => [name, index]));
     const at = (values: string[], name: string) => values[positions[name]] ?? "";
@@ -227,7 +337,7 @@ export class AirrResultStore {
         completeVdj: at(values, "complete_vdj"),
         revComp: at(values, "rev_comp"),
       };
-      records.put(record);
+      records.put(packRecord(record));
       if (record.vCall && record.jCall) this.assigned += 1;
       if (record.productive === "T") this.productive += 1;
       if (record.cdr3 || record.cdr3Aa) this.withCdr3 += 1;
@@ -237,7 +347,15 @@ export class AirrResultStore {
       bump(this.facetMaps.dCalls, record.dCall);
       bump(this.facetMaps.jCalls, record.jCall);
     }
-    await transactionDone(transaction);
+    try {
+      await transactionDone(transaction);
+      this.nextChunk += 1;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "QuotaExceededError") {
+        throw new Error("Browser storage is full. Re-run with ‘stream AIRR to disk’ so output is never retained in browser storage.");
+      }
+      throw error;
+    }
   }
 
   async page(
@@ -263,7 +381,8 @@ export class AirrResultStore {
     if (!filtered) {
       if (offset >= this.count) return { rows: [], hasMore: false, totalMatches: this.count, scanned: 0 };
       const upper = Math.min(this.count - 1, offset + limit - 1);
-      const rows = await requestResult(store.getAll(IDBKeyRange.bound(offset, upper), limit)) as AirrIndexRecord[];
+      const packed = await requestResult(store.getAll(IDBKeyRange.bound(offset, upper), limit)) as PackedIndexRecord[];
+      const rows = packed.map(unpackRecord);
       return { rows, hasMore: offset + rows.length < this.count, totalMatches: this.count, scanned: rows.length };
     }
 
@@ -272,8 +391,6 @@ export class AirrResultStore {
     const exactCandidates: Array<[keyof ResultFilters, string]> = [
       ["vCall", "vCall"], ["jCall", "jCall"], ["dCall", "dCall"],
       ["locus", "locus"], ["productive", "productive"],
-      ["vjInFrame", "vjInFrame"], ["stopCodon", "stopCodon"],
-      ["completeVdj", "completeVdj"], ["revComp", "revComp"],
     ];
     for (const [filterName, indexName] of exactCandidates) {
       const value = filters[filterName];
@@ -329,7 +446,7 @@ export class AirrResultStore {
         }
         scanned += 1;
         if (scanned % 2500 === 0) onScan?.(scanned);
-        const record = cursor.value as AirrIndexRecord;
+        const record = unpackRecord(cursor.value as PackedIndexRecord);
         if (matches(record)) {
           if (matched >= offset && rows.length < limit) rows.push(record);
           matched += 1;
@@ -349,30 +466,96 @@ export class AirrResultStore {
     const transaction = database.transaction("chunks", "readonly");
     const chunk = await requestResult(transaction.objectStore("chunks").get(record.chunk)) as ChunkRecord | undefined;
     if (!chunk) throw new Error("That AIRR result is no longer present in the local index.");
-    const line = chunk.text.split("\n")[record.line]?.replace(/\r$/, "") ?? "";
+    const text = await this.chunkText(chunk);
+    const line = text.split("\n")[record.line]?.replace(/\r$/, "") ?? "";
     const values = line.split("\t");
     return Object.fromEntries(this.headers.map((header, index) => [header, values[index] ?? ""]));
   }
 
-  async airrBlob(): Promise<Blob> {
+  private async chunkBlob(chunk: ChunkRecord): Promise<Blob> {
+    if (chunk.storage === "external") {
+      if (!this.directOutput || chunk.start === undefined || chunk.length === undefined) {
+        throw new Error("The streamed AIRR output file is no longer available.");
+      }
+      const file = await this.directOutput.handle.getFile();
+      return file.slice(chunk.start, chunk.start + chunk.length);
+    }
+    if (!chunk.data) throw new Error("An indexed AIRR output batch is missing.");
+    if (!chunk.compressed) return chunk.data;
+    if (!("DecompressionStream" in globalThis)) {
+      throw new Error("This browser cannot decompress the local AIRR result batch.");
+    }
+    return new Response(chunk.data.stream().pipeThrough(new DecompressionStream("gzip"))).blob();
+  }
+
+  private async chunkText(chunk: ChunkRecord): Promise<string> {
+    return (await this.chunkBlob(chunk)).text();
+  }
+
+  async finalize(): Promise<void> {
+    if (this.finalized) return;
     const database = await this.database;
-    const transaction = database.transaction("chunks", "readonly");
-    const chunks = await requestResult(transaction.objectStore("chunks").getAll()) as ChunkRecord[];
-    const parts: BlobPart[] = [`${this.headerLine}\n`, ...chunks.map((chunk) => chunk.text)];
+    const transaction = database.transaction("meta", "readwrite");
+    transaction.objectStore("meta").put({
+      key: "manifest",
+      headerLine: this.headerLine,
+      chunks: this.nextChunk,
+      records: this.nextOrdinal,
+      outputBytes: this.outputByteCount,
+    } satisfies ManifestRecord);
+    await transactionDone(transaction);
+    await this.directOutput?.writable.close();
+    this.finalized = true;
+  }
+
+  async abort(): Promise<void> {
+    if (!this.finalized) {
+      try {
+        await this.directOutput?.writable.abort?.();
+      } catch {
+        // The browser may already have discarded an interrupted output stream.
+      }
+    }
+  }
+
+  streamingDownloadUrl(baseUrl: string, name: string): string {
+    const url = new URL(`${baseUrl}__swig_download__`, globalThis.location?.href);
+    url.searchParams.set("database", this.databaseName);
+    url.searchParams.set("name", name);
+    return url.href;
+  }
+
+  async airrBlob(): Promise<Blob> {
+    if (this.directOutput) return this.directOutput.handle.getFile();
+    if (this.outputByteCount > MAX_FALLBACK_BLOB_BYTES) {
+      throw new Error("This AIRR table is too large for a memory-backed download. Enable the streaming download worker or re-run with direct-to-disk output.");
+    }
+    const database = await this.database;
+    const parts: BlobPart[] = [`${this.headerLine}\n`];
+    for (let index = 0; index < this.nextChunk; index += 1) {
+      const transaction = database.transaction("chunks", "readonly");
+      const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
+      if (chunk) parts.push(await this.chunkBlob(chunk));
+    }
     return new Blob(parts, { type: "text/tab-separated-values;charset=utf-8" });
   }
 
-  async writeAirr(write: (part: string) => Promise<void>): Promise<void> {
+  async writeAirr(write: (part: string | Blob | Uint8Array) => Promise<void>): Promise<void> {
+    if (this.directOutput) {
+      await write(await this.directOutput.handle.getFile());
+      return;
+    }
     await write(`${this.headerLine}\n`);
     const database = await this.database;
     for (let index = 0; index < this.nextChunk; index += 1) {
       const transaction = database.transaction("chunks", "readonly");
       const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
-      if (chunk) await write(chunk.text);
+      if (chunk) await write(await this.chunkBlob(chunk));
     }
   }
 
   async clear(): Promise<void> {
+    await this.abort();
     const database = await this.database;
     database.close();
     await new Promise<void>((resolve) => {

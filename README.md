@@ -1,6 +1,6 @@
 # Swig — GitHub Pages edition
 
-Swig is a completely static browser interface for [SwiftIG](https://github.com/MurrellGroup/swiftig). The SwiftIG C++20 annotation core runs as WebAssembly inside a Web Worker; sequence data and uploaded germline sets never leave the browser.
+Swig is a completely static browser interface for [SwiftIG](https://github.com/MurrellGroup/swiftig). The SwiftIG C++20 annotation core runs as WebAssembly in a bounded pool of workers; sequence data and uploaded germline sets never leave the browser.
 
 There is no backend, database, authentication layer, or platform-specific hosting configuration in this repository.
 
@@ -48,12 +48,14 @@ Selecting a record retrieves its full AIRR row and exposes its rearrangement map
 
 ## Large-run behavior
 
-- SwiftIG runs in a Web Worker and annotates bounded batches.
-- AIRR batches are acknowledged only after they have been committed to IndexedDB, providing backpressure between WebAssembly and browser storage.
-- The table renders 50 records at a time. Exact locus, productivity, allele, frame, stop-codon, completeness, and orientation queries use browser-local indexes; ID and CDR3 substring searches scan candidates on demand and are cancellable.
+- Input is read incrementally from `File.stream()`. Gzip is decompressed through `DecompressionStream`; FASTA, multiline FASTQ, and AIRR rows are parsed without making a decompressed whole-file string.
+- A coordinator schedules one active batch per independent WASM worker. Results may compute out of order but are committed in input order. Compute may run one batch ahead of storage, with a strict high-water mark of twice the worker count—not the number of input records.
+- In Auto mode, known-large runs offer a save location before annotation and write the AIRR TSV incrementally while computation is running. Otherwise AIRR batches are gzip-compressed in IndexedDB. A service worker exposes those batches as a streaming download without assembling a full result Blob.
+- The table renders 50 records at a time. Exact locus, productivity, and V/D/J allele filters use browser-local indexes; ID, CDR3 substring, identity, length, and QC filters scan the narrowed candidate set on demand and are cancellable.
 - Additional filters cover V/D/J identity floors, CDR3 amino-acid length, D/CDR3 presence, receptor locus, and productivity.
 - Full alignments and translated evidence are retrieved or calculated only after a row is opened.
-- On browsers with the File System Access API, large AIRR downloads are streamed chunk by chunk to the chosen file. Other browsers use a conventional Blob download.
+- Every input still receives one lightweight IndexedDB record for filtering. Full AIRR rows and alignments remain in chunked storage and are read only for the selected query.
+- Direct-to-disk output uses the File System Access API (Chromium-family browsers in a secure context). Other modern browsers use compressed IndexedDB plus the streaming download service worker. A conventional Blob is only the small-result fallback.
 
 ## Supported biology and formats
 
@@ -76,7 +78,13 @@ WASI_SDK=/path/to/wasi-sdk npm run build:wasm
 npm test
 ```
 
-The vendored SwiftIG source and browser ABI are under `wasm/`. The upstream MIT license is retained in `LICENSE` and `wasm/LICENSE.swiftig`.
+The build uses `-O3`, LTO, WebAssembly SIMD, bulk-memory operations, section garbage collection, and a pinned Binaryen `wasm-opt -O4` convergence pass. The GitHub Pages workflow downloads the pinned SDK and rebuilds this optimized core before testing and publishing. The vendored SwiftIG source and browser ABI are under `wasm/`. The upstream MIT license is retained in `LICENSE` and `wasm/LICENSE.swiftig`.
+
+## Performance and stress verification
+
+`npm run benchmark:50k` runs 50,000 annotations through the same one-batch-per-worker scheduling bound used by the browser. On the included nine-logical-CPU build environment, the deliberately heavy all-full-length human IGH profile (543 germline alleles, both strands, complete AIRR formatting and transfer) completed at 3,125 reads/s with eight scalar WASM workers. This is not the same workload as SwiftIG's published 5,242 reads/s native benchmark, which mixes short and full IGH/IGK/IGL reads and uses 396 NCBI alleles; do not treat the two rates as a Web/native ratio.
+
+The normal test suite also pushes 50,000 gzip FASTA records through the incremental parser and 50,000 synthetic AIRR records through chunk compression, IndexedDB indexing, filtering, detail retrieval, and batchwise export. It asserts a 1,000-record parser high-water mark. Scaling from 50,000 to one million increases durable IndexedDB/file data and lightweight index rows, but not the number of resident query or AIRR batches.
 
 ## Update the IMGT reference pack
 

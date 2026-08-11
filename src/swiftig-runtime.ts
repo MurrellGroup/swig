@@ -2,18 +2,20 @@ import type { CompiledReferences } from "./reference-pack";
 
 export interface ResultBatch {
   header: string;
-  body: string;
+  body: Uint8Array;
   count: number;
   processed: number;
-  total: number;
+  total: number | null;
 }
 
 export interface RunOptions {
   query: string | File;
-  format: 0 | 1 | 2 | 3;
+  format: 1 | 2 | 3;
   references: CompiledReferences;
   minimumIdentity: number;
   strand: 0 | 1 | 2;
+  workers: number;
+  countHint?: number | null;
   onProgress?: (stage: string, value: number) => void;
   onBatch?: (batch: ResultBatch) => void | Promise<void>;
   signal?: AbortSignal;
@@ -22,6 +24,7 @@ export interface RunOptions {
 export interface RunResult {
   count: number;
   total: number;
+  workers: number;
 }
 
 let requestId = 0;
@@ -53,10 +56,11 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
         value?: number;
         batch?: number;
         header?: string;
-        body?: string;
+        body?: ArrayBuffer;
         count?: number;
         processed?: number;
-        total?: number;
+        total?: number | null;
+        workers?: number;
         message?: string;
       };
       if (message.id !== id || finished) return;
@@ -67,10 +71,10 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
       if (message.type === "batch") {
         Promise.resolve(options.onBatch?.({
           header: message.header ?? "",
-          body: message.body ?? "",
+          body: new Uint8Array(message.body ?? new ArrayBuffer(0)),
           count: message.count ?? 0,
           processed: message.processed ?? 0,
-          total: message.total ?? 0,
+          total: message.total ?? null,
         })).then(() => {
           worker.postMessage({ type: "ack", id, batch: message.batch ?? 0 });
         }).catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
@@ -83,7 +87,7 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
       finished = true;
       options.signal?.removeEventListener("abort", abort);
       worker.terminate();
-      resolve({ count: message.count ?? 0, total: message.total ?? 0 });
+      resolve({ count: message.count ?? 0, total: message.total ?? 0, workers: message.workers ?? 1 });
     };
     worker.onerror = (event) => fail(new Error(event.message || "The SwiftIG worker stopped unexpectedly."));
     worker.postMessage({
@@ -99,6 +103,8 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
       },
       minimumIdentity: options.minimumIdentity,
       strand: options.strand,
+      workers: options.workers,
+      countHint: options.countHint ?? null,
     });
   });
 }

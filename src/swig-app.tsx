@@ -22,7 +22,10 @@ import {
 import {
   AirrResultStore,
   EMPTY_FILTERS,
+  type AirrOutputHandle,
+  type AirrOutputWritable,
   type AirrIndexRecord,
+  type DirectAirrOutput,
   type ResultFacets,
   type ResultFilters,
   type ResultPage,
@@ -32,6 +35,7 @@ import { runSwiftIg } from "./swiftig-runtime";
 type AppPage = "home" | "analyze" | "results";
 type InputFormat = "FASTA" | "FASTQ" | "AIRR TSV";
 type InputSource = "upload" | "paste";
+type OutputStorageMode = "auto" | "browser" | "disk";
 type AirrRow = Record<string, string>;
 
 interface InputData {
@@ -60,11 +64,65 @@ interface ResultSession {
   scope: ScopeKey;
   facets: ResultFacets;
   summary: { assigned: number; productive: number; withCdr3: number };
+  workers: number;
+  outputBytes: number;
+  streamedDirectly: boolean;
 }
 
 const SEGMENTS: SegmentKey[] = ["V", "D", "J"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
+const DIRECT_OUTPUT_COUNT = 100_000;
+const DIRECT_OUTPUT_INPUT_BYTES = 32 * 1024 * 1024;
+
+interface SaveFileHandle extends AirrOutputHandle {
+  createWritable: () => Promise<AirrOutputWritable>;
+}
+
+type SavePicker = (options: {
+  suggestedName: string;
+  types: Array<{ description: string; accept: Record<string, string[]> }>;
+}) => Promise<SaveFileHandle>;
+
+let downloadWorkerRegistration: Promise<ServiceWorkerRegistration> | null = null;
+
+function browserWorkerLimit(): number {
+  if (typeof navigator === "undefined") return 4;
+  const cores = Math.max(1, navigator.hardwareConcurrency || 4);
+  return Math.max(1, Math.min(16, cores - 1 || 1));
+}
+
+function recommendedWorkerCount(): number {
+  const hardwareLimit = browserWorkerLimit();
+  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  const memoryLimit = memory === undefined ? 8 : memory <= 2 ? 2 : memory <= 4 ? 4 : memory <= 8 ? 8 : 12;
+  return Math.max(1, Math.min(hardwareLimit, memoryLimit));
+}
+
+function outputName(inputName: string): string {
+  return `${inputName.replace(/(\.gz)?\.[^.]+$/, "") || "swig"}.airr.tsv`;
+}
+
+function likelyLargeInput(input: InputData): boolean {
+  if (input.count !== null) return input.count >= DIRECT_OUTPUT_COUNT;
+  const gzipThreshold = 8 * 1024 * 1024;
+  return input.size >= (input.name.toLowerCase().endsWith(".gz") ? gzipThreshold : DIRECT_OUTPUT_INPUT_BYTES);
+}
+
+function savePicker(): SavePicker | undefined {
+  return (window as Window & { showSaveFilePicker?: SavePicker }).showSaveFilePicker;
+}
+
+function registerDownloadWorker(): Promise<ServiceWorkerRegistration> {
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) {
+    return Promise.reject(new Error("Streaming downloads require a secure browser context."));
+  }
+  downloadWorkerRegistration ??= navigator.serviceWorker.register(
+    `${import.meta.env.BASE_URL}download-worker.js`,
+    { scope: import.meta.env.BASE_URL },
+  );
+  return downloadWorkerRegistration;
+}
 
 const LOCUS_LABELS: Record<string, string> = {
   BCR: "All BCR chains",
@@ -81,7 +139,8 @@ const LOCUS_LABELS: Record<string, string> = {
 function bytes(value: number): string {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function percentage(value: number, total: number): string {
@@ -252,7 +311,7 @@ function LandingPage({ references, onStart, onDemo }: {
             <button className="secondary-cta" type="button" onClick={onDemo}>Explore with demo data</button>
           </div>
           <div className="hero-proof">
-            <span><b>FASTA</b> / FASTQ / AIRR</span>
+            <span><b>FASTA</b> / FASTQ / AIRR · gzip</span>
             <span><b>7</b> IG + TR loci</span>
             <span><b>0</b> bases uploaded</span>
           </div>
@@ -270,17 +329,17 @@ function LandingPage({ references, onStart, onDemo }: {
         <div className="section-heading"><p className="eyebrow"><span>A clear path through the data</span></p><h2>Three stages, no mystery state.</h2><p>Each run moves from configuration to measured progress to a durable local result index.</p></div>
         <div className="workflow-cards">
           <article><span>01</span><div className="workflow-icon upload-icon" /><h3>Bring sequences</h3><p>Upload or paste FASTA, FASTQ, or AIRR. Gzip is accepted, and large files remain out of the main UI thread.</p></article>
-          <article><span>02</span><div className="workflow-icon engine-icon" /><h3>Annotate locally</h3><p>Choose species, BCR/TCR locus, and germlines. Swap V, D, J, or C independently. Watch every batch complete.</p></article>
+          <article><span>02</span><div className="workflow-icon engine-icon" /><h3>Annotate locally</h3><p>Choose species, BCR/TCR locus, and germlines. Swap V, D, J, or C independently. Use multiple isolated WASM workers across CPU cores.</p></article>
           <article><span>03</span><div className="workflow-icon result-icon" /><h3>Interrogate calls</h3><p>Filter a million records without rendering them all, then open any read for nucleotide or on-demand protein alignments.</p></article>
         </div>
       </section>
 
       <section className="scale-section">
-        <div className="scale-copy"><p className="eyebrow"><span>Designed across scales</span></p><h2>One read gets a microscope.<br />A million reads get an index.</h2><p>Small runs open directly into detailed evidence. Large runs are written in batches to a browser-local index with query-time filters, so expensive views are calculated only for records you select.</p></div>
+        <div className="scale-copy"><p className="eyebrow"><span>Designed across scales</span></p><h2>One read gets a microscope.<br />A million reads get a pipeline.</h2><p>Small runs open directly into detailed evidence. Large runs are decompressed, parsed, annotated, indexed, and optionally written to disk under one bounded backpressure queue.</p></div>
         <div className="scale-grid">
           <article><strong>1–3</strong><span>Auto-open individual calls</span><small>Alignment-first review</small></article>
           <article><strong>10³</strong><span>Facets + paged table</span><small>Instant categorical filters</small></article>
-          <article><strong>10⁶</strong><span>Indexed local batches</span><small>No million-row DOM</small></article>
+          <article><strong>10⁶</strong><span>Streaming local batches</span><small>No million-row DOM or full-file buffer</small></article>
           <article><strong>{references ?? "—"}</strong><span>Reference sets</span><small>Plus arbitrary custom FASTA</small></article>
         </div>
       </section>
@@ -315,9 +374,9 @@ function ReferenceSegment({ segment, count, override, optional, onFile, onClear 
 
 function AnalysisProgress({ stage, value, onCancel }: { stage: string; value: number; onCancel: () => void }) {
   const phases = [
-    { label: "Read + count", threshold: 0.12 },
-    { label: "Index germlines", threshold: 0.24 },
-    { label: "Annotate batches", threshold: 0.96 },
+    { label: "Load WASM", threshold: 0.08 },
+    { label: "Replicate germlines", threshold: 0.14 },
+    { label: "Stream + annotate", threshold: 0.96 },
     { label: "Finalize index", threshold: 1 },
   ];
   const percent = Math.min(100, Math.max(0, Math.round(value * 100)));
@@ -443,11 +502,8 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     setDownloading(true);
     setDownloadError("");
     try {
-      const name = `${session.inputName.replace(/(\.gz)?\.[^.]+$/, "") || "swig"}.airr.tsv`;
-      type WritableFile = { write: (data: string) => Promise<void>; close: () => Promise<void>; abort?: () => Promise<void> };
-      type SaveHandle = { createWritable: () => Promise<WritableFile> };
-      type SavePicker = (options: { suggestedName: string; types: Array<{ description: string; accept: Record<string, string[]> }> }) => Promise<SaveHandle>;
-      const picker = (window as Window & { showSaveFilePicker?: SavePicker }).showSaveFilePicker;
+      const name = outputName(session.inputName);
+      const picker = savePicker();
       if (picker) {
         const handle = await picker.call(window, {
           suggestedName: name,
@@ -462,8 +518,19 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
           throw error;
         }
       } else {
-        const blob = await session.store.airrBlob();
-        downloadBlob(blob, name);
+        if (session.streamedDirectly) {
+          downloadBlob(await session.store.airrBlob(), name);
+          return;
+        }
+        try {
+          await registerDownloadWorker();
+          const anchor = document.createElement("a");
+          anchor.href = session.store.streamingDownloadUrl(import.meta.env.BASE_URL, name);
+          anchor.download = name;
+          anchor.click();
+        } catch {
+          downloadBlob(await session.store.airrBlob(), name);
+        }
       }
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
@@ -482,7 +549,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     <main className="results-page">
       <section className="results-hero">
         <WorkflowStepper active={3} />
-        <div className="results-title"><div><p className="eyebrow"><span>Analysis complete · {session.seconds.toFixed(2)} s</span></p><h1>{session.total.toLocaleString()} rearrangements,<br /><em>ready to interrogate.</em></h1><p>{friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · indexed locally</p></div><div className="results-actions"><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing AIRR…" : "Download AIRR TSV"}<span>↓</span></button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
+        <div className="results-title"><div><p className="eyebrow"><span>Analysis complete · {session.seconds.toFixed(2)} s · {Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s</span></p><h1>{session.total.toLocaleString()} rearrangements,<br /><em>ready to interrogate.</em></h1><p>{friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR</p></div><div className="results-actions"><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing AIRR…" : session.streamedDirectly ? "Save another AIRR copy" : "Download AIRR TSV"}<span>↓</span></button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
         <div className="result-summary">
           <article><span>V + J assigned</span><strong>{session.summary.assigned.toLocaleString()}</strong><small>{percentage(session.summary.assigned, session.total)} of input</small></article>
           <article><span>Productive</span><strong>{session.summary.productive.toLocaleString()}</strong><small>{percentage(session.summary.productive, session.total)} of input</small></article>
@@ -559,6 +626,8 @@ export default function SwigApp() {
   const [overrides, setOverrides] = useState<Partial<Record<SegmentKey, ReferenceOverride>>>({});
   const [minimumIdentity, setMinimumIdentity] = useState(0.6);
   const [strand, setStrand] = useState<0 | 1 | 2>(0);
+  const [workerCount, setWorkerCount] = useState(recommendedWorkerCount);
+  const [outputStorage, setOutputStorage] = useState<OutputStorageMode>("auto");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ stage: "Preparing analysis", value: 0 });
@@ -569,6 +638,7 @@ export default function SwigApp() {
 
   useEffect(() => {
     loadReferencePack().then(setPack).catch((error) => setPackError(error instanceof Error ? error.message : String(error)));
+    if ("serviceWorker" in navigator && window.isSecureContext) void registerDownloadWorker().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -644,15 +714,43 @@ export default function SwigApp() {
       setRunError("This reference selection requires both V and J germline records.");
       return;
     }
+
+    let directOutput: DirectAirrOutput | undefined;
+    const wantsDisk = outputStorage === "disk" || (outputStorage === "auto" && likelyLargeInput(activeInput));
+    if (wantsDisk) {
+      const picker = savePicker();
+      if (!picker && outputStorage === "disk") {
+        setRunError("Direct-to-disk streaming is unavailable in this browser. Use Auto/browser storage or a Chromium-based browser.");
+        return;
+      }
+      if (picker) {
+        try {
+          const handle = await picker.call(window, {
+            suggestedName: outputName(activeInput.name),
+            types: [{ description: "AIRR rearrangement table", accept: { "text/tab-separated-values": [".tsv"] } }],
+          });
+          directOutput = { handle, writable: await handle.createWritable() };
+        } catch (error) {
+          if (!(error instanceof DOMException && error.name === "AbortError") || outputStorage === "disk") {
+            if (!(error instanceof DOMException && error.name === "AbortError")) {
+              setRunError(error instanceof Error ? error.message : String(error));
+            }
+            return;
+          }
+        }
+      }
+    }
+
     if (session) await session.store.clear();
     setSession(null);
-    const store = new AirrResultStore();
+    const store = new AirrResultStore(directOutput);
     const controller = new AbortController();
     abortRef.current = controller;
     setRunning(true);
     setRunError("");
     setProgress({ stage: "Preparing analysis", value: 0.01 });
     const started = performance.now();
+    void navigator.storage?.persist?.().catch(() => false);
     try {
       const result = await runSwiftIg({
         query: activeInput.source,
@@ -660,13 +758,21 @@ export default function SwigApp() {
         references: compiled,
         minimumIdentity,
         strand,
+        workers: workerCount,
+        countHint: activeInput.count,
         signal: controller.signal,
         onProgress: (stage, value) => setProgress({ stage, value }),
         onBatch: async (batch) => {
           await store.appendBatch(batch.header, batch.body);
-          setProgress({ stage: `Indexed ${batch.processed.toLocaleString()} of ${batch.total.toLocaleString()} AIRR records`, value: 0.24 + 0.72 * (batch.processed / batch.total) });
+          setProgress((current) => ({
+            ...current,
+            stage: batch.total === null
+              ? `Committed ${batch.processed.toLocaleString()} AIRR records`
+              : `Committed ${batch.processed.toLocaleString()} of ${batch.total.toLocaleString()} AIRR records`,
+          }));
         },
       });
+      await store.finalize();
       setProgress({ stage: "Results ready", value: 1 });
       setSession({
         id: Date.now(),
@@ -678,10 +784,14 @@ export default function SwigApp() {
         scope: activeScope,
         facets: store.facets(),
         summary: store.summary,
+        workers: result.workers,
+        outputBytes: store.outputBytes,
+        streamedDirectly: store.streamedDirectly,
       });
       setPage("results");
       window.scrollTo({ top: 0 });
     } catch (error) {
+      await store.abort();
       await store.clear();
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         setRunError(error instanceof Error ? error.message : String(error));
@@ -722,7 +832,7 @@ export default function SwigApp() {
                       event.preventDefault();
                       const file = event.dataTransfer.files?.[0];
                       if (file) void acceptInputFile(file);
-                    }}><span>＋</span><strong>Drop sequence data here</strong><small>FASTA · FASTQ · AIRR TSV · optional gzip</small><i>Choose file</i></button>
+                    }}><span>＋</span><strong>Drop sequence data here</strong><small>.fasta(.gz) · .fastq(.gz) · AIRR .tsv(.gz)</small><i>Choose file</i></button>
                   ) : (
                     <div className="paste-input"><textarea spellCheck={false} value={pasteText} onChange={(event) => setPasteText(event.target.value)} placeholder={">sequence_1\nCAGGTGCAGCTGGTG...\n\n—or—\n\nsequence_id\tsequence\nread_1\tCAGGTGCAGCTGGTG..."} /><footer><span>{pasteInput ? `${pasteInput.count?.toLocaleString()} ${pasteInput.format} records detected` : pasteText.trim() ? "Waiting for valid FASTA, FASTQ, or AIRR…" : "Nothing pasted yet"}</span><button type="button" onClick={chooseDemo}>Insert demo</button></footer></div>
                   )}
@@ -749,17 +859,23 @@ export default function SwigApp() {
 
                 <section className="analysis-card settings-card">
                   <header><span className="card-number">03</span><div><h2>Analysis behavior</h2><p>Defaults are tuned for rearranged repertoire sequences.</p></div><button className="reset-button" type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} controls</button></header>
-                  <div className="settings-strip"><span><b>Strand</b> both</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> AIRR TSV</span><span><b>Execution</b> batched worker</span></div>
-                  {showAdvanced && <div className="advanced-settings"><label><span>Search strand</span><select value={strand} onChange={(event) => setStrand(Number(event.target.value) as 0 | 1 | 2)}><option value={0}>Both orientations</option><option value={1}>Plus only</option><option value={2}>Minus only</option></select></label><label className="minimum-slider"><span>Minimum alignment identity <b>{Math.round(minimumIdentity * 100)}%</b></span><input type="range" min="0.45" max="0.9" step="0.01" value={minimumIdentity} onChange={(event) => setMinimumIdentity(Number(event.target.value))} /></label><div className="constant-reference"><div><span>Optional C germlines</span><small>Add constant-region calls</small></div><label>{overrides.C ? overrides.C.name : "Upload C FASTA"}<input className="visually-hidden" type="file" accept=".fa,.fasta,.fna,.txt,.gz" onChange={(event) => { const file = event.target.files?.[0]; if (file) void acceptReferenceFile("C", file); event.target.value = ""; }} /></label></div></div>}
+                  <div className="settings-strip"><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "adaptive"}</span><span><b>Execution</b> {workerCount} parallel WASM worker{workerCount === 1 ? "" : "s"}</span></div>
+                  {showAdvanced && <div className="advanced-settings">
+                    <label><span>Search strand</span><select value={strand} onChange={(event) => setStrand(Number(event.target.value) as 0 | 1 | 2)}><option value={0}>Both orientations</option><option value={1}>Plus only</option><option value={2}>Minus only</option></select></label>
+                    <label><span>Parallel WASM workers</span><select value={workerCount} onChange={(event) => setWorkerCount(Number(event.target.value))}>{Array.from({ length: browserWorkerLimit() }, (_, index) => index + 1).map((count) => <option value={count} key={count}>{count}{count === recommendedWorkerCount() ? " · recommended" : ""}</option>)}</select></label>
+                    <label><span>AIRR output storage</span><select value={outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}><option value="auto">Auto · disk for large runs</option><option value="browser">Compressed browser index</option><option value="disk">Stream directly to a file</option></select></label>
+                    <label className="minimum-slider"><span>Minimum alignment identity <b>{Math.round(minimumIdentity * 100)}%</b></span><input type="range" min="0.45" max="0.9" step="0.01" value={minimumIdentity} onChange={(event) => setMinimumIdentity(Number(event.target.value))} /></label>
+                    <div className="constant-reference"><div><span>Optional C germlines</span><small>Add constant-region calls</small></div><label>{overrides.C ? overrides.C.name : "Upload C FASTA"}<input className="visually-hidden" type="file" accept=".fa,.fasta,.fna,.txt,.gz" onChange={(event) => { const file = event.target.files?.[0]; if (file) void acceptReferenceFile("C", file); event.target.value = ""; }} /></label></div>
+                  </div>}
                 </section>
               </div>
 
               <aside className="run-summary">
                 <span className="section-kicker">Run manifest</span><h2>{activeInput ? activeInput.count === null ? "Large file" : `${activeInput.count?.toLocaleString()} sequences` : "Awaiting data"}</h2><p>{activeInput?.name ?? "Add an input to unlock analysis."}</p>
-                <dl><div><dt>Reference</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>V / D / J</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J}` : "—"}</dd></div><div><dt>Custom</dt><dd>{Object.keys(overrides).length ? Object.keys(overrides).join(" + ") : "None"}</dd></div><div><dt>Storage</dt><dd>Local indexed batches</dd></div></dl>
+                <dl><div><dt>Reference</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>V / D / J</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J}` : "—"}</dd></div><div><dt>Custom</dt><dd>{Object.keys(overrides).length ? Object.keys(overrides).join(" + ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · bounded queue</dd></div><div><dt>Storage</dt><dd>{outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
                 {runError && <p className="run-error" role="alert">{runError}</p>}
                 <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError)} onClick={() => void run()}><span>Analyze with SwiftIG</span><b>→</b></button>
-                <p className="privacy-copy"><span>⌁</span> Query data, custom germlines, and AIRR output remain on this device.</p>
+                <p className="privacy-copy"><span>⌁</span> Query data, custom germlines, and AIRR output remain on this device. Large runs can be committed to disk while analysis is still running.</p>
               </aside>
             </div>
           )}
@@ -767,7 +883,7 @@ export default function SwigApp() {
       )}
 
       {page === "results" && session && <ResultsPage session={session} onNewAnalysis={() => navigate("analyze")} />}
-      <footer className="site-footer"><Brand /><p>SwiftIG 0.2 · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      <footer className="site-footer"><Brand /><p>SwiftIG 0.3 · parallel streaming WebAssembly · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }

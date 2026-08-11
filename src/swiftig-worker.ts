@@ -1,15 +1,17 @@
 /// <reference lib="webworker" />
 
-import { WASI } from "@bjorn3/browser_wasi_shim";
+import { streamSequenceBatches, type SequenceBatch, type SequenceFormat } from "./sequence-stream";
 
 interface StartRequest {
   type: "start";
   id: number;
   query: string | File;
-  format: 0 | 1 | 2 | 3;
+  format: SequenceFormat;
   references: { V: string; D: string; J: string; C: string };
   minimumIdentity: number;
   strand: 0 | 1 | 2;
+  workers: number;
+  countHint: number | null;
 }
 
 interface AckRequest {
@@ -18,285 +20,272 @@ interface AckRequest {
   batch: number;
 }
 
-interface SwiftIgExports extends WebAssembly.Exports {
-  memory: WebAssembly.Memory;
-  _initialize: () => void;
-  swig_alloc: (size: number) => number;
-  swig_free: (pointer: number) => void;
-  swig_init_database: (
-    vPointer: number, vSize: number, dPointer: number, dSize: number,
-    jPointer: number, jSize: number, cPointer: number, cSize: number,
-  ) => number;
-  swig_annotate: (
-    queryPointer: number, querySize: number, format: number,
-    identityPerMille: number, strand: number,
-  ) => number;
-  swig_result_ptr: () => number;
-  swig_result_len: () => number;
-  swig_error_ptr: () => number;
-  swig_error_len: () => number;
-}
-
-interface QueryBatch {
-  text: string;
+interface ComputeBatch {
+  batch: number;
+  header: string;
+  body: ArrayBuffer;
   count: number;
+  milliseconds: number;
 }
 
-let runtimePromise: Promise<SwiftIgExports> | null = null;
+interface ComputeSlot {
+  index: number;
+  worker: Worker;
+  busy: boolean;
+  resolve?: (batch: ComputeBatch) => void;
+  reject?: (error: Error) => void;
+}
+
 const acknowledgements = new Map<string, () => void>();
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
-function progress(id: number, stage: string, value: number) {
+function postProgress(id: number, stage: string, value: number) {
   self.postMessage({ id, type: "progress", stage, value });
-}
-
-async function loadRuntime(): Promise<SwiftIgExports> {
-  if (!runtimePromise) {
-    runtimePromise = (async () => {
-      const response = await fetch(`${import.meta.env.BASE_URL}swiftig.wasm`);
-      if (!response.ok) throw new Error("The SwiftIG WebAssembly core could not be loaded.");
-      const wasmModule = await WebAssembly.compile(await response.arrayBuffer());
-      const wasi = new WASI([], [], []);
-      const instance = await WebAssembly.instantiate(wasmModule, {
-        wasi_snapshot_preview1: wasi.wasiImport,
-      });
-      wasi.initialize(instance as WebAssembly.Instance & {
-        exports: { memory: WebAssembly.Memory; _initialize?: () => unknown };
-      });
-      return instance.exports as SwiftIgExports;
-    })();
-  }
-  return runtimePromise;
-}
-
-function put(exports: SwiftIgExports, value: string): [number, number] {
-  const bytes = encoder.encode(value);
-  const pointer = exports.swig_alloc(bytes.length);
-  if (!pointer && bytes.length) throw new Error("SwiftIG ran out of browser memory.");
-  new Uint8Array(exports.memory.buffer, pointer, bytes.length).set(bytes);
-  return [pointer, bytes.length];
-}
-
-function read(exports: SwiftIgExports, pointer: number, length: number): string {
-  return decoder.decode(new Uint8Array(exports.memory.buffer, pointer, length));
-}
-
-function readError(exports: SwiftIgExports): string {
-  return read(exports, exports.swig_error_ptr(), exports.swig_error_len()) ||
-    "SwiftIG could not complete the annotation.";
-}
-
-function lineAt(input: string, start: number): { value: string; next: number } {
-  const end = input.indexOf("\n", start);
-  const stop = end < 0 ? input.length : end;
-  return {
-    value: input.slice(start, stop).replace(/\r$/, ""),
-    next: end < 0 ? input.length : end + 1,
-  };
-}
-
-function* fastaRecords(input: string): Generator<string> {
-  const starts = /^>/gm;
-  let previous: number | null = null;
-  for (let match = starts.exec(input); match; match = starts.exec(input)) {
-    if (previous !== null) yield input.slice(previous, match.index);
-    previous = match.index;
-  }
-  if (previous !== null) yield input.slice(previous);
-}
-
-function* fastqRecords(input: string): Generator<string> {
-  let position = 0;
-  while (position < input.length) {
-    while (position < input.length) {
-      const peek = lineAt(input, position);
-      if (peek.value.trim()) break;
-      position = peek.next;
-    }
-    if (position >= input.length) return;
-    const start = position;
-    const header = lineAt(input, position);
-    if (!header.value.startsWith("@")) throw new Error("Expected a FASTQ header beginning with '@'.");
-    position = header.next;
-    let sequenceLength = 0;
-    let foundPlus = false;
-    while (position < input.length) {
-      const line = lineAt(input, position);
-      position = line.next;
-      if (line.value.startsWith("+")) {
-        foundPlus = true;
-        break;
-      }
-      sequenceLength += line.value.replace(/\s/g, "").length;
-    }
-    if (!foundPlus) throw new Error("The FASTQ input ended before a '+' line.");
-    let qualityLength = 0;
-    while (position < input.length && qualityLength < sequenceLength) {
-      const line = lineAt(input, position);
-      position = line.next;
-      qualityLength += line.value.length;
-    }
-    if (qualityLength !== sequenceLength) throw new Error("A FASTQ sequence and quality string differ in length.");
-    yield input.slice(start, position);
-  }
-}
-
-function* airrRecords(input: string): Generator<{ header: string; row: string }> {
-  let position = 0;
-  let header = "";
-  while (position < input.length && !header) {
-    const line = lineAt(input, position);
-    position = line.next;
-    header = line.value;
-  }
-  if (!header) return;
-  const delimiter = header.includes("\t") ? "\t" : ",";
-  const columns = header.split(delimiter);
-  const sequenceColumn = columns.indexOf("sequence");
-  if (sequenceColumn < 0) throw new Error("AIRR input requires a 'sequence' column.");
-  while (position < input.length) {
-    const line = lineAt(input, position);
-    position = line.next;
-    if (!line.value.trim()) continue;
-    const values = line.value.split(delimiter);
-    if (!values[sequenceColumn]) continue;
-    yield { header, row: line.value };
-  }
-}
-
-function resolvedFormat(input: string, format: number): 1 | 2 | 3 {
-  if (format === 1 || format === 2 || format === 3) return format;
-  const first = input.trimStart()[0];
-  return first === ">" ? 1 : first === "@" ? 2 : 3;
-}
-
-function* queryBatches(input: string, format: number, batchSize: number): Generator<QueryBatch> {
-  const actual = resolvedFormat(input, format);
-  if (actual === 3) {
-    let header = "";
-    let rows: string[] = [];
-    for (const record of airrRecords(input)) {
-      header = record.header;
-      rows.push(record.row);
-      if (rows.length === batchSize) {
-        yield { text: `${header}\n${rows.join("\n")}\n`, count: rows.length };
-        rows = [];
-      }
-    }
-    if (rows.length) yield { text: `${header}\n${rows.join("\n")}\n`, count: rows.length };
-    return;
-  }
-  const source = actual === 1 ? fastaRecords(input) : fastqRecords(input);
-  let records: string[] = [];
-  for (const record of source) {
-    records.push(record.endsWith("\n") ? record : `${record}\n`);
-    if (records.length === batchSize) {
-      yield { text: records.join(""), count: records.length };
-      records = [];
-    }
-  }
-  if (records.length) yield { text: records.join(""), count: records.length };
-}
-
-function countQueries(input: string, format: number): number {
-  let count = 0;
-  for (const batch of queryBatches(input, format, 2000)) count += batch.count;
-  return count;
-}
-
-async function readQuery(query: string | File, id: number): Promise<string> {
-  if (typeof query === "string") return query;
-  progress(id, query.name.toLowerCase().endsWith(".gz") ? "Decompressing input" : "Reading input", 0.03);
-  if (query.name.toLowerCase().endsWith(".gz")) {
-    if (!("DecompressionStream" in globalThis)) {
-      throw new Error("This browser cannot decompress gzip input.");
-    }
-    const stream = query.stream().pipeThrough(new DecompressionStream("gzip"));
-    return new Response(stream).text();
-  }
-  const reader = query.stream().getReader();
-  const textDecoder = new TextDecoder();
-  let consumed = 0;
-  let output = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    consumed += value.byteLength;
-    output += textDecoder.decode(value, { stream: true });
-    progress(id, "Reading input", 0.03 + 0.05 * (consumed / Math.max(query.size, 1)));
-  }
-  return output + textDecoder.decode();
 }
 
 function waitForAcknowledgement(id: number, batch: number): Promise<void> {
   return new Promise((resolve) => acknowledgements.set(`${id}:${batch}`, resolve));
 }
 
-async function handleRequest(request: StartRequest) {
+async function compileCore(): Promise<WebAssembly.Module> {
+  const url = `${import.meta.env.BASE_URL}swiftig.wasm`;
   try {
-    const queryText = await readQuery(request.query, request.id);
-    progress(request.id, "Counting sequences", 0.09);
-    const total = countQueries(queryText, request.format);
-    if (!total) throw new Error("No sequence records were found in the input.");
-    progress(request.id, `Found ${total.toLocaleString()} sequences`, 0.12);
+    return await WebAssembly.compileStreaming(fetch(url));
+  } catch {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("The SwiftIG WebAssembly core could not be loaded.");
+    return WebAssembly.compile(await response.arrayBuffer());
+  }
+}
 
-    const exports = await loadRuntime();
-    progress(request.id, "Indexing V, D and J references", 0.16);
-    const allocations = [
-      put(exports, request.references.V), put(exports, request.references.D),
-      put(exports, request.references.J), put(exports, request.references.C),
-    ];
-    const initialized = exports.swig_init_database(
-      allocations[0][0], allocations[0][1], allocations[1][0], allocations[1][1],
-      allocations[2][0], allocations[2][1], allocations[3][0], allocations[3][1],
-    );
-    allocations.forEach(([pointer]) => exports.swig_free(pointer));
-    if (initialized < 0) throw new Error(readError(exports));
-    progress(request.id, `Indexed ${initialized.toLocaleString()} germline alleles`, 0.24);
+function effectiveWorkerCount(request: StartRequest): number {
+  const requested = Math.max(1, Math.min(16, Math.floor(request.workers || 1)));
+  if (request.countHint !== null && request.countHint <= 3) return 1;
+  if (request.countHint !== null && request.countHint <= 500) return Math.min(2, requested);
+  return requested;
+}
 
-    const batchSize = total <= 10 ? 1 : total <= 1000 ? 50 : 500;
-    let processed = 0;
-    let batchNumber = 0;
-    for (const batch of queryBatches(queryText, request.format, batchSize)) {
-      const [queryPointer, querySize] = put(exports, batch.text);
-      const count = exports.swig_annotate(
-        queryPointer, querySize, request.format,
-        Math.round(request.minimumIdentity * 1000), request.strand,
-      );
-      exports.swig_free(queryPointer);
-      if (count < 0) throw new Error(readError(exports));
-      const tsv = read(exports, exports.swig_result_ptr(), exports.swig_result_len());
-      const breakAt = tsv.indexOf("\n");
-      if (breakAt < 0) throw new Error("SwiftIG returned an invalid AIRR table.");
-      processed += count;
-      const acknowledgement = waitForAcknowledgement(request.id, batchNumber);
-      self.postMessage({
-        id: request.id,
-        type: "batch",
-        batch: batchNumber,
-        header: tsv.slice(0, breakAt).replace(/\r$/, ""),
-        body: tsv.slice(breakAt + 1),
-        count,
-        processed,
-        total,
-      });
-      await acknowledgement;
-      batchNumber += 1;
-      progress(
-        request.id,
-        `Annotated ${processed.toLocaleString()} of ${total.toLocaleString()}`,
-        0.24 + 0.72 * (processed / total),
-      );
+function batchSize(countHint: number | null): number {
+  if (countHint !== null && countHint <= 10) return 1;
+  if (countHint !== null && countHint <= 1000) return 100;
+  return 1000;
+}
+
+async function initializeSlot(
+  index: number,
+  module: WebAssembly.Module,
+  references: StartRequest["references"],
+): Promise<ComputeSlot> {
+  const worker = new Worker(new URL("./swiftig-compute-worker.ts", import.meta.url), { type: "module" });
+  const slot: ComputeSlot = { index, worker, busy: false };
+  return new Promise((resolve, reject) => {
+    const fail = (error: Error) => {
+      worker.terminate();
+      reject(error);
+    };
+    worker.onerror = (event) => fail(new Error(event.message || `Compute worker ${index + 1} stopped unexpectedly.`));
+    worker.onmessage = (event) => {
+      const message = event.data as { type: "ready" | "error"; genes?: number; message?: string };
+      if (message.type === "error") {
+        fail(new Error(message.message || `Compute worker ${index + 1} could not initialize.`));
+        return;
+      }
+      resolve(slot);
+    };
+    worker.postMessage({ type: "initialize", worker: index, module, references });
+  });
+}
+
+function installComputeHandler(slot: ComputeSlot, onFatal: (error: Error) => void) {
+  slot.worker.onerror = (event) => {
+    const error = new Error(event.message || `Compute worker ${slot.index + 1} stopped unexpectedly.`);
+    slot.reject?.(error);
+    onFatal(error);
+  };
+  slot.worker.onmessage = (event) => {
+    const message = event.data as ComputeBatch & { type: "batch" | "error"; message?: string };
+    if (message.type === "error") {
+      const error = new Error(message.message || `Compute worker ${slot.index + 1} failed.`);
+      slot.reject?.(error);
+      slot.resolve = undefined;
+      slot.reject = undefined;
+      onFatal(error);
+      return;
     }
-    progress(request.id, "Finalizing local result index", 0.98);
-    self.postMessage({ id: request.id, type: "result", count: processed, total });
+    slot.resolve?.(message);
+    slot.resolve = undefined;
+    slot.reject = undefined;
+  };
+}
+
+function annotate(slot: ComputeSlot, batch: SequenceBatch, request: StartRequest): Promise<ComputeBatch> {
+  const query = encoder.encode(batch.text);
+  return new Promise((resolve, reject) => {
+    slot.resolve = resolve;
+    slot.reject = reject;
+    slot.worker.postMessage({
+      type: "annotate",
+      batch: batch.index,
+      query: query.buffer,
+      count: batch.count,
+      format: batch.format,
+      minimumIdentity: request.minimumIdentity,
+      strand: request.strand,
+    }, [query.buffer]);
+  });
+}
+
+async function handleRequest(request: StartRequest) {
+  const slots: ComputeSlot[] = [];
+  try {
+    const workerCount = effectiveWorkerCount(request);
+    postProgress(request.id, `Loading WebAssembly for ${workerCount} parallel worker${workerCount === 1 ? "" : "s"}`, 0.03);
+    const module = await compileCore();
+    postProgress(request.id, `Indexing germlines in ${workerCount} worker${workerCount === 1 ? "" : "s"}`, 0.08);
+    slots.push(...await Promise.all(Array.from(
+      { length: workerCount },
+      (_, index) => initializeSlot(index, module, request.references),
+    )));
+
+    let fatalError: Error | null = null;
+    let wakeAvailability: (() => void) | null = null;
+    let resolveFinished!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      resolveFinished = resolve;
+    });
+    const pending = new Map<number, { result: ComputeBatch; slot: ComputeSlot }>();
+    const maximumOutstanding = workerCount * 2;
+    let nextCommit = 0;
+    let parsed = 0;
+    let committed = 0;
+    let inputDone = false;
+    let flushing = false;
+    let lastProgress = 0.14;
+    let bytesRead = 0;
+    let totalBytes = typeof request.query === "string" ? request.query.length : request.query.size;
+
+    const fail = (error: Error) => {
+      if (fatalError) return;
+      fatalError = error;
+      wakeAvailability?.();
+      wakeAvailability = null;
+      resolveFinished();
+    };
+    slots.forEach((slot) => installComputeHandler(slot, fail));
+
+    const report = (stage: string) => {
+      const inputFraction = totalBytes ? Math.min(1, bytesRead / totalBytes) : 0;
+      const completion = inputDone
+        ? (parsed ? committed / parsed : 0)
+        : Math.min(0.96, inputFraction * 0.92 + (parsed ? committed / parsed : 0) * 0.08);
+      lastProgress = Math.max(lastProgress, 0.14 + completion * 0.82);
+      postProgress(request.id, stage, Math.min(0.96, lastProgress));
+    };
+
+    const release = (slot: ComputeSlot) => {
+      slot.busy = false;
+      wakeAvailability?.();
+      wakeAvailability = null;
+    };
+
+    const maybeFinish = () => {
+      if (inputDone && committed === parsed && slots.every((slot) => !slot.busy) && !pending.size) {
+        resolveFinished();
+      }
+    };
+
+    const flush = async () => {
+      if (flushing || fatalError) return;
+      flushing = true;
+      try {
+        while (pending.has(nextCommit)) {
+          const { result, slot } = pending.get(nextCommit)!;
+          pending.delete(nextCommit);
+          committed += result.count;
+          const acknowledgement = waitForAcknowledgement(request.id, nextCommit);
+          self.postMessage({
+            id: request.id,
+            type: "batch",
+            batch: nextCommit,
+            header: result.header,
+            body: result.body,
+            count: result.count,
+            processed: committed,
+            total: inputDone ? parsed : null,
+            milliseconds: result.milliseconds,
+          }, [result.body]);
+          await acknowledgement;
+          nextCommit += 1;
+          wakeAvailability?.();
+          wakeAvailability = null;
+          report(inputDone
+            ? `Annotated ${committed.toLocaleString()} of ${parsed.toLocaleString()} sequences`
+            : `Streamed + annotated ${committed.toLocaleString()} sequences`);
+        }
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+      } finally {
+        flushing = false;
+        maybeFinish();
+      }
+    };
+
+    const acquire = async (batchIndex: number): Promise<ComputeSlot> => {
+      while (true) {
+        if (fatalError) throw fatalError;
+        const available = slots.find((slot) => !slot.busy);
+        if (available && batchIndex - nextCommit < maximumOutstanding) {
+          available.busy = true;
+          return available;
+        }
+        await new Promise<void>((resolve) => { wakeAvailability = resolve; });
+      }
+    };
+
+    postProgress(request.id, `Ready · ${workerCount} parallel worker${workerCount === 1 ? "" : "s"}`, 0.14);
+    for await (const batch of streamSequenceBatches({
+      source: request.query,
+      format: request.format,
+      batchSize: batchSize(request.countHint),
+      onProgress: (state) => {
+        bytesRead = state.bytesRead;
+        totalBytes = state.totalBytes;
+        if (state.recordsRead && state.recordsRead % 1000 === 0) {
+          report(`Streaming input · ${state.recordsRead.toLocaleString()} sequences parsed`);
+        }
+      },
+    })) {
+      if (fatalError) throw fatalError;
+      parsed += batch.count;
+      const slot = await acquire(batch.index);
+      void annotate(slot, batch, request).then((result) => {
+        pending.set(batch.index, { result, slot });
+        release(slot);
+        void flush();
+      }).catch(fail);
+    }
+    inputDone = true;
+    bytesRead = totalBytes;
+    report(`Input complete · finishing ${parsed.toLocaleString()} sequences`);
+    maybeFinish();
+    await finished;
+    if (fatalError) throw fatalError;
+    postProgress(request.id, "Finalizing the local AIRR index", 0.98);
+    self.postMessage({
+      id: request.id,
+      type: "result",
+      count: committed,
+      total: parsed,
+      workers: workerCount,
+    });
   } catch (error) {
     self.postMessage({
       id: request.id,
       type: "error",
       message: error instanceof Error ? error.message : String(error),
     });
+  } finally {
+    slots.forEach((slot) => slot.worker.terminate());
   }
 }
 
@@ -312,4 +301,3 @@ self.addEventListener("message", (event: MessageEvent<StartRequest | AckRequest>
 });
 
 export {};
-

@@ -15,6 +15,12 @@ if [[ ! -x "$compiler" ]]; then
   exit 2
 fi
 
+wasm_opt="$project_dir/node_modules/.bin/wasm-opt"
+if [[ ! -x "$wasm_opt" ]]; then
+  echo "Run npm install before building so the pinned Binaryen wasm-opt is available." >&2
+  exit 2
+fi
+
 build_dir="$project_dir/.build/wasm"
 mkdir -p "$build_dir"
 export TMPDIR="$build_dir"
@@ -32,6 +38,9 @@ sources=(
 "$compiler" \
   --target=wasm32-wasip1 \
   -O3 \
+  -flto \
+  -msimd128 \
+  -mbulk-memory \
   -DNDEBUG \
   -std=c++20 \
   -fno-exceptions \
@@ -40,9 +49,21 @@ sources=(
   -I"$project_dir/wasm/include" \
   "${sources[@]}" \
   -mexec-model=reactor \
+  -Wl,--lto-O3 \
+  -Wl,--gc-sections \
   -Wl,--export-memory \
   -Wl,--strip-all \
+  -o "$build_dir/swiftig.raw.wasm"
+
+"$wasm_opt" \
+  "$build_dir/swiftig.raw.wasm" \
+  -O4 \
+  --converge \
+  --enable-bulk-memory \
+  --enable-simd \
+  --strip-debug \
+  --strip-producers \
   -o "$build_dir/swiftig.wasm"
 
 install -m 755 "$build_dir/swiftig.wasm" "$project_dir/public/swiftig.wasm"
-echo "Built public/swiftig.wasm"
+echo "Built optimized SIMD/LTO public/swiftig.wasm"
