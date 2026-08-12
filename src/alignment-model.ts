@@ -30,7 +30,8 @@ const CODONS: Record<string, string> = {
 export const REGIONS = ["fwr1", "cdr1", "fwr2", "cdr2", "fwr3", "cdr3", "fwr4"] as const;
 export const ALIGNMENT_SEGMENTS = [
   { key: "v", label: "V", color: "var(--segment-v)" },
-  { key: "d", label: "D", color: "var(--segment-d)" },
+  { key: "d", label: "D1", color: "var(--segment-d)" },
+  { key: "d2", label: "D2", color: "#f2cf73" },
   { key: "j", label: "J", color: "var(--segment-j)" },
   { key: "c", label: "C", color: "var(--segment-c)" },
 ] as const;

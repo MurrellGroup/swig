@@ -31,6 +31,7 @@ sources=(
   "$project_dir/wasm/src/index.cpp"
   "$project_dir/wasm/src/alignment.cpp"
   "$project_dir/wasm/src/engine.cpp"
+  "$project_dir/wasm/src/double_d.cpp"
   "$project_dir/wasm/src/airr.cpp"
   "$project_dir/wasm/src/web_adapter.cpp"
 )

@@ -92,9 +92,9 @@ export class PostAnalysisRuntime {
     return this.indexing;
   }
 
-  async deduplicate(key: DedupKey): Promise<DedupDashboard> {
+  async deduplicate(key: DedupKey, unresolvedPolicy: "discard" | "retain" = "discard"): Promise<DedupDashboard> {
     await this.ensureIndexed();
-    return this.request<DedupDashboard>({ type: "dedup", key });
+    return this.request<DedupDashboard>({ type: "dedup", key, unresolvedPolicy });
   }
 
   async denoise(options: DenoiseOptions, onProgress?: (processed: number, total: number) => void, signal?: AbortSignal): Promise<DedupDashboard> {
@@ -118,6 +118,12 @@ export class PostAnalysisRuntime {
   async setActiveMask(mask: Uint8Array | null): Promise<{ retained: number }> {
     await this.ensureIndexed();
     return this.request({ type: "setActiveMask", mask });
+  }
+
+  async activeMask(): Promise<Uint8Array | null> {
+    await this.ensureIndexed();
+    const result = await this.request<{ mask: Uint8Array | null }>({ type: "activeMask" });
+    return result.mask;
   }
 
   async assignLineages(options: LineageOptions, useDedup: boolean): Promise<LineageDashboard> {

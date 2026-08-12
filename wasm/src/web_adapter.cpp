@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "swiftig/airr.hpp"
+#include "swiftig/double_d.hpp"
 #include "swiftig/engine.hpp"
 #include "swiftig/index.hpp"
 #include "swiftig/types.hpp"
@@ -24,6 +25,8 @@ using swiftig::SequenceRecord;
 
 std::unique_ptr<GermlineDatabase> g_database;
 std::string g_result;
+std::string g_double_d_result;
+int g_double_d_count = 0;
 std::string g_error;
 
 bool fail(std::string message) {
@@ -305,6 +308,8 @@ int swig_init_database(
     database->c.reset(std::move(c_genes), 9);
     const auto count = static_cast<int>(database->gene_count());
     g_database = std::move(database);
+    g_double_d_result.clear();
+    g_double_d_count = 0;
     return count;
 }
 
@@ -335,6 +340,68 @@ int swig_annotate(
         swiftig::write_airr_record(output, engine.annotate(record));
     }
     g_result = std::move(output).str();
+    g_double_d_result.clear();
+    g_double_d_count = 0;
+    return static_cast<int>(records.size());
+}
+
+__attribute__((export_name("swig_annotate_double_d")))
+int swig_annotate_double_d(
+    const char* query_data,
+    std::size_t query_size,
+    int format,
+    int minimum_identity_per_mille,
+    int strand,
+    int mode,
+    int minimum_vj_span,
+    int seed_length,
+    int pseudo_trim,
+    int maximum_pseudo_mismatches,
+    int minimum_score_gain) noexcept {
+    g_error.clear();
+    g_double_d_count = 0;
+    if (!g_database) {
+        fail("load a reference database before annotation");
+        return -1;
+    }
+    std::string_view query_input;
+    if (!memory_view(query_data, query_size, query_input)) return -1;
+    std::vector<SequenceRecord> records;
+    if (!parse_queries(query_input, format, records)) return -1;
+    EngineOptions engine_options;
+    engine_options.min_identity = std::clamp(minimum_identity_per_mille, 0, 1000) / 1000.0;
+    engine_options.search_forward = strand != 2;
+    engine_options.search_reverse = strand != 1;
+    AnnotationEngine engine(*g_database, engine_options);
+    swiftig::DoubleDOptions double_d_options;
+    double_d_options.mode = mode == 1
+        ? swiftig::DoubleDMode::All : mode == 2
+            ? swiftig::DoubleDMode::LongSpan : swiftig::DoubleDMode::Off;
+    double_d_options.minimum_vj_span = static_cast<std::size_t>(
+        std::clamp(minimum_vj_span, 0, 10000));
+    double_d_options.seed_length = static_cast<std::size_t>(
+        std::clamp(seed_length, 6, 24));
+    double_d_options.pseudo_trim = static_cast<std::size_t>(
+        std::clamp(pseudo_trim, 0, 24));
+    double_d_options.maximum_pseudo_mismatches = std::clamp(
+        maximum_pseudo_mismatches, 0, 24);
+    double_d_options.minimum_score_gain = std::clamp(minimum_score_gain, 0, 1000);
+    swiftig::DoubleDScreener screener(*g_database, double_d_options);
+    std::ostringstream output;
+    std::ostringstream double_d_output;
+    swiftig::write_airr_header(output);
+    swiftig::write_double_d_header(double_d_output);
+    for (std::size_t record_index = 0; record_index < records.size(); ++record_index) {
+        const auto annotation = engine.annotate(records[record_index]);
+        swiftig::write_airr_record(output, annotation);
+        if (const auto call = screener.screen(annotation)) {
+            swiftig::write_double_d_record(
+                double_d_output, annotation, *call, double_d_options, record_index);
+            ++g_double_d_count;
+        }
+    }
+    g_result = std::move(output).str();
+    g_double_d_result = std::move(double_d_output).str();
     return static_cast<int>(records.size());
 }
 
@@ -343,6 +410,15 @@ const char* swig_result_ptr() noexcept { return g_result.data(); }
 
 __attribute__((export_name("swig_result_len")))
 std::size_t swig_result_len() noexcept { return g_result.size(); }
+
+__attribute__((export_name("swig_double_d_result_ptr")))
+const char* swig_double_d_result_ptr() noexcept { return g_double_d_result.data(); }
+
+__attribute__((export_name("swig_double_d_result_len")))
+std::size_t swig_double_d_result_len() noexcept { return g_double_d_result.size(); }
+
+__attribute__((export_name("swig_double_d_count")))
+int swig_double_d_count() noexcept { return g_double_d_count; }
 
 __attribute__((export_name("swig_error_ptr")))
 const char* swig_error_ptr() noexcept { return g_error.data(); }

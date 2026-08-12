@@ -23,6 +23,7 @@ import {
 } from "./chmmairra-runtime";
 import { GERMLINE_OUTGROUP, lineageInputFasta, quickAirrAlignment } from "./lineage-alignment";
 import { LineageTreeViewer } from "./lineage-tree-viewer";
+import { withAnalysisWebLock } from "./swiftig-runtime";
 import {
   canonicalizeTree,
   collapseShortInternalBranches,
@@ -284,8 +285,13 @@ function parseQueries(text: string): string[] {
 
 export function PostAnalysisWorkbench({ store, references, scope, loci, inputName, workers, minimumIdentity, strand, onInspect }: Props) {
   const runtime = useMemo(() => new PostAnalysisRuntime(store), [store]);
-  useEffect(() => () => runtime.terminate(), [runtime]);
+  const postLockAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    postLockAbortRef.current?.abort();
+    runtime.terminate();
+  }, [runtime]);
   const [busy, setBusy] = useState("");
+  const [postLockState, setPostLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
   const [progress, setProgress] = useState({ processed: 0, total: store.count });
   const [error, setError] = useState("");
 
@@ -298,6 +304,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [denoiseAmbiguity, setDenoiseAmbiguity] = useState<"top" | "strict">("strict");
   const [minimumParentCount, setMinimumParentCount] = useState(2);
   const [denoiseAmbiguousPolicy, setDenoiseAmbiguousPolicy] = useState<"exclude" | "retain">("exclude");
+  const [denoiseUnresolvedPolicy, setDenoiseUnresolvedPolicy] = useState<"discard" | "retain">("discard");
   const [fadNeighborThreshold, setFadNeighborThreshold] = useState(1);
   const [fadMethod, setFadMethod] = useState<1 | 2>(2);
   const [expectedZeroErrorFraction, setExpectedZeroErrorFraction] = useState(1);
@@ -394,12 +401,25 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [queryRecords, setQueryRecords] = useState<Map<number, AirrIndexRecord>>(new Map());
   const [expanded, setExpanded] = useState<{ ordinals: number[]; comparisons: number; capped: boolean } | null>(null);
 
+  async function runInActiveLock<T>(action: () => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    postLockAbortRef.current = controller;
+    try {
+      return await withAnalysisWebLock(controller.signal, setPostLockState, action);
+    } finally {
+      if (postLockAbortRef.current === controller) postLockAbortRef.current = null;
+      setPostLockState("unsupported");
+    }
+  }
+
   async function operation<T>(label: string, action: () => Promise<T>): Promise<T | undefined> {
     setBusy(label);
     setError("");
     try {
-      await runtime.ensureIndexed((processed, total) => setProgress({ processed, total }));
-      return await action();
+      return await runInActiveLock(async () => {
+        await runtime.ensureIndexed((processed, total) => setProgress({ processed, total }));
+        return action();
+      });
     } catch (operationError) {
       if (!(operationError instanceof DOMException && operationError.name === "AbortError")) setError(operationError instanceof Error ? operationError.message : String(operationError));
       return undefined;
@@ -411,7 +431,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   async function runDedup() {
     setProgress({ processed: 0, total: store.count });
     const label = collapseMode === "exact" ? "Deduplicating AIRR records" : collapseMode === "fad" ? "Running FAD-compatible denoising" : collapseMode === "indel" ? "Running indel-aware denoising" : "Running conservative error-model denoising";
-    const result = await operation(label, () => collapseMode === "exact" ? runtime.deduplicate(dedupKey) : runtime.denoise({
+    const result = await operation(label, () => collapseMode === "exact" ? runtime.deduplicate(dedupKey, denoiseUnresolvedPolicy) : runtime.denoise({
       mode: collapseMode,
       errorRate: denoiseErrorRate,
       alpha: denoiseAlpha,
@@ -419,6 +439,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       ambiguity: denoiseAmbiguity,
       minimumParentCount,
       ambiguousPolicy: denoiseAmbiguousPolicy,
+      unresolvedPolicy: denoiseUnresolvedPolicy,
       fadNeighborThreshold,
       fadMethod,
       expectedZeroErrorFraction,
@@ -453,7 +474,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       input: dedup.inputRecords,
       retained: result.retained,
       discarded: dedup.collapsedRecords,
-      detail: `${dedup.algorithm}. Collapsed abundance remains in duplicate_count and lineage weights.`,
+      detail: `${dedup.algorithm}. Collapsed abundance remains in duplicate_count and lineage weights.${dedup.unresolvedRecords ? ` ${dedup.unresolvedRecords.toLocaleString()} ineligible records ${denoiseUnresolvedPolicy === "discard" ? "were excluded" : "remain unchanged"}.` : ""}`,
     }]);
     setChmm(null);
     setChmmRun(null);
@@ -560,13 +581,12 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setBusy(alignmentMethod === "quick" ? "Preparing AIRR-anchored alignment" : alignmentMethod === "codon" ? "Running codon-aware Kalign WASM" : "Running Kalign WASM");
     setError("");
     try {
-      const rows = lineageRows.slice(0, Math.max(2, alignmentLimit));
-      let next = "";
-      if (alignmentMethod === "quick") next = quickAirrAlignment(rows);
-      else {
+      const next = await runInActiveLock(async () => {
+        const rows = lineageRows.slice(0, Math.max(2, alignmentLimit));
+        if (alignmentMethod === "quick") return quickAirrAlignment(rows);
         const input = lineageInputFasta(rows);
-        next = alignmentMethod === "codon" ? await runCodonAwareKalign(input.fasta, input.frames) : await runKalign(input.fasta);
-      }
+        return alignmentMethod === "codon" ? runCodonAwareKalign(input.fasta, input.frames) : runKalign(input.fasta);
+      });
       installAlignment(next, alignmentMethod === "quick" ? "AIRR-anchored alignment" : alignmentMethod === "codon" ? "Codon-aware Kalign 3.3.1" : "Nucleotide Kalign 3.3.1");
       setAlignmentEditorStatus("");
       setAlignmentEditorError("");
@@ -585,7 +605,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     const alignmentSnapshot = alignment;
     const sourceSnapshot = alignmentSource;
     try {
-      const execution = await runFastTree(alignmentSnapshot, treeModel, treeFast);
+      const execution = await runInActiveLock(() => runFastTree(alignmentSnapshot, treeModel, treeFast));
       if (revision !== alignmentRevisionRef.current) throw new Error("The alignment changed while FastTree was running. Run the tree again on the current alignment.");
       const rooted = rootOnOutgroup(parseNewick(execution.newick), GERMLINE_OUTGROUP);
       const canonicalRooted = canonicalizeTree(rooted);
@@ -728,31 +748,35 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setBusy(chmmSource === "selected" ? `Building ${chmmSegment} reference MSA with Kalign WASM` : "Validating uploaded reference MSA");
     setError("");
     try {
-      let msa = chmmSource === "upload" ? uploadedMsa : preparedMsa;
-      if (!msa) msa = await runKalign(references[chmmSegment]);
-      prepareReferenceMsa(msa);
-      setPreparedMsa(msa);
-      setBusy(`Running CHMMAIRRa ${chmmSegment} model with ${Math.min(workers, 16)} workers`);
-      const rates = mutationRates.split(/[\s,;]+/).map(Number).filter((value) => Number.isFinite(value) && value >= 0 && value < 1);
-      if (chmmMethod === "DB" && !rates.length) throw new Error("Provide at least one mutation-rate state for the discretized Bayesian model.");
-      const options: ChmmRunOptions = {
-        segment: chmmSegment,
-        method: chmmMethod,
-        priorProbability: chmmPrior,
-        baseMutationProbability: 0.05,
-        mutationRates: rates,
-        mutationSwitchProbability: 0,
-        detailed: chmmDetailed,
-        minDfr: chmmMinDfr,
-        threshold: chmmThreshold,
-        workers,
-      };
-      const inputMask = workingMask?.slice() ?? null;
-      const result = await runChmmairra(store, msa, options, inputMask ?? undefined, (processed, total) => setProgress({ processed, total }));
-      setChmm(result);
-      setChmmRun({ msa, options, inputMask });
-      setChmmFilterThreshold(chmmThreshold);
-      setChimeraDetail(null);
+      await runInActiveLock(async () => {
+        let msa = chmmSource === "upload" ? uploadedMsa : preparedMsa;
+        if (!msa) msa = await runKalign(references[chmmSegment]);
+        prepareReferenceMsa(msa);
+        setPreparedMsa(msa);
+        setBusy(`Running CHMMAIRRa ${chmmSegment} model with ${Math.min(workers, 16)} workers`);
+        const rates = mutationRates.split(/[\s,;]+/).map(Number).filter((value) => Number.isFinite(value) && value >= 0 && value < 1);
+        if (chmmMethod === "DB" && !rates.length) throw new Error("Provide at least one mutation-rate state for the discretized Bayesian model.");
+        const options: ChmmRunOptions = {
+          segment: chmmSegment,
+          method: chmmMethod,
+          priorProbability: chmmPrior,
+          baseMutationProbability: 0.05,
+          mutationRates: rates,
+          mutationSwitchProbability: 0,
+          detailed: chmmDetailed,
+          minDfr: chmmMinDfr,
+          threshold: chmmThreshold,
+          workers,
+        };
+        // The worker owns the canonical cumulative filter. Reading it here avoids
+        // launching an HMM scan from a stale React render after a filter commit.
+        const inputMask = await runtime.activeMask();
+        const result = await runChmmairra(store, msa, options, inputMask ?? undefined, (processed, total) => setProgress({ processed, total }));
+        setChmm(result);
+        setChmmRun({ msa, options, inputMask });
+        setChmmFilterThreshold(chmmThreshold);
+        setChimeraDetail(null);
+      });
     } catch (operationError) {
       setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
@@ -880,7 +904,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setBusy("Assigning seed V/J calls with the main SwiftIG configuration");
     setError("");
     try {
-      setQueryInference(await inferQueryAssignments(queries, queryTarget, references, minimumIdentity, strand, workers));
+      setQueryInference(await runInActiveLock(() => inferQueryAssignments(queries, queryTarget, references, minimumIdentity, strand, workers)));
     } catch (operationError) {
       setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
@@ -943,7 +967,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       <div className="working-set-flow"><article className="source"><span>Assigned input</span><strong>{store.count.toLocaleString()}</strong><small>records</small></article>{workingStages.map((stage) => <article key={stage.id} className={stage.id}><span>{stage.label}</span><strong>{stage.retained.toLocaleString()}</strong><small>retained · {stage.discarded.toLocaleString()} excluded at this step</small><p>{stage.detail}</p></article>)}{!workingStages.length && <article className="pass-through"><span>No applied filter</span><strong>All records</strong><small>pass downstream</small></article>}<article className="consumers"><span>Current consumers</span><strong>CHMMAIRRa · lineages · query</strong><small>alignment/tree follow the selected lineage</small></article></div>
     </section>
 
-    {busy && <div className="post-progress" role="status"><div><span>{busy}</span><strong>{progress.total ? `${Math.min(100, progress.processed / progress.total * 100).toFixed(1)}%` : "working"}</strong></div><progress max={Math.max(1, progress.total)} value={progress.processed} /><small>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()} AIRR records indexed or scanned</small></div>}
+    {busy && <div className="post-progress" role="status"><div><span>{busy}</span><strong>{progress.total ? `${Math.min(100, progress.processed / progress.total * 100).toFixed(1)}%` : "working"}</strong></div><progress max={Math.max(1, progress.total)} value={progress.processed} /><small>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()} AIRR records indexed or scanned · {postLockState === "held" ? "background-run lock held" : postLockState === "waiting" ? "waiting for another Swig tab" : "Web Locks unavailable"}</small></div>}
     {error && <div className="post-error" role="alert"><strong>Post-analysis stopped</strong><span>{error}</span><button type="button" onClick={() => setError("")}>Dismiss</button></div>}
 
     <section className="post-module dedup-module">
@@ -957,6 +981,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       {collapseMode === "exact" ? <>
         <div className="module-controls">
           <label><span>Identity key</span><select value={dedupKey} onChange={(event) => setDedupKey(event.target.value as DedupKey)}><option value="sequence">Full input sequence</option><option value="trimmed">VDJ-aligned sequence</option><option value="cdr3">Locus + CDR3 nucleotide</option><option value="rearrangement">Locus + V/J calls + CDR3</option></select></label>
+          <label><span>Missing selected key fields</span><select value={denoiseUnresolvedPolicy} onChange={(event) => { setDenoiseUnresolvedPolicy(event.target.value as "discard" | "retain"); setDedup(null); }}><option value="discard">Discard from downstream · default</option><option value="retain">Retain unchanged</option></select></label>
           <button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runDedup()}>Run exact deduplication</button>
         </div>
         {(dedupKey === "sequence" || dedupKey === "trimmed") && <p className="scientific-note"><span>i</span>Sequence-key modes compare normalized length plus a 128-bit fingerprint so complete sequence payloads do not remain in memory. Existing <code>duplicate_count</code> values are summed rather than reset.</p>}
@@ -965,6 +990,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
           <label><span>V/J call level</span><select value={denoiseResolution} onChange={(event) => setDenoiseResolution(event.target.value as CallResolution)}><option value="allele">Allele</option><option value="gene">Gene</option></select></label>
           <label><span>Uncertain assignments</span><select value={denoiseAmbiguity} onChange={(event) => setDenoiseAmbiguity(event.target.value as "top" | "strict")}><option value="strict">Exact sorted call set</option><option value="top">Top V and J calls</option></select></label>
           <label><span>Ambiguous N bases</span><select value={denoiseAmbiguousPolicy} onChange={(event) => setDenoiseAmbiguousPolicy(event.target.value as "exclude" | "retain")}><option value="exclude">Exclude (published FAD behavior)</option><option value="retain">Keep as exact-only representatives</option></select></label>
+          <label><span>Missing trimmed sequence or V/J</span><select value={denoiseUnresolvedPolicy} onChange={(event) => { setDenoiseUnresolvedPolicy(event.target.value as "discard" | "retain"); setDedup(null); }}><option value="discard">Discard from downstream · default</option><option value="retain">Retain unchanged</option></select></label>
           <label><span>Per-base error rate</span><CommitNumberInput min="0.000001" max="0.2" step="0.00001" value={denoiseErrorRate} onCommit={setDenoiseErrorRate} /></label>
           <label><span>Significance α</span><CommitNumberInput min="0.000001" max="0.5" step="0.001" value={denoiseAlpha} onCommit={setDenoiseAlpha} /></label>
           <label><span>Minimum parent abundance</span><CommitNumberInput min="1" max="1000000" step="1" value={minimumParentCount} onCommit={setMinimumParentCount} /></label>
@@ -983,7 +1009,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         <p className="scientific-note"><span>i</span>Trimmed VDJ sequences are streamed from the AIRR store into a two-bit packed arena. Temporary neighbor profiles are released one V/J partition at a time. The 0.00473 default reproduces the linked workflow’s MiSeq median error-rate setting; it should be changed for a different assay.</p>
         <button className="post-primary denoise-run" type="button" disabled={Boolean(busy)} onClick={() => void runDedup()}>{collapseMode === "fad" ? "Run FAD-compatible denoising" : collapseMode === "indel" ? "Run indel-aware denoising" : "Run exact-neighbor denoising"}</button>
       </div>}
-      {dedup && <div className="module-result"><div className="post-stat-grid"><article><span>Input rows / abundance</span><strong>{dedup.inputRecords.toLocaleString()} / {dedup.inputAbundance.toLocaleString()}</strong></article><article><span>Retained representatives</span><strong>{dedup.uniqueRecords.toLocaleString()}</strong></article><article><span>Collapsed or excluded rows</span><strong>{dedup.collapsedRecords.toLocaleString()}</strong></article><article><span>Largest multiplicity</span><strong>{(dedup.largestGroups[0]?.count ?? 1).toLocaleString()}</strong></article>{dedup.mode !== "exact" && <><article><span>V/J partitions</span><strong>{dedup.partitions.toLocaleString()}</strong></article><article><span>Verified candidates</span><strong>{dedup.candidateComparisons.toLocaleString()}</strong></article></>}{dedup.mode === "indel" && <><article><span>Indel variants merged</span><strong>{dedup.indelMergedVariants.toLocaleString()}</strong></article><article><span>Substitution variants merged</span><strong>{dedup.substitutionMergedVariants.toLocaleString()}</strong></article></>}</div><div className="denoise-provenance"><strong>{dedup.algorithm}</strong><span>{dedup.mode === "exact" ? `Key: ${dedup.key}` : `${denoiseResolution}-level V/J partitioning · ${denoiseAmbiguity} assignment policy`}</span></div>{dedup.warnings.map((warning) => <div key={warning} className="scientific-note warning"><span>!</span><p>{warning}</p></div>)}<div className="filter-commit"><div><span>Downstream action</span><strong>Retain representatives; preserve collapsed abundance as counts</strong><p>This action changes the working set from {dedup.inputRecords.toLocaleString()} to {dedup.uniqueRecords.toLocaleString()} rows and invalidates downstream results.</p></div><button className="post-primary" type="button" disabled={Boolean(busy) || workingStages.some((stage) => stage.id === "dedup")} onClick={() => void applyDedupFilter()}>{workingStages.some((stage) => stage.id === "dedup") ? "Applied downstream" : `Apply ${dedup.uniqueRecords.toLocaleString()} representatives`}</button></div><div className="result-actions"><button type="button" onClick={() => void downloadDeduplicated()}>Download collapsed AIRR + multiplicity</button></div></div>}
+      {dedup && <div className="module-result"><div className="post-stat-grid"><article><span>Input rows / abundance</span><strong>{dedup.inputRecords.toLocaleString()} / {dedup.inputAbundance.toLocaleString()}</strong></article><article><span>Retained representatives</span><strong>{dedup.uniqueRecords.toLocaleString()}</strong></article><article><span>Collapsed or excluded rows</span><strong>{dedup.collapsedRecords.toLocaleString()}</strong></article><article><span>Largest multiplicity</span><strong>{(dedup.largestGroups[0]?.count ?? 1).toLocaleString()}</strong></article>{dedup.mode !== "exact" && <><article><span>V/J partitions</span><strong>{dedup.partitions.toLocaleString()}</strong></article><article><span>Verified candidates</span><strong>{dedup.candidateComparisons.toLocaleString()}</strong></article></>}{dedup.unresolvedRecords > 0 && <article><span>{denoiseUnresolvedPolicy === "discard" ? "Ineligible discarded" : "Ineligible retained"}</span><strong>{dedup.unresolvedRecords.toLocaleString()}</strong></article>}{dedup.mode === "indel" && <><article><span>Indel variants merged</span><strong>{dedup.indelMergedVariants.toLocaleString()}</strong></article><article><span>Substitution variants merged</span><strong>{dedup.substitutionMergedVariants.toLocaleString()}</strong></article></>}</div><div className="denoise-provenance"><strong>{dedup.algorithm}</strong><span>{dedup.mode === "exact" ? `Key: ${dedup.key} · ineligible ${denoiseUnresolvedPolicy}` : `${denoiseResolution}-level V/J partitioning · ${denoiseAmbiguity} assignment policy · ineligible ${denoiseUnresolvedPolicy}`}</span></div>{dedup.warnings.map((warning) => <div key={warning} className="scientific-note warning"><span>!</span><p>{warning}</p></div>)}<div className="filter-commit"><div><span>Downstream action</span><strong>Retain representatives; preserve collapsed abundance as counts</strong><p>This action changes the working set from {dedup.inputRecords.toLocaleString()} to {dedup.uniqueRecords.toLocaleString()} rows and invalidates downstream results.</p></div><button className="post-primary" type="button" disabled={Boolean(busy) || workingStages.some((stage) => stage.id === "dedup")} onClick={() => void applyDedupFilter()}>{workingStages.some((stage) => stage.id === "dedup") ? "Applied downstream" : `Apply ${dedup.uniqueRecords.toLocaleString()} representatives`}</button></div><div className="result-actions"><button type="button" onClick={() => void downloadDeduplicated()}>Download collapsed AIRR + multiplicity</button></div></div>}
     </section>
 
     <section className="post-module chmm-module">

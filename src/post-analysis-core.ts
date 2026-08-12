@@ -46,6 +46,8 @@ export interface DenoiseOptions {
   ambiguity: "top" | "strict";
   minimumParentCount: number;
   ambiguousPolicy: "exclude" | "retain";
+  /** Records that cannot enter a V/J-partitioned denoising model. */
+  unresolvedPolicy?: "discard" | "retain";
   /** FAD corrected 6-mer distance radius. */
   fadNeighborThreshold: number;
   /** FAD method 1 is abundance-only; method 2 uses its Poisson decision. */
@@ -297,14 +299,37 @@ function largestCountGroups(counts: Uint32Array, limit = 100): Array<{ ordinal: 
   return heap.sort((left, right) => counts[right] - counts[left] || left - right).map((ordinal) => ({ ordinal, count: counts[ordinal] }));
 }
 
-export function deduplicate(records: PostAnalysisRecord[], key: DedupKey): DedupResult {
+function hasUsableDedupKey(record: PostAnalysisRecord, key: DedupKey): boolean {
+  if (key === "sequence") return Number(record.sequenceFingerprint.split(":", 1)[0]) > 0;
+  if (key === "trimmed") return Number(record.trimmedFingerprint.split(":", 1)[0]) > 0;
+  if (key === "cdr3") return Boolean(record.locus && record.cdr3Nt);
+  return Boolean(record.locus && record.vCall && record.jCall && record.cdr3Nt);
+}
+
+export function deduplicate(
+  records: PostAnalysisRecord[],
+  key: DedupKey,
+  unresolvedPolicy: "discard" | "retain" = "discard",
+): DedupResult {
   const representatives = new Int32Array(records.length);
+  representatives.fill(-1);
   const counts = new Uint32Array(records.length);
   const seen = new Map<string, number>();
   let inputAbundance = 0;
+  let unresolvedRecords = 0;
+  let retainedUnresolved = 0;
   for (let index = 0; index < records.length; index += 1) {
     const weight = Math.max(1, Math.floor(records[index].inputCount ?? 1));
     inputAbundance += weight;
+    if (!hasUsableDedupKey(records[index], key)) {
+      unresolvedRecords += 1;
+      if (unresolvedPolicy === "retain") {
+        representatives[index] = index;
+        counts[index] = weight;
+        retainedUnresolved += 1;
+      }
+      continue;
+    }
     const value = dedupKey(records[index], key);
     const previous = seen.get(value);
     if (previous === undefined) {
@@ -317,14 +342,15 @@ export function deduplicate(records: PostAnalysisRecord[], key: DedupKey): Dedup
     }
   }
   const largestGroups = largestCountGroups(counts);
+  const uniqueRecords = seen.size + retainedUnresolved;
   return {
     mode: "exact",
     key,
     algorithm: "Exact key collapse",
     inputRecords: records.length,
     inputAbundance,
-    uniqueRecords: seen.size,
-    collapsedRecords: records.length - seen.size,
+    uniqueRecords,
+    collapsedRecords: records.length - uniqueRecords,
     representatives,
     counts,
     largestGroups,
@@ -333,8 +359,10 @@ export function deduplicate(records: PostAnalysisRecord[], key: DedupKey): Dedup
     indelMergedVariants: 0,
     substitutionMergedVariants: 0,
     excludedAmbiguous: 0,
-    unresolvedRecords: 0,
-    warnings: [],
+    unresolvedRecords,
+    warnings: unresolvedRecords ? [
+      `${unresolvedRecords.toLocaleString()} records without a usable ${key} key were ${unresolvedPolicy === "retain" ? "retained unchanged" : "discarded from the downstream representative set"}.`,
+    ] : [],
   };
 }
 
@@ -777,7 +805,7 @@ export class DenoiseAccumulator {
     const sequence = normalizeNt(rawSequence);
     const partition = denoisePartition(record, this.options);
     if (!sequence || !partition) {
-      this.standalone.push(ordinal);
+      if (this.options.unresolvedPolicy === "retain") this.standalone.push(ordinal);
       this.unresolvedRecords += 1;
       return;
     }
@@ -811,7 +839,7 @@ export class DenoiseAccumulator {
   finish(): DedupResult {
     for (let ordinal = 0; ordinal < this.records.length; ordinal += 1) {
       if (!this.processed[ordinal]) {
-        this.standalone.push(ordinal);
+        if (this.options.unresolvedPolicy === "retain") this.standalone.push(ordinal);
         this.unresolvedRecords += 1;
       }
     }
@@ -864,7 +892,9 @@ export class DenoiseAccumulator {
     const largestGroups = largestCountGroups(counts);
     const warnings: string[] = [];
     if (this.excludedAmbiguous) warnings.push(`${this.excludedAmbiguous.toLocaleString()} records containing ambiguous nucleotide symbols were excluded to match the selected policy.`);
-    if (this.unresolvedRecords) warnings.push(`${this.unresolvedRecords.toLocaleString()} records without a usable trimmed sequence or both V/J calls were retained unchanged.`);
+    if (this.unresolvedRecords) warnings.push(
+      `${this.unresolvedRecords.toLocaleString()} records without a usable trimmed sequence or both V/J calls were ${this.options.unresolvedPolicy === "retain" ? "retained unchanged" : "discarded from the downstream representative set"}.`,
+    );
     if (truncated) warnings.push(`${truncated.toLocaleString()} variants reached the candidate cap; increase it before treating this denoising result as complete.`);
     const inputAbundance = this.records.reduce((sum, record) => sum + Math.max(1, Math.floor(record.inputCount ?? 1)), 0);
     return {

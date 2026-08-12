@@ -6,6 +6,7 @@ export interface AirrIndexRecord {
   locus: string;
   vCall: string;
   dCall: string;
+  d2Call: string;
   jCall: string;
   cCall: string;
   isotype: string;
@@ -45,6 +46,7 @@ export interface ResultFilters {
   completeVdj: string;
   revComp: string;
   hasD: boolean;
+  hasDoubleD: boolean;
   hasCdr3: boolean;
 }
 
@@ -114,6 +116,7 @@ interface PackedIndexRecord {
   l: string;
   v: string;
   d: string;
+  h: string;
   j: string;
   k: string;
   y: string;
@@ -149,6 +152,16 @@ interface ManifestRecord {
   outputBytes: number;
 }
 
+interface DoubleDRecord {
+  ordinal: number;
+  values: Record<string, string>;
+}
+
+export interface DoubleDBatch {
+  header: string;
+  body: string | Uint8Array;
+}
+
 export interface AirrOutputWritable {
   write: (data: string | Blob | Uint8Array) => Promise<void>;
   close: () => Promise<void>;
@@ -166,6 +179,20 @@ export interface DirectAirrOutput {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+function cooperativeYield(): Promise<void> {
+  const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (scheduler?.yield) return scheduler.yield();
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
+}
 const MAX_FALLBACK_BLOB_BYTES = 256 * 1024 * 1024;
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -272,7 +299,7 @@ function numeric(value: string): number | null {
 function packRecord(record: AirrIndexRecord): PackedIndexRecord {
   return {
     o: record.ordinal, c: record.chunk, n: record.line, i: record.sequenceId,
-    l: record.locus, v: record.vCall, d: record.dCall, j: record.jCall,
+    l: record.locus, v: record.vCall, d: record.dCall, h: record.d2Call, j: record.jCall,
     k: record.cCall, y: record.isotype,
     p: record.productive, r: record.cdr3, a: record.cdr3Aa, u: record.junctionAa,
     vi: record.vIdentity, di: record.dIdentity, ji: record.jIdentity, ci: record.cIdentity,
@@ -284,7 +311,7 @@ function packRecord(record: AirrIndexRecord): PackedIndexRecord {
 function unpackRecord(record: PackedIndexRecord): AirrIndexRecord {
   return {
     ordinal: record.o, chunk: record.c, line: record.n, sequenceId: record.i,
-    locus: record.l, vCall: record.v, dCall: record.d, jCall: record.j,
+    locus: record.l, vCall: record.v, dCall: record.d, d2Call: record.h ?? "", jCall: record.j,
     cCall: record.k, isotype: record.y,
     productive: record.p, cdr3: record.r, cdr3Aa: record.a, junctionAa: record.u,
     vIdentity: record.vi, dIdentity: record.di, jIdentity: record.ji, cIdentity: record.ci,
@@ -314,6 +341,7 @@ export const EMPTY_FILTERS: ResultFilters = {
   completeVdj: "",
   revComp: "",
   hasD: false,
+  hasDoubleD: false,
   hasCdr3: false,
 };
 
@@ -339,6 +367,9 @@ export class AirrResultStore {
   private withCdr3 = 0;
   private readonly directOutput?: DirectAirrOutput;
   private outputByteCount = 0;
+  private doubleDHeaderLine = "";
+  private doubleDHeaders: string[] = [];
+  private doubleDRecordCount = 0;
   private finalized = false;
 
   constructor(directOutput?: DirectAirrOutput) {
@@ -349,6 +380,7 @@ export class AirrResultStore {
         const database = request.result;
         database.createObjectStore("chunks", { keyPath: "index" });
         database.createObjectStore("meta", { keyPath: "key" });
+        database.createObjectStore("doubleD", { keyPath: "ordinal" });
         const records = database.createObjectStore("records", { keyPath: "o" });
         records.createIndex("locus", "l");
         records.createIndex("productive", "p");
@@ -377,6 +409,10 @@ export class AirrResultStore {
 
   get streamedDirectly(): boolean {
     return Boolean(this.directOutput);
+  }
+
+  get doubleDCount(): number {
+    return this.doubleDRecordCount;
   }
 
   get summary() {
@@ -450,7 +486,7 @@ export class AirrResultStore {
     }
   }
 
-  async appendBatch(headerLine: string, body: string | Uint8Array): Promise<void> {
+  async appendBatch(headerLine: string, body: string | Uint8Array, doubleD?: DoubleDBatch): Promise<void> {
     if (this.finalized) throw new Error("Cannot append to a finalized AIRR result store.");
     let normalizedHeader = headerLine.replace(/\r$/, "");
     let bodyText = typeof body === "string" ? body : decoder.decode(body);
@@ -479,6 +515,29 @@ export class AirrResultStore {
     const bodyBytes = encoder.encode(bodyText);
     const lines = bodyText.split("\n").map((line) => line.replace(/\r$/, "")).filter(Boolean);
     if (!lines.length) return;
+    const doubleDByLine = new Map<number, Record<string, string>>();
+    if (doubleD) {
+      const incomingHeader = doubleD.header.replace(/\r$/, "");
+      if (!this.doubleDHeaderLine) {
+        this.doubleDHeaderLine = incomingHeader;
+        this.doubleDHeaders = incomingHeader.split("\t");
+      } else if (incomingHeader !== this.doubleDHeaderLine) {
+        throw new Error("SwiftIG returned inconsistent double-D evidence columns between batches.");
+      }
+      const doubleDText = typeof doubleD.body === "string" ? doubleD.body : decoder.decode(doubleD.body);
+      for (const rawLine of doubleDText.split("\n")) {
+        const line = rawLine.replace(/\r$/, "");
+        if (!line) continue;
+        const values = line.split("\t");
+        const row = Object.fromEntries(this.doubleDHeaders.map((name, index) => [name, values[index] ?? ""]));
+        const relative = Number(row.swig_batch_record_index);
+        if (!Number.isInteger(relative) || relative < 0 || relative >= lines.length || doubleDByLine.has(relative)) {
+          throw new Error("SwiftIG returned an invalid double-D batch record index.");
+        }
+        delete row.swig_batch_record_index;
+        doubleDByLine.set(relative, row);
+      }
+    }
     const chunkIndex = this.nextChunk;
     let chunk: ChunkRecord;
     if (this.directOutput) {
@@ -500,9 +559,10 @@ export class AirrResultStore {
     this.outputByteCount += bodyBytes.byteLength;
 
     const database = await this.database;
-    const transaction = database.transaction(["chunks", "records"], "readwrite");
+    const transaction = database.transaction(["chunks", "records", "doubleD"], "readwrite");
     const chunks = transaction.objectStore("chunks");
     const records = transaction.objectStore("records");
+    const doubleDRecords = transaction.objectStore("doubleD");
     chunks.put(chunk);
 
     const positions = Object.fromEntries(this.headers.map((name, index) => [name, index]));
@@ -516,7 +576,8 @@ export class AirrResultStore {
         sequenceId: at(values, "sequence_id"),
         locus: at(values, "locus"),
         vCall: at(values, "v_call"),
-        dCall: at(values, "d_call"),
+        dCall: doubleDByLine.get(line)?.d_call || at(values, "d_call"),
+        d2Call: doubleDByLine.get(line)?.d2_call ?? "",
         jCall: at(values, "j_call"),
         cCall: at(values, "c_call"),
         isotype: at(values, "isotype") || inferIsotype(
@@ -529,7 +590,7 @@ export class AirrResultStore {
         cdr3Aa: at(values, "cdr3_aa"),
         junctionAa: at(values, "junction_aa"),
         vIdentity: numeric(at(values, "v_identity")),
-        dIdentity: numeric(at(values, "d_identity")),
+        dIdentity: numeric(doubleDByLine.get(line)?.d_identity ?? at(values, "d_identity")),
         jIdentity: numeric(at(values, "j_identity")),
         cIdentity: numeric(at(values, "c_identity")),
         cdr3AaLength: at(values, "cdr3_aa") ? at(values, "cdr3_aa").length : null,
@@ -539,6 +600,11 @@ export class AirrResultStore {
         revComp: at(values, "rev_comp"),
       };
       records.put(packRecord(record));
+      const doubleDValues = doubleDByLine.get(line);
+      if (doubleDValues) {
+        doubleDRecords.put({ ordinal: record.ordinal, values: doubleDValues } satisfies DoubleDRecord);
+        this.doubleDRecordCount += 1;
+      }
       if (record.vCall && record.jCall) this.assigned += 1;
       if (record.productive === "T") this.productive += 1;
       if (record.cdr3 || record.cdr3Aa) this.withCdr3 += 1;
@@ -579,7 +645,7 @@ export class AirrResultStore {
       filters.vCall || filters.dCall || filters.jCall || filters.cCall || filters.isotype ||
       filters.minVIdentity || filters.minDIdentity || filters.minJIdentity || filters.minCIdentity || filters.minCdr3AaLength ||
       filters.maxCdr3AaLength || filters.vjInFrame || filters.stopCodon ||
-      filters.completeVdj || filters.revComp || filters.hasD || filters.hasCdr3,
+      filters.completeVdj || filters.revComp || filters.hasD || filters.hasDoubleD || filters.hasCdr3,
     );
 
     if (!filtered) {
@@ -628,6 +694,7 @@ export class AirrResultStore {
       if (filters.completeVdj && record.completeVdj !== filters.completeVdj) return false;
       if (filters.revComp && record.revComp !== filters.revComp) return false;
       if (filters.hasD && !record.dCall) return false;
+      if (filters.hasDoubleD && !record.d2Call) return false;
       if (filters.hasCdr3 && !record.cdr3 && !record.cdr3Aa) return false;
       return true;
     };
@@ -677,7 +744,10 @@ export class AirrResultStore {
     const text = await this.chunkText(chunk);
     const line = text.split("\n")[record.line]?.replace(/\r$/, "") ?? "";
     const values = line.split("\t");
-    return Object.fromEntries(this.headers.map((header, index) => [header, values[index] ?? ""]));
+    const row = Object.fromEntries(this.headers.map((header, index) => [header, values[index] ?? ""]));
+    const doubleDTransaction = database.transaction("doubleD", "readonly");
+    const doubleD = await requestResult(doubleDTransaction.objectStore("doubleD").get(record.ordinal)) as DoubleDRecord | undefined;
+    return doubleD ? { ...row, ...doubleD.values } : row;
   }
 
   async indexRecords(ordinals: readonly number[]): Promise<AirrIndexRecord[]> {
@@ -713,6 +783,14 @@ export class AirrResultStore {
         });
       }
     }
+    if (result.size) {
+      const transaction = database.transaction("doubleD", "readonly");
+      const doubleDStore = transaction.objectStore("doubleD");
+      await Promise.all([...result.entries()].map(async ([ordinal, detail]) => {
+        const doubleD = await requestResult(doubleDStore.get(ordinal)) as DoubleDRecord | undefined;
+        if (doubleD) detail.values = { ...detail.values, ...doubleD.values };
+      }));
+    }
     return ordinals.flatMap((ordinal) => result.get(ordinal) ?? []);
   }
 
@@ -723,13 +801,23 @@ export class AirrResultStore {
       batchSize?: number;
       onProgress?: (processed: number, total: number) => void;
       signal?: AbortSignal;
+      includeMask?: Uint8Array;
     } = {},
   ): Promise<void> {
     const selected = [...new Set(fields)];
     const positions = selected.map((field) => this.headers.indexOf(field));
     const batchSize = Math.max(100, options.batchSize ?? 2_000);
+    if (options.includeMask && options.includeMask.length !== this.count) {
+      throw new Error("The AIRR scan mask does not match the result-store record count.");
+    }
+    let includedTotal = this.count;
+    if (options.includeMask) {
+      includedTotal = 0;
+      for (const value of options.includeMask) includedTotal += value ? 1 : 0;
+    }
     const database = await this.database;
     let ordinal = 0;
+    let included = 0;
     let batch: AirrScanRow[] = [];
     for (let index = 0; index < this.nextChunk; index += 1) {
       if (options.signal?.aborted) throw new DOMException("Post-analysis was cancelled.", "AbortError");
@@ -740,25 +828,27 @@ export class AirrResultStore {
       for (const rawLine of lines) {
         const line = rawLine.replace(/\r$/, "");
         if (!line) continue;
+        const rowOrdinal = ordinal++;
+        if (options.includeMask && !options.includeMask[rowOrdinal]) continue;
         const values = line.split("\t");
         const row: AirrRow = {};
         selected.forEach((field, fieldIndex) => {
           const position = positions[fieldIndex];
           row[field] = position >= 0 ? values[position] ?? "" : "";
         });
-        batch.push({ ordinal, values: row });
-        ordinal += 1;
+        batch.push({ ordinal: rowOrdinal, values: row });
+        included += 1;
         if (batch.length >= batchSize) {
           await onBatch(batch);
           batch = [];
-          options.onProgress?.(ordinal, this.count);
-          await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+          options.onProgress?.(included, includedTotal);
+          await cooperativeYield();
           if (options.signal?.aborted) throw new DOMException("Post-analysis was cancelled.", "AbortError");
         }
       }
     }
     if (batch.length) await onBatch(batch);
-    options.onProgress?.(ordinal, this.count);
+    options.onProgress?.(included, includedTotal);
   }
 
   private async chunkBlob(chunk: ChunkRecord): Promise<Blob> {
@@ -841,6 +931,26 @@ export class AirrResultStore {
       const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
       if (chunk) await write(await this.chunkBlob(chunk));
     }
+  }
+
+  async writeDoubleD(write: (part: string | Blob | Uint8Array) => Promise<void>): Promise<void> {
+    if (!this.doubleDHeaderLine || !this.doubleDRecordCount) {
+      throw new Error("This analysis has no supported double-D calls to export.");
+    }
+    const exportedHeaders = this.doubleDHeaders.filter((header) => header !== "swig_batch_record_index");
+    await write(`swig_airr_ordinal\t${exportedHeaders.join("\t")}\n`);
+    const database = await this.database;
+    const transaction = database.transaction("doubleD", "readonly");
+    const records = await requestResult(transaction.objectStore("doubleD").getAll()) as DoubleDRecord[];
+    let body = "";
+    for (const record of records) {
+      body += `${record.ordinal + 1}\t${exportedHeaders.map((header) => record.values[header] ?? "").join("\t")}\n`;
+      if (body.length >= 1_000_000) {
+        await write(body);
+        body = "";
+      }
+    }
+    if (body) await write(body);
   }
 
   async writeDeduplicatedAirr(

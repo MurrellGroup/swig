@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { streamSequenceBatches, type SequenceBatch, type SequenceFormat } from "./sequence-stream";
+import type { DoubleDScreenOptions } from "./swiftig-runtime";
 
 interface StartRequest {
   type: "start";
@@ -13,6 +14,7 @@ interface StartRequest {
   workers: number;
   countHint: number | null;
   subsample?: { size: number; seed: number };
+  doubleD?: DoubleDScreenOptions;
 }
 
 interface AckRequest {
@@ -27,6 +29,9 @@ interface ComputeBatch {
   body: ArrayBuffer;
   count: number;
   milliseconds: number;
+  doubleDHeader?: string;
+  doubleDBody?: ArrayBuffer;
+  doubleDCount?: number;
 }
 
 interface ComputeSlot {
@@ -135,6 +140,7 @@ function annotate(slot: ComputeSlot, batch: SequenceBatch, request: StartRequest
       format: batch.format,
       minimumIdentity: request.minimumIdentity,
       strand: request.strand,
+      doubleD: request.doubleD,
     }, [query.buffer]);
   });
 }
@@ -226,7 +232,10 @@ async function handleRequest(request: StartRequest) {
             processed: committed,
             total: inputDone ? parsed : null,
             milliseconds: result.milliseconds,
-          }, [result.body]);
+            doubleDHeader: result.doubleDHeader,
+            doubleDBody: result.doubleDBody,
+            doubleDCount: result.doubleDCount ?? 0,
+          }, [result.body, ...(result.doubleDBody ? [result.doubleDBody] : [])]);
           await acknowledgement;
           nextCommit += 1;
           wakeAvailability?.();

@@ -58,6 +58,22 @@ test("exact deduplication sums an existing AIRR duplicate_count", () => {
   assert.deepEqual([...result.counts], [10, 0]);
 });
 
+test("exact collapse discards unusable keys by default and can retain them unchanged", () => {
+  const records = [record(0, "TGTGCCAAA"), record(1, "TGTGCCAAA"), record(2, "")];
+  records[2].trimmedFingerprint = sequenceFingerprint("");
+  records[2].inputCount = 9;
+  const discarded = deduplicate(records, "trimmed");
+  assert.equal(discarded.unresolvedRecords, 1);
+  assert.equal(discarded.uniqueRecords, 1);
+  assert.deepEqual([...discarded.counts], [2, 0, 0]);
+  assert.equal(discarded.representatives[2], -1);
+  const retained = deduplicate(records, "trimmed", "retain");
+  assert.equal(retained.unresolvedRecords, 1);
+  assert.equal(retained.uniqueRecords, 2);
+  assert.equal(retained.counts[2], 9);
+  assert.equal(retained.representatives[2], 2);
+});
+
 test("Poisson strict upper tail matches known probabilities used by FAD method 2", () => {
   assert.ok(Math.abs(poissonStrictUpperTail(0, 0.1) - 0.095162581964) < 1e-11);
   assert.ok(Math.abs(poissonStrictUpperTail(1, 0.1) - 0.00467884016044) < 1e-11);
@@ -125,6 +141,43 @@ test("conservative denoising merges plausible one-base errors but retains isolat
   assert.equal(result.uniqueRecords, 2);
   assert.deepEqual([...result.counts], [101, 0, 1]);
   assert.deepEqual([...result.representatives], [0, 0, 2]);
+});
+
+test("denoising discards unresolved records by default and can retain them explicitly", () => {
+  const usable = record(0, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", "ACGT".repeat(12));
+  const unresolved = record(1, "TGTGCCAAA", "", "IGHJ4*02", "TGCA".repeat(12));
+  const options = {
+    mode: "conservative" as const,
+    errorRate: 0.00473,
+    alpha: 0.01,
+    callResolution: "allele" as const,
+    ambiguity: "strict" as const,
+    minimumParentCount: 2,
+    ambiguousPolicy: "retain" as const,
+    fadNeighborThreshold: 1,
+    fadMethod: 2 as const,
+    expectedZeroErrorFraction: 1,
+    maximumHammingDistance: 1,
+    maximumEditDistance: 2,
+    minimumIndelParentRatio: 2,
+    maxCandidatesPerVariant: 10_000,
+  };
+  const discarded = new DenoiseAccumulator([usable, unresolved], options);
+  discarded.add(0, "ACGT".repeat(12));
+  discarded.add(1, "TGCA".repeat(12));
+  const discardedResult = discarded.finish();
+  assert.equal(discardedResult.unresolvedRecords, 1);
+  assert.equal(discardedResult.uniqueRecords, 1);
+  assert.deepEqual([...discardedResult.counts], [1, 0]);
+  assert.equal(discardedResult.representatives[1], -1);
+
+  const retained = new DenoiseAccumulator([usable, unresolved], { ...options, unresolvedPolicy: "retain" });
+  retained.add(0, "ACGT".repeat(12));
+  retained.add(1, "TGCA".repeat(12));
+  const retainedResult = retained.finish();
+  assert.equal(retainedResult.uniqueRecords, 2);
+  assert.deepEqual([...retainedResult.counts], [1, 1]);
+  assert.equal(retainedResult.representatives[1], 1);
 });
 
 test("bounded edit profiling distinguishes substitutions, insertions, deletions and mixed paths", () => {

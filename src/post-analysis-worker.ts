@@ -39,12 +39,13 @@ type Request =
   | { id: number; type: "ingest"; rows: IngestRow[] }
   | { id: number; type: "initSketches" }
   | { id: number; type: "ingestSketches"; rows: Array<{ ordinal: number; sequence: string }> }
-  | { id: number; type: "dedup"; key: DedupKey }
+  | { id: number; type: "dedup"; key: DedupKey; unresolvedPolicy: "discard" | "retain" }
   | { id: number; type: "denoiseInit"; options: DenoiseOptions }
   | { id: number; type: "denoiseIngest"; rows: Array<{ ordinal: number; sequence: string }> }
   | { id: number; type: "denoiseFinish" }
   | { id: number; type: "applyDedupFilter" }
   | { id: number; type: "setActiveMask"; mask: Uint8Array | null }
+  | { id: number; type: "activeMask" }
   | { id: number; type: "lineages"; options: LineageOptions; useDedup: boolean }
   | { id: number; type: "query"; queries: string[]; options: QueryOptions }
   | { id: number; type: "expand"; seedOrdinals: number[]; options: ExpansionOptions }
@@ -146,7 +147,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       for (const row of request.rows) packedSketches.set(minHashSketch(row.sequence), row.ordinal * 8);
       result = { sketched: request.rows.length };
     } else if (request.type === "dedup") {
-      currentDedup = deduplicate(records, request.key);
+      currentDedup = deduplicate(records, request.key, request.unresolvedPolicy);
       denoiseAccumulator = undefined;
       currentLineages = undefined;
       currentActiveMask = undefined;
@@ -181,6 +182,8 @@ worker.onmessage = (event: MessageEvent<Request>) => {
         for (const value of currentActiveMask) retained += value ? 1 : 0;
       }
       result = { retained };
+    } else if (request.type === "activeMask") {
+      result = { mask: currentActiveMask?.slice() ?? null };
     } else if (request.type === "lineages") {
       currentLineages = assignLineages(records, request.options, request.useDedup ? currentDedup : undefined, currentActiveMask);
       result = compactLineageResult(currentLineages);

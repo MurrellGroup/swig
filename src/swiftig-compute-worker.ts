@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { WASI } from "@bjorn3/browser_wasi_shim";
+import type { DoubleDScreenOptions } from "./swiftig-runtime";
 
 interface SwiftIgExports extends WebAssembly.Exports {
   memory: WebAssembly.Memory;
@@ -14,8 +15,17 @@ interface SwiftIgExports extends WebAssembly.Exports {
     queryPointer: number, querySize: number, format: number,
     identityPerMille: number, strand: number,
   ) => number;
+  swig_annotate_double_d: (
+    queryPointer: number, querySize: number, format: number,
+    identityPerMille: number, strand: number, mode: number,
+    minimumVjSpan: number, seedLength: number, pseudoTrim: number,
+    maximumPseudoMismatches: number, minimumScoreGain: number,
+  ) => number;
   swig_result_ptr: () => number;
   swig_result_len: () => number;
+  swig_double_d_result_ptr: () => number;
+  swig_double_d_result_len: () => number;
+  swig_double_d_count: () => number;
   swig_error_ptr: () => number;
   swig_error_len: () => number;
 }
@@ -35,6 +45,7 @@ interface AnnotateRequest {
   format: 1 | 2 | 3;
   minimumIdentity: number;
   strand: 0 | 1 | 2;
+  doubleD?: DoubleDScreenOptions;
 }
 
 const encoder = new TextEncoder();
@@ -95,13 +106,28 @@ function annotate(request: AnnotateRequest) {
   const [queryPointer] = putBytes(runtime, new Uint8Array(request.query));
   let count: number;
   try {
-    count = runtime.swig_annotate(
-      queryPointer,
-      request.query.byteLength,
-      request.format,
-      Math.round(request.minimumIdentity * 1000),
-      request.strand,
-    );
+    const doubleD = request.doubleD;
+    count = doubleD && doubleD.mode !== "off"
+      ? runtime.swig_annotate_double_d(
+        queryPointer,
+        request.query.byteLength,
+        request.format,
+        Math.round(request.minimumIdentity * 1000),
+        request.strand,
+        doubleD.mode === "all" ? 1 : 2,
+        Math.round(doubleD.minimumVjSpan),
+        Math.round(doubleD.seedLength),
+        Math.round(doubleD.pseudoTrim),
+        Math.round(doubleD.maximumPseudoMismatches),
+        Math.round(doubleD.minimumScoreGain),
+      )
+      : runtime.swig_annotate(
+        queryPointer,
+        request.query.byteLength,
+        request.format,
+        Math.round(request.minimumIdentity * 1000),
+        request.strand,
+      );
   } finally {
     runtime.swig_free(queryPointer);
   }
@@ -117,14 +143,30 @@ function annotate(request: AnnotateRequest) {
   if (newline < 0) throw new Error("SwiftIG returned an invalid AIRR table.");
   const header = decoder.decode(wasmView.subarray(0, newline)).replace(/\r$/, "");
   const body = wasmView.slice(newline + 1);
-  self.postMessage({
+  const message: Record<string, unknown> = {
     type: "batch",
     batch: request.batch,
     header,
     body: body.buffer,
     count,
     milliseconds: performance.now() - started,
-  }, [body.buffer]);
+  };
+  const transfers: ArrayBuffer[] = [body.buffer];
+  if (request.doubleD && request.doubleD.mode !== "off") {
+    const doubleDView = new Uint8Array(
+      runtime.memory.buffer,
+      runtime.swig_double_d_result_ptr(),
+      runtime.swig_double_d_result_len(),
+    );
+    const doubleDNewline = doubleDView.indexOf(10);
+    if (doubleDNewline < 0) throw new Error("SwiftIG returned an invalid double-D evidence table.");
+    const doubleDBody = doubleDView.slice(doubleDNewline + 1);
+    message.doubleDHeader = decoder.decode(doubleDView.subarray(0, doubleDNewline)).replace(/\r$/, "");
+    message.doubleDBody = doubleDBody.buffer;
+    message.doubleDCount = runtime.swig_double_d_count();
+    transfers.push(doubleDBody.buffer);
+  }
+  self.postMessage(message, transfers);
 }
 
 self.addEventListener("message", (event: MessageEvent<InitializeRequest | AnnotateRequest>) => {

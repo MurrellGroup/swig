@@ -6,6 +6,20 @@ export interface ResultBatch {
   count: number;
   processed: number;
   total: number | null;
+  doubleDHeader?: string;
+  doubleDBody?: Uint8Array;
+  doubleDCount?: number;
+}
+
+export type DoubleDScreenMode = "off" | "all" | "long_span";
+
+export interface DoubleDScreenOptions {
+  mode: DoubleDScreenMode;
+  minimumVjSpan: number;
+  seedLength: number;
+  pseudoTrim: number;
+  maximumPseudoMismatches: number;
+  minimumScoreGain: number;
 }
 
 export interface RunOptions {
@@ -17,6 +31,7 @@ export interface RunOptions {
   workers: number;
   countHint?: number | null;
   subsample?: { size: number; seed: number };
+  doubleD?: DoubleDScreenOptions;
   onProgress?: (stage: string, value: number) => void;
   onBatch?: (batch: ResultBatch) => void | Promise<void>;
   signal?: AbortSignal;
@@ -30,6 +45,36 @@ export interface RunResult {
 }
 
 let requestId = 0;
+
+interface AnalysisLockManager {
+  request: <T>(
+    name: string,
+    options: { mode: "exclusive"; signal: AbortSignal },
+    callback: (lock: unknown) => Promise<T>,
+  ) => Promise<T>;
+}
+
+/**
+ * Chrome's Energy Saver freeze eligibility excludes a browsing context group
+ * that owns a Web Lock. The lock also prevents two tabs on the same origin
+ * from concurrently saturating the machine and competing for result storage.
+ */
+export async function withAnalysisWebLock<T>(
+  signal: AbortSignal,
+  onState: (state: "unsupported" | "waiting" | "held") => void,
+  action: () => Promise<T>,
+): Promise<T> {
+  const locks = (navigator as Navigator & { locks?: AnalysisLockManager }).locks;
+  if (!locks) {
+    onState("unsupported");
+    return action();
+  }
+  onState("waiting");
+  return locks.request("swig-active-analysis", { mode: "exclusive", signal }, async () => {
+    onState("held");
+    return action();
+  });
+}
 
 export function runSwiftIg(options: RunOptions): Promise<RunResult> {
   const id = ++requestId;
@@ -65,6 +110,9 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
         workers?: number;
         inputRecords?: number;
         message?: string;
+        doubleDHeader?: string;
+        doubleDBody?: ArrayBuffer;
+        doubleDCount?: number;
       };
       if (message.id !== id || finished) return;
       if (message.type === "progress") {
@@ -78,6 +126,9 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
           count: message.count ?? 0,
           processed: message.processed ?? 0,
           total: message.total ?? null,
+          doubleDHeader: message.doubleDHeader,
+          doubleDBody: message.doubleDBody ? new Uint8Array(message.doubleDBody) : undefined,
+          doubleDCount: message.doubleDCount ?? 0,
         })).then(() => {
           worker.postMessage({ type: "ack", id, batch: message.batch ?? 0 });
         }).catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
@@ -114,6 +165,7 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
       workers: options.workers,
       countHint: options.countHint ?? null,
       subsample: options.subsample,
+      doubleD: options.doubleD,
     });
   });
 }

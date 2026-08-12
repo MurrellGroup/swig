@@ -74,7 +74,7 @@ function CompositeAlignment({ row, mode }: { row: AirrRow; mode: AlignmentMode }
   const rendered = alignmentBlocks(query || "", reference || "");
   return (
     <article className="composite-alignment">
-      <header><div><span className="section-kicker">Combined V(D)J layer</span><h4>Query ↔ composite germline</h4></div><small>{mode === "aa" ? `Shared biological frame ${row.sequence_frame ? `+${row.sequence_frame}` : "not available"}` : "AIRR stitched nucleotide alignment"}</small></header>
+      <header><div><span className="section-kicker">{row.d2_call ? "Baseline single-D composite" : "Combined V(D)J layer"}</span><h4>Query ↔ composite germline</h4></div><small>{mode === "aa" ? `Shared biological frame ${row.sequence_frame ? `+${row.sequence_frame}` : "not available"}` : "AIRR stitched nucleotide alignment"}</small></header>
       {rendered.length ? rendered.map((block) => <div className="alignment-block" key={block.offset}>
         <div><span>query</span><ColoredSequence sequence={block.query} alphabet={mode} /></div>
         <div className="match-row"><span /><code>{block.match}</code></div>
@@ -131,11 +131,12 @@ export function AlignmentViewer({ row, mode, onMode }: {
   return (
     <section className="alignment-viewer">
       <div className="alignment-toolbar">
-        <div><span className="section-kicker">Layered sequence annotation</span><h3>Query, IMGT regions, and V(D)J germlines</h3></div>
+        <div><span className="section-kicker">Layered sequence annotation</span><h3>Query, IMGT regions, and {row.d2_call ? "V(D)(D)J" : "V(D)J"} germlines</h3></div>
         <div className="alignment-actions"><button className="copy-fasta" type="button" onClick={() => void navigator.clipboard.writeText(`>${row.sequence_id}\n${row.sequence}\n`)}>Copy query FASTA</button><div className="mode-toggle" role="group" aria-label="Alignment alphabet"><button className={mode === "nt" ? "active" : ""} type="button" onClick={() => onMode("nt")}>Nucleotide</button><button className={mode === "aa" ? "active" : ""} type="button" onClick={() => onMode("aa")}>Amino acid</button></div></div>
       </div>
       <div className={`annotation-status ${hasRegions ? "valid" : "incomplete"}`}><span>{hasRegions ? "Validated region map" : "Region map unavailable"}</span><p>{hasRegions ? `${row.region_definition} boundaries · V: ${row.v_annotation_source || "unspecified"} · J: ${row.j_annotation_source || "unspecified"}${row.sequence_frame ? ` · query frame +${row.sequence_frame}` : ""}` : "No V-region delineation passed validation for the selected allele. A closest-relative transfer is accepted only when the sequence spans the mapped IMGT intervals."}</p></div>
       {mode === "aa" && <p className="alignment-explainer">All translated layers use the single rearrangement frame anchored by the mapped V cysteine and J F/W-G motif. Frames are not optimized independently per segment.</p>}
+      {row.d2_call && <p className="alignment-explainer">The composite layer is the unchanged standard SwiftIG single-D result. The D1 and D2 cards and feature track are the opt-in double-D screening model; the main AIRR export is not rewritten.</p>}
       <FeatureTracks row={row} mode={mode} />
       <RegionSequences row={row} mode={mode} />
       <CompositeAlignment row={row} mode={mode} />

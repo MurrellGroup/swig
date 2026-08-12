@@ -70,7 +70,52 @@ async function makeRuntime() {
     return { count, headers, rows, tsv };
   }
 
-  return { initialize, annotate };
+  function annotateDoubleD(query, format, options, strand = 0) {
+    const [pointer, size] = put(query);
+    const count = exports.swig_annotate_double_d(
+      pointer,
+      size,
+      format,
+      600,
+      strand,
+      options.mode,
+      options.minimumVjSpan,
+      options.seedLength,
+      options.pseudoTrim,
+      options.maximumPseudoMismatches,
+      options.minimumScoreGain,
+    );
+    exports.swig_free(pointer);
+    if (count < 0) {
+      throw new Error(read(exports.swig_error_ptr(), exports.swig_error_len()));
+    }
+    const tsv = read(exports.swig_result_ptr(), exports.swig_result_len());
+    const lines = tsv.trimEnd().split("\n");
+    const headers = lines.shift().split("\t");
+    const rows = lines.map((line) => {
+      const values = line.split("\t");
+      return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""]));
+    });
+    const doubleDTsv = read(exports.swig_double_d_result_ptr(), exports.swig_double_d_result_len());
+    const doubleDLines = doubleDTsv.trimEnd().split("\n");
+    const doubleDHeaders = doubleDLines.shift().split("\t");
+    const doubleDRows = doubleDLines.filter(Boolean).map((line) => {
+      const values = line.split("\t");
+      return Object.fromEntries(doubleDHeaders.map((header, index) => [header, values[index] ?? ""]));
+    });
+    return {
+      count,
+      headers,
+      rows,
+      tsv,
+      doubleDTsv,
+      doubleDHeaders,
+      doubleDRows,
+      doubleDCount: exports.swig_double_d_count(),
+    };
+  }
+
+  return { initialize, annotate, annotateDoubleD };
 }
 
 function referenceFor(locus, customJName) {
@@ -252,4 +297,49 @@ test("bundled macaque KIMDB references produce complete IMGT region and CDR call
     }
     assert.ok(row.c_call, `${speciesName} constant call is empty`);
   }
+});
+
+test("opt-in double-D screening is sparse and leaves the standard AIRR result byte-for-byte unchanged", async () => {
+  const human = pack.species.find((entry) => entry.name === "Homo sapiens");
+  assert.ok(human?.loci.IGH);
+  const v = human.loci.IGH.V.find((allele) => allele[2]?.slice(2, 12).every((value) => value >= 0));
+  const j = human.loci.IGH.J.find((allele) => allele[2]?.[0] >= 0 && allele[2]?.[1] >= 0);
+  assert.ok(v && j);
+  const d1 = ["IGHDTEST1*01", "ATGCCGTACGTTAGC"];
+  const d2 = ["IGHDTEST2*01", "CGATTCGGAACCTGA"];
+  const references = {
+    V: asFasta([v]),
+    D: asFasta([d1, d2]),
+    J: asFasta([j]),
+    C: "",
+  };
+  const sequence = `${v[1]}AAAA${d1[1]}GGGGGG${d2[1]}TTTT${j[1]}`;
+  const query = `>vddj_case\n${sequence}\n`;
+  const runtime = await makeRuntime();
+  runtime.initialize(references);
+  const baseline = runtime.annotate(query, 1);
+  const options = {
+    mode: 1,
+    minimumVjSpan: 0,
+    seedLength: 11,
+    pseudoTrim: 5,
+    maximumPseudoMismatches: 3,
+    minimumScoreGain: 8,
+  };
+  const screened = runtime.annotateDoubleD(query, 1, options);
+  assert.equal(screened.tsv, baseline.tsv, "the opt-in sidecar changed the ordinary AIRR table");
+  assert.equal(screened.doubleDCount, 1);
+  assert.equal(screened.doubleDRows.length, 1);
+  assert.equal(screened.doubleDRows[0].swig_batch_record_index, "0");
+  assert.equal(screened.doubleDRows[0].sequence_id, "vddj_case");
+  assert.equal(screened.doubleDRows[0].d_call, d1[0]);
+  assert.equal(screened.doubleDRows[0].d2_call, d2[0]);
+  assert.ok(Number(screened.doubleDRows[0].d_sequence_end) < Number(screened.doubleDRows[0].d2_sequence_start));
+  assert.equal(screened.doubleDRows[0].np2, "GGGGGG");
+  assert.ok(Number(screened.doubleDRows[0].swig_double_d_score_gain) >= options.minimumScoreGain);
+
+  const gated = runtime.annotateDoubleD(query, 1, { ...options, mode: 2, minimumVjSpan: 10_000 });
+  assert.equal(gated.tsv, baseline.tsv);
+  assert.equal(gated.doubleDCount, 0);
+  assert.equal(gated.doubleDRows.length, 0);
 });

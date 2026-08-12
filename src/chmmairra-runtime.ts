@@ -180,12 +180,11 @@ export async function runChmmairra(
     await store.scanAirrRows(
       [`${prefix}_call`, `${prefix}_sequence_alignment`, `${prefix}_germline_alignment`],
       async (rows) => {
-        const includedRows = workingMask ? rows.filter((row) => Boolean(workingMask[row.ordinal])) : rows;
-        if (!includedRows.length) return;
+        if (!rows.length) return;
         const current = slot;
         slot = (slot + 1) % clients.length;
         await slots[current];
-        const workerRows = includedRows.map((row) => ({
+        const workerRows = rows.map((row) => ({
           ordinal: row.ordinal,
           call: row.values[`${prefix}_call`],
           sequenceAlignment: row.values[`${prefix}_sequence_alignment`],
@@ -193,7 +192,7 @@ export async function runChmmairra(
         }));
         slots[current] = clients[current].request<{ results: WorkerResult[] }>({ type: "batch", rows: workerRows }).then(({ results }) => consume(results));
       },
-      { batchSize: 250, onProgress, signal },
+      { batchSize: 250, onProgress, signal, includeMask: workingMask },
     );
     await Promise.all(slots);
     return {

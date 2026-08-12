@@ -54,7 +54,12 @@ import {
   type ResultFilters,
   type ResultPage,
 } from "./result-store";
-import { runSwiftIg } from "./swiftig-runtime";
+import {
+  runSwiftIg,
+  withAnalysisWebLock,
+  type DoubleDScreenMode,
+  type DoubleDScreenOptions,
+} from "./swiftig-runtime";
 
 type AppPage = "home" | "analyze" | "results";
 type InputFormat = "FASTA" | "FASTQ" | "AIRR TSV";
@@ -102,6 +107,8 @@ interface ResultSession {
   references: CompiledReferences;
   minimumIdentity: number;
   strand: 0 | 1 | 2;
+  doubleD: DoubleDScreenOptions;
+  doubleDCount: number;
 }
 
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
@@ -136,6 +143,10 @@ function recommendedWorkerCount(): number {
 
 function outputName(inputName: string): string {
   return `${inputName.replace(/(\.gz)?\.[^.]+$/, "") || "swig"}.airr.tsv`;
+}
+
+function doubleDOutputName(inputName: string): string {
+  return `${inputName.replace(/(\.gz)?\.[^.]+$/, "") || "swig"}.double-d-evidence.tsv`;
 }
 
 function likelyLargeInput(input: InputData, selectedCount?: number | null): boolean {
@@ -508,7 +519,13 @@ function CompositionSummary({
   );
 }
 
-function AnalysisProgress({ stage, value, onCancel }: { stage: string; value: number; onCancel: () => void }) {
+function AnalysisProgress({ stage, value, onCancel, lockState, hidden }: {
+  stage: string;
+  value: number;
+  onCancel: () => void;
+  lockState: "unsupported" | "waiting" | "held";
+  hidden: boolean;
+}) {
   const phases = [
     { label: "Load WASM", threshold: 0.08 },
     { label: "Replicate germlines", threshold: 0.14 },
@@ -519,7 +536,7 @@ function AnalysisProgress({ stage, value, onCancel }: { stage: string; value: nu
   return (
     <section className="progress-stage" aria-live="polite">
       <div className="progress-orbit"><span>{percent}<small>%</small></span><i style={{ "--progress": `${percent * 3.6}deg` } as React.CSSProperties} /></div>
-      <div className="progress-copy"><p className="eyebrow"><span>SwiftIG is running locally</span></p><h2>{stage}</h2><p>The page will move to Results automatically when the local AIRR index is ready.</p><div className="main-progress"><i style={{ width: `${percent}%` }} /></div><ol>{phases.map((phase, index) => {
+      <div className="progress-copy"><p className="eyebrow"><span>SwiftIG is running locally</span></p><h2>{stage}</h2><p>The page will move to Results automatically when the local AIRR index is ready.</p><p className={`background-run-state ${lockState}`}>{lockState === "held" ? `${hidden ? "Background tab · " : ""}active-run Web Lock held; Chrome Energy Saver freeze is inhibited while this analysis is running.` : lockState === "waiting" ? "Waiting for another Swig analysis tab to release the active-run lock." : "This browser does not expose Web Locks; keep the tab active for long runs."}</p><div className="main-progress"><i style={{ width: `${percent}%` }} /></div><ol>{phases.map((phase, index) => {
         const previous = index ? phases[index - 1].threshold : 0;
         const state = value >= phase.threshold ? "complete" : value >= previous ? "active" : "";
         return <li className={state} key={phase.label}><span>{state === "complete" ? "✓" : index + 1}</span>{phase.label}</li>;
@@ -554,7 +571,8 @@ function parseAlternatives(value: string): AlternativeHit[] {
 function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
   const [mode, setMode] = useState<"nt" | "aa">("nt");
   const sequenceLength = row.sequence?.length ?? 0;
-  const mapSegments = ["v", "d", "j", "c"].flatMap((segment) => {
+  const displayedSegments = row.d2_call ? ["v", "d", "d2", "j", "c"] : ["v", "d", "j", "c"];
+  const mapSegments = displayedSegments.flatMap((segment) => {
     const start = Number(row[`${segment}_sequence_start`]);
     const end = Number(row[`${segment}_sequence_end`]);
     if (!row[`${segment}_call`] || !start || !end || !sequenceLength) return [];
@@ -570,7 +588,7 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
   return (
     <article className="detail-panel">
       <header className="detail-header">
-        <div><span className="section-kicker">Selected rearrangement</span><h2>{row.sequence_id}</h2><div className="detail-tags"><span>{row.locus || "unassigned"}</span><span className={row.productive === "T" ? "good" : "warn"}>{row.productive === "T" ? "Productive" : "Non-productive"}</span>{isotype && <span className="isotype-tag">{isotype}</span>}{row.rev_comp === "T" && <span>Reverse complement</span>}</div></div>
+        <div><span className="section-kicker">Selected rearrangement</span><h2>{row.sequence_id}</h2><div className="detail-tags"><span>{row.locus || "unassigned"}</span><span className={row.productive === "T" ? "good" : "warn"}>{row.productive === "T" ? "Productive" : "Non-productive"}</span>{row.d2_call && <span>VDDJ screen-supported</span>}{isotype && <span className="isotype-tag">{isotype}</span>}{row.rev_comp === "T" && <span>Reverse complement</span>}</div></div>
         <button className="close-detail" type="button" onClick={onClose}>Close <span>×</span></button>
       </header>
 
@@ -581,13 +599,20 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
           {mapSegments.map((segment) => <span key={segment.segment} className={`map-segment ${segment.segment}`} style={{ left: `${segment.left}%`, width: `${segment.width}%` }} title={segment.call}>{segment.segment.toUpperCase()}</span>)}
         </div>
         <div className="call-grid">
-          {["v", "d", "j", "c"].map((segment) => {
+          {displayedSegments.map((segment) => {
             const selected = splitCalls(row[`${segment}_call`] || "");
             const alternatives = parseAlternatives(row[`${segment}_alternatives`] || "");
             return <div key={segment}><span>{segment.toUpperCase()} call</span><strong>{selected[0] || "—"}</strong><small>{row[`${segment}_identity`] ? `${(Number(row[`${segment}_identity`]) * 100).toFixed(1)}% identity` : "not assigned"}{selected.length > 1 ? ` · ${selected.length} co-optimal` : alternatives.length ? ` · ${alternatives.length} near-tied` : ""}</small></div>;
           })}
         </div>
       </section>
+
+      {row.d2_call && <section className="uncertainty-panel double-d-evidence">
+        <div className="uncertainty-heading"><div><span className="section-kicker">Opt-in double-D evidence</span><h3>{row.d_call} → {row.d2_call}</h3></div><p>Two ordered, non-overlapping D seeds passed the configured evidence rule and could not be explained by the allowed single-D pseudo-tandem distance. The standard SwiftIG call was {row.standard_d_call || "unassigned"}.</p></div>
+        <div className="post-stat-grid compact"><article><span>V–J search span</span><strong>{row.swig_double_d_vj_span} nt</strong></article><article><span>Exact seed</span><strong>{row.swig_double_d_seed_length} nt / D</strong></article><article><span>Two-D score gain</span><strong>{row.swig_double_d_score_gain}</strong></article><article><span>Single-D Δ-distance</span><strong>{row.swig_double_d_pseudo_distance || "not explainable"}</strong></article></div>
+        <div className="junction-panel"><div><span className="section-kicker">D1 → D2 insertion</span><code>{row.np2 || "zero length"}</code></div><dl><div><dt>NP2</dt><dd>{row.np2_length || "0"} nt</dd></div><div><dt>D2 → J / NP3</dt><dd>{row.np3_length || "0"} nt</dd></div><div><dt>Screen mode</dt><dd>{row.swig_double_d_mode?.replace("_", " ")}</dd></div></dl></div>
+        {row.swig_double_d_alternatives && <p className="scientific-note"><span>i</span>Near-tied ordered pairs: <code>{row.swig_double_d_alternatives}</code></p>}
+      </section>}
 
       {uncertainSegments.length > 0 && <section className="uncertainty-panel">
         <div className="uncertainty-heading"><div><span className="section-kicker">Call uncertainty</span><h3>Co-optimal and near-tied hits</h3></div><p>Comma-separated calls have the same optimal score. Additional candidates are retained within SwiftIG’s configured uncertainty window. Full alignment strings are stored only for the selected call to bound per-record output size.</p></div>
@@ -624,6 +649,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const [selected, setSelected] = useState<AirrIndexRecord | null>(null);
   const [detail, setDetail] = useState<AirrRow | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [doubleDDownloading, setDoubleDDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
   const autoOpened = useRef(false);
   const detailRef = useRef<HTMLElement>(null);
@@ -752,6 +778,39 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     }
   }
 
+  async function downloadDoubleD() {
+    setDoubleDDownloading(true);
+    setDownloadError("");
+    try {
+      const name = doubleDOutputName(session.inputName);
+      const picker = savePicker();
+      if (picker) {
+        const handle = await picker.call(window, {
+          suggestedName: name,
+          types: [{ description: "Swig double-D evidence table", accept: { "text/tab-separated-values": [".tsv"] } }],
+        });
+        const writable = await handle.createWritable();
+        try {
+          await session.store.writeDoubleD((part) => writable.write(part));
+          await writable.close();
+        } catch (error) {
+          await writable.abort?.();
+          throw error;
+        }
+      } else {
+        const parts: BlobPart[] = [];
+        await session.store.writeDoubleD(async (part) => { parts.push(part as BlobPart); });
+        downloadBlob(new Blob(parts, { type: "text/tab-separated-values;charset=utf-8" }), name);
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        setDownloadError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setDoubleDDownloading(false);
+    }
+  }
+
   const filtered = Object.entries(filters).some(([key, value]) => key.startsWith("min") ? Number(value) > 0 : Boolean(value));
   const pageStart = page * PAGE_SIZE + (results.rows.length ? 1 : 0);
   const pageEnd = page * PAGE_SIZE + results.rows.length;
@@ -760,12 +819,13 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     <main className="results-page">
       <section className="results-hero">
         <WorkflowStepper active={3} />
-        <div className="results-title"><div><p className="eyebrow"><span>Analysis complete · {session.seconds.toFixed(2)} s · {Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s</span></p><h1>{session.total.toLocaleString()} analyzed<br /><em>rearrangements.</em></h1><p>{friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize ? ` · exact random sample from ${session.inputTotal.toLocaleString()} input records (seed ${session.subsampleSeed})` : ""}</p></div><div className="results-actions"><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing AIRR…" : session.streamedDirectly ? "Save another AIRR copy" : "Download AIRR TSV"}<span>↓</span></button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
+        <div className="results-title"><div><p className="eyebrow"><span>Analysis complete · {session.seconds.toFixed(2)} s · {Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s</span></p><h1>{session.total.toLocaleString()} analyzed<br /><em>rearrangements.</em></h1><p>{friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize ? ` · exact random sample from ${session.inputTotal.toLocaleString()} input records (seed ${session.subsampleSeed})` : ""}{session.doubleD.mode !== "off" ? ` · double-D screen ${session.doubleD.mode === "all" ? "all eligible junctions" : `V–J spans ≥ ${session.doubleD.minimumVjSpan} nt`}` : ""}</p></div><div className="results-actions"><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing AIRR…" : session.streamedDirectly ? "Save another AIRR copy" : "Download AIRR TSV"}<span>↓</span></button>{session.doubleDCount > 0 && <button type="button" onClick={() => void downloadDoubleD()} disabled={doubleDDownloading}>{doubleDDownloading ? "Writing double-D evidence…" : `Download double-D evidence (${session.doubleDCount.toLocaleString()})`}</button>}<button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
         <div className="result-summary">
           <article><span>V + J assigned</span><strong>{session.summary.assigned.toLocaleString()}</strong><small>{percentage(session.summary.assigned, session.total)} of input</small></article>
           <article><span>Productive</span><strong>{session.summary.productive.toLocaleString()}</strong><small>{percentage(session.summary.productive, session.total)} of input</small></article>
           <article><span>CDR3 called</span><strong>{session.summary.withCdr3.toLocaleString()}</strong><small>{percentage(session.summary.withCdr3, session.total)} of input</small></article>
           <article><span>Loci observed</span><strong>{session.facets.loci.length}</strong><small>{session.facets.loci.map((item) => item.value).join(" · ") || "none"}</small></article>
+          {session.doubleD.mode !== "off" && <article><span>Supported double-D</span><strong>{session.doubleDCount.toLocaleString()}</strong><small>opt-in screen · separate evidence table</small></article>}
         </div>
       </section>
 
@@ -799,6 +859,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
               <label><span>Orientation</span><select value={filters.revComp} onChange={(event) => updateFilter("revComp", event.target.value)}><option value="">Either</option><option value="F">Forward</option><option value="T">Reverse-comp.</option></select></label>
             </div>
             <label className="check-filter"><input type="checkbox" checked={filters.hasD} onChange={(event) => updateFilter("hasD", event.target.checked)} /><span>Require a D assignment</span></label>
+            {session.doubleD.mode !== "off" && <label className="check-filter"><input type="checkbox" checked={filters.hasDoubleD} onChange={(event) => updateFilter("hasDoubleD", event.target.checked)} /><span>Require supported double-D evidence</span></label>}
             <label className="check-filter"><input type="checkbox" checked={filters.hasCdr3} onChange={(event) => updateFilter("hasCdr3", event.target.checked)} /><span>Require a CDR3 call</span></label>
           </div></details>
           <p className="index-note"><span>i</span> Exact gene and locus filters use browser-local indexes. Substring filters scan candidate records on demand within the browser.</p>
@@ -812,7 +873,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
               <tbody>{results.rows.map((row) => <tr className={selected?.ordinal === row.ordinal ? "selected" : ""} key={row.ordinal} tabIndex={0} onClick={() => openRecord(row)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openRecord(row); } }}>
                 <td><strong title={row.sequenceId}>{row.sequenceId}</strong><small>#{(row.ordinal + 1).toLocaleString()}</small></td>
                 <td><span className="locus-pill">{row.locus || "—"}</span></td>
-                <td title={row.vCall}>{row.vCall || <i>—</i>}</td><td title={row.dCall}>{row.dCall || <i>—</i>}</td><td title={row.jCall}>{row.jCall || <i>—</i>}</td><td>{row.isotype || <i>—</i>}</td>
+                <td title={row.vCall}>{row.vCall || <i>—</i>}</td><td title={[row.dCall, row.d2Call].filter(Boolean).join(" → ")}>{row.dCall || <i>—</i>}{row.d2Call && <small className="d2-table-call">→ {row.d2Call}</small>}</td><td title={row.jCall}>{row.jCall || <i>—</i>}</td><td>{row.isotype || <i>—</i>}</td>
                 <td><code title={row.cdr3Aa}>{row.cdr3Aa || "—"}</code></td>
                 <td><span className={`productive-dot ${row.productive === "T" ? "yes" : "no"}`} />{row.productive === "T" ? "Yes" : row.productive === "F" ? "No" : "—"}</td>
                 <td><button type="button" aria-label={`Open ${row.sequenceId}`}>→</button></td>
@@ -851,10 +912,18 @@ export default function SwigApp() {
   const [subsampleEnabled, setSubsampleEnabled] = useState(false);
   const [subsampleSize, setSubsampleSize] = useState(10_000);
   const [subsampleSeed, setSubsampleSeed] = useState(1);
+  const [doubleDMode, setDoubleDMode] = useState<DoubleDScreenMode>("off");
+  const [doubleDMinimumSpan, setDoubleDMinimumSpan] = useState(40);
+  const [doubleDSeedLength, setDoubleDSeedLength] = useState(11);
+  const [doubleDPseudoTrim, setDoubleDPseudoTrim] = useState(5);
+  const [doubleDMaximumPseudoMismatches, setDoubleDMaximumPseudoMismatches] = useState(3);
+  const [doubleDMinimumScoreGain, setDoubleDMinimumScoreGain] = useState(8);
   const [outputPrompt, setOutputPrompt] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ stage: "Preparing analysis", value: 0 });
+  const [analysisLockState, setAnalysisLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
+  const [pageHidden, setPageHidden] = useState(typeof document !== "undefined" && document.hidden);
   const [runError, setRunError] = useState("");
   const [session, setSession] = useState<ResultSession | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -867,6 +936,22 @@ export default function SwigApp() {
     loadReferencePack().then(setPack).catch((error) => setPackError(error instanceof Error ? error.message : String(error)));
     if ("serviceWorker" in navigator && window.isSecureContext) void registerDownloadWorker().catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    const updateVisibility = () => setPageHidden(document.hidden);
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [running]);
 
   useEffect(() => {
     return () => {
@@ -1136,6 +1221,17 @@ export default function SwigApp() {
       setRunError("Random subsample size must be at least one record.");
       return;
     }
+    if (doubleDMode !== "off") {
+      if (!compiled.counts.D) {
+        setRunError("Double-D screening requires at least one D germline in the composed reference set.");
+        return;
+      }
+      const integerParameters = [doubleDMinimumSpan, doubleDSeedLength, doubleDPseudoTrim, doubleDMaximumPseudoMismatches, doubleDMinimumScoreGain];
+      if (integerParameters.some((value) => !Number.isFinite(value) || value < 0) || doubleDSeedLength < 4) {
+        setRunError("Double-D screen parameters must be non-negative integers; the exact seed must be at least 4 nt.");
+        return;
+      }
+    }
     const selectedCount = subsampleEnabled ? Math.floor(subsampleSize) : null;
     const wantsDisk = outputStorage === "disk" || (outputStorage === "auto" && likelyLargeInput(activeInput, selectedCount));
     if (wantsDisk && !savePicker() && outputStorage === "disk") {
@@ -1184,29 +1280,44 @@ export default function SwigApp() {
     setProgress({ stage: "Preparing analysis", value: 0.01 });
     const started = performance.now();
     void navigator.storage?.persist?.().catch(() => false);
+    const doubleD: DoubleDScreenOptions = {
+      mode: doubleDMode,
+      minimumVjSpan: Math.round(doubleDMinimumSpan),
+      seedLength: Math.round(doubleDSeedLength),
+      pseudoTrim: Math.round(doubleDPseudoTrim),
+      maximumPseudoMismatches: Math.round(doubleDMaximumPseudoMismatches),
+      minimumScoreGain: Math.round(doubleDMinimumScoreGain),
+    };
     try {
-      const result = await runSwiftIg({
-        query: activeInput.source,
-        format: activeInput.formatCode,
-        references: compiled,
-        minimumIdentity,
-        strand,
-        workers: workerCount,
-        countHint: activeInput.count,
-        subsample: subsampleEnabled ? { size: Math.floor(subsampleSize), seed: Math.trunc(subsampleSeed) } : undefined,
-        signal: controller.signal,
-        onProgress: (stage, value) => setProgress({ stage, value }),
-        onBatch: async (batch) => {
-          await store.appendBatch(batch.header, batch.body);
-          setProgress((current) => ({
-            ...current,
-            stage: batch.total === null
-              ? `Committed ${batch.processed.toLocaleString()} AIRR records`
-              : `Committed ${batch.processed.toLocaleString()} of ${batch.total.toLocaleString()} AIRR records`,
-          }));
-        },
+      const result = await withAnalysisWebLock(controller.signal, setAnalysisLockState, async () => {
+        const completed = await runSwiftIg({
+          query: activeInput.source,
+          format: activeInput.formatCode,
+          references: compiled,
+          minimumIdentity,
+          strand,
+          workers: workerCount,
+          countHint: activeInput.count,
+          subsample: subsampleEnabled ? { size: Math.floor(subsampleSize), seed: Math.trunc(subsampleSeed) } : undefined,
+          doubleD,
+          signal: controller.signal,
+          onProgress: (stage, value) => setProgress({ stage, value }),
+          onBatch: async (batch) => {
+            const doubleDBatch = batch.doubleDHeader !== undefined && batch.doubleDBody !== undefined
+              ? { header: batch.doubleDHeader, body: batch.doubleDBody }
+              : undefined;
+            await store.appendBatch(batch.header, batch.body, doubleDBatch);
+            setProgress((current) => ({
+              ...current,
+              stage: batch.total === null
+                ? `Committed ${batch.processed.toLocaleString()} AIRR records${store.doubleDCount ? ` · ${store.doubleDCount.toLocaleString()} double-D supported` : ""}`
+                : `Committed ${batch.processed.toLocaleString()} of ${batch.total.toLocaleString()} AIRR records${store.doubleDCount ? ` · ${store.doubleDCount.toLocaleString()} double-D supported` : ""}`,
+            }));
+          },
+        });
+        await store.finalize();
+        return completed;
       });
-      await store.finalize();
       setProgress({ stage: "Results ready", value: 1 });
       setSession({
         id: Date.now(),
@@ -1227,6 +1338,8 @@ export default function SwigApp() {
         references: compiled,
         minimumIdentity,
         strand,
+        doubleD,
+        doubleDCount: store.doubleDCount,
       });
       setPage("results");
       window.scrollTo({ top: 0 });
@@ -1239,6 +1352,7 @@ export default function SwigApp() {
     } finally {
       abortRef.current = null;
       setRunning(false);
+      setAnalysisLockState("unsupported");
     }
   }
 
@@ -1254,7 +1368,7 @@ export default function SwigApp() {
         <main className="analysis-page">
           <section className="analysis-intro"><WorkflowStepper active={running ? 2 : 1} /><div><p className="eyebrow"><span>Analysis workspace</span></p><h1>{running ? "Calling rearrangements…" : "Configure an annotation run."}</h1><p>{running ? "SwiftIG is processing bounded batches and writing AIRR records into a browser-local index." : "Provide sequences, select the biological search space, and specify any germline replacements."}</p></div></section>
 
-          {running ? <AnalysisProgress stage={progress.stage} value={progress.value} onCancel={() => abortRef.current?.abort()} /> : (
+          {running ? <AnalysisProgress stage={progress.stage} value={progress.value} onCancel={() => abortRef.current?.abort()} lockState={analysisLockState} hidden={pageHidden} /> : (
             <div className="analysis-layout">
               <div className="analysis-forms">
                 <section className="analysis-card input-card">
@@ -1301,20 +1415,31 @@ export default function SwigApp() {
 
                 <section className="analysis-card settings-card">
                   <header><span className="card-number">03</span><div><h2>Analysis parameters</h2><p>Review sampling, strand, identity, worker, and output settings.</p></div><button className="reset-button" type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} controls</button></header>
-                  <div className="settings-strip"><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "adaptive"}</span><span><b>Input</b> {subsampleEnabled ? `random ${Math.floor(subsampleSize || 0).toLocaleString()}` : "all records"}</span></div>
+                  <div className="settings-strip"><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "adaptive"}</span><span><b>Input</b> {subsampleEnabled ? `random ${Math.floor(subsampleSize || 0).toLocaleString()}` : "all records"}</span><span><b>Double-D</b> {doubleDMode === "off" ? "off" : doubleDMode === "all" ? "screen all" : `span ≥ ${Math.round(doubleDMinimumSpan)} nt`}</span></div>
                   <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records in memory and output.</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>Records to analyze</span><CommitNumberInput min="1" step="1000" value={subsampleSize} onCommit={setSubsampleSize} /></label><label><span>Random seed</span><CommitNumberInput step="1" value={subsampleSeed} onCommit={setSubsampleSeed} /></label></div>}</div>
                   {showAdvanced && <div className="advanced-settings">
                     <label><span>Search strand</span><select value={strand} onChange={(event) => setStrand(Number(event.target.value) as 0 | 1 | 2)}><option value={0}>Both orientations</option><option value={1}>Plus only</option><option value={2}>Minus only</option></select></label>
                     <label><span>Parallel WASM workers</span><select value={workerCount} onChange={(event) => setWorkerCount(Number(event.target.value))}>{Array.from({ length: browserWorkerLimit() }, (_, index) => index + 1).map((count) => <option value={count} key={count}>{count}{count === recommendedWorkerCount() ? " · recommended" : ""}</option>)}</select></label>
                     <label><span>AIRR results destination</span><select value={outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}><option value="auto">Auto · ask to save large results</option><option value="browser">Browser · compressed local index</option><option value="disk">File · save while analyzing</option></select></label>
                     <label className="minimum-slider"><span>Minimum alignment identity <b>{Math.round(minimumIdentity * 100)}%</b></span><input type="range" min="0.45" max="0.9" step="0.01" value={minimumIdentity} onChange={(event) => setMinimumIdentity(Number(event.target.value))} /></label>
+                    <label><span>Double-D / VDDJ screening</span><select value={doubleDMode} onChange={(event) => setDoubleDMode(event.target.value as DoubleDScreenMode)}><option value="off">Off · standard V(D)J only</option><option value="long_span">Long inter-V/J spans only</option><option value="all">All eligible D-bearing junctions</option></select></label>
+                    <section className={`double-d-parameters ${doubleDMode === "off" ? "disabled" : ""}`}>
+                      <div><span className="section-kicker">Rare rearrangement screen</span><h3>{doubleDMode === "off" ? "No double-D screening" : "Two ordered D segments"}</h3><p>{doubleDMode === "off" ? "The original SwiftIG annotation entry point is used and ordinary behavior is unchanged." : "This evidence screen runs after the ordinary V(D)J call. It does not rewrite the main AIRR TSV; supported D1/D2 calls are retained in a separate evidence table and merged into the interactive detail viewer."}</p></div>
+                      {doubleDMode !== "off" && <div className="double-d-fields">
+                        {doubleDMode === "long_span" && <label><span>Minimum inter-V/J span</span><CommitNumberInput min="0" max="10000" step="1" value={doubleDMinimumSpan} onCommit={setDoubleDMinimumSpan} /><small>nt between the baseline V end and J start</small></label>}
+                        <label><span>Exact seed per D</span><CommitNumberInput min="6" max="24" step="1" value={doubleDSeedLength} onCommit={setDoubleDSeedLength} /><small>nt; 11 follows the IgScout tandem-D screen</small></label>
+                        <label><span>Single-D Δ trim</span><CommitNumberInput min="0" max="24" step="1" value={doubleDPseudoTrim} onCommit={setDoubleDPseudoTrim} /><small>nt removed for the pseudo-tandem test</small></label>
+                        <label><span>Maximum pseudo mismatches</span><CommitNumberInput min="0" max="24" step="1" value={doubleDMaximumPseudoMismatches} onCommit={setDoubleDMaximumPseudoMismatches} /><small>reject a pair at or below this distance</small></label>
+                        <label><span>Minimum two-D score gain</span><CommitNumberInput min="0" max="1000" step="1" value={doubleDMinimumScoreGain} onCommit={setDoubleDMinimumScoreGain} /><small>over the best supported single D</small></label>
+                      </div>}
+                    </section>
                   </div>}
                 </section>
               </div>
 
               <aside className="run-summary">
                 <span className="section-kicker">Run manifest</span><h2>{activeInput ? subsampleEnabled ? `${Math.floor(subsampleSize).toLocaleString()}-read sample` : activeInput.count === null ? "Large file" : `${activeInput.count?.toLocaleString()} sequences` : "Awaiting data"}</h2><p>{activeInput?.name ?? "Add an input to configure the run."}</p>
-                <dl><div><dt>Species</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Sources</dt><dd>{databaseLabel}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>V / D / J / C</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J} / ${compiled.counts.C}` : "—"}</dd></div><div><dt>Non-IMGT cells</dt><dd>{activeReferenceEntries.length ? activeReferenceEntries.map(([key]) => key.replace(":", " ")).join(" · ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · bounded queue</dd></div><div><dt>Storage</dt><dd>{outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
+                <dl><div><dt>Species</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Sources</dt><dd>{databaseLabel}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>V / D / J / C</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J} / ${compiled.counts.C}` : "—"}</dd></div><div><dt>Non-IMGT cells</dt><dd>{activeReferenceEntries.length ? activeReferenceEntries.map(([key]) => key.replace(":", " ")).join(" · ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · bounded queue</dd></div><div><dt>Double-D</dt><dd>{doubleDMode === "off" ? "Off · standard path" : doubleDMode === "all" ? "Screen all eligible junctions" : `Screen inter-V/J spans ≥ ${Math.round(doubleDMinimumSpan)} nt`}</dd></div><div><dt>Storage</dt><dd>{outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
                 {runError && <p className="run-error" role="alert">{runError}</p>}
                 <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError) || databaseBusy || Boolean(busyCells.size)} onClick={requestRun}><span>{databaseBusy || busyCells.size ? "Validating references…" : "Analyze with SwiftIG"}</span><b>→</b></button>
                 <p className="privacy-copy"><span>i</span> Query sequences, uploaded germlines, and AIRR results are processed in this browser; Swig does not transmit them. A remotely hosted alternative database is requested from its named provider only when selected.</p>
@@ -1334,7 +1459,7 @@ export default function SwigApp() {
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
         <p className="output-safety"><span>i</span> Query sequences remain in this browser and are not transmitted by Swig.</p>
       </section></div>}
-      <footer className="site-footer"><Brand /><p>Swig 0.11.0 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      <footer className="site-footer"><Brand /><p>Swig 0.12.0 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }

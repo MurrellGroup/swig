@@ -109,6 +109,78 @@ test("lineage export adds AIRR clone_id values and leaves excluded records blank
   await store.clear();
 });
 
+test("masked AIRR scans yield only active ordinals and report filtered progress totals", async () => {
+  const store = new AirrResultStore();
+  await store.appendBatch(header, makeBody(0, 8));
+  await store.finalize();
+  const mask = Uint8Array.from([0, 1, 0, 0, 1, 0, 0, 1]);
+  const observed: number[] = [];
+  const progress: Array<[number, number]> = [];
+  await store.scanAirrRows(["sequence_id"], (rows) => {
+    observed.push(...rows.map((row) => row.ordinal));
+  }, {
+    includeMask: mask,
+    batchSize: 100,
+    onProgress: (processed, total) => progress.push([processed, total]),
+  });
+  assert.deepEqual(observed, [1, 4, 7]);
+  assert.deepEqual(progress.at(-1), [3, 3]);
+  await store.clear();
+});
+
+test("double-D evidence is indexed and exported separately without rewriting the AIRR table", async () => {
+  const store = new AirrResultStore();
+  const doubleDHeader = [
+    "swig_batch_record_index", "sequence_id", "standard_d_call", "d_call", "d2_call",
+    "d_identity", "d2_identity", "d_sequence_start", "d_sequence_end",
+    "d2_sequence_start", "d2_sequence_end", "np2", "np3", "swig_double_d_mode",
+  ].join("\t");
+  const doubleDBody = [
+    "1", "read_1", "IGHD2*01", "IGHDA*01", "IGHDB*01", "0.99", "0.98",
+    "110", "122", "129", "141", "AACCGG", "TT", "all",
+  ].join("\t") + "\n";
+  await store.appendBatch(header, makeBody(0, 3), { header: doubleDHeader, body: doubleDBody });
+  const secondDoubleDBody = [
+    "0", "read_3", "IGHD4*01", "IGHDC*01", "IGHDD*01", "0.97", "0.96",
+    "112", "124", "130", "143", "AACCC", "T", "long_span",
+  ].join("\t") + "\n";
+  await store.appendBatch(header, makeBody(3, 2), { header: doubleDHeader, body: secondDoubleDBody });
+  await store.finalize();
+
+  assert.equal(store.doubleDCount, 2);
+  const doubleDPage = await store.page({ ...EMPTY_FILTERS, hasDoubleD: true }, 0, 10);
+  assert.equal(doubleDPage.rows.length, 2);
+  assert.equal(doubleDPage.rows[0].ordinal, 1);
+  assert.equal(doubleDPage.rows[1].ordinal, 3, "batch-local evidence indexes were not mapped to global AIRR ordinals");
+  assert.equal(doubleDPage.rows[0].dCall, "IGHDA*01");
+  assert.equal(doubleDPage.rows[0].d2Call, "IGHDB*01");
+  assert.equal(doubleDPage.rows[0].dIdentity, 0.99);
+  const detail = await store.detail(doubleDPage.rows[0]);
+  assert.equal(detail.standard_d_call, "IGHD2*01");
+  assert.equal(detail.d_call, "IGHDA*01");
+  assert.equal(detail.d2_call, "IGHDB*01");
+  assert.equal(detail.swig_batch_record_index, undefined);
+
+  const main = await store.airrBlob();
+  const mainText = await main.text();
+  assert.ok(!mainText.split("\n", 1)[0].includes("d2_call"));
+  const mainHeader = mainText.split("\n", 1)[0].split("\t");
+  const mainRows = mainText.trimEnd().split("\n").slice(1).map((line) => line.split("\t"));
+  assert.equal(mainRows[1][mainHeader.indexOf("d_call")], "IGHD2*01");
+
+  let evidence = "";
+  await store.writeDoubleD(async (part) => {
+    evidence += typeof part === "string" ? part : part instanceof Blob ? await part.text() : new TextDecoder().decode(part);
+  });
+  const evidenceLines = evidence.trimEnd().split("\n");
+  assert.ok(evidenceLines[0].startsWith("swig_airr_ordinal\tsequence_id"));
+  assert.ok(!evidenceLines[0].includes("swig_batch_record_index"));
+  assert.equal(evidenceLines[1].split("\t", 1)[0], "2");
+  assert.ok(evidenceLines[1].includes("IGHDB*01"));
+  assert.equal(evidenceLines[2].split("\t", 1)[0], "4");
+  await store.clear();
+});
+
 test("direct output keeps byte offsets usable for on-demand detail", async () => {
   const parts: BlobPart[] = [];
   let file = new File([], "direct.airr.tsv");
