@@ -5,6 +5,7 @@ import {
   DenoiseAccumulator,
   deduplicate,
   expandSingleLinkage,
+  findLineageNeighbours,
   minHashSketch,
   normalizeNt,
   queryRecords,
@@ -14,6 +15,7 @@ import {
   type DenoiseOptions,
   type ExpansionOptions,
   type LineageOptions,
+  type LineageNeighbourOptions,
   type LineageResult,
   type QueryHit,
   type PostAnalysisRecord,
@@ -56,6 +58,8 @@ type Request =
   | { id: number; type: "query"; queries: string[]; options: QueryOptions }
   | { id: number; type: "expand"; seedOrdinals: number[]; options: ExpansionOptions }
   | { id: number; type: "lineageMembers"; lineageId: number; offset: number; limit: number }
+  | { id: number; type: "lineageMembersMany"; lineageIds: number[]; limitPerLineage: number }
+  | { id: number; type: "lineageNeighbours"; options: LineageNeighbourOptions; useDedup: boolean }
   | { id: number; type: "lineageAssignments" }
   | { id: number; type: "dedupMembers"; representative: number; offset: number; limit: number }
   | { id: number; type: "dedupCounts" }
@@ -216,6 +220,37 @@ worker.onmessage = (event: MessageEvent<Request>) => {
         total += 1;
       }
       result = { ordinals, total };
+    } else if (request.type === "lineageMembersMany") {
+      if (!currentLineages) throw new Error("Run lineage assignment before opening lineage members.");
+      const selected = new Set(request.lineageIds.filter((value) => value > 0));
+      const byLineage = new Map<number, { lineageId: number; ordinals: number[]; total: number }>();
+      selected.forEach((lineageId) => byLineage.set(lineageId, { lineageId, ordinals: [], total: 0 }));
+      const limit = Math.max(1, request.limitPerLineage);
+      const reservoirSlot = (ordinal: number, lineageId: number, seen: number) => {
+        let value = (ordinal + 1) ^ Math.imul(lineageId + 1, 0x9e3779b1);
+        value ^= value >>> 16;
+        value = Math.imul(value, 0x7feb352d);
+        value ^= value >>> 15;
+        value = Math.imul(value, 0x846ca68b);
+        value ^= value >>> 16;
+        return (value >>> 0) % seen;
+      };
+      for (let ordinal = 0; ordinal < currentLineages.assignments.length; ordinal += 1) {
+        if (currentActiveMask && !currentActiveMask[ordinal]) continue;
+        const entry = byLineage.get(currentLineages.assignments[ordinal]);
+        if (!entry) continue;
+        entry.total += 1;
+        if (entry.ordinals.length < limit) entry.ordinals.push(ordinal);
+        else {
+          const slot = reservoirSlot(ordinal, entry.lineageId, entry.total);
+          if (slot < limit) entry.ordinals[slot] = ordinal;
+        }
+      }
+      byLineage.forEach((entry) => entry.ordinals.sort((left, right) => left - right));
+      result = { members: [...byLineage.values()] };
+    } else if (request.type === "lineageNeighbours") {
+      if (!currentLineages) throw new Error("Run lineage assignment before searching for lineage neighbours.");
+      result = findLineageNeighbours(records, currentLineages.assignments, request.options, request.useDedup ? currentDedup : undefined, currentActiveMask);
     } else if (request.type === "lineageAssignments") {
       if (!currentLineages) throw new Error("Run lineage assignment before exporting clone identifiers.");
       result = { assignments: currentLineages.assignments };

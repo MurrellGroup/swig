@@ -108,6 +108,36 @@ export interface LineageResult {
   truncatedCandidates: number;
 }
 
+export interface LineageNeighbourOptions extends LineageOptions {
+  sourceLineageIds: number[];
+  /** Lower, exploratory CDR3 identity boundary; normally below lineage assignment. */
+  minimumIdentity: number;
+  maximumResults: number;
+}
+
+export interface LineageNeighbourHit {
+  lineageId: number;
+  sourceLineageId: number;
+  sourceOrdinal: number;
+  candidateOrdinal: number;
+  cdr3Identity: number;
+  uniqueMembers: number;
+  abundance: number;
+  locus: string;
+  vCalls: string[];
+  jCalls: string[];
+  cdr3Length: number;
+  studyGroup: string;
+}
+
+export interface LineageNeighbourResult {
+  hits: LineageNeighbourHit[];
+  indexedRecords: number;
+  sourceRecords: number;
+  candidateComparisons: number;
+  truncatedSourceRecords: number;
+}
+
 export type QueryTarget = "cdr3_nt" | "cdr3_aa" | "trimmed";
 export type QueryMetric = "exact" | "substring" | "hamming" | "edit" | "sketch";
 
@@ -1416,6 +1446,115 @@ export function assignLineages(
     candidateComparisons,
     truncatedCandidates,
   };
+}
+
+/**
+ * Exact indexed search across already-assigned lineage boundaries. Candidate
+ * generation uses the same study/locus/V/J partition and d+1 block guarantee
+ * as lineage assignment, then verifies the best member-to-member CDR3 Hamming
+ * identity for each neighbouring lineage. It never changes assignments.
+ */
+export function findLineageNeighbours(
+  records: PostAnalysisRecord[],
+  assignments: Int32Array,
+  options: LineageNeighbourOptions,
+  dedup?: DedupResult,
+  activeMask?: Uint8Array,
+): LineageNeighbourResult {
+  if (assignments.length < records.length) throw new Error("Lineage assignments do not cover the indexed repertoire.");
+  const sourceIds = new Set(options.sourceLineageIds.filter((value) => value > 0));
+  if (!sourceIds.size) throw new Error("Choose at least one assigned lineage before searching for neighbours.");
+  if (!(options.minimumIdentity >= 0 && options.minimumIdentity <= 1)) throw new Error("Neighbour CDR3 identity must be between zero and one.");
+  const lineageCount = assignments.reduce((maximum, value) => Math.max(maximum, value), 0);
+  const uniqueMembers = new Uint32Array(lineageCount + 1);
+  const abundance = new Float64Array(lineageCount + 1);
+  const bucket = new Map<string, number[]>();
+  const sourceRecords: number[] = [];
+  let indexedRecords = 0;
+
+  for (let index = 0; index < records.length; index += 1) {
+    if (activeMask && !activeMask[index]) continue;
+    const lineageId = assignments[index];
+    if (!(lineageId > 0)) continue;
+    const record = records[index];
+    const cdr3 = normalizeNt(record.cdr3Nt);
+    const tokens = recordIndexTokens(record, options);
+    if (!cdr3 || !tokens.length || (options.productiveOnly && !record.productive)) continue;
+    const weight = dedup ? dedup.counts[index] : Math.max(1, Math.floor(record.inputCount ?? 1));
+    // A deduplicated non-representative can inherit an assignment but is not an
+    // independent searchable row in the active representative set.
+    if (dedup && !weight) continue;
+    uniqueMembers[lineageId] += 1;
+    abundance[lineageId] += weight;
+    indexedRecords += 1;
+    if (sourceIds.has(lineageId)) sourceRecords.push(index);
+    const distanceLimit = Math.floor((1 - options.minimumIdentity) * cdr3.length + 1e-9);
+    const blockCount = Math.max(1, Math.min(cdr3.length, distanceLimit + 1));
+    const prefix = `${options.requireSameLocus ? record.locus : "*"}\u0000${cdr3.length}\u0000`;
+    for (const token of tokens) {
+      for (const block of blocks(cdr3, blockCount)) {
+        const key = `${prefix}${token}\u0000${block.index}\u0000${block.value}`;
+        const values = bucket.get(key);
+        if (values) values.push(index);
+        else bucket.set(key, [index]);
+      }
+    }
+  }
+
+  const best = new Map<number, LineageNeighbourHit>();
+  let candidateComparisons = 0;
+  let truncatedSourceRecords = 0;
+  for (const sourceIndex of sourceRecords) {
+    const source = records[sourceIndex];
+    const sourceLineageId = assignments[sourceIndex];
+    const cdr3 = normalizeNt(source.cdr3Nt);
+    const distanceLimit = Math.floor((1 - options.minimumIdentity) * cdr3.length + 1e-9);
+    const blockCount = Math.max(1, Math.min(cdr3.length, distanceLimit + 1));
+    const prefix = `${options.requireSameLocus ? source.locus : "*"}\u0000${cdr3.length}\u0000`;
+    const candidates = new Set<number>();
+    for (const token of recordIndexTokens(source, options)) {
+      for (const block of blocks(cdr3, blockCount)) {
+        for (const candidate of bucket.get(`${prefix}${token}\u0000${block.index}\u0000${block.value}`) ?? []) {
+          const candidateLineage = assignments[candidate];
+          if (candidateLineage <= 0 || sourceIds.has(candidateLineage)) continue;
+          candidates.add(candidate);
+          if (candidates.size >= options.maxCandidateComparisons) break;
+        }
+        if (candidates.size >= options.maxCandidateComparisons) break;
+      }
+      if (candidates.size >= options.maxCandidateComparisons) break;
+    }
+    if (candidates.size >= options.maxCandidateComparisons) truncatedSourceRecords += 1;
+    for (const candidateIndex of candidates) {
+      candidateComparisons += 1;
+      const candidate = records[candidateIndex];
+      if (!compatibleRecords(source, candidate, options)) continue;
+      const distance = hammingDistanceWithin(cdr3, normalizeNt(candidate.cdr3Nt), distanceLimit, false);
+      if (distance > distanceLimit) continue;
+      const candidateLineage = assignments[candidateIndex];
+      const cdr3Identity = cdr3.length ? 1 - distance / cdr3.length : 0;
+      const previous = best.get(candidateLineage);
+      if (previous && previous.cdr3Identity >= cdr3Identity) continue;
+      best.set(candidateLineage, {
+        lineageId: candidateLineage,
+        sourceLineageId,
+        sourceOrdinal: source.ordinal,
+        candidateOrdinal: candidate.ordinal,
+        cdr3Identity,
+        uniqueMembers: uniqueMembers[candidateLineage],
+        abundance: abundance[candidateLineage],
+        locus: candidate.locus,
+        vCalls: callSet(candidate.vCall, options.callResolution, options.ambiguity),
+        jCalls: callSet(candidate.jCall, options.callResolution, options.ambiguity),
+        cdr3Length: candidate.cdr3Nt.length,
+        studyGroup: datasetScopeValue(candidate, options.scope ?? "global"),
+      });
+    }
+  }
+  const hits = [...best.values()]
+    .sort((left, right) => right.cdr3Identity - left.cdr3Identity || right.abundance - left.abundance || left.lineageId - right.lineageId)
+    .slice(0, Math.max(1, options.maximumResults));
+  return { hits, indexedRecords, sourceRecords: sourceRecords.length, candidateComparisons, truncatedSourceRecords };
 }
 
 function queryValue(record: PostAnalysisRecord, target: QueryTarget): string {

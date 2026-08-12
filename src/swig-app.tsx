@@ -65,6 +65,7 @@ import {
 } from "./swiftig-runtime";
 import { streamSequenceBatches } from "./sequence-stream";
 import { prepareReferenceMsa } from "./post-analysis-core";
+import { createSampleColorMap, sampleColor, sampleIds, type SampleColorMap } from "./sample-colors";
 import { decodeSession, encodeSession, linkedAirrMatches, sessionBaseName, SWIG_SESSION_SCHEMA, type PostAnalysisSessionSnapshot, type SwigSession } from "./session-state";
 import {
   annotateAirrBatch,
@@ -133,6 +134,7 @@ interface ResultSession {
   strand: 0 | 1 | 2;
   doubleD: DoubleDScreenOptions;
   doubleDCount: number;
+  sampleColors: SampleColorMap;
   postAnalysis?: PostAnalysisSessionSnapshot;
   restored?: boolean;
 }
@@ -740,6 +742,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const [downloadError, setDownloadError] = useState("");
   const [downloadFormat,setDownloadFormat]=useState<TableExportFormat>("tsv");
   const [savingSession,setSavingSession]=useState(false);
+  const [sampleColors,setSampleColors]=useState<SampleColorMap>(()=>createSampleColorMap(session.datasets,session.sampleColors));
   const postSessionRef=useRef<PostAnalysisSessionHandle|null>(null);
   const autoOpened = useRef(false);
   const detailRef = useRef<HTMLElement>(null);
@@ -908,7 +911,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     setSavingSession(true);setDownloadError("");
     try{
       const postAnalysis=postSessionRef.current?await postSessionRef.current.snapshot():session.postAnalysis??{workingStages:[]};
-      const artifact:SwigSession={schema:SWIG_SESSION_SCHEMA,application:"Swig",applicationVersion:"0.14.0",savedAt:new Date().toISOString(),linkedAirr:{name:outputName(session.inputName),size:session.outputBytes,lastModified:0,records:session.store.count,headers:[...session.store.airrHeaders],fingerprint:session.store.fingerprint},analysis:{inputName:session.inputName,species:session.species,scope:session.scope,workers:session.workers,callingProfile:session.callingProfile,minimumIdentity:session.minimumIdentity,strand:session.strand,references:session.references,doubleD:{...session.doubleD},datasets:session.datasets,studyDesign:session.studyDesign,pipeline:session.pipeline},doubleD:await session.store.doubleDRecords(),postAnalysis};
+      const artifact:SwigSession={schema:SWIG_SESSION_SCHEMA,application:"Swig",applicationVersion:"0.15.0",savedAt:new Date().toISOString(),linkedAirr:{name:outputName(session.inputName),size:session.outputBytes,lastModified:0,records:session.store.count,headers:[...session.store.airrHeaders],fingerprint:session.store.fingerprint},analysis:{inputName:session.inputName,species:session.species,scope:session.scope,workers:session.workers,callingProfile:session.callingProfile,minimumIdentity:session.minimumIdentity,strand:session.strand,references:session.references,doubleD:{...session.doubleD},datasets:session.datasets,studyDesign:session.studyDesign,pipeline:session.pipeline,sampleColors},doubleD:await session.store.doubleDRecords(),postAnalysis};
       downloadBlob(await encodeSession(artifact),sessionBaseName(session.inputName));
     }catch(error){setDownloadError(error instanceof Error?error.message:String(error));}finally{setSavingSession(false);}
   }
@@ -929,11 +932,12 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
           <article><span>Loci observed</span><strong>{session.facets.loci.length}</strong><small>{session.facets.loci.map((item) => item.value).join(" · ") || "none"}</small></article>
           {session.doubleD.mode !== "off" && <article><span>Supported double-D</span><strong>{session.doubleDCount.toLocaleString()}</strong><small>opt-in screen · separate evidence table</small></article>}
         </div>
+        <details className="sample-palette-editor"><summary><span>Study palette</span><strong>Sample colors</strong><small>One association is reused in sample-level figures and phylogenies.</small></summary><div>{sampleIds(session.datasets).map((sample)=><label key={sample}><input type="color" value={sampleColor(sample,sampleColors)} onChange={(event)=>setSampleColors((current)=>({...current,[sample]:event.target.value}))}/><span><i style={{background:sampleColor(sample,sampleColors)}}/>{sample}</span></label>)}<button type="button" onClick={()=>setSampleColors(createSampleColorMap(session.datasets))}>Reset palette</button></div></details>
       </section>
 
       <nav className="results-view-tabs" aria-label="Results view"><button className={view === "repertoire" ? "active" : ""} type="button" onClick={() => setView("repertoire")}><span>Repertoire</span><small>Figures + composition</small></button><button className={view === "sequences" ? "active" : ""} type="button" onClick={() => setView("sequences")}><span>Sequences</span><small>Filter + inspect calls</small></button>{session.doubleDCount>0?<button className={view === "double-d" ? "active" : ""} type="button" onClick={() => setView("double-d")}><span>Double-D</span><small>{session.doubleDCount.toLocaleString()} VDDJ calls + alignments</small></button>:null}<button className={view === "post" ? "active" : ""} type="button" onClick={() => { setPostOpened(true); setView("post"); }}><span>Post-analysis</span><small>Filter + lineages + SHM + trees</small></button></nav>
 
-      {view === "repertoire" ? <RepertoireDashboard store={session.store} loci={session.facets.loci} inputName={session.inputName} /> : view === "sequences" ? <>
+      {view === "repertoire" ? <RepertoireDashboard store={session.store} loci={session.facets.loci} inputName={session.inputName} samples={session.facets.samples} sampleColors={sampleColors} /> : view === "sequences" ? <>
 
       <section className="explorer-shell">
         <aside className="filter-panel">
@@ -976,7 +980,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
               <thead><tr><th>Sequence</th>{session.datasets.length>1&&<th>Sample</th>}<th>Locus</th><th>V call</th><th>D call</th><th>J call</th><th>Isotype</th><th>CDR3 AA</th><th>Productive</th><th /></tr></thead>
               <tbody>{results.rows.map((row) => <tr className={selected?.ordinal === row.ordinal ? "selected" : ""} key={row.ordinal} tabIndex={0} onClick={() => openRecord(row)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openRecord(row); } }}>
                 <td><strong title={row.sequenceId}>{row.sequenceId}</strong><small>#{(row.ordinal + 1).toLocaleString()}</small></td>
-                {session.datasets.length>1&&<td><strong>{row.sampleId||"—"}</strong><small>{row.timepoint||row.subjectId||""}</small></td>}
+                {session.datasets.length>1&&<td><strong className="sample-colored-label"><i style={{background:sampleColor(row.sampleId,sampleColors)}}/>{row.sampleId||"—"}</strong><small>{row.timepoint||row.subjectId||""}</small></td>}
                 <td><span className="locus-pill">{row.locus || "—"}</span></td>
                 <td title={row.vCall}>{row.vCall || <i>—</i>}</td><td title={[row.dCall, row.d2Call].filter(Boolean).join(" → ")}>{row.dCall || <i>—</i>}{row.d2Call && <small className="d2-table-call">→ {row.d2Call}</small>}</td><td title={row.jCall}>{row.jCall || <i>—</i>}</td><td>{row.isotype || <i>—</i>}</td>
                 <td><code title={row.cdr3Aa}>{row.cdr3Aa || "—"}</code></td>
@@ -992,7 +996,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
 
       {selected && <section ref={detailRef} className="detail-shell" tabIndex={-1} aria-label={`Details for ${selected.sequenceId}`}>{detail ? <ResultDetail row={detail} onClose={() => setSelected(null)} /> : <div className="detail-loading">Loading selected AIRR record…</div>}</section>}
       </> : view === "double-d" ? <DoubleDExplorer session={session} onInspect={(ordinal)=>void inspectOrdinal(ordinal)}/> : null}
-      {postOpened && <div hidden={view !== "post"}><PostAnalysisWorkbench store={session.store} references={session.references} scope={session.scope} loci={session.facets.loci} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={session.datasets} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} autoPipeline={session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} onInspect={(ordinal) => void inspectOrdinal(ordinal)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} /></div>}
+      {postOpened && <div hidden={view !== "post"}><PostAnalysisWorkbench store={session.store} references={session.references} scope={session.scope} loci={session.facets.loci} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={session.datasets} sampleColors={sampleColors} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} autoPipeline={session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} onInspect={(ordinal) => void inspectOrdinal(ordinal)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} /></div>}
     </main>
   );
 }
@@ -1142,7 +1146,7 @@ export default function SwigApp() {
       if(saved.doubleD.length)await store.importDoubleDRecords(saved.doubleD);
       const dd={mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8,...saved.analysis.doubleD} as DoubleDScreenOptions;
       const restoredDatasets=saved.analysis.datasets?.length?saved.analysis.datasets:[{datasetId:"legacy",inputName:saved.analysis.inputName,sampleId:"sample_1",subjectId:"subject_1",cohort:"",timepoint:"",records:store.count}];
-      setSession({id:Date.now(),store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"independent",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:null,subsampleSeed:null,references:saved.analysis.references,callingProfile:saved.analysis.callingProfile??"truth_optimized",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,postAnalysis:saved.postAnalysis,restored:true});
+      setSession({id:Date.now(),store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"independent",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:null,subsampleSeed:null,references:saved.analysis.references,callingProfile:saved.analysis.callingProfile??"truth_optimized",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true});
       setPendingLoadedSession(null);setSessionLoadProgress({records:store.count,total:store.count,stage:"Session restored"});setPage("results");window.scrollTo({top:0});
     }catch(error){if(store)await store.clear();setSessionLoadError(error instanceof Error?error.message:String(error));}finally{setLoadingSession(false);}
   }
@@ -1571,6 +1575,7 @@ export default function SwigApp() {
         strand,
         doubleD,
         doubleDCount: store.doubleDCount,
+        sampleColors: createSampleColorMap(datasetSnapshot),
       });
       setPage("results");
       window.scrollTo({ top: 0 });
@@ -1741,7 +1746,7 @@ export default function SwigApp() {
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
         <p className="output-safety"><span>i</span> Query sequences remain in this browser and are not transmitted by Swig.</p>
       </section></div>}
-      <footer className="site-footer"><Brand /><p>Swig 0.14.0 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      <footer className="site-footer"><Brand /><p>Swig 0.15.0 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }

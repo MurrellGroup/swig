@@ -127,6 +127,27 @@ test("lineage export adds AIRR clone_id values and leaves excluded records blank
   await store.clear();
 });
 
+test("lineage export preserves original clone_id and adds an explicit derived merge column", async () => {
+  const store = new AirrResultStore();
+  await store.appendBatch(header, makeBody(0, 3));
+  await store.finalize();
+  let output = "";
+  const merged = new Map<number, string>([[7, "swig_merged_lineage_1"], [12, "swig_merged_lineage_1"]]);
+  await store.writeLineageAirrFormat(Int32Array.from([7, 0, 12]), "tsv", async (part) => {
+    output += typeof part === "string" ? part : part instanceof Blob ? await part.text() : new TextDecoder().decode(part);
+  }, merged);
+  const rows = output.trimEnd().split("\n").map((line) => line.split("\t"));
+  const clone = rows[0].indexOf("clone_id");
+  const derived = rows[0].indexOf("swig_merged_lineage_id");
+  assert.ok(clone >= 0 && derived >= 0);
+  assert.deepEqual(rows.slice(1).map((row) => [row[clone], row[derived]]), [
+    ["swig_lineage_7", "swig_merged_lineage_1"],
+    ["", ""],
+    ["swig_lineage_12", "swig_merged_lineage_1"],
+  ]);
+  await store.clear();
+});
+
 test("masked AIRR scans yield only active ordinals and report filtered progress totals", async () => {
   const store = new AirrResultStore();
   await store.appendBatch(header, makeBody(0, 8));

@@ -25,7 +25,14 @@ import {
 } from "./chmmairra-runtime";
 import { alignmentExtension, alignmentText, tableExtension, tableHeader, tableRow, treeNexus, type AlignmentExportFormat, type TableExportFormat } from "./export-formats";
 import { MissingAlleleAccumulator, DEFAULT_MISSING_ALLELE_OPTIONS, type MissingAlleleDashboard, type MissingAlleleOptions } from "./germline-evidence";
-import { GERMLINE_OUTGROUP, lineageInputFasta, quickAirrAlignment } from "./lineage-alignment";
+import { GERMLINE_OUTGROUP, inferLineageGermline, lineageInputFasta, quickAirrAlignment } from "./lineage-alignment";
+import {
+  buildLineageGermlineSketchIndex,
+  scoreGermlineCandidate,
+  screenLineageGermlineCandidates,
+  type GermlineNeighbourScore,
+  type LineageGermlineSketchIndex,
+} from "./lineage-neighbours";
 import { LineageTreeViewer } from "./lineage-tree-viewer";
 import { withAnalysisWebLock, type CallingProfile } from "./swiftig-runtime";
 import {
@@ -43,6 +50,8 @@ import {
   type CollapseMode,
   type DedupKey,
   type LineageSummary,
+  type LineageNeighbourHit,
+  type LineageNeighbourResult,
   type QueryHit,
   type QueryConstraint,
   type QueryMetric,
@@ -61,7 +70,8 @@ import { MissingAlleleResultsPanel, ShmResultsPanel } from "./post-analysis-exte
 import { DEFAULT_REPERTOIRE_SELECTION, selectRepertoire, validateRepertoireSelection, type RepertoireSelectionOptions, type RepertoireSelectionResult } from "./repertoire-selection";
 import { ShmAccumulator, type ShmDashboard, type ShmMetricKey } from "./shm-analysis";
 import { packSessionVector, unpackSessionVector, type PostAnalysisSessionSnapshot } from "./session-state";
-import { DATASET_SCOPE_LABELS, type DatasetManifestEntry, type DatasetScope, type PipelinePlan } from "./study-design";
+import { DATASET_SCOPE_LABELS, datasetScopeValue, type DatasetManifestEntry, type DatasetScope, type PipelinePlan } from "./study-design";
+import { sampleColor, type SampleColorMap } from "./sample-colors";
 
 interface Props {
   store: AirrResultStore;
@@ -74,6 +84,7 @@ interface Props {
   minimumIdentity: number;
   strand: 0 | 1 | 2;
   datasets?: DatasetManifestEntry[];
+  sampleColors?: SampleColorMap;
   defaultCollapseScope?: DatasetScope;
   defaultLineageScope?: DatasetScope;
   autoPipeline?: PipelinePlan | null;
@@ -113,6 +124,55 @@ interface TreeSnapshot extends FastTreeRun {
 }
 
 type TreeViewMode = "stable" | "rooted" | "raw";
+
+interface EditedAlignmentState {
+  key: string;
+  lineageIds: number[];
+  fasta: string;
+  source: string;
+  savedAt: string;
+}
+
+interface LineageMergeState {
+  id: string;
+  label: string;
+  originalLineageIds: number[];
+  createdAt: string;
+}
+
+interface CombinedNeighbourHit {
+  lineageId: number;
+  cdr3?: LineageNeighbourHit;
+  germline?: GermlineNeighbourScore;
+}
+
+function lineageGroupKey(lineageIds: Iterable<number>): string {
+  return [...new Set(lineageIds)].filter((value)=>value>0).sort((left,right)=>left-right).join("+");
+}
+
+function stratifiedLineageRows(rows: AirrDetailRow[], lineageByOrdinal: ReadonlyMap<number, number>, limit: number): AirrDetailRow[] {
+  if (rows.length <= limit) return rows;
+  const groups = new Map<number, AirrDetailRow[]>();
+  for (const row of rows) {
+    const lineageId = lineageByOrdinal.get(row.record.ordinal) ?? 0;
+    const values = groups.get(lineageId);
+    if (values) values.push(row); else groups.set(lineageId, [row]);
+  }
+  const ordered = [...groups.values()];
+  const offsets = new Uint32Array(ordered.length);
+  const selected: AirrDetailRow[] = [];
+  while (selected.length < limit) {
+    let added = false;
+    for (let group = 0; group < ordered.length && selected.length < limit; group += 1) {
+      const row = ordered[group][offsets[group]++];
+      if (!row) continue;
+      selected.push(row);
+      added = true;
+    }
+    if (!added) break;
+  }
+  return selected;
+}
 
 function baseName(name: string): string {
   return name.replace(/(\.airr)?\.(tsv|csv|txt|fa|fasta|fastq)(\.gz)?$/i, "") || "swig";
@@ -303,7 +363,7 @@ function parseQueries(text: string): string[] {
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).map((line) => line.replace(/\s/g, ""));
 }
 
-export function PostAnalysisWorkbench({ store, references, scope, loci, inputName, workers, callingProfile, minimumIdentity, strand, datasets = [], defaultCollapseScope = "sample", defaultLineageScope = "sample", autoPipeline, onInspect, sessionHandleRef, initialSession }: Props) {
+export function PostAnalysisWorkbench({ store, references, scope, loci, inputName, workers, callingProfile, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", autoPipeline, onInspect, sessionHandleRef, initialSession }: Props) {
   const runtime = useMemo(() => new PostAnalysisRuntime(store), [store]);
   const postLockAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => {
@@ -361,15 +421,20 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [topGenes, setTopGenes] = useState(15);
 
   const [selectedLineage, setSelectedLineage] = useState<LineageSummary | null>(null);
+  const [selectedLineageIds, setSelectedLineageIds] = useState<number[]>([]);
   const [lineageRows, setLineageRows] = useState<AirrDetailRow[]>([]);
   const [lineageMultiplicity, setLineageMultiplicity] = useState<Map<number, number>>(new Map());
+  const [originalLineageByOrdinal, setOriginalLineageByOrdinal] = useState<Map<number,number>>(new Map());
   const [lineageTotal, setLineageTotal] = useState(0);
   const workbenchRef = useRef<HTMLElement>(null);
   const [alignment, setAlignment] = useState("");
   const [alignmentMode, setAlignmentMode] = useState<"nt" | "aa">("nt");
-  const [alignmentMethod, setAlignmentMethod] = useState<"quick" | "kalign" | "codon">("codon");
+  const [alignmentMethod, setAlignmentMethod] = useState<"quick" | "kalign" | "codon">("quick");
   const [alignmentLimit, setAlignmentLimit] = useState(200);
   const [alignmentSource, setAlignmentSource] = useState("");
+  const [alignmentEdited, setAlignmentEdited] = useState(false);
+  const [editedAlignments, setEditedAlignments] = useState<Map<string,EditedAlignmentState>>(new Map());
+  const [lineageMerges,setLineageMerges]=useState<LineageMergeState[]>([]);
   const alignmentRevisionRef = useRef(0);
   const [treeRun, setTreeRun] = useState<TreeSnapshot | null>(null);
   const [treeViewMode, setTreeViewMode] = useState<TreeViewMode>("rooted");
@@ -384,22 +449,36 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     if (!alignment) return null;
     try { return inspectAlignment(alignment); } catch { return null; }
   }, [alignment]);
+  const selectedGroupKey = useMemo(()=>lineageGroupKey(selectedLineageIds),[selectedLineageIds]);
+  const savedEditedAlignment = editedAlignments.get(selectedGroupKey);
+  const mergedIdByOriginal = useMemo(()=>{
+    const map=new Map<number,string>();
+    lineageMerges.forEach((merge)=>merge.originalLineageIds.forEach((lineageId)=>map.set(lineageId,merge.id)));
+    return map;
+  },[lineageMerges]);
 
   function clearAlignmentArtifacts() {
     alignmentRevisionRef.current += 1;
     setAlignment("");
     setAlignmentSource("");
+    setAlignmentEdited(false);
     setTreeRun(null);
     setTreeError("");
   }
 
-  function installAlignment(next: string, source: string) {
+  function installAlignment(next: string, source: string, edited = false, lineageIds: number[] = selectedLineageIds) {
     const inspected = inspectAlignment(next);
     alignmentRevisionRef.current += 1;
     setAlignment(inspected.fasta);
     setAlignmentSource(source);
+    setAlignmentEdited(edited);
     setTreeRun(null);
     setTreeError("");
+    const key=lineageGroupKey(lineageIds);
+    if(edited&&key){
+      const entry:EditedAlignmentState={key,lineageIds:[...new Set(lineageIds)].sort((a,b)=>a-b),fasta:inspected.fasta,source,savedAt:new Date().toISOString()};
+      setEditedAlignments((current)=>{const updated=new Map(current);updated.set(key,entry);return updated;});
+    }
     return inspected;
   }
 
@@ -445,6 +524,32 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const restoredSessionRef = useRef(false);
   const pipelineRunRef = useRef(false);
   const [pipelineReport, setPipelineReport] = useState<string[]>([]);
+  const [neighbourCdr3Identity,setNeighbourCdr3Identity]=useState(()=>Math.max(0.7,identity-0.05));
+  const [neighbourGermlineIdentity,setNeighbourGermlineIdentity]=useState(0.97);
+  const [neighbourMethod,setNeighbourMethod]=useState<"cdr3"|"germline"|"either">("either");
+  const [neighbourScope,setNeighbourScope]=useState<DatasetScope>(defaultLineageScope);
+  const [neighbourLimit,setNeighbourLimit]=useState(50);
+  const [neighbourResult,setNeighbourResult]=useState<LineageNeighbourResult|null>(null);
+  const [germlineNeighbourScores,setGermlineNeighbourScores]=useState<GermlineNeighbourScore[]>([]);
+  const [germlineSketchIndex,setGermlineSketchIndex]=useState<LineageGermlineSketchIndex|null>(null);
+  const [selectedNeighbourIds,setSelectedNeighbourIds]=useState<Set<number>>(new Set());
+  const combinedNeighbourHits = useMemo(() => {
+    const hits = new Map<number, CombinedNeighbourHit>();
+    for (const cdr3 of neighbourResult?.hits ?? []) hits.set(cdr3.lineageId, { lineageId: cdr3.lineageId, cdr3 });
+    for (const germline of germlineNeighbourScores) {
+      const current = hits.get(germline.lineageId) ?? { lineageId: germline.lineageId };
+      current.germline = germline;
+      hits.set(germline.lineageId, current);
+    }
+    return [...hits.values()].sort((left, right) =>
+      Math.max(right.cdr3?.cdr3Identity ?? 0, right.germline?.germlineIdentity ?? 0) - Math.max(left.cdr3?.cdr3Identity ?? 0, left.germline?.germlineIdentity ?? 0) ||
+      left.lineageId - right.lineageId,
+    ).slice(0, neighbourLimit);
+  }, [neighbourResult, germlineNeighbourScores, neighbourLimit]);
+  const lineageGermline = useMemo(() => {
+    if (!lineageRows.length) return null;
+    try { return inferLineageGermline(lineageRows); } catch { return null; }
+  }, [lineageRows]);
 
   useEffect(() => {
     if (!autoPipeline?.enabled || initialSession || pipelineRunRef.current) return;
@@ -643,10 +748,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       const collapse=dedup?await (async()=>{const state=await runtime.dedupState();return {mode:dedup.mode,options:{dedupKey,collapseMode,collapseScope,denoiseErrorRate,denoiseAlpha,denoiseResolution,denoiseAmbiguity,minimumParentCount,denoiseAmbiguousPolicy,denoiseUnresolvedPolicy,fadNeighborThreshold,fadMethod,expectedZeroErrorFraction,maximumDenoiseDistance,maximumEditDistance,minimumIndelParentRatio,denoiseCandidateCap},counts:packSessionVector(state.counts),representatives:packSessionVector(state.representatives),dashboard:{...dedup}};})():undefined;
       const lineage=lineages?{options:{identity,resolution,ambiguity,productiveOnly,candidateCap,lineageScope},assignments:packSessionVector(await runtime.lineageAssignments()),dashboard:{...lineages}}:undefined;
       const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
-      return {workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,lineage,
+      return {workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,lineage,selectedLineageIds:[...selectedLineageIds],
         query:{queryText,queryTarget,queryMetric,queryIdentity,queryLimit,queryLocus,queryV,queryJ,queryConstraintMode,queryInference,queryHits,expanded},
-        alignment:alignment?{fasta:alignment,source:alignmentSource,selectedLineageId:selectedLineage?.id}:undefined,
-        tree:treeRun?{rawNewick:treeRun.newick,rootedNewick:treeRun.rootedNewick,stableNewick:treeRun.stableNewick,source:treeRun.source,run:{...treeRun}}:undefined,
+        editedAlignments:[...editedAlignments.values()].map((entry)=>({...entry,lineageIds:[...entry.lineageIds]})),
+        lineageMerges:lineageMerges.map((merge)=>({...merge,originalLineageIds:[...merge.originalLineageIds]})),
+        tree:treeRun?{rawNewick:treeRun.newick,rootedNewick:treeRun.rootedNewick,stableNewick:treeRun.stableNewick,source:treeRun.source,lineageIds:[...selectedLineageIds],run:{...treeRun}}:undefined,
         shm:shmDashboard?{metric:shmMetric,dashboard:shmDashboard}:undefined,missingAlleles:missingAlleles?{options:missingAlleleOptions,dashboard:missingAlleles}:undefined} satisfies PostAnalysisSessionSnapshot;
     }};
     sessionHandleRef.current=handle;
@@ -669,21 +775,31 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         const rawRestoredLineages=lineage?.dashboard?lineage.dashboard as unknown as LineageDashboard:null;
         const restoredLineages=rawRestoredLineages?{...rawRestoredLineages,summaries:rawRestoredLineages.summaries.map((summary)=>({...summary,studyScope:summary.studyScope??"global",studyGroup:summary.studyGroup||"complete study"}))}:null;
         if(restoredLineages){setLineages(restoredLineages);const o=lineage?.options??{};if(typeof o.identity==="number")setIdentity(o.identity);if(typeof o.resolution==="string")setResolution(o.resolution as CallResolution);if(typeof o.ambiguity==="string")setAmbiguity(o.ambiguity as AmbiguityPolicy);if(typeof o.productiveOnly==="boolean")setProductiveOnly(o.productiveOnly);if(typeof o.lineageScope==="string")setLineageScope(o.lineageScope as DatasetScope);}
+        const restoredMerges=(initialSession.lineageMerges??[]).map((merge)=>({...merge,originalLineageIds:[...new Set(merge.originalLineageIds)].filter((value)=>value>0).sort((a,b)=>a-b)}));
+        setLineageMerges(restoredMerges);
+        const restoredEdited=new Map<string,EditedAlignmentState>();
+        for(const entry of initialSession.editedAlignments??[]){const key=lineageGroupKey(entry.lineageIds);if(key)restoredEdited.set(key,{...entry,key,lineageIds:[...new Set(entry.lineageIds)].sort((a,b)=>a-b)});}
+        if(initialSession.alignment&&/(corrected|manual|alivibe|edited)/i.test(initialSession.alignment.source)){const lineageIds=initialSession.alignment.selectedLineageId?[initialSession.alignment.selectedLineageId]:[];const key=lineageGroupKey(lineageIds);if(key&&!restoredEdited.has(key))restoredEdited.set(key,{key,lineageIds,fasta:initialSession.alignment.fasta,source:initialSession.alignment.source,savedAt:new Date().toISOString()});}
+        setEditedAlignments(restoredEdited);
         const chimera=initialSession.chimera;if(chimera?.dashboard&&chimera.probabilities&&chimera.dfr&&chimera.msa){const dashboard={...chimera.dashboard,probabilities:unpackSessionVector(chimera.probabilities) as Float32Array,dfr:unpackSessionVector(chimera.dfr) as Uint16Array} as unknown as ChmmDashboard;const options=chimera.options as unknown as ChmmRunOptions;const inputMask=chimera.retainedMask?unpackSessionVector(chimera.retainedMask) as Uint8Array:null;setChmm(dashboard);setChmmRun({msa:chimera.msa,options,inputMask});setPreparedMsa(chimera.msa);setChmmFilterThreshold(chimera.filterThreshold);}
         if(initialSession.shm){setShmMetric(initialSession.shm.metric);setShmDashboard(initialSession.shm.dashboard);}if(initialSession.missingAlleles){setMissingAlleleOptions(initialSession.missingAlleles.options);setMissingAlleles(initialSession.missingAlleles.dashboard);}
         const q=initialSession.query??{};if(typeof q.queryText==="string")setQueryText(q.queryText);
         const restoredHits=Array.isArray(q.queryHits)?q.queryHits as QueryHit[]:[];setQueryHits(restoredHits);const restoredExpansion=q.expanded as NonNullable<typeof expanded>|undefined;if(restoredExpansion)setExpanded(restoredExpansion);
         const restoredQueryOrdinals=[...new Set([...(restoredExpansion?.ordinals??[]),...restoredHits.map(hit=>hit.ordinal)])].slice(0,500);
         if(restoredQueryOrdinals.length){const rows=await store.indexRecords(restoredQueryOrdinals);setQueryRecords(new Map(rows.map(row=>[row.ordinal,row])));}
-        if(initialSession.alignment){
-          const selectedId=initialSession.alignment.selectedLineageId;
-          const summary=selectedId===undefined?undefined:restoredLineages?.summaries.find(item=>item.id===selectedId);
+        const restoredSelectedIds=[...new Set(initialSession.selectedLineageIds??initialSession.tree?.lineageIds??(initialSession.alignment?.selectedLineageId?[initialSession.alignment.selectedLineageId]:[]))].filter((value)=>value>0).sort((a,b)=>a-b);
+        if(restoredSelectedIds.length){
+          const selectedId=restoredSelectedIds[0];
+          const summary=restoredLineages?.summaries.find(item=>item.id===selectedId);
           if(summary){
-            const members=await runtime.lineageMembers(summary.id,0,500);const rows=await store.detailMany(members.ordinals);
+            const limitPerLineage=restoredSelectedIds.length===1?500:Math.max(20,Math.floor(1000/restoredSelectedIds.length));const memberGroups=await runtime.lineageMembersMany(restoredSelectedIds,limitPerLineage);const rows=await store.detailMany(memberGroups.flatMap((group)=>group.ordinals));
             const counts=initialSession.workingStages.some(stage=>stage.id==="dedup")?await runtime.dedupCounts():null;
-            setSelectedLineage(summary);setLineageRows(rows);setLineageTotal(members.total);setLineageMultiplicity(new Map(rows.map(row=>{const imported=Number(row.values.duplicate_count);const count=counts?.[row.record.ordinal]||(Number.isFinite(imported)&&imported>0?imported:1);return [row.record.ordinal,Math.max(1,Math.floor(count))] as const;})));
+            const originalByOrdinal=new Map<number,number>();memberGroups.forEach((group)=>group.ordinals.forEach((ordinal)=>originalByOrdinal.set(ordinal,group.lineageId)));
+            setSelectedLineage(summary);setSelectedLineageIds(restoredSelectedIds);setLineageRows(rows);setLineageTotal(memberGroups.reduce((sum,group)=>sum+group.total,0));setOriginalLineageByOrdinal(originalByOrdinal);setLineageMultiplicity(new Map(rows.map(row=>{const imported=Number(row.values.duplicate_count);const count=counts?.[row.record.ordinal]||(Number.isFinite(imported)&&imported>0?imported:1);return [row.record.ordinal,Math.max(1,Math.floor(count))] as const;})));
           }
-          installAlignment(initialSession.alignment.fasta,initialSession.alignment.source);
+          const key=lineageGroupKey(restoredSelectedIds);const restored=restoredEdited.get(key);
+          if(restored)installAlignment(restored.fasta,restored.source,true,restored.lineageIds);
+          else if(initialSession.tree?.run&&typeof initialSession.tree.run.alignmentFasta==="string")installAlignment(initialSession.tree.run.alignmentFasta,initialSession.tree.source||"Saved tree input",false,restoredSelectedIds);
         }
         if(initialSession.tree?.run)setTreeRun(initialSession.tree.run as unknown as TreeSnapshot);
       }catch(restoreError){setError(restoreError instanceof Error?restoreError.message:String(restoreError));}finally{setBusy("");}
@@ -748,13 +864,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       setChmm(null);
       setChmmRun(null);
       setChimeraDetail(null);
-      setLineages(null);
-      setSelectedLineage(null);
-      setLineageMultiplicity(new Map());
-      setQueryHits([]);
-      setExpanded(null);
-      setShmDashboard(null);
-      setMissingAlleles(null);
+      invalidatePopulationAnalyses();
     }
   }
 
@@ -777,14 +887,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setChmm(null);
     setChmmRun(null);
     setChimeraDetail(null);
-    setLineages(null);
-    setSelectedLineage(null);
-    setLineageMultiplicity(new Map());
-    clearAlignmentArtifacts();
-    setQueryHits([]);
-    setExpanded(null);
-    setShmDashboard(null);
-    setMissingAlleles(null);
+    invalidatePopulationAnalyses();
   }
 
   async function resetWorkingSet() {
@@ -798,21 +901,19 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setChmm(null);
     setChmmRun(null);
     setChimeraDetail(null);
-    setLineages(null);
-    setSelectedLineage(null);
-    setLineageMultiplicity(new Map());
-    clearAlignmentArtifacts();
-    setQueryHits([]);
-    setExpanded(null);
-    setShmDashboard(null);
-    setMissingAlleles(null);
+    invalidatePopulationAnalyses();
   }
 
   function invalidatePopulationAnalyses() {
     setLineages(null);
     setSelectedLineage(null);
+    setSelectedLineageIds([]);
     setLineageRows([]);
     setLineageMultiplicity(new Map());
+    setOriginalLineageByOrdinal(new Map());
+    setEditedAlignments(new Map());
+    setLineageMerges([]);
+    clearNeighbourResults(true);
     clearAlignmentArtifacts();
     setQueryHits([]);
     setQueryRecords(new Map());
@@ -873,7 +974,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
 
   async function runShmAnalysis() {
     const result=await operation("Calculating somatic hypermutation on the current working set",async()=>{
-      const mask=await runtime.activeMask();const assignments=lineages?await runtime.lineageAssignments():null;const counts=workingStages.some((stage)=>stage.id==="dedup")?await runtime.dedupCounts():null;
+      const mask=await runtime.activeMask();const assignments=lineages?await analysisLineageAssignments():null;const counts=workingStages.some((stage)=>stage.id==="dedup")?await runtime.dedupCounts():null;
       const accumulator=new ShmAccumulator({metric:shmMetric,maxSamplesPerLineage:shmSampleCap});
       const fields=["sequence_id","v_call","j_call","locus","isotype","sample_id","subject_id","swig_cohort","swig_timepoint","duplicate_count","v_sequence_alignment","v_germline_alignment","sequence_alignment","germline_alignment","v_sequence_start","sequence_frame","v_frame","cdr1_start","cdr1_end","cdr2_start","cdr2_end","fwr1_start","fwr1_end","fwr2_start","fwr2_end","fwr3_start","fwr3_end"];
       await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){if(counts?.[row.ordinal])row.values.duplicate_count=String(counts[row.ordinal]);const stratum=shmStratum==="all"?"All selected":row.values[shmStratum]||"Unassigned";accumulator.add(row.values,row.ordinal,assignments?.[row.ordinal]??0,stratum);}}, {batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total})});
@@ -885,7 +986,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   async function runMissingAlleleAnalysis() {
     if(missingAlleleOptions.unit==="lineage"&&!lineages){setError("Lineage-aware missing-allele screening requires lineage assignments on the current selected population. Assign lineages first, or explicitly choose exploratory record-level mode.");return;}
     const result=await operation("Screening for recurrent low-SHM germline discrepancies",async()=>{
-      const mask=await runtime.activeMask();const assignments=lineages?await runtime.lineageAssignments():null;const accumulator=new MissingAlleleAccumulator(missingAlleleOptions);
+      const mask=await runtime.activeMask();const assignments=lineages?await analysisLineageAssignments():null;const accumulator=new MissingAlleleAccumulator(missingAlleleOptions);
       const fields=["v_call","j_call","cdr3","junction","v_sequence_alignment","v_germline_alignment"];
       await store.scanAirrRows(fields,async(rows)=>{for(const row of rows)accumulator.add(row.values,row.ordinal,assignments?.[row.ordinal]??0);},{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total})});
       return accumulator.finish(references.V);
@@ -920,9 +1021,16 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     }, workingStages.some((stage) => stage.id === "dedup")));
     if (result) {
       setLineages(result);
+      setNeighbourScope(lineageScope);
+      setNeighbourCdr3Identity(Math.max(0.5, identity - 0.05));
       setSelectedLineage(null);
       setLineageRows([]);
       setLineageMultiplicity(new Map());
+      setSelectedLineageIds([]);
+      setOriginalLineageByOrdinal(new Map());
+      setEditedAlignments(new Map());
+      setLineageMerges([]);
+      clearNeighbourResults(true);
       clearAlignmentArtifacts();
     }
   }
@@ -933,7 +1041,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     try {
       const assignments = await runtime.lineageAssignments();
       const extension = tableExtension(exportFormat);
-      await saveStream(`${baseName(inputName)}.lineages.airr${extension}`, "AIRR rearrangement table with clone identifiers", extension, async (writer) => store.writeLineageAirrFormat(assignments, exportFormat, writer.write));
+      await saveStream(`${baseName(inputName)}.lineages.airr${extension}`, "AIRR rearrangement table with original and merged lineage identifiers", extension, async (writer) => store.writeLineageAirrFormat(assignments, exportFormat, writer.write, mergedIdByOriginal));
     } catch (operationError) {
       setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
@@ -941,12 +1049,50 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     }
   }
 
-  async function openLineage(summary: LineageSummary) {
-    setBusy(`Loading lineage ${summary.id}`);
+  function expandedMergedLineageIds(values: Iterable<number>): number[] {
+    const result = new Set<number>();
+    for (const lineageId of values) {
+      const merge = lineageMerges.find((entry) => entry.originalLineageIds.includes(lineageId));
+      if (merge) merge.originalLineageIds.forEach((value) => result.add(value));
+      else if (lineageId > 0) result.add(lineageId);
+    }
+    return [...result].sort((left, right) => left - right);
+  }
+
+  async function analysisLineageAssignments(): Promise<Int32Array> {
+    const original = await runtime.lineageAssignments();
+    if (!lineageMerges.length) return original;
+    const result = original.slice();
+    let maximum = 0;
+    for (const value of original) maximum = Math.max(maximum, value);
+    const synthetic = new Map<string, number>();
+    lineageMerges.forEach((merge, index) => synthetic.set(merge.id, maximum + index + 1));
+    for (let ordinal = 0; ordinal < result.length; ordinal += 1) {
+      const merged = mergedIdByOriginal.get(original[ordinal]);
+      if (merged) result[ordinal] = synthetic.get(merged) ?? original[ordinal];
+    }
+    return result;
+  }
+
+  function clearNeighbourResults(clearIndex = false) {
+    setNeighbourResult(null);
+    setGermlineNeighbourScores([]);
+    setSelectedNeighbourIds(new Set());
+    if (clearIndex) setGermlineSketchIndex(null);
+  }
+
+  async function loadLineageGroup(summary: LineageSummary, requestedIds: number[]) {
+    const lineageIds = expandedMergedLineageIds(requestedIds);
+    if (!lineageIds.length) return;
+    setBusy(lineageIds.length === 1 ? `Loading lineage ${lineageIds[0]}` : `Loading ${lineageIds.length} lineages together`);
     setError("");
     try {
-      const members = await runtime.lineageMembers(summary.id, 0, 500);
-      const rows = await store.detailMany(members.ordinals);
+      const limitPerLineage = lineageIds.length === 1 ? 500 : Math.max(20, Math.floor(1_000 / lineageIds.length));
+      const memberGroups = await runtime.lineageMembersMany(lineageIds, limitPerLineage);
+      const ordinals = memberGroups.flatMap((group) => group.ordinals);
+      const rows = await store.detailMany(ordinals);
+      const lineageByOrdinal = new Map<number, number>();
+      memberGroups.forEach((group) => group.ordinals.forEach((ordinal) => lineageByOrdinal.set(ordinal, group.lineageId)));
       const deduplicationApplied = workingStages.some((stage) => stage.id === "dedup");
       const counts = deduplicationApplied ? await runtime.dedupCounts() : null;
       const multiplicity = new Map(rows.map((row) => {
@@ -955,12 +1101,17 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         return [row.record.ordinal, Math.max(1, Math.floor(value))] as const;
       }));
       setSelectedLineage(summary);
+      setSelectedLineageIds(lineageIds);
       setLineageRows(rows);
+      setOriginalLineageByOrdinal(lineageByOrdinal);
       setLineageMultiplicity(multiplicity);
-      setLineageTotal(members.total);
+      setLineageTotal(memberGroups.reduce((sum, group) => sum + group.total, 0));
       clearAlignmentArtifacts();
+      const restored = editedAlignments.get(lineageGroupKey(lineageIds));
+      if (restored) installAlignment(restored.fasta, restored.source, true, restored.lineageIds);
       setAlignmentEditorStatus("");
       setAlignmentEditorError("");
+      clearNeighbourResults();
       window.requestAnimationFrame(() => workbenchRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     } catch (operationError) {
       setError(operationError instanceof Error ? operationError.message : String(operationError));
@@ -969,18 +1120,159 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     }
   }
 
+  async function openLineage(summary: LineageSummary) {
+    await loadLineageGroup(summary, [summary.id]);
+  }
+
+  function setNeighbourSelected(lineageId: number, selected: boolean) {
+    setSelectedNeighbourIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(lineageId); else next.delete(lineageId);
+      return next;
+    });
+  }
+
+  async function searchLineageNeighbours() {
+    if (!lineages || !selectedLineage || !selectedLineageIds.length) return;
+    setBusy("Searching for neighbouring lineages");
+    setError("");
+    setSelectedNeighbourIds(new Set());
+    try {
+      if (neighbourMethod === "cdr3" || neighbourMethod === "either") {
+        const cdr3 = await runtime.lineageNeighbours({
+          identity,
+          callResolution: resolution,
+          ambiguity,
+          productiveOnly,
+          requireSameLocus: true,
+          maxCandidateComparisons: candidateCap,
+          scope: neighbourScope,
+          sourceLineageIds: selectedLineageIds,
+          minimumIdentity: neighbourCdr3Identity,
+          maximumResults: Math.max(neighbourLimit * 5, 100),
+        }, workingStages.some((stage) => stage.id === "dedup"));
+        setNeighbourResult(cdr3);
+      } else setNeighbourResult(null);
+
+      if (neighbourMethod === "germline" || neighbourMethod === "either") {
+        const assignments = await runtime.lineageAssignments();
+        const activeMask = await runtime.activeMask();
+        let index = germlineSketchIndex;
+        if (!index) {
+          setBusy("Indexing one compact germline sketch per lineage");
+          index = await buildLineageGermlineSketchIndex(store, assignments, lineages.lineageCount, neighbourScope, activeMask, (processed, total) => setProgress({ processed, total }));
+          setGermlineSketchIndex(index);
+        }
+        const sourceGroups = new Map<string, { lineageId: number; studyGroup: string; rows: AirrDetailRow[] }>();
+        for (const row of lineageRows) {
+          const lineageId = originalLineageByOrdinal.get(row.record.ordinal) ?? 0;
+          if (!lineageId) continue;
+          const studyGroup = datasetScopeValue({
+            datasetId: row.values.swig_dataset_id || row.record.datasetId,
+            sampleId: row.values.sample_id || row.record.sampleId,
+            subjectId: row.values.subject_id || row.record.subjectId,
+            cohort: row.values.swig_cohort || row.record.cohort,
+          }, neighbourScope);
+          const key = `${lineageId}\u0000${studyGroup}`;
+          const group = sourceGroups.get(key);
+          if (group) group.rows.push(row); else sourceGroups.set(key, { lineageId, studyGroup, rows: [row] });
+        }
+        const screens = new Map<number, { screen: ReturnType<typeof screenLineageGermlineCandidates>[number]; sourceLineageId: number; sourceRows: AirrDetailRow[] }>();
+        for (const { lineageId: sourceLineageId, studyGroup, rows } of sourceGroups.values()) {
+          const source = inferLineageGermline(rows);
+          const first = rows[0];
+          const candidates = screenLineageGermlineCandidates(index, source, selectedLineageIds, first.values.locus || first.record.locus, studyGroup, Math.min(2_000, Math.max(500, neighbourLimit * 20)));
+          for (const screen of candidates) {
+            const previous = screens.get(screen.lineageId);
+            if (!previous || screen.sketchSimilarity > previous.screen.sketchSimilarity) screens.set(screen.lineageId, { screen, sourceLineageId, sourceRows: rows });
+          }
+        }
+        // Cheap representative-level exact scoring removes weak MinHash hits;
+        // only the best shortlist needs multi-member germline reconstruction.
+        const representativeRows = await store.detailMany([...screens.values()].map((entry) => entry.screen.representativeOrdinal));
+        const representativeByOrdinal = new Map(representativeRows.map((row) => [row.record.ordinal, row]));
+        const ranked = [...screens.values()].map((entry) => {
+          const representative = representativeByOrdinal.get(entry.screen.representativeOrdinal);
+          const score = representative ? scoreGermlineCandidate(entry.sourceRows, [representative], entry.screen, 1, Math.max(0.7, neighbourGermlineIdentity - 0.12), entry.sourceLineageId) : null;
+          return score ? { entry, score: score.germlineIdentity } : null;
+        }).filter((value): value is NonNullable<typeof value> => Boolean(value))
+          .sort((left, right) => right.score - left.score || right.entry.screen.sketchSimilarity - left.entry.screen.sketchSimilarity)
+          .slice(0, Math.min(400, Math.max(100, neighbourLimit * 6)));
+        const memberGroups = await runtime.lineageMembersMany(ranked.map((value) => value.entry.screen.lineageId), 250);
+        const memberByLineage = new Map(memberGroups.map((group) => [group.lineageId, group]));
+        const candidateRows = await store.detailMany(memberGroups.flatMap((group) => group.ordinals));
+        const rowsByLineage = new Map<number, AirrDetailRow[]>();
+        for (const row of candidateRows) {
+          const lineageId = assignments[row.record.ordinal];
+          const values = rowsByLineage.get(lineageId);
+          if (values) values.push(row); else rowsByLineage.set(lineageId, [row]);
+        }
+        const exact: GermlineNeighbourScore[] = [];
+        for (const { entry } of ranked) {
+          const group = memberByLineage.get(entry.screen.lineageId);
+          const rows = rowsByLineage.get(entry.screen.lineageId) ?? [];
+          if (!group || !rows.length) continue;
+          const score = scoreGermlineCandidate(entry.sourceRows, rows, entry.screen, group.total, neighbourGermlineIdentity, entry.sourceLineageId);
+          if (score) exact.push(score);
+        }
+        exact.sort((left, right) => right.germlineIdentity - left.germlineIdentity || right.sketchSimilarity - left.sketchSimilarity || left.lineageId - right.lineageId);
+        setGermlineNeighbourScores(exact.slice(0, Math.max(neighbourLimit * 3, neighbourLimit)));
+      } else setGermlineNeighbourScores([]);
+    } catch (operationError) {
+      setError(operationError instanceof Error ? operationError.message : String(operationError));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function createMergedLineage(lineageIdsValue: Iterable<number>): LineageMergeState | null {
+    const requested = expandedMergedLineageIds(lineageIdsValue);
+    if (requested.length < 2) return null;
+    const touching = lineageMerges.filter((merge) => merge.originalLineageIds.some((lineageId) => requested.includes(lineageId)));
+    const all = new Set(requested);
+    touching.forEach((merge) => merge.originalLineageIds.forEach((lineageId) => all.add(lineageId)));
+    const retainedId = touching[0]?.id;
+    let serial = 1;
+    while (!retainedId && lineageMerges.some((merge) => merge.id === `swig_merged_lineage_${serial}`)) serial += 1;
+    const id = retainedId ?? `swig_merged_lineage_${serial}`;
+    const merged: LineageMergeState = {
+      id,
+      label: touching[0]?.label ?? `Merged lineage ${serial}`,
+      originalLineageIds: [...all].sort((left, right) => left - right),
+      createdAt: touching[0]?.createdAt ?? new Date().toISOString(),
+    };
+    setLineageMerges((current) => [...current.filter((entry) => !touching.some((touch) => touch.id === entry.id)), merged]);
+    setShmDashboard(null);
+    setMissingAlleles(null);
+    return merged;
+  }
+
+  function removeLineageMerge(id: string) {
+    setLineageMerges((current) => current.filter((entry) => entry.id !== id));
+    setShmDashboard(null);
+    setMissingAlleles(null);
+  }
+
+  async function viewSelectedNeighbourGroup(merge = false) {
+    if (!selectedLineage) return;
+    const lineageIds = expandedMergedLineageIds([...selectedLineageIds, ...selectedNeighbourIds]);
+    if (lineageIds.length < 2) return;
+    if (merge) createMergedLineage(lineageIds);
+    await loadLineageGroup(selectedLineage, lineageIds);
+  }
+
   async function runAlignment() {
     if (!lineageRows.length) return;
     setBusy(alignmentMethod === "quick" ? "Preparing AIRR-anchored alignment" : alignmentMethod === "codon" ? "Running codon-aware Kalign WASM" : "Running Kalign WASM");
     setError("");
     try {
       const next = await runInActiveLock(async () => {
-        const rows = lineageRows.slice(0, Math.max(2, alignmentLimit));
+        const rows = stratifiedLineageRows(lineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
         if (alignmentMethod === "quick") return quickAirrAlignment(rows);
         const input = lineageInputFasta(rows);
         return alignmentMethod === "codon" ? runCodonAwareKalign(input.fasta, input.frames) : runKalign(input.fasta);
       });
-      installAlignment(next, alignmentMethod === "quick" ? "AIRR-anchored alignment" : alignmentMethod === "codon" ? "Codon-aware Kalign 3.3.1" : "Nucleotide Kalign 3.3.1");
+      installAlignment(next, alignmentMethod === "quick" ? "AIRR-anchored reference quick view" : alignmentMethod === "codon" ? "Codon-aware Kalign 3.3.1" : "Nucleotide Kalign 3.3.1", false, selectedLineageIds);
       setAlignmentEditorStatus("");
       setAlignmentEditorError("");
     } catch (operationError) {
@@ -1024,7 +1316,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   function importEditedAlignment(text: string, source = "Alivibe-corrected alignment") {
     if (!alignment) throw new Error("Create a lineage alignment before importing a correction.");
     const inspected = validateCorrectedAlignment(alignment, text);
-    installAlignment(inspected.fasta, source);
+    installAlignment(inspected.fasta, source, true, selectedLineageIds);
     setAlignmentEditorError("");
     setAlignmentEditorStatus(`Accepted the complete corrected alignment: ${inspected.rows.toLocaleString()} rows × ${inspected.columns.toLocaleString()} columns · fingerprint ${inspected.fingerprint}. FastTree will use these exact aligned rows.`);
   }
@@ -1202,15 +1494,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       discarded: chmm.inputRecords - retained,
       detail: retainUnevaluated ? `${unevaluatedRetained.toLocaleString()} unevaluated records retained.` : "Unevaluated records excluded.",
     }]);
-    setLineages(null);
-    setSelectedLineage(null);
-    setLineageMultiplicity(new Map());
-    clearAlignmentArtifacts();
+    invalidatePopulationAnalyses();
     setTreeError("");
-    setQueryHits([]);
-    setExpanded(null);
-    setShmDashboard(null);
-    setMissingAlleles(null);
   }
 
   async function openChimera(ordinal: number) {
@@ -1480,7 +1765,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     <section className="post-module lineage-module">
       <header><div className="module-number">04</div><div><span className="section-kicker">Repertoire-scale clonal grouping</span><h3>Assign lineages from CDR3 nucleotide distance</h3><p>Default: same locus, overlapping V/J gene assignments, exact CDR3 nucleotide length, and single-linkage at ≥85% identity. The threshold is a starting point and remains dataset-adjustable.</p></div><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC5340603/" target="_blank" rel="noreferrer">Clonal threshold literature ↗</a></header>
       <div className="lineage-config"><div className="control-grid five"><label><span>Study boundary</span><select value={lineageScope} onChange={(event)=>{setLineageScope(event.target.value as DatasetScope);setLineages(null);}}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><label><span>CDR3 identity</span><div className="range-number"><input type="range" min="0.7" max="1" step="0.01" value={identity} onChange={(event) => setIdentity(Number(event.target.value))} /><b>{Math.round(identity * 100)}%</b></div></label><label><span>Call level</span><select value={resolution} onChange={(event) => setResolution(event.target.value as CallResolution)}><option value="gene">Gene</option><option value="allele">Allele</option></select></label><label><span>Ambiguous calls</span><select value={ambiguity} onChange={(event) => setAmbiguity(event.target.value as AmbiguityPolicy)}><option value="overlap">Any assignment overlaps</option><option value="top">Top call only</option><option value="strict">Exact call sets</option></select></label><label><span>Candidate cap / record</span><CommitNumberInput min="100" max="1000000" step="1000" value={candidateCap} onCommit={setCandidateCap} /></label><label className="check-line"><input type="checkbox" checked={productiveOnly} onChange={(event) => setProductiveOnly(event.target.checked)} /><span>Productive only</span></label></div><div className="algorithm-note"><strong>Exact accelerated single-linkage · {DATASET_SCOPE_LABELS[lineageScope]}</strong><span>Partition by study boundary → locus → V/J calls → CDR3 length → d+1 exact blocks → verify normalized Hamming distance → union-find components.</span></div><div className="current-step-input"><span>Input inherited from applied filters</span><strong>{workingCount.toLocaleString()} active records</strong><small>{workingStages.length ? workingStages.map((stage) => stage.label).join(" → ") : "No upstream exclusion applied"}</small></div><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runLineages()}>Assign lineages on current set</button></div>
-      {lineages && <div className="lineage-results"><div className="post-stat-grid"><article><span>Lineages</span><strong>{lineages.lineageCount.toLocaleString()}</strong></article><article><span>Assigned records</span><strong>{lineages.assignedRecords.toLocaleString()}</strong></article><article><span>Largest lineage</span><strong>{(lineages.summaries[0]?.abundance ?? 0).toLocaleString()}</strong></article><article><span>Exact comparisons</span><strong>{lineages.candidateComparisons.toLocaleString()}</strong></article></div>{lineages.truncatedCandidates > 0 && <div className="scientific-note warning"><span>!</span><p>{lineages.truncatedCandidates.toLocaleString()} records reached the candidate cap. Increase it and rerun before treating components as complete.</p></div>}<div className="result-actions"><button type="button" onClick={() => void downloadLineages()}>Download AIRR + clone_id</button></div><div className="chart-customizer"><label><span>Gene chart metric</span><select value={geneMetric} onChange={(event) => setGeneMetric(event.target.value as "abundance" | "lineages")}><option value="abundance">Sequence abundance</option><option value="lineages">Lineage count</option></select></label><label><span>Top genes</span><CommitNumberInput min="5" max="24" value={topGenes} onCommit={setTopGenes} /></label><label><span>Figure color</span><input type="color" value={chartColor} onChange={(event) => setChartColor(event.target.value)} /></label></div><div className="post-chart-grid"><BarChart title="Lineage abundance distribution" subtitle="Lineage count in each abundance interval" data={lineages.sizeHistogram.map((item) => ({ label: item.label, value: item.count }))} color={chartColor} name={`${baseName(inputName)}.lineage-size-distribution.svg`} /><BarChart title="Largest lineages" subtitle="Abundance retained after deduplication" data={lineages.summaries.slice(0, 20).map((item) => ({ label: `Lineage ${item.id} · ${item.studyGroup}`, value: item.abundance }))} color={chartColor} name={`${baseName(inputName)}.largest-lineages.svg`} /><BarChart title="V germline use by lineage" subtitle={geneMetric === "abundance" ? "Sequence abundance across lineage representatives" : "Number of lineages represented"} data={vChart} color={chartColor} name={`${baseName(inputName)}.lineage-v-use.svg`} /><BarChart title="J germline use by lineage" subtitle={geneMetric === "abundance" ? "Sequence abundance across lineage representatives" : "Number of lineages represented"} data={jChart} color={chartColor} name={`${baseName(inputName)}.lineage-j-use.svg`} /></div><div className="lineage-table-wrap"><table><thead><tr><th>Lineage</th><th>{DATASET_SCOPE_LABELS[lineageScope]}</th><th>Abundance</th><th>Unique</th><th>Locus</th><th>V calls</th><th>J calls</th><th>CDR3 nt</th><th /></tr></thead><tbody>{lineages.summaries.slice(0, 250).map((summary) => <tr key={summary.id} className={selectedLineage?.id === summary.id ? "selected" : ""} onClick={() => void openLineage(summary)}><td><strong>{summary.id}</strong></td><td>{summary.studyGroup}</td><td>{summary.abundance.toLocaleString()}</td><td>{summary.uniqueMembers.toLocaleString()}</td><td>{summary.locus}</td><td>{summary.vCalls.join(", ")}</td><td>{summary.jCalls.join(", ")}</td><td>{summary.cdr3Length} nt</td><td><button type="button">Open →</button></td></tr>)}</tbody></table></div></div>}
+      {lineages && <div className="lineage-results"><div className="post-stat-grid"><article><span>Original lineages</span><strong>{lineages.lineageCount.toLocaleString()}</strong></article><article><span>Assigned records</span><strong>{lineages.assignedRecords.toLocaleString()}</strong></article><article><span>Largest lineage</span><strong>{(lineages.summaries[0]?.abundance ?? 0).toLocaleString()}</strong></article><article><span>Exact comparisons</span><strong>{lineages.candidateComparisons.toLocaleString()}</strong></article></div>{lineages.truncatedCandidates > 0 && <div className="scientific-note warning"><span>!</span><p>{lineages.truncatedCandidates.toLocaleString()} records reached the candidate cap. Increase it and rerun before treating components as complete.</p></div>}<div className="result-actions"><button type="button" onClick={() => void downloadLineages()}>Download AIRR + original/merged lineage IDs</button></div>{lineageMerges.length > 0 && <div className="lineage-merge-register"><header><div><span className="section-kicker">Derived merge register</span><strong>{lineageMerges.length.toLocaleString()} merged lineage{lineageMerges.length === 1 ? "" : "s"}</strong></div><small>Original clone_id values never change. The derived swig_merged_lineage_id column is added to exports.</small></header>{lineageMerges.map((merge) => <div key={merge.id}><code>{merge.id}</code><span>{merge.originalLineageIds.map((id) => `L${id}`).join(" + ")}</span><button type="button" onClick={() => removeLineageMerge(merge.id)}>Remove merge</button></div>)}</div>}<div className="chart-customizer"><label><span>Gene chart metric</span><select value={geneMetric} onChange={(event) => setGeneMetric(event.target.value as "abundance" | "lineages")}><option value="abundance">Sequence abundance</option><option value="lineages">Lineage count</option></select></label><label><span>Top genes</span><CommitNumberInput min="5" max="24" value={topGenes} onCommit={setTopGenes} /></label><label><span>Figure color</span><input type="color" value={chartColor} onChange={(event) => setChartColor(event.target.value)} /></label></div><div className="post-chart-grid"><BarChart title="Lineage abundance distribution" subtitle="Lineage count in each abundance interval" data={lineages.sizeHistogram.map((item) => ({ label: item.label, value: item.count }))} color={chartColor} name={`${baseName(inputName)}.lineage-size-distribution.svg`} /><BarChart title="Largest lineages" subtitle="Abundance retained after deduplication" data={lineages.summaries.slice(0, 20).map((item) => ({ label: `Lineage ${item.id} · ${item.studyGroup}`, value: item.abundance }))} color={chartColor} name={`${baseName(inputName)}.largest-lineages.svg`} /><BarChart title="V germline use by lineage" subtitle={geneMetric === "abundance" ? "Sequence abundance across lineage representatives" : "Number of lineages represented"} data={vChart} color={chartColor} name={`${baseName(inputName)}.lineage-v-use.svg`} /><BarChart title="J germline use by lineage" subtitle={geneMetric === "abundance" ? "Sequence abundance across lineage representatives" : "Number of lineages represented"} data={jChart} color={chartColor} name={`${baseName(inputName)}.lineage-j-use.svg`} /></div><div className="lineage-table-wrap"><table><thead><tr><th>Original lineage</th><th>Merged lineage</th><th>{DATASET_SCOPE_LABELS[lineageScope]}</th><th>Abundance</th><th>Unique</th><th>Locus</th><th>V calls</th><th>J calls</th><th>CDR3 nt</th><th /></tr></thead><tbody>{lineages.summaries.slice(0, 250).map((summary) => <tr key={summary.id} className={selectedLineageIds.includes(summary.id) ? "selected" : ""} onClick={() => void openLineage(summary)}><td><strong>{summary.id}</strong></td><td>{mergedIdByOriginal.get(summary.id) || "—"}</td><td>{summary.studyGroup}</td><td>{summary.abundance.toLocaleString()}</td><td>{summary.uniqueMembers.toLocaleString()}</td><td>{summary.locus}</td><td>{summary.vCalls.join(", ")}</td><td>{summary.jCalls.join(", ")}</td><td>{summary.cdr3Length} nt</td><td><button type="button">Open →</button></td></tr>)}</tbody></table></div></div>}
     </section>
 
     <section className="post-module downstream-viz-module">
@@ -1489,7 +1774,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         <article><span className="section-kicker">SHM</span><h4>Mutation distributions</h4><div className="control-grid three"><label><span>Measure</span><select value={shmMetric} onChange={(event)=>{setShmMetric(event.target.value as ShmMetricKey);setShmDashboard(null);}}><option value="vNtRate">V nucleotide rate</option><option value="vNtMutations">V nucleotide count</option><option value="vAaRate">V amino-acid replacement rate</option><option value="vAaReplacements">V amino-acid replacement count</option><option value="synonymous">Synonymous codon count</option><option value="cdrNtRate">CDR1/2 nucleotide rate</option><option value="frameworkNtRate">Framework nucleotide rate</option></select></label><label><span>Stratify by</span><select value={shmStratum} onChange={(event)=>{setShmStratum(event.target.value as typeof shmStratum);setShmDashboard(null);}}><option value="all">No additional stratum</option><option value="sample_id">Sample</option><option value="subject_id">Donor / subject</option><option value="swig_cohort">Cohort</option><option value="swig_timepoint">Timepoint</option><option value="locus">Locus</option><option value="v_call">V call</option><option value="isotype">Isotype</option></select></label><label><span>Plot sample / lineage</span><CommitNumberInput min="50" max="10000" step="50" value={shmSampleCap} onCommit={(value)=>{setShmSampleCap(value);setShmDashboard(null);}} /></label></div><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={()=>void runShmAnalysis()}>Calculate SHM on {workingCount.toLocaleString()} records</button><p>Plot memory is bounded per lineage; scalar counts still cover every selected row.</p></article>
         <article><span className="section-kicker">Reference warning</span><h4>Possible missing V alleles</h4><div className="control-grid three"><label><span>Independent unit</span><select value={missingAlleleOptions.unit} onChange={(event)=>{setMissingAlleleOptions(value=>({...value,unit:event.target.value as "lineage"|"record"}));setMissingAlleles(null);}}><option value="lineage">One least-mutated record / lineage + V</option><option value="record">Records · exploratory</option></select></label><label><span>Minimum independent support</span><CommitNumberInput min="3" max="1000" value={missingAlleleOptions.minimumIndependentUnits} onCommit={(minimumIndependentUnits)=>{setMissingAlleleOptions(value=>({...value,minimumIndependentUnits}));setMissingAlleles(null);}} /></label><label><span>Minimum covered units</span><CommitNumberInput min="5" max="100000" value={missingAlleleOptions.minimumCoveredUnits} onCommit={(minimumCoveredUnits)=>{setMissingAlleleOptions(value=>({...value,minimumCoveredUnits}));setMissingAlleles(null);}} /></label><label><span>Minimum candidate fraction</span><CommitNumberInput min="0.01" max="1" step="0.01" value={missingAlleleOptions.minimumAlleleFraction} onCommit={(minimumAlleleFraction)=>{setMissingAlleleOptions(value=>({...value,minimumAlleleFraction}));setMissingAlleles(null);}} /></label><label><span>Maximum source SHM</span><CommitNumberInput min="0" max="0.5" step="0.01" value={missingAlleleOptions.maximumShmRate} onCommit={(maximumShmRate)=>{setMissingAlleleOptions(value=>({...value,maximumShmRate}));setMissingAlleles(null);}} /></label><label><span>Maximum linked SNPs</span><CommitNumberInput min="1" max="20" value={missingAlleleOptions.maximumCandidateSnps} onCommit={(maximumCandidateSnps)=>{setMissingAlleleOptions(value=>({...value,maximumCandidateSnps}));setMissingAlleles(null);}} /></label></div><details className="post-advanced"><summary>Evidence thresholds</summary><div className="control-grid three"><label><span>Minimum aligned V bases</span><CommitNumberInput min="30" max="1000" value={missingAlleleOptions.minimumAlignedBases} onCommit={(minimumAlignedBases)=>setMissingAlleleOptions(value=>({...value,minimumAlignedBases}))} /></label><label><span>Maximum tail probability</span><CommitNumberInput min="0.000000000001" max="0.1" step="0.000001" value={missingAlleleOptions.maximumPValue} onCommit={(maximumPValue)=>setMissingAlleleOptions(value=>({...value,maximumPValue}))} /></label><label><span>Minimum distinct J calls</span><CommitNumberInput min="1" max="100" value={missingAlleleOptions.minimumDistinctJCalls} onCommit={(minimumDistinctJCalls)=>setMissingAlleleOptions(value=>({...value,minimumDistinctJCalls}))} /></label><label><span>Minimum junction lengths</span><CommitNumberInput min="1" max="100" value={missingAlleleOptions.minimumDistinctJunctionLengths} onCommit={(minimumDistinctJunctionLengths)=>setMissingAlleleOptions(value=>({...value,minimumDistinctJunctionLengths}))} /></label></div></details><button className="post-primary amber" type="button" disabled={Boolean(busy)} onClick={()=>void runMissingAlleleAnalysis()}>Screen selected population</button><p>This produces candidates and a referral warning, never an automatic database edit.</p></article>
       </div>
-      {shmDashboard?<ShmResultsPanel dashboard={shmDashboard} name={baseName(inputName)} color={chartColor}/>:null}
+      {shmDashboard?<ShmResultsPanel dashboard={shmDashboard} name={baseName(inputName)} color={chartColor} sampleColors={sampleColors} stratum={shmStratum}/>:null}
       {missingAlleles?<MissingAlleleResultsPanel dashboard={missingAlleles} name={baseName(inputName)}/>:null}
     </section>
 
@@ -1518,11 +1803,26 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     </section>
 
     {selectedLineage && <section ref={workbenchRef} className="post-module lineage-workbench" tabIndex={-1}>
-      <header><div className="module-number dark">06</div><div><span className="section-kicker">Selected lineage {selectedLineage.id} · {selectedLineage.studyGroup}</span><h3>Alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · abundance {selectedLineage.abundance.toLocaleString()} · {selectedLineage.locus} · {selectedLineage.vCalls.join(", ")} / {selectedLineage.jCalls.join(", ")}</p></div><button type="button" onClick={() => { setSelectedLineage(null); setLineageRows([]); setLineageMultiplicity(new Map()); }}>Close lineage</button></header>
-      <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `first ${lineageRows.length}; alignment remains on-demand` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)}>{row.record.sequenceId}</button>)}</div></div>
-      <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">AIRR-anchored quick view</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><CommitNumberInput min="2" max="500" value={alignmentLimit} onCommit={setAlignmentLimit} /></label><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runAlignment()}>Align selected lineage</button>{alignment && <><label><span>Alignment export</span><select value={alignmentExportFormat} onChange={(event)=>setAlignmentExportFormat(event.target.value as AlignmentExportFormat)}><option value="fasta">Aligned FASTA</option><option value="clustal">Clustal</option><option value="phylip">Relaxed PHYLIP</option><option value="stockholm">Stockholm</option><option value="nexus">NEXUS</option></select></label><button type="button" onClick={downloadCurrentAlignment}>Download alignment ↓</button></>}</div>
+      <header><div className="module-number dark">06</div><div><span className="section-kicker">{selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>Lineage neighbours, alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · {selectedLineage.locus} · original assignments {selectedLineageIds.map((id) => `L${id}`).join(", ")}</p></div><button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); }}>Close lineage</button></header>
+      <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `${lineageRows.length} stratified members loaded from ${lineageTotal.toLocaleString()}; analysis remains bounded` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => {const sample=row.values.sample_id||row.record.sampleId||"";const original=originalLineageByOrdinal.get(row.record.ordinal);return <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)} title={`${sample||"sample unassigned"}${original?` · original lineage ${original}`:""}`}><i style={{background:sampleColor(sample,sampleColors)}}/>{row.record.sequenceId}</button>;})}</div></div>
+      <div className="lineage-neighbour-explorer">
+        <header><div><span className="section-kicker">Exploratory boundary review</span><h4>Lineage neighbours</h4><p>Find separate assigned lineages with CDR3 links below the clustering cutoff, similar inferred lineage germlines, or either criterion. Search is read-only until you explicitly merge.</p></div><span className="neighbour-source-chip">Source {selectedLineageIds.map((id)=>`L${id}`).join(" + ")}</span></header>
+        <div className="control-grid five">
+          <label><span>Evidence route</span><select value={neighbourMethod} onChange={(event)=>{setNeighbourMethod(event.target.value as typeof neighbourMethod);clearNeighbourResults();}}><option value="either">CDR3 or inferred germline</option><option value="cdr3">CDR3 only</option><option value="germline">Inferred germline only</option></select></label>
+          <label><span>Search boundary</span><select value={neighbourScope} onChange={(event)=>{setNeighbourScope(event.target.value as DatasetScope);clearNeighbourResults(true);}}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label>
+          <label><span>Minimum CDR3 identity</span><CommitNumberInput min="0.5" max="1" step="0.01" value={neighbourCdr3Identity} onCommit={setNeighbourCdr3Identity}/><small>Assignment cutoff: {(identity*100).toFixed(0)}%</small></label>
+          <label><span>Minimum inferred germline identity</span><CommitNumberInput min="0.5" max="1" step="0.01" value={neighbourGermlineIdentity} onCommit={setNeighbourGermlineIdentity}/></label>
+          <label><span>Maximum displayed</span><CommitNumberInput min="1" max="250" value={neighbourLimit} onCommit={setNeighbourLimit}/></label>
+        </div>
+        <div className="algorithm-note"><strong>Indexed shortlist → exact verification</strong><span>CDR3 mode uses the same exact V/J-aware d+1 index and Hamming verification as assignment. Germline mode builds one bounded sketch per lineage, then exactly recomputes a multi-member V(D)J-aware inferred germline for every shortlisted hit. Neither route modifies lineage IDs.</span></div>
+        <div className="result-actions"><button className="post-primary dark" type="button" disabled={Boolean(busy)} onClick={()=>void searchLineageNeighbours()}>Search neighbouring lineages</button>{combinedNeighbourHits.length>0&&<><button type="button" disabled={!selectedNeighbourIds.size} onClick={()=>void viewSelectedNeighbourGroup(false)}>View selected together</button><button type="button" disabled={!selectedNeighbourIds.size} onClick={()=>void viewSelectedNeighbourGroup(true)}>Merge + view together</button></>}</div>
+        {(neighbourResult||germlineNeighbourScores.length>0)&&<><div className="neighbour-search-stats"><span>{combinedNeighbourHits.length.toLocaleString()} displayed candidates</span>{neighbourResult&&<span>{neighbourResult.candidateComparisons.toLocaleString()} exact CDR3 comparisons</span>}{germlineSketchIndex&&<span>{germlineSketchIndex.representedLineages.toLocaleString()} lineage germline sketches</span>}<span>{selectedNeighbourIds.size.toLocaleString()} selected</span></div><div className="lineage-table-wrap neighbour-table"><table><thead><tr><th>Select</th><th>Original lineage</th><th>Best source</th><th>CDR3 identity</th><th>Inferred germline identity</th><th>Members / abundance</th><th>Boundary</th></tr></thead><tbody>{combinedNeighbourHits.map((hit)=><tr key={hit.lineageId} className={selectedNeighbourIds.has(hit.lineageId)?"selected":""}><td><input aria-label={`Select lineage ${hit.lineageId}`} type="checkbox" checked={selectedNeighbourIds.has(hit.lineageId)} onChange={(event)=>setNeighbourSelected(hit.lineageId,event.target.checked)}/></td><td><strong>L{hit.lineageId}</strong>{mergedIdByOriginal.get(hit.lineageId)&&<small>{mergedIdByOriginal.get(hit.lineageId)}</small>}</td><td>L{hit.cdr3?.sourceLineageId??hit.germline?.sourceLineageId??"—"}</td><td>{hit.cdr3?`${(hit.cdr3.cdr3Identity*100).toFixed(2)}%`:"—"}</td><td>{hit.germline?`${(hit.germline.germlineIdentity*100).toFixed(2)}%`:"—"}</td><td>{hit.cdr3?`${hit.cdr3.uniqueMembers.toLocaleString()} / ${hit.cdr3.abundance.toLocaleString()}`:hit.germline?`${hit.germline.candidateTotalRows.toLocaleString()} / —`:"—"}</td><td>{hit.cdr3?.studyGroup||"same selected boundary"}</td></tr>)}</tbody></table></div></>}
+        {(neighbourResult&&neighbourResult.hits.length===0&&!germlineNeighbourScores.length)&&<div className="method-placeholder small"><span>∅</span><h4>No candidate met the selected neighbour criteria</h4><p>Lower the exploratory threshold or broaden the search boundary; original assignments remain unchanged.</p></div>}
+      </div>
+      {lineageGermline&&<div className="lineage-germline-method"><div><span className="section-kicker">Lineage root construction</span><strong>No member sequence is chosen as the trimming template</strong><p>Each loaded representative contributes one equal vote at every AIRR-anchored V/D/J germline column. A germline base requires ≥80% agreement among informative members; unresolved junction bases stay N in the tree root, while a separate UCA comparison sequence may fill them with ≥60% unweighted query consensus. Endpoints require support from ≥20% of loaded members.</p></div><div><b>{lineageGermline.rowsUsed.toLocaleString()}</b><span>members voted</span></div><div><b>{lineageGermline.knownColumns.toLocaleString()}</b><span>reference-resolved columns</span></div><div><b>{lineageGermline.inferredColumns.toLocaleString()}</b><span>N sites consensus-filled for neighbour UCA only</span></div><div><b>{lineageGermline.conflictingColumns.toLocaleString()}</b><span>conflicting reference columns retained as N</span></div></div>}
+      <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">Ref-anchored quick view · default</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><CommitNumberInput min="2" max="500" value={alignmentLimit} onCommit={setAlignmentLimit} /></label><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runAlignment()}>{alignmentMethod==="quick"?"Prepare quick view":"Align selected lineage"}</button>{savedEditedAlignment&&!alignmentEdited&&<button type="button" onClick={()=>installAlignment(savedEditedAlignment.fasta,savedEditedAlignment.source,true,savedEditedAlignment.lineageIds)}>Restore saved manual edit</button>}{alignment && <><label><span>Alignment export</span><select value={alignmentExportFormat} onChange={(event)=>setAlignmentExportFormat(event.target.value as AlignmentExportFormat)}><option value="fasta">Aligned FASTA</option><option value="clustal">Clustal</option><option value="phylip">Relaxed PHYLIP</option><option value="stockholm">Stockholm</option><option value="nexus">NEXUS</option></select></label><button type="button" onClick={downloadCurrentAlignment}>Download alignment ↓</button></>}</div>
       {alignment && <>
-        <div className="alignment-editor-transfer"><div><span className="section-kicker">Manual correction</span><h4>Round trip through Alivibe</h4><p>Swig keeps its internal aligners. A returned alignment is accepted only if it contains every original row and every ungapped nucleotide sequence is unchanged; selected or truncated exports are rejected.</p></div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={() => void importFromAlivibe()}>Import full alignment</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label></div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>For the cross-origin fallback, use Alivibe’s full-alignment download. Its Copy action can be selection-sensitive. Sequence data remain in the browser.</small></div>
+        <div className={`alignment-editor-transfer${alignmentEdited?" edited-saved":""}`}><div><span className="section-kicker">Manual correction</span><h4>Round trip through Alivibe</h4><p>Swig keeps its internal aligners. A returned alignment is accepted only if it contains every original row and every ungapped nucleotide sequence is unchanged; selected or truncated exports are rejected.</p>{alignmentEdited?<strong className="session-preserved-badge">Manual alignment · included in Save session</strong>:<small>Generated alignments are reproducible and omitted from sessions unless a tree needs their exact input. Any manually returned/imported correction is preserved.</small>}</div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={() => void importFromAlivibe()}>Import full alignment</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label>{savedEditedAlignment&&<button type="button" onClick={()=>{setEditedAlignments((current)=>{const next=new Map(current);next.delete(selectedGroupKey);return next;});if(alignmentEdited)setAlignmentEdited(false);}}>Discard saved manual edit</button>}</div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>For the cross-origin fallback, use Alivibe’s full-alignment download. Its Copy action can be selection-sensitive. Sequence data remain in the browser.</small></div>
         <div className="alignment-view-controls"><div className="mode-toggle"><button className={alignmentMode === "nt" ? "active" : ""} type="button" onClick={() => setAlignmentMode("nt")}>Nucleotide</button><button className={alignmentMode === "aa" ? "active" : ""} type="button" onClick={() => setAlignmentMode("aa")}>Amino acid</button></div><span>{alignmentInfo?.rows.toLocaleString() ?? parseFasta(alignment, true).length.toLocaleString()} aligned rows · {alignmentInfo?.columns.toLocaleString() ?? "—"} columns · {alignmentSource || "alignment"} · fingerprint {alignmentInfo?.fingerprint ?? "—"}</span></div>
         <AlignmentPreview fasta={alignment} mode={alignmentMode} />
         <div ref={treeResultRef} className="tree-operation-region">
@@ -1536,6 +1836,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
               alignmentFasta={treeRun.alignmentFasta}
               rows={lineageRows}
               multiplicityByOrdinal={lineageMultiplicity}
+              sampleColors={sampleColors}
+              lineageByOrdinal={originalLineageByOrdinal}
               variant={treeViewMode}
               collapsedEdges={treeRun.collapsedEdges}
               collapseThreshold={treeRun.collapseThreshold}

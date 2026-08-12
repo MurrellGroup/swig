@@ -5,6 +5,8 @@ import type {
   DenoiseOptions,
   ExpansionOptions,
   LineageOptions,
+  LineageNeighbourOptions,
+  LineageNeighbourResult,
   LineageSummary,
   QueryHit,
   QueryOptions,
@@ -163,6 +165,20 @@ export class PostAnalysisRuntime {
 
   async lineageMembers(lineageId: number, offset = 0, limit = 500): Promise<{ ordinals: number[]; total: number }> {
     return this.request({ type: "lineageMembers", lineageId, offset, limit });
+  }
+
+  async lineageMembersMany(lineageIds: number[], limitPerLineage = 500): Promise<Array<{ lineageId: number; ordinals: number[]; total: number }>> {
+    const result = await this.request<{ members: Array<{ lineageId: number; ordinals: number[]; total: number }> }>({
+      type: "lineageMembersMany",
+      lineageIds,
+      limitPerLineage,
+    });
+    return result.members;
+  }
+
+  async lineageNeighbours(options: LineageNeighbourOptions, useDedup: boolean): Promise<LineageNeighbourResult> {
+    await this.ensureIndexed();
+    return this.request<LineageNeighbourResult>({ type: "lineageNeighbours", options, useDedup });
   }
 
   async lineageAssignments(): Promise<Int32Array> {

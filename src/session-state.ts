@@ -4,6 +4,7 @@ import type { MissingAlleleDashboard, MissingAlleleOptions } from "./germline-ev
 import type { ShmDashboard, ShmMetricKey } from "./shm-analysis";
 import type { CallingProfile } from "./swiftig-runtime";
 import type { DatasetManifestEntry, PipelinePlan, StudyDesign } from "./study-design";
+import type { SampleColorMap } from "./sample-colors";
 
 export const SWIG_SESSION_SCHEMA = 1 as const;
 
@@ -54,9 +55,14 @@ export interface PostAnalysisSessionSnapshot {
   chimera?: ChimeraReplayState;
   selection?: { options: RepertoireSelectionOptions; mask?: SessionVector; baseMask?: SessionVector };
   lineage?: LineageReplayState;
+  /** Original lineage IDs currently opened together in the workbench. */
+  selectedLineageIds?: number[];
   query?: Record<string, unknown>;
   alignment?: { fasta: string; source: string; selectedLineageId?: number };
-  tree?: { rawNewick: string; rootedNewick: string; stableNewick: string; source: string; run?: Record<string, unknown> };
+  /** Only manual/corrected alignments are retained; generated alignments are reproducible from AIRR rows. */
+  editedAlignments?: Array<{ key: string; lineageIds: number[]; fasta: string; source: string; savedAt: string }>;
+  lineageMerges?: Array<{ id: string; label: string; originalLineageIds: number[]; createdAt: string }>;
+  tree?: { rawNewick: string; rootedNewick: string; stableNewick: string; source: string; lineageIds?: number[]; run?: Record<string, unknown> };
   shm?: { metric: ShmMetricKey; dashboard: ShmDashboard };
   missingAlleles?: { options: MissingAlleleOptions; dashboard: MissingAlleleDashboard };
 }
@@ -80,6 +86,7 @@ export interface SwigSession {
     datasets?: DatasetManifestEntry[];
     studyDesign?: StudyDesign;
     pipeline?: PipelinePlan;
+    sampleColors?: SampleColorMap;
   };
   doubleD: Array<{ ordinal: number; values: Record<string, string> }>;
   postAnalysis: PostAnalysisSessionSnapshot;

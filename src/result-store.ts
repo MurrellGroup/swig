@@ -1137,10 +1137,12 @@ export class AirrResultStore {
     assignments: Int32Array,
     format: TableExportFormat,
     write: (part: string | Blob | Uint8Array) => Promise<void>,
+    mergedLineageByOriginal?: ReadonlyMap<number, string>,
   ): Promise<void> {
     if (assignments.length < this.count) throw new Error("The lineage-assignment vector does not cover every AIRR record.");
     const clonePosition = this.headers.indexOf("clone_id");
     const fields = clonePosition >= 0 ? [...this.headers] : [...this.headers, "clone_id"];
+    if (mergedLineageByOriginal?.size && !fields.includes("swig_merged_lineage_id")) fields.push("swig_merged_lineage_id");
     const header = tableHeader(fields, format);
     if (header) await write(header);
     await this.scanAirrRows(this.headers, async (rows) => {
@@ -1148,7 +1150,8 @@ export class AirrResultStore {
       for (const row of rows) {
         const lineage = assignments[row.ordinal];
         const cloneId = lineage > 0 ? `swig_lineage_${lineage}` : "";
-        body += tableRow(fields, { ...row.values, clone_id: cloneId }, format);
+        const mergedLineageId = lineage > 0 ? mergedLineageByOriginal?.get(lineage) ?? "" : "";
+        body += tableRow(fields, { ...row.values, clone_id: cloneId, swig_merged_lineage_id: mergedLineageId }, format);
       }
       if (body) await write(body);
     }, { batchSize: 2000 });

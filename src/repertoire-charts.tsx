@@ -7,6 +7,7 @@ import type {
   RepertoireSnapshot,
 } from "./result-store";
 import { tableHeader, tableRow } from "./export-formats";
+import { contrastingText, sampleColor, type SampleColorMap } from "./sample-colors";
 
 type Metric = "percent" | "count";
 type Palette = "teal" | "coral" | "indigo";
@@ -227,6 +228,18 @@ function PairingChart({ pairs, resolution, palette, filename }: {
   );
 }
 
+function SampleCompositionChart({ samples, colors, filename }: { samples: FacetValue[]; colors: SampleColorMap; filename: string }) {
+  const svg = useRef<SVGSVGElement>(null);
+  const visible = samples.slice(0, 40);
+  const maximum = Math.max(1, ...visible.map((item) => item.count));
+  const width = 960;
+  const height = Math.max(250, 112 + visible.length * 29);
+  const left = 250;
+  const bar = 570;
+  const title = "Records by biological sample";
+  return <article className="figure-card figure-card-wide"><header><div><span className="section-kicker">Study composition</span><h3>{title}</h3><p>Colors follow the study-wide sample palette and remain fixed in downstream trees and sample-stratified figures.</p></div><div className="post-chart-actions"><button type="button" onClick={()=>downloadCsv(samples.map((item)=>({sample_id:item.value,records:item.count,color:sampleColor(item.value,colors)})),filename)}>Data CSV ↓</button><SvgButton svg={svg} name={filename}/></div></header><div className="svg-frame">{visible.length?<svg ref={svg} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}><rect width={width} height={height} fill="#fffdf7"/><text x="28" y="42" fill="#132321" fontFamily="Inter,Arial,sans-serif" fontSize="22" fontWeight="750">{title}</text>{visible.map((item,index)=>{const y=76+index*29;const color=sampleColor(item.value,colors);const length=Math.max(3,item.count/maximum*bar);return <g key={item.value}><text x={left-14} y={y+15} textAnchor="end" fill="#263936" fontFamily="ui-monospace,monospace" fontSize="10">{item.value}</text><rect x={left} y={y} width={length} height="20" rx="3" fill={color}/><text x={length>70?left+8:left+length+8} y={y+14} fill={length>70?contrastingText(color):"#263936"} fontFamily="Inter,Arial,sans-serif" fontSize="10" fontWeight="700">{item.count.toLocaleString()}</text></g>;})}</svg>:<div className="figure-empty"><strong>No sample metadata</strong></div>}</div></article>;
+}
+
 const SERIES_LABELS: Record<CallSeries, string> = {
   vCalls: "V use",
   dCalls: "D use",
@@ -235,10 +248,12 @@ const SERIES_LABELS: Record<CallSeries, string> = {
   isotypes: "Isotype / constant class",
 };
 
-export function RepertoireDashboard({ store, loci, inputName }: {
+export function RepertoireDashboard({ store, loci, inputName, samples, sampleColors }: {
   store: AirrResultStore;
   loci: FacetValue[];
   inputName: string;
+  samples: FacetValue[];
+  sampleColors: SampleColorMap;
 }) {
   const [locus, setLocus] = useState("");
   const [productiveOnly, setProductiveOnly] = useState(false);
@@ -275,6 +290,7 @@ export function RepertoireDashboard({ store, loci, inputName }: {
       </div>
 
       <div className="figure-grid">
+        {samples.length>1&&<SampleCompositionChart samples={samples} colors={sampleColors} filename={`${fileStem}-samples.svg`}/>}
         <div className="figure-config"><label><span>Ranked series</span><select value={series} onChange={(event) => setSeries(event.target.value as CallSeries)}>{Object.entries(SERIES_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>Show</span><select value={topN} onChange={(event) => setTopN(Number(event.target.value))}><option value="10">Top 10</option><option value="20">Top 20</option><option value="40">Top 40</option></select></label></div>
         <FrequencyChart data={ranked} total={snapshot.records} metric={metric} palette={palette} title={SERIES_LABELS[series]} subtitle={`${population}; ${series === "isotypes" ? "constant calls with ≥30 aligned nt and ≥65% identity" : callDetail}.`} filename={`${fileStem}-${series}.svg`} />
         <div className="figure-config single"><label><span>Distribution</span><select value={distribution} onChange={(event) => setDistribution(event.target.value as "cdr3Lengths" | "vIdentityBins")}><option value="cdr3Lengths">CDR3 AA length</option><option value="vIdentityBins">V identity</option></select></label></div>
