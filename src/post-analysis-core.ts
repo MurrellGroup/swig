@@ -159,6 +159,8 @@ export interface QueryOptions {
   ambiguity: AmbiguityPolicy;
   productiveOnly: boolean;
   queryConstraints?: QueryConstraint[];
+  /** Rank individual sequence hits or one exact best-member hit per lineage. */
+  resultMode?: "sequences" | "lineages";
 }
 
 export interface QueryHit {
@@ -167,12 +169,21 @@ export interface QueryHit {
   score: number;
   distance: number;
   matched: string;
+  lineageId?: number;
+  matchedSequences?: number;
+  matchedQueries?: number;
 }
 
 const HASH_SEEDS = [
   0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
   0x27d4eb2f, 0x165667b1, 0xd3a2646c, 0xfd7046c5,
 ] as const;
+
+function popcount32(value: number): number {
+  value -= (value >>> 1) & 0x55555555;
+  value = (value & 0x33333333) + ((value >>> 2) & 0x33333333);
+  return (((value + (value >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+}
 
 function mix32(value: number): number {
   value ^= value >>> 16;
@@ -1581,10 +1592,45 @@ export function queryRecords(
   options: QueryOptions,
   packedSketches?: Uint32Array,
   activeMask?: Uint8Array,
+  lineageAssignments?: Int32Array,
+  lineageCount = 0,
 ): QueryHit[] {
   const normalizedQueries = queries.map((query) => options.target === "cdr3_aa" ? normalizeAa(query) : normalizeNt(query));
   const querySketches = options.target === "trimmed" ? normalizedQueries.map((query) => minHashSketch(query)) : [];
   const hits: QueryHit[] = [];
+  const lineageMode = options.resultMode === "lineages";
+  if (lineageMode && (!lineageAssignments || !(lineageCount > 0))) throw new Error("Lineage query mode requires lineage assignments on the current working set.");
+  const bestScores = lineageMode ? new Float64Array(lineageCount + 1).fill(-1) : null;
+  const bestDistances = lineageMode ? new Float64Array(lineageCount + 1).fill(Number.POSITIVE_INFINITY) : null;
+  const bestOrdinals = lineageMode ? new Int32Array(lineageCount + 1).fill(-1) : null;
+  const bestQueries = lineageMode ? new Int32Array(lineageCount + 1).fill(-1) : null;
+  const matchedSequenceCounts = lineageMode ? new Uint32Array(lineageCount + 1) : null;
+  const lastMatchedOrdinals = lineageMode ? new Int32Array(lineageCount + 1).fill(-1) : null;
+  const matchedQueryMasks = lineageMode && normalizedQueries.length <= 32 ? new Uint32Array(lineageCount + 1) : null;
+  const matchedQuerySets = lineageMode && normalizedQueries.length > 32 ? new Map<number, Set<number>>() : null;
+  const bestMatched = lineageMode ? new Map<number, string>() : null;
+  const accept = (hit: QueryHit) => {
+    if (!lineageMode) { hits.push(hit); return; }
+    const lineageId = lineageAssignments![hit.ordinal] ?? 0;
+    if (!(lineageId > 0) || lineageId > lineageCount) return;
+    if (lastMatchedOrdinals![lineageId] !== hit.ordinal) {
+      lastMatchedOrdinals![lineageId] = hit.ordinal;
+      matchedSequenceCounts![lineageId] += 1;
+    }
+    if (matchedQueryMasks) matchedQueryMasks[lineageId] |= (1 << hit.queryIndex) >>> 0;
+    else {
+      let values = matchedQuerySets!.get(lineageId);
+      if (!values) { values = new Set(); matchedQuerySets!.set(lineageId, values); }
+      values.add(hit.queryIndex);
+    }
+    if (hit.score > bestScores![lineageId] || (hit.score === bestScores![lineageId] && (hit.distance < bestDistances![lineageId] || (hit.distance === bestDistances![lineageId] && hit.ordinal < bestOrdinals![lineageId])))) {
+      bestScores![lineageId] = hit.score;
+      bestDistances![lineageId] = hit.distance;
+      bestOrdinals![lineageId] = hit.ordinal;
+      bestQueries![lineageId] = hit.queryIndex;
+      bestMatched!.set(lineageId, hit.matched);
+    }
+  };
   for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
     if (activeMask && !activeMask[recordIndex]) continue;
     const record = records[recordIndex];
@@ -1597,7 +1643,7 @@ export function queryRecords(
         const sketch = record.trimmedSketch ?? packedSketches?.subarray(record.ordinal * HASH_SEEDS.length, (record.ordinal + 1) * HASH_SEEDS.length);
         if (!sketch) continue;
         const score = sketchSimilarity(sketch, querySketches[queryIndex]);
-        if (score >= options.identity) hits.push({ ordinal: record.ordinal, queryIndex, score, distance: Math.round((1 - score) * 1000), matched: "VDJ k-mer sketch" });
+        if (score >= options.identity) accept({ ordinal: record.ordinal, queryIndex, score, distance: Math.round((1 - score) * 1000), matched: "VDJ k-mer sketch" });
         continue;
       }
       const target = queryValue(record, options.target);
@@ -1624,7 +1670,24 @@ export function queryRecords(
         if (distance > maximum) continue;
         score = 1 - distance / Math.max(target.length, query.length);
       }
-      hits.push({ ordinal: record.ordinal, queryIndex, score, distance, matched: target });
+      accept({ ordinal: record.ordinal, queryIndex, score, distance, matched: target });
+    }
+  }
+  if (lineageMode) {
+    for (let lineageId = 1; lineageId <= lineageCount; lineageId += 1) {
+      if (bestOrdinals![lineageId] < 0) continue;
+      const mask = matchedQueryMasks?.[lineageId] ?? 0;
+      const matchedQueries = matchedQueryMasks ? popcount32(mask) : matchedQuerySets!.get(lineageId)?.size ?? 0;
+      hits.push({
+        ordinal: bestOrdinals![lineageId],
+        queryIndex: bestQueries![lineageId],
+        score: bestScores![lineageId],
+        distance: bestDistances![lineageId],
+        matched: bestMatched!.get(lineageId) ?? "",
+        lineageId,
+        matchedSequences: matchedSequenceCounts![lineageId],
+        matchedQueries,
+      });
     }
   }
   return hits.sort((a, b) => b.score - a.score || a.distance - b.distance || a.ordinal - b.ordinal).slice(0, options.maxResults);

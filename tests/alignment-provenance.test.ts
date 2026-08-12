@@ -32,7 +32,7 @@ test("a complete gap-only alignment correction is accepted and fingerprinted", (
   assert.equal(after.fasta, corrected);
 });
 
-test("a selected or truncated Alivibe fragment cannot replace the full alignment", () => {
+test("Alivibe correction may delete bad rows and nucleotide characters", () => {
   const selectedRows = [
     ">read_a",
     "AC-GT",
@@ -40,7 +40,8 @@ test("a selected or truncated Alivibe fragment cannot replace the full alignment
     "ACG-T",
     "",
   ].join("\n");
-  assert.throws(() => validateCorrectedAlignment(ORIGINAL, selectedRows), /exactly the original rows/);
+  const rowDeletion=validateCorrectedAlignment(ORIGINAL, selectedRows);
+  assert.deepEqual(rowDeletion.removedRows,["read_b"]);
 
   const selectedColumns = [
     ">read_a",
@@ -51,12 +52,17 @@ test("a selected or truncated Alivibe fragment cannot replace the full alignment
     "ACG-",
     "",
   ].join("\n");
-  assert.throws(() => validateCorrectedAlignment(ORIGINAL, selectedColumns), /changed or was truncated/);
+  const columnDeletion=validateCorrectedAlignment(ORIGINAL, selectedColumns);
+  assert.equal(columnDeletion.removedNucleotides,3);
 });
 
 test("manual alignment import cannot mutate nucleotides or duplicate identifiers", () => {
   const mutated = ORIGINAL.replace("AC-GT", "AT-GT");
-  assert.throws(() => validateCorrectedAlignment(ORIGINAL, mutated), /ungapped sequence/);
+  assert.throws(() => validateCorrectedAlignment(ORIGINAL, mutated), /substitution/);
+  const missingRoot=">read_a\nACGT\n>read_b\nACGT\n";
+  assert.throws(()=>validateCorrectedAlignment(ORIGINAL,missingRoot),/must retain __germline_N_masked__/);
+  const added=`${ORIGINAL}>new_row\nAC-GT\n`;
+  assert.throws(()=>validateCorrectedAlignment(ORIGINAL,added),/unexpected or renamed rows/);
   assert.throws(() => inspectAlignment(">a\nACGT\n>a\nACGT\n"), /duplicate identifier/);
   assert.throws(() => inspectAlignment(">a\nAC?T\n>b\nACGT\n"), /unsupported nucleotide character/);
 });

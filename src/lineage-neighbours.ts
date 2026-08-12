@@ -1,4 +1,4 @@
-import { inferLineageGermline, type InferredLineageGermline } from "./lineage-alignment.ts";
+import { inferLineageGermline, type InferredLineageGermline, type LineageGermlineMethod } from "./lineage-alignment.ts";
 import { minHashSketch, sketchSimilarity } from "./post-analysis-core.ts";
 import type { AirrDetailRow, AirrResultStore } from "./result-store.ts";
 import { datasetScopeValue, type DatasetScope } from "./study-design.ts";
@@ -58,7 +58,7 @@ function provisionalAncestor(queryValue: string, germlineValue: string): { seque
  * Build one compact eight-word UCA screen signature per assigned lineage in a
  * single bounded-memory AIRR scan. The least-mutated/highest-coverage member
  * supplies the screen sketch; exact hits are subsequently verified against a
- * multi-member inferred germline.
+ * the user-selected exact inferred-germline method.
  */
 export async function buildLineageGermlineSketchIndex(
   store: AirrResultStore,
@@ -200,9 +200,10 @@ export function scoreGermlineCandidate(
   candidateTotalRows: number,
   minimumIdentity: number,
   sourceLineageId = 0,
+  method: LineageGermlineMethod = "closest",
 ): GermlineNeighbourScore | null {
-  const sourceGermline = inferLineageGermline(sourceRows);
-  const candidateGermline = inferLineageGermline(candidateRows);
+  const sourceGermline = inferLineageGermline(sourceRows, method);
+  const candidateGermline = inferLineageGermline(candidateRows, method);
   const germlineIdentity = inferredGermlineIdentity(sourceGermline.trimmedUca, candidateGermline.trimmedUca, minimumIdentity);
   if (germlineIdentity + 1e-12 < minimumIdentity) return null;
   return {

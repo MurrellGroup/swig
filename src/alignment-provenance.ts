@@ -8,6 +8,11 @@ export interface AlignmentInspection {
   fingerprint: string;
 }
 
+export interface AlignmentCorrectionInspection extends AlignmentInspection {
+  removedRows: string[];
+  removedNucleotides: number;
+}
+
 function assertFastaAlphabet(text: string): void {
   for (const line of text.split(/\r?\n/)) {
     if (!line || line.startsWith(">")) continue;
@@ -55,29 +60,37 @@ function ungapped(sequence: string): string {
   return sequence.replaceAll("-", "").replaceAll("U", "T");
 }
 
+function isSubsequence(candidate: string, original: string): boolean {
+  let offset = 0;
+  for (const base of candidate) {
+    offset = original.indexOf(base, offset);
+    if (offset < 0) return false;
+    offset += 1;
+  }
+  return true;
+}
+
 /**
- * Manual correction may move or add gap columns, but it must not silently add,
- * remove, truncate, rename, or mutate biological sequences.
+ * Manual correction may move gaps, delete biological rows, and remove bases or
+ * alignment columns. It may not add/rename rows or introduce/substitute bases.
+ * The N-masked germline is retained because downstream rooting depends on it.
  */
-export function validateCorrectedAlignment(currentText: string, correctedText: string): AlignmentInspection {
+export function validateCorrectedAlignment(currentText: string, correctedText: string): AlignmentCorrectionInspection {
   const current = inspectAlignment(currentText);
   const corrected = inspectAlignment(correctedText);
   const currentByName = new Map(current.records.map((record) => [record.name, record.sequence]));
   const correctedNames = new Set(corrected.records.map((record) => record.name));
   const missing = current.records.filter((record) => !correctedNames.has(record.name)).map((record) => record.name);
   const added = corrected.records.filter((record) => !currentByName.has(record.name)).map((record) => record.name);
-  if (missing.length || added.length) {
-    const details = [
-      missing.length ? `missing: ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? "…" : ""}` : "",
-      added.length ? `unexpected: ${added.slice(0, 4).join(", ")}${added.length > 4 ? "…" : ""}` : "",
-    ].filter(Boolean).join("; ");
-    throw new Error(`The corrected alignment must contain exactly the original rows (${details}). A selected Alivibe fragment is not a complete alignment.`);
-  }
+  if (added.length) throw new Error(`The corrected alignment contains unexpected or renamed rows: ${added.slice(0, 4).join(", ")}${added.length > 4 ? "…" : ""}. New biological sequences cannot be introduced during alignment correction.`);
+  if (missing.includes("__germline_N_masked__")) throw new Error("The corrected alignment must retain __germline_N_masked__ so the lineage tree can be rooted reproducibly.");
+  let removedNucleotides = 0;
   for (const record of corrected.records) {
     const original = currentByName.get(record.name)!;
-    if (ungapped(record.sequence) !== ungapped(original)) {
-      throw new Error(`The ungapped sequence for ${record.name} changed or was truncated. Alignment correction may change gaps, but not nucleotides or row contents.`);
-    }
+    const originalUngapped = ungapped(original);
+    const correctedUngapped = ungapped(record.sequence);
+    if (!isSubsequence(correctedUngapped, originalUngapped)) throw new Error(`The ungapped sequence for ${record.name} contains a substitution, inserted base, or changed order. Row/base deletion and gap editing are allowed; new nucleotide content is not.`);
+    removedNucleotides += originalUngapped.length - correctedUngapped.length;
   }
-  return corrected;
+  return { ...corrected, removedRows: missing, removedNucleotides };
 }

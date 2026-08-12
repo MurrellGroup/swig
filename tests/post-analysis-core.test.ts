@@ -318,6 +318,10 @@ test("sequence query and single-linkage expansion recover a transitive CDR3 neig
     productiveOnly: true,
   });
   assert.deepEqual(hits.map((hit) => hit.ordinal), [0, 1]);
+  const lineageHits=queryRecords(records,["AAAAAAAAAA"],{
+    target:"cdr3_nt",metric:"hamming",identity:0.8,maxResults:100,callResolution:"gene",ambiguity:"overlap",productiveOnly:true,resultMode:"lineages",
+  },undefined,undefined,Int32Array.from([1,1,2,3]),3);
+  assert.deepEqual(lineageHits.map((hit)=>[hit.lineageId,hit.ordinal,hit.matchedSequences,hit.matchedQueries]),[[1,0,2,1],[2,2,1,1]]);
   const expanded = expandSingleLinkage(records, [0], {
     identity: 0.9,
     callResolution: "gene",

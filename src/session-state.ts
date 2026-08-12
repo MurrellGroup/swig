@@ -5,6 +5,7 @@ import type { ShmDashboard, ShmMetricKey } from "./shm-analysis";
 import type { CallingProfile } from "./swiftig-runtime";
 import type { DatasetManifestEntry, PipelinePlan, StudyDesign } from "./study-design";
 import type { SampleColorMap } from "./sample-colors";
+import type { LineageGermlineMethod } from "./lineage-alignment";
 
 export const SWIG_SESSION_SCHEMA = 1 as const;
 
@@ -57,6 +58,7 @@ export interface PostAnalysisSessionSnapshot {
   lineage?: LineageReplayState;
   /** Original lineage IDs currently opened together in the workbench. */
   selectedLineageIds?: number[];
+  lineageGermlineMethod?: LineageGermlineMethod;
   query?: Record<string, unknown>;
   alignment?: { fasta: string; source: string; selectedLineageId?: number };
   /** Only manual/corrected alignments are retained; generated alignments are reproducible from AIRR rows. */

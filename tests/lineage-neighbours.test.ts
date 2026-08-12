@@ -23,7 +23,7 @@ function detail(ordinal: number, sequence: string, germline: string, start = 1):
   } as AirrDetailRow;
 }
 
-test("lineage germline uses member votes instead of choosing the first row", () => {
+test("lineage germline defaults to the closest member and keeps consensus as an explicit mode", () => {
   const rows = [
     detail(0, "AAATCCC", "CAANCCC"),
     detail(1, "AAATCCC", "AAANCCC"),
@@ -34,9 +34,27 @@ test("lineage germline uses member votes instead of choosing the first row", () 
   const inferred = inferLineageGermline(rows);
   assert.equal(inferred.template, "AAANCCC");
   assert.equal(inferred.uca, "AAATCCC");
-  assert.equal(inferred.rowsUsed, 5);
-  assert.equal(inferred.knownColumns, 6);
-  assert.equal(inferred.inferredColumns, 1);
+  assert.equal(inferred.method, "closest");
+  assert.equal(inferred.selectedOrdinal, 1);
+  assert.equal(inferred.rowsUsed, 1);
+  const consensus = inferLineageGermline(rows, "consensus");
+  assert.equal(consensus.template, "AAANCCC");
+  assert.equal(consensus.uca, "AAATCCC");
+  assert.equal(consensus.method, "consensus");
+  assert.equal(consensus.rowsUsed, 5);
+  assert.equal(consensus.knownColumns, 6);
+  assert.equal(consensus.inferredColumns, 1);
+});
+
+test("closest-member ranking gives V and J identities equal segment weight", () => {
+  const first=detail(0,"AAAANCCC","AAAANCCC");first.values.v_sequence_alignment="AAAAAAAAAA";first.values.v_germline_alignment="AAAAAAAAAA";first.values.j_sequence_alignment="AAAA";first.values.j_germline_alignment="AAAT";
+  const second=detail(1,"CCCCNGGG","CCCCNGGG");second.values.v_sequence_alignment="AAAAAAAAAA";second.values.v_germline_alignment="AAAAAAAATA";second.values.j_sequence_alignment="AAAA";second.values.j_germline_alignment="AAAA";
+  const inferred=inferLineageGermline([first,second]);
+  assert.equal(inferred.selectedOrdinal,1);
+  assert.equal(inferred.selectedVIdentity,0.9);
+  assert.equal(inferred.selectedJIdentity,1);
+  assert.equal(inferred.selectedVjIdentity,0.95);
+  assert.equal(inferred.template,"CCCCNGGG");
 });
 
 test("reference quick view anchors rows on the V germline coordinate", () => {

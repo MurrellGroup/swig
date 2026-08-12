@@ -206,7 +206,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       result = compactLineageResult(currentLineages);
     } else if (request.type === "query") {
       if (request.options.target === "trimmed" && !packedSketches) throw new Error("Build the VDJ sketch index before querying aligned sequences.");
-      result = { hits: queryRecords(records, request.queries, request.options, packedSketches, currentActiveMask) satisfies QueryHit[] };
+      result = { hits: queryRecords(records, request.queries, request.options, packedSketches, currentActiveMask, currentLineages?.assignments, currentLineages?.lineageCount ?? 0) satisfies QueryHit[] };
     } else if (request.type === "expand") {
       result = expandSingleLinkage(records, request.seedOrdinals, request.options, currentActiveMask);
     } else if (request.type === "lineageMembers") {

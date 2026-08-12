@@ -108,6 +108,23 @@ test("study metadata is indexed for dataset, sample, donor, cohort, and timepoin
   assert.equal(store.facets().subjects.find((item) => item.value === "donor_1")?.count, 2);
   assert.equal((await store.page({ ...EMPTY_FILTERS, subjectId: "donor_1" }, 0, 10)).rows.length, 2);
   assert.equal((await store.page({ ...EMPTY_FILTERS, cohort: "control", timepoint: "day_0" }, 0, 10)).rows[0].sampleId, "sample_C");
+  const updated=[
+    {datasetId:"dataset_1",inputName:"one.tsv",sampleId:"shared_sample",subjectId:"corrected_donor",cohort:"case",timepoint:"day_0"},
+    {datasetId:"dataset_2",inputName:"two.tsv",sampleId:"shared_sample",subjectId:"corrected_donor",cohort:"case",timepoint:"day_30"},
+    {datasetId:"dataset_3",inputName:"three.tsv",sampleId:"sample_C",subjectId:"donor_2",cohort:"control",timepoint:"day_0"},
+  ];
+  await store.updateStudyMetadata(updated);
+  assert.equal((await store.page({...EMPTY_FILTERS,subjectId:"corrected_donor"},0,10)).rows.length,2);
+  assert.equal(store.facets().samples.find((item)=>item.value==="shared_sample")?.count,2);
+  const [updatedDetail]=await store.detailMany([1]);
+  assert.equal(updatedDetail.values.sample_id,"shared_sample");
+  assert.equal(updatedDetail.values.subject_id,"corrected_donor");
+  const scanned:string[]=[];
+  await store.scanAirrRows(["sample_id","subject_id"],(rows)=>{for(const row of rows)if(row.ordinal<2)scanned.push(`${row.values.sample_id}/${row.values.subject_id}`);});
+  assert.deepEqual(scanned,["shared_sample/corrected_donor","shared_sample/corrected_donor"]);
+  let exported="";await store.writeAirr(async(part)=>{exported+=typeof part==="string"?part:part instanceof Blob?await part.text():new TextDecoder().decode(part);});
+  const exportedRows=exported.trimEnd().split("\n").map((line)=>line.split("\t"));const sampleColumn=exportedRows[0].indexOf("sample_id");const subjectColumn=exportedRows[0].indexOf("subject_id");
+  assert.deepEqual(exportedRows.slice(1,3).map((row)=>[row[sampleColumn],row[subjectColumn]]),[["shared_sample","corrected_donor"],["shared_sample","corrected_donor"]]);
   await store.clear();
 });
 

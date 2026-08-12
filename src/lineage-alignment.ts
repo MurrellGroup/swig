@@ -4,6 +4,8 @@ import type { AirrDetailRow } from "./result-store.ts";
 
 export const GERMLINE_OUTGROUP = "__germline_N_masked__";
 
+export type LineageGermlineMethod = "closest" | "consensus";
+
 function safeName(value: string, fallback: string): string {
   return (value || fallback).replace(/[^A-Za-z0-9_.|*+\-]/g, "_");
 }
@@ -21,9 +23,10 @@ export interface AnchoredLineageRow {
 }
 
 export interface InferredLineageGermline {
+  method: LineageGermlineMethod;
   /** V/D/J-aware root template; unresolved recombination columns remain N. */
   template: string;
-  /** Template with unresolved N columns filled only by an unweighted member consensus. */
+  /** Template with unresolved N columns filled by the selected reconstruction method. */
   uca: string;
   /** Supported endpoint-trimmed forms used for lineage-neighbour comparison. */
   trimmedTemplate: string;
@@ -36,6 +39,14 @@ export interface InferredLineageGermline {
   inferredColumns: number;
   conflictingColumns: number;
   minimumEndpointSupport: number;
+  /** AIRR member used by closest-member reconstruction. */
+  selectedOrdinal?: number;
+  selectedSequenceId?: string;
+  /** Equal-weight V/J identity across informative matched segment columns. */
+  selectedVjIdentity?: number;
+  selectedVIdentity?: number;
+  selectedJIdentity?: number;
+  selectedComparedColumns?: number;
 }
 
 /**
@@ -85,6 +96,120 @@ function plurality(counts: readonly number[]): { base: string; count: number; ti
 
 const BASE_INDEX: Record<string, number | undefined> = { A: 0, C: 1, G: 2, T: 3 };
 
+interface SegmentIdentity {
+  identity: number | null;
+  matches: number;
+  compared: number;
+}
+
+function segmentIdentity(queryValue: string, germlineValue: string, reportedValue: string | number | null | undefined): SegmentIdentity {
+  const query = normalizedAlignment(queryValue);
+  const germline = normalizedAlignment(germlineValue);
+  let matches = 0;
+  let compared = 0;
+  const columns = Math.max(query.length, germline.length);
+  for (let column = 0; column < columns; column += 1) {
+    const queryBase = query[column];
+    const germlineBase = germline[column];
+    if (BASE_INDEX[queryBase] === undefined || BASE_INDEX[germlineBase] === undefined) continue;
+    compared += 1;
+    if (queryBase === germlineBase) matches += 1;
+  }
+  if (compared) return { identity: matches / compared, matches, compared };
+  const reported = Number(reportedValue);
+  return Number.isFinite(reported) && reported >= 0 && reported <= 1
+    ? { identity: reported, matches: 0, compared: 0 }
+    : { identity: null, matches: 0, compared: 0 };
+}
+
+interface ClosestMemberScore {
+  row: AirrDetailRow;
+  anchored: AnchoredLineageRow;
+  v: SegmentIdentity;
+  j: SegmentIdentity;
+  equalWeightIdentity: number;
+  combinedIdentity: number;
+  compared: number;
+  informativeSegments: number;
+}
+
+function closestMember(anchored: AnchoredLineageRow[]): ClosestMemberScore {
+  const scores = anchored.map((record) => {
+    const values = record.row.values;
+    const v = segmentIdentity(values.v_sequence_alignment, values.v_germline_alignment, values.v_identity ?? record.row.record.vIdentity);
+    const j = segmentIdentity(values.j_sequence_alignment, values.j_germline_alignment, values.j_identity ?? record.row.record.jIdentity);
+    const segmentIdentities = [v.identity, j.identity].filter((value): value is number => value !== null);
+    let compared = v.compared + j.compared;
+    let matches = v.matches + j.matches;
+    let equalWeightIdentity = segmentIdentities.length ? segmentIdentities.reduce((sum, value) => sum + value, 0) / segmentIdentities.length : -1;
+    let combinedIdentity = compared ? matches / compared : equalWeightIdentity;
+    if (!segmentIdentities.length) {
+      // Older imported AIRR tables may omit segment-specific alignment fields.
+      // Fall back to known V/D/J columns in the combined AIRR alignment.
+      const fallback = segmentIdentity(values.sequence_alignment || values.sequence, values.germline_alignment, null);
+      compared = fallback.compared;
+      matches = fallback.matches;
+      equalWeightIdentity = fallback.identity ?? -1;
+      combinedIdentity = fallback.identity ?? -1;
+    }
+    return { row: record.row, anchored: record, v, j, equalWeightIdentity, combinedIdentity, compared, informativeSegments: segmentIdentities.length };
+  });
+  scores.sort((left, right) =>
+    right.informativeSegments - left.informativeSegments ||
+    right.equalWeightIdentity - left.equalWeightIdentity ||
+    right.combinedIdentity - left.combinedIdentity ||
+    right.compared - left.compared ||
+    left.row.record.ordinal - right.row.record.ordinal,
+  );
+  return scores[0];
+}
+
+function inferClosestLineageGermline(rows: AirrDetailRow[]): InferredLineageGermline {
+  const anchored = referenceAnchoredLineageRows(rows);
+  const selected = closestMember(anchored);
+  const template = [...selected.anchored.germline];
+  const uca = [...selected.anchored.germline];
+  const supported = template.map((base, column) => base !== "-" || selected.anchored.sequence[column] !== "-");
+  let knownColumns = 0;
+  let inferredColumns = 0;
+  for (let column = 0; column < template.length; column += 1) {
+    if (BASE_INDEX[template[column]] !== undefined) {
+      knownColumns += 1;
+      continue;
+    }
+    if (template[column] === "N" && BASE_INDEX[selected.anchored.sequence[column]] !== undefined) {
+      uca[column] = selected.anchored.sequence[column];
+      inferredColumns += 1;
+    }
+  }
+  let start = supported.findIndex(Boolean);
+  if (start < 0) start = 0;
+  let end = supported.length;
+  while (end > start && !supported[end - 1]) end -= 1;
+  const selectedSequenceId = selected.row.values.sequence_id || selected.row.record.sequenceId;
+  return {
+    method: "closest",
+    template: template.join(""),
+    uca: uca.join(""),
+    trimmedTemplate: template.slice(start, end).join(""),
+    trimmedUca: uca.slice(start, end).join(""),
+    rowsUsed: 1,
+    columns: template.length,
+    startColumn: start,
+    endColumn: end,
+    knownColumns,
+    inferredColumns,
+    conflictingColumns: 0,
+    minimumEndpointSupport: 1,
+    selectedOrdinal: selected.row.record.ordinal,
+    selectedSequenceId,
+    selectedVjIdentity: selected.equalWeightIdentity >= 0 ? selected.equalWeightIdentity : undefined,
+    selectedVIdentity: selected.v.identity ?? undefined,
+    selectedJIdentity: selected.j.identity ?? undefined,
+    selectedComparedColumns: selected.compared,
+  };
+}
+
 /**
  * Infer one lineage germline without selecting a closest read. Known V/D/J
  * bases are voted from each member's AIRR germline alignment. A known base is
@@ -94,7 +219,7 @@ const BASE_INDEX: Record<string, number | undefined> = { A: 0, C: 1, G: 2, T: 3 
  * parsimony can treat it as unknown. Endpoint trimming requires coverage from
  * at least 20% of the loaded unique representatives.
  */
-export function inferLineageGermline(rows: AirrDetailRow[]): InferredLineageGermline {
+export function inferConsensusLineageGermline(rows: AirrDetailRow[]): InferredLineageGermline {
   const anchored = referenceAnchoredLineageRows(rows);
   const minimumEndpointSupport = Math.max(1, Math.ceil(anchored.length * 0.2));
   const template: string[] = [];
@@ -140,6 +265,7 @@ export function inferLineageGermline(rows: AirrDetailRow[]): InferredLineageGerm
   let end = supported.length;
   while (end > start && !supported[end - 1]) end -= 1;
   return {
+    method: "consensus",
     template: template.join(""),
     uca: uca.join(""),
     trimmedTemplate: template.slice(start, end).join(""),
@@ -155,9 +281,23 @@ export function inferLineageGermline(rows: AirrDetailRow[]): InferredLineageGerm
   };
 }
 
-export function lineageInputFasta(rows: AirrDetailRow[]): { fasta: string; frames: number[]; germline: string } {
+/**
+ * Reconstruct a lineage root using the least-mutated member by default.
+ * Consensus voting remains available as an explicit alternative.
+ */
+export function inferLineageGermline(
+  rows: AirrDetailRow[],
+  method: LineageGermlineMethod = "closest",
+): InferredLineageGermline {
+  return method === "consensus" ? inferConsensusLineageGermline(rows) : inferClosestLineageGermline(rows);
+}
+
+export function lineageInputFasta(
+  rows: AirrDetailRow[],
+  method: LineageGermlineMethod = "closest",
+): { fasta: string; frames: number[]; germline: string; inferred: InferredLineageGermline } {
   const anchored = referenceAnchoredLineageRows(rows);
-  const inferred = inferLineageGermline(rows);
+  const inferred = inferLineageGermline(rows, method);
   const germline = inferred.template.padEnd(anchored[0].sequence.length, "-");
   const records = anchored.map((record) => ({
     name: record.name,
@@ -169,11 +309,12 @@ export function lineageInputFasta(rows: AirrDetailRow[]): { fasta: string; frame
     fasta: records.map((record) => `>${record.name}\n${record.sequence}`).join("\n") + "\n",
     frames: records.map((record) => record.frame),
     germline,
+    inferred,
   };
 }
 
-export function quickAirrAlignment(rows: AirrDetailRow[]): string {
-  const input = lineageInputFasta(rows);
+export function quickAirrAlignment(rows: AirrDetailRow[], method: LineageGermlineMethod = "closest"): string {
+  const input = lineageInputFasta(rows, method);
   const records = parseFasta(input.fasta, true);
   const maximum = Math.max(...records.map((record) => record.sequence.length));
   return records.map((record) => `>${record.name}\n${record.sequence.padEnd(maximum, "-")}`).join("\n") + "\n";

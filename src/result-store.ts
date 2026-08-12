@@ -1,4 +1,5 @@
 import { tableHeader, tableRow, type TableExportFormat } from "./export-formats.ts";
+import type { DatasetManifestEntry } from "./study-design.ts";
 
 export interface AirrIndexRecord {
   ordinal: number;
@@ -416,6 +417,7 @@ export class AirrResultStore {
   private doubleDRecordCount = 0;
   private readonly fingerprintState = new Uint32Array([0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]);
   private finalized = false;
+  private studyMetadataOverrides = new Map<string, DatasetManifestEntry>();
 
   constructor(directOutput?: DirectAirrOutput) {
     this.directOutput = directOutput;
@@ -466,6 +468,10 @@ export class AirrResultStore {
     return this.doubleDRecordCount;
   }
 
+  get hasStudyMetadataOverrides(): boolean {
+    return this.studyMetadataOverrides.size > 0;
+  }
+
   get fingerprint(): string {
     return [...this.fingerprintState].map((value) => value.toString(16).padStart(8, "0")).join("");
   }
@@ -489,6 +495,92 @@ export class AirrResultStore {
       cCalls: facet(this.facetMaps.cCalls),
       isotypes: facet(this.facetMaps.isotypes),
     };
+  }
+
+  private overlayStudyMetadata(values: AirrRow, datasetId = values.swig_dataset_id): AirrRow {
+    if (!this.studyMetadataOverrides.size) return values;
+    const dataset = this.studyMetadataOverrides.get(datasetId);
+    if (!dataset) return values;
+    return {
+      ...values,
+      sample_id: dataset.sampleId,
+      subject_id: dataset.subjectId,
+      swig_cohort: dataset.cohort,
+      swig_timepoint: dataset.timepoint,
+    };
+  }
+
+  /**
+   * Re-index editable study metadata without touching sequence assignments.
+   * Chunk payloads stay immutable; AIRR scans/details/exports receive a small
+   * dataset-keyed overlay so a million-row table is not duplicated in storage.
+   */
+  async updateStudyMetadata(
+    datasets: readonly DatasetManifestEntry[],
+    onProgress?: (processed: number, total: number) => void,
+  ): Promise<ResultFacets> {
+    const byDataset = new Map<string, DatasetManifestEntry>();
+    for (const dataset of datasets) {
+      const datasetId = dataset.datasetId.trim();
+      if (!datasetId) throw new Error("Every dataset must retain a non-empty dataset ID.");
+      if (byDataset.has(datasetId)) throw new Error(`Dataset ID ${datasetId} occurs more than once.`);
+      byDataset.set(datasetId, {
+        ...dataset,
+        datasetId,
+        sampleId: dataset.sampleId.trim(),
+        subjectId: dataset.subjectId.trim(),
+        cohort: dataset.cohort.trim(),
+        timepoint: dataset.timepoint.trim(),
+      });
+    }
+    const nextSamples = new Map<string, number>();
+    const nextSubjects = new Map<string, number>();
+    const nextCohorts = new Map<string, number>();
+    const nextTimepoints = new Map<string, number>();
+    const database = await this.database;
+    const transaction = database.transaction("records", "readwrite");
+    const records = transaction.objectStore("records");
+    let processed = 0;
+    await new Promise<void>((resolve, reject) => {
+      const request = records.openCursor();
+      request.onerror = () => reject(request.error ?? new Error("Could not update study metadata in the local index."));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          resolve();
+          return;
+        }
+        const current = unpackRecord(cursor.value as PackedIndexRecord);
+        const dataset = byDataset.get(current.datasetId);
+        const updated = dataset ? {
+          ...current,
+          sampleId: dataset.sampleId,
+          subjectId: dataset.subjectId,
+          cohort: dataset.cohort,
+          timepoint: dataset.timepoint,
+        } : current;
+        cursor.update(packRecord(updated));
+        bump(nextSamples, updated.sampleId);
+        bump(nextSubjects, updated.subjectId);
+        bump(nextCohorts, updated.cohort);
+        bump(nextTimepoints, updated.timepoint);
+        processed += 1;
+        if (processed % 2_500 === 0) onProgress?.(processed, this.count);
+        cursor.continue();
+      };
+    });
+    await transactionDone(transaction);
+    this.studyMetadataOverrides = byDataset;
+    this.facetMaps.samples.clear();
+    this.facetMaps.subjects.clear();
+    this.facetMaps.cohorts.clear();
+    this.facetMaps.timepoints.clear();
+    nextSamples.forEach((count, value) => this.facetMaps.samples.set(value, count));
+    nextSubjects.forEach((count, value) => this.facetMaps.subjects.set(value, count));
+    nextCohorts.forEach((count, value) => this.facetMaps.cohorts.set(value, count));
+    nextTimepoints.forEach((count, value) => this.facetMaps.timepoints.set(value, count));
+    onProgress?.(processed, this.count);
+    return this.facets();
   }
 
   repertoire(options: RepertoireOptions = {}): RepertoireSnapshot {
@@ -832,7 +924,7 @@ export class AirrResultStore {
     const row = Object.fromEntries(this.headers.map((header, index) => [header, values[index] ?? ""]));
     const doubleDTransaction = database.transaction("doubleD", "readonly");
     const doubleD = await requestResult(doubleDTransaction.objectStore("doubleD").get(record.ordinal)) as DoubleDEvidenceRecord | undefined;
-    return doubleD ? { ...row, ...doubleD.values } : row;
+    return this.overlayStudyMetadata(doubleD ? { ...row, ...doubleD.values } : row);
   }
 
   async indexRecords(ordinals: readonly number[]): Promise<AirrIndexRecord[]> {
@@ -864,7 +956,7 @@ export class AirrResultStore {
         const values = line.split("\t");
         result.set(record.ordinal, {
           record,
-          values: Object.fromEntries(this.headers.map((header, index) => [header, values[index] ?? ""])),
+          values: this.overlayStudyMetadata(Object.fromEntries(this.headers.map((header, index) => [header, values[index] ?? ""]))),
         });
       }
     }
@@ -891,6 +983,7 @@ export class AirrResultStore {
   ): Promise<void> {
     const selected = [...new Set(fields)];
     const positions = selected.map((field) => this.headers.indexOf(field));
+    const metadataDatasetPosition = this.headers.indexOf("swig_dataset_id");
     const batchSize = Math.max(100, options.batchSize ?? 2_000);
     if (options.includeMask && options.includeMask.length !== this.count) {
       throw new Error("The AIRR scan mask does not match the result-store record count.");
@@ -921,7 +1014,7 @@ export class AirrResultStore {
           const position = positions[fieldIndex];
           row[field] = position >= 0 ? values[position] ?? "" : "";
         });
-        batch.push({ ordinal: rowOrdinal, values: row });
+        batch.push({ ordinal: rowOrdinal, values: this.overlayStudyMetadata(row, metadataDatasetPosition >= 0 ? values[metadataDatasetPosition] ?? "" : "") });
         included += 1;
         if (batch.length >= batchSize) {
           await onBatch(batch);
@@ -990,23 +1083,27 @@ export class AirrResultStore {
   }
 
   async airrBlob(): Promise<Blob> {
-    if (this.directOutput) return this.directOutput.handle.getFile();
+    if (this.directOutput && !this.studyMetadataOverrides.size) return this.directOutput.handle.getFile();
     if (this.outputByteCount > MAX_FALLBACK_BLOB_BYTES) {
       throw new Error("This AIRR table is too large for a memory-backed download. Enable the streaming download worker or re-run with direct-to-disk output.");
     }
-    const database = await this.database;
-    const parts: BlobPart[] = [`${this.headerLine}\n`];
-    for (let index = 0; index < this.nextChunk; index += 1) {
-      const transaction = database.transaction("chunks", "readonly");
-      const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
-      if (chunk) parts.push(await this.chunkBlob(chunk));
-    }
+    const parts: BlobPart[] = [];
+    await this.writeAirr(async (part) => { parts.push(part instanceof Uint8Array ? part.slice().buffer : part); });
     return new Blob(parts, { type: "text/tab-separated-values;charset=utf-8" });
   }
 
   async writeAirr(write: (part: string | Blob | Uint8Array) => Promise<void>): Promise<void> {
-    if (this.directOutput) {
+    if (this.directOutput && !this.studyMetadataOverrides.size) {
       await write(await this.directOutput.handle.getFile());
+      return;
+    }
+    if (this.studyMetadataOverrides.size) {
+      await write(`${this.headerLine}\n`);
+      await this.scanAirrRows(this.headers, async (rows) => {
+        let body = "";
+        for (const row of rows) body += tableRow(this.headers, row.values, "tsv");
+        if (body) await write(body);
+      }, { batchSize: 2_000 });
       return;
     }
     await write(`${this.headerLine}\n`);
@@ -1038,7 +1135,9 @@ export class AirrResultStore {
     if (!this.doubleDRecordCount) return [];
     const database = await this.database;
     const transaction = database.transaction("doubleD", "readonly");
-    return requestResult(transaction.objectStore("doubleD").getAll()) as Promise<DoubleDEvidenceRecord[]>;
+    const records = await requestResult(transaction.objectStore("doubleD").getAll()) as DoubleDEvidenceRecord[];
+    if (!this.studyMetadataOverrides.size) return records;
+    return records.map((record) => ({ ...record, values: this.overlayStudyMetadata(record.values) }));
   }
 
   async doubleDMask(): Promise<Uint8Array> {

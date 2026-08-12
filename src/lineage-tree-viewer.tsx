@@ -134,6 +134,8 @@ export function LineageTreeViewer({
   const [rowHeight, setRowHeight] = useState(26);
   const [cellWidth, setCellWidth] = useState(13);
   const [showMutations, setShowMutations] = useState(false);
+  const [mutationLabelLimit, setMutationLabelLimit] = useState(2);
+  const [mutationFontSize, setMutationFontSize] = useState(8);
   const [numbering, setNumbering] = useState<"alignment" | "kabat">("alignment");
   const [kabat, setKabat] = useState<KabatColumnMap | null>(null);
   const [kabatStatus, setKabatStatus] = useState("");
@@ -259,6 +261,7 @@ export function LineageTreeViewer({
       <label><span>Tree width · {treeWidth}px</span><input type="range" min="0" max="1400" step="10" value={treeWidth} onChange={(event) => setTreeWidth(Number(event.target.value))} /></label>
       <label><span>Tip spacing · {rowHeight}px</span><input type="range" min="0" max="64" step="1" value={rowHeight} onChange={(event) => setRowHeight(Number(event.target.value))} /></label>
       <label><span>Residue width · {cellWidth}px</span><input type="range" min="9" max="24" step="1" value={cellWidth} onChange={(event) => setCellWidth(Number(event.target.value))} /></label>
+      {showMutations&&<><label><span>Mutations before +N · {mutationLabelLimit}</span><input type="range" min="1" max="20" step="1" value={mutationLabelLimit} onChange={(event)=>setMutationLabelLimit(Number(event.target.value))}/></label><label><span>Mutation font · {mutationFontSize}px</span><input type="range" min="5" max="24" step="1" value={mutationFontSize} onChange={(event)=>setMutationFontSize(Number(event.target.value))}/></label></>}
     </div>
     {kabatStatus && <div className={numbering === "kabat" ? "viewer-numbering-status" : "viewer-numbering-status warning"}>{kabatStatus}</div>}
     {mode === "aa" && numbering === "kabat" && kabat && <div className="viewer-numbering-status">Kabat {kabat.chain} consensus · {kabat.numberedColumns.toLocaleString()} columns · {kabat.contributingSequences} members · mean confidence {kabat.confidence.toFixed(2)}</div>}
@@ -294,13 +297,13 @@ export function LineageTreeViewer({
       {layout.edges.map((edge, index) => {
         const childSignature = cladeSignature(edge.child);
         const mutations = (mode === "nt" ? parsimony?.mutationsByClade.get(childSignature) : aminoMutationsByClade.get(childSignature))?.filter((mutation) => selectedColumnSet.has(mutation.column)) ?? [];
-        const label = mutations.slice(0, 2).map((mutation) => mutationLabel(mutation.column, mutation.from, mutation.to)).join(" · ") + (mutations.length > 2 ? ` · +${mutations.length - 2}` : "");
+        const label = mutations.slice(0, mutationLabelLimit).map((mutation) => mutationLabel(mutation.column, mutation.from, mutation.to)).join(" · ") + (mutations.length > mutationLabelLimit ? ` · +${mutations.length - mutationLabelLimit}` : "");
         const labelX = edge.parent.x + (edge.child.x - edge.parent.x) * 0.5;
         return <g key={`edge-${index}`}>
           <path d={`M${edge.parent.x},${edge.parent.y} V${edge.child.y} H${edge.child.x}`} stroke="#3f5650" strokeWidth="0.95" strokeLinecap="square" strokeLinejoin="miter" fill="none" />
           {showMutations && label && <g>
             <line x1={labelX} x2={labelX} y1={edge.child.y - 2.5} y2={edge.child.y + 2.5} stroke="#88465b" strokeWidth="0.8" />
-            <text x={labelX} y={edge.child.y - 4.5} textAnchor="middle" fontFamily="ui-monospace,monospace" fontSize="8" fontWeight="650" fill="#71374a" stroke="#fbfaf5" strokeWidth="3" paintOrder="stroke fill">{label}</text>
+            <text x={labelX} y={edge.child.y - Math.max(4.5, mutationFontSize * 0.58)} textAnchor="middle" fontFamily="ui-monospace,monospace" fontSize={mutationFontSize} fontWeight="650" fill="#71374a" stroke="#fbfaf5" strokeWidth={Math.max(2.5,mutationFontSize*0.36)} paintOrder="stroke fill">{label}</text>
           </g>}
         </g>;
       })}
