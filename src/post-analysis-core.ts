@@ -1,3 +1,5 @@
+import { datasetScopeKey, datasetScopeValue, type DatasetScope } from "./study-design.ts";
+
 export type CallResolution = "gene" | "allele";
 export type AmbiguityPolicy = "overlap" | "top" | "strict";
 export type DedupKey = "sequence" | "trimmed" | "cdr3" | "rearrangement";
@@ -6,6 +8,11 @@ export type CollapseMode = "exact" | "fad" | "conservative" | "indel";
 export interface PostAnalysisRecord {
   ordinal: number;
   sequenceId: string;
+  datasetId?: string;
+  sampleId?: string;
+  subjectId?: string;
+  cohort?: string;
+  timepoint?: string;
   locus: string;
   vCall: string;
   jCall: string;
@@ -60,6 +67,8 @@ export interface DenoiseOptions {
   /** Required abundance ratio for an indel-containing child to collapse. */
   minimumIndelParentRatio: number;
   maxCandidatesPerVariant: number;
+  /** Hard boundary for candidate generation; defaults to global for legacy API calls. */
+  scope?: DatasetScope;
 }
 
 export interface LineageOptions {
@@ -69,6 +78,8 @@ export interface LineageOptions {
   productiveOnly: boolean;
   requireSameLocus: boolean;
   maxCandidateComparisons: number;
+  /** Lineages cannot cross this study boundary. */
+  scope?: DatasetScope;
 }
 
 export interface LineageSummary {
@@ -80,6 +91,8 @@ export interface LineageSummary {
   vCalls: string[];
   jCalls: string[];
   cdr3Length: number;
+  studyScope: DatasetScope;
+  studyGroup: string;
 }
 
 export interface LineageResult {
@@ -254,11 +267,12 @@ export function bandedEditDistance(left: string, right: string, maximum: number)
   return previous[right.length];
 }
 
-function dedupKey(record: PostAnalysisRecord, key: DedupKey): string {
-  if (key === "sequence") return record.sequenceFingerprint;
-  if (key === "trimmed") return record.trimmedFingerprint;
-  if (key === "cdr3") return `${record.locus}\u0000${record.cdr3Nt}`;
-  return `${record.locus}\u0000${record.vCall}\u0000${record.jCall}\u0000${record.cdr3Nt}`;
+function dedupKey(record: PostAnalysisRecord, key: DedupKey, scope: DatasetScope): string {
+  const prefix = `${datasetScopeKey(record, scope)}\u0000`;
+  if (key === "sequence") return `${prefix}${record.sequenceFingerprint}`;
+  if (key === "trimmed") return `${prefix}${record.trimmedFingerprint}`;
+  if (key === "cdr3") return `${prefix}${record.locus}\u0000${record.cdr3Nt}`;
+  return `${prefix}${record.locus}\u0000${record.vCall}\u0000${record.jCall}\u0000${record.cdr3Nt}`;
 }
 
 function largestCountGroups(counts: Uint32Array, limit = 100): Array<{ ordinal: number; count: number }> {
@@ -310,6 +324,7 @@ export function deduplicate(
   records: PostAnalysisRecord[],
   key: DedupKey,
   unresolvedPolicy: "discard" | "retain" = "discard",
+  scope: DatasetScope = "global",
 ): DedupResult {
   const representatives = new Int32Array(records.length);
   representatives.fill(-1);
@@ -330,7 +345,7 @@ export function deduplicate(
       }
       continue;
     }
-    const value = dedupKey(records[index], key);
+    const value = dedupKey(records[index], key, scope);
     const previous = seen.get(value);
     if (previous === undefined) {
       seen.set(value, index);
@@ -450,7 +465,7 @@ function denoisePartition(record: PostAnalysisRecord, options: DenoiseOptions): 
   const v = callSet(record.vCall, options.callResolution, options.ambiguity);
   const j = callSet(record.jCall, options.callResolution, options.ambiguity);
   if (!v.length || !j.length) return null;
-  return `${record.locus || "?"}\u0000${v.join("+")}\u0000${j.join("+")}`;
+  return `${datasetScopeKey(record, options.scope ?? "global")}\u0000${record.locus || "?"}\u0000${v.join("+")}\u0000${j.join("+")}`;
 }
 
 function kmerProfile(sequence: string, blockCount: number, k = 6): KmerProfile {
@@ -1210,6 +1225,7 @@ function blocks(value: string, count: number): Array<{ index: number; value: str
 }
 
 function compatibleRecords(left: PostAnalysisRecord, right: PostAnalysisRecord, options: LineageOptions): boolean {
+  if (datasetScopeKey(left, options.scope ?? "global") !== datasetScopeKey(right, options.scope ?? "global")) return false;
   if (options.requireSameLocus && left.locus !== right.locus) return false;
   return callsCompatible(left.vCall, right.vCall, options.callResolution, options.ambiguity) &&
     callsCompatible(left.jCall, right.jCall, options.callResolution, options.ambiguity);
@@ -1219,8 +1235,9 @@ function recordIndexTokens(record: PostAnalysisRecord, options: LineageOptions):
   const v = callSet(record.vCall, options.callResolution, options.ambiguity);
   const j = callSet(record.jCall, options.callResolution, options.ambiguity);
   if (!v.length || !j.length) return [];
-  if (options.ambiguity === "strict") return [`${v.join("+")}\u0001${j.join("+")}`];
-  return v.flatMap((vCall) => j.map((jCall) => `${vCall}\u0001${jCall}`));
+  const scope = `${datasetScopeKey(record, options.scope ?? "global")}\u0001`;
+  if (options.ambiguity === "strict") return [`${scope}${v.join("+")}\u0001${j.join("+")}`];
+  return v.flatMap((vCall) => j.map((jCall) => `${scope}${vCall}\u0001${jCall}`));
 }
 
 export function assignLineages(
@@ -1371,6 +1388,8 @@ export function assignLineages(
       vCalls,
       jCalls,
       cdr3Length: representative.cdr3Nt.length,
+      studyScope: options.scope ?? "global",
+      studyGroup: datasetScopeValue(representative, options.scope ?? "global"),
     });
   }
   for (let index = 0; index < records.length; index += 1) {

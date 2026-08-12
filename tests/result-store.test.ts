@@ -93,6 +93,24 @@ test("constant-region evidence yields isotype facets and repertoire summaries", 
   await store.clear();
 });
 
+test("study metadata is indexed for dataset, sample, donor, cohort, and timepoint filtering", async () => {
+  const store = new AirrResultStore();
+  const studyHeader = `${header}\tswig_dataset_id\tsample_id\tsubject_id\tswig_cohort\tswig_timepoint`;
+  const baseRows = new TextDecoder().decode(makeBody(0, 3)).trimEnd().split("\n");
+  const body = [
+    `${baseRows[0]}\tdataset_1\tsample_A\tdonor_1\tcase\tday_0`,
+    `${baseRows[1]}\tdataset_2\tsample_B\tdonor_1\tcase\tday_30`,
+    `${baseRows[2]}\tdataset_3\tsample_C\tdonor_2\tcontrol\tday_0`,
+  ].join("\n") + "\n";
+  await store.appendBatch(studyHeader, body);
+  await store.finalize();
+  assert.deepEqual(store.facets().samples.map((item) => item.value).sort(), ["sample_A", "sample_B", "sample_C"]);
+  assert.equal(store.facets().subjects.find((item) => item.value === "donor_1")?.count, 2);
+  assert.equal((await store.page({ ...EMPTY_FILTERS, subjectId: "donor_1" }, 0, 10)).rows.length, 2);
+  assert.equal((await store.page({ ...EMPTY_FILTERS, cohort: "control", timepoint: "day_0" }, 0, 10)).rows[0].sampleId, "sample_C");
+  await store.clear();
+});
+
 test("lineage export adds AIRR clone_id values and leaves excluded records blank", async () => {
   const store = new AirrResultStore();
   await store.appendBatch(header, makeBody(0, 3));

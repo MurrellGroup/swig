@@ -1,8 +1,15 @@
+import { tableHeader, tableRow, type TableExportFormat } from "./export-formats.ts";
+
 export interface AirrIndexRecord {
   ordinal: number;
   chunk: number;
   line: number;
   sequenceId: string;
+  datasetId: string;
+  sampleId: string;
+  subjectId: string;
+  cohort: string;
+  timepoint: string;
   locus: string;
   vCall: string;
   dCall: string;
@@ -28,6 +35,11 @@ export interface AirrIndexRecord {
 export interface ResultFilters {
   sequenceId: string;
   cdr3: string;
+  datasetId: string;
+  sampleId: string;
+  subjectId: string;
+  cohort: string;
+  timepoint: string;
   locus: string;
   productive: string;
   vCall: string;
@@ -56,6 +68,11 @@ export interface FacetValue {
 }
 
 export interface ResultFacets {
+  datasets: FacetValue[];
+  samples: FacetValue[];
+  subjects: FacetValue[];
+  cohorts: FacetValue[];
+  timepoints: FacetValue[];
   loci: FacetValue[];
   productive: FacetValue[];
   vCalls: FacetValue[];
@@ -113,6 +130,11 @@ interface PackedIndexRecord {
   c: number;
   n: number;
   i: string;
+  e: string;
+  m: string;
+  b: string;
+  g: string;
+  t: string;
   l: string;
   v: string;
   d: string;
@@ -152,7 +174,7 @@ interface ManifestRecord {
   outputBytes: number;
 }
 
-interface DoubleDRecord {
+export interface DoubleDEvidenceRecord {
   ordinal: number;
   values: Record<string, string>;
 }
@@ -179,6 +201,16 @@ export interface DirectAirrOutput {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+function updateHash(states: Uint32Array, value: string) {
+  const bytes = encoder.encode(value);
+  for (const byte of bytes) {
+    states[0] = Math.imul(states[0] ^ byte, 0x01000193) >>> 0;
+    states[1] = Math.imul((states[1] + byte + 0x9e3779b9) ^ (states[1] >>> 13), 0x85ebca6b) >>> 0;
+    states[2] = Math.imul(states[2] ^ (byte + (states[2] << 6) + (states[2] >>> 2)), 0xc2b2ae35) >>> 0;
+    states[3] = Math.imul((states[3] ^ byte) + 0x27d4eb2d, 0x165667b1) >>> 0;
+  }
+}
 
 function cooperativeYield(): Promise<void> {
   const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
@@ -299,6 +331,7 @@ function numeric(value: string): number | null {
 function packRecord(record: AirrIndexRecord): PackedIndexRecord {
   return {
     o: record.ordinal, c: record.chunk, n: record.line, i: record.sequenceId,
+    e: record.datasetId, m: record.sampleId, b: record.subjectId, g: record.cohort, t: record.timepoint,
     l: record.locus, v: record.vCall, d: record.dCall, h: record.d2Call, j: record.jCall,
     k: record.cCall, y: record.isotype,
     p: record.productive, r: record.cdr3, a: record.cdr3Aa, u: record.junctionAa,
@@ -311,6 +344,7 @@ function packRecord(record: AirrIndexRecord): PackedIndexRecord {
 function unpackRecord(record: PackedIndexRecord): AirrIndexRecord {
   return {
     ordinal: record.o, chunk: record.c, line: record.n, sequenceId: record.i,
+    datasetId: record.e ?? "", sampleId: record.m ?? "", subjectId: record.b ?? "", cohort: record.g ?? "", timepoint: record.t ?? "",
     locus: record.l, vCall: record.v, dCall: record.d, d2Call: record.h ?? "", jCall: record.j,
     cCall: record.k, isotype: record.y,
     productive: record.p, cdr3: record.r, cdr3Aa: record.a, junctionAa: record.u,
@@ -323,6 +357,11 @@ function unpackRecord(record: PackedIndexRecord): AirrIndexRecord {
 export const EMPTY_FILTERS: ResultFilters = {
   sequenceId: "",
   cdr3: "",
+  datasetId: "",
+  sampleId: "",
+  subjectId: "",
+  cohort: "",
+  timepoint: "",
   locus: "",
   productive: "",
   vCall: "",
@@ -349,6 +388,11 @@ export class AirrResultStore {
   readonly databaseName = `swig-results-${Date.now()}-${crypto.randomUUID()}`;
   private readonly database: Promise<IDBDatabase>;
   private readonly facetMaps = {
+    datasets: new Map<string, number>(),
+    samples: new Map<string, number>(),
+    subjects: new Map<string, number>(),
+    cohorts: new Map<string, number>(),
+    timepoints: new Map<string, number>(),
     loci: new Map<string, number>(),
     productive: new Map<string, number>(),
     vCalls: new Map<string, number>(),
@@ -370,6 +414,7 @@ export class AirrResultStore {
   private doubleDHeaderLine = "";
   private doubleDHeaders: string[] = [];
   private doubleDRecordCount = 0;
+  private readonly fingerprintState = new Uint32Array([0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]);
   private finalized = false;
 
   constructor(directOutput?: DirectAirrOutput) {
@@ -382,10 +427,16 @@ export class AirrResultStore {
         database.createObjectStore("meta", { keyPath: "key" });
         database.createObjectStore("doubleD", { keyPath: "ordinal" });
         const records = database.createObjectStore("records", { keyPath: "o" });
+        records.createIndex("datasetId", "e");
+        records.createIndex("sampleId", "m");
+        records.createIndex("subjectId", "b");
+        records.createIndex("cohort", "g");
+        records.createIndex("timepoint", "t");
         records.createIndex("locus", "l");
         records.createIndex("productive", "p");
         records.createIndex("vCall", "v");
         records.createIndex("dCall", "d");
+        records.createIndex("d2Call", "h");
         records.createIndex("jCall", "j");
         records.createIndex("cCall", "k");
         records.createIndex("isotype", "y");
@@ -415,12 +466,21 @@ export class AirrResultStore {
     return this.doubleDRecordCount;
   }
 
+  get fingerprint(): string {
+    return [...this.fingerprintState].map((value) => value.toString(16).padStart(8, "0")).join("");
+  }
+
   get summary() {
     return { assigned: this.assigned, productive: this.productive, withCdr3: this.withCdr3 };
   }
 
   facets(): ResultFacets {
     return {
+      datasets: facet(this.facetMaps.datasets),
+      samples: facet(this.facetMaps.samples),
+      subjects: facet(this.facetMaps.subjects),
+      cohorts: facet(this.facetMaps.cohorts),
+      timepoints: facet(this.facetMaps.timepoints),
       loci: facet(this.facetMaps.loci),
       productive: facet(this.facetMaps.productive),
       vCalls: facet(this.facetMaps.vCalls),
@@ -505,6 +565,7 @@ export class AirrResultStore {
     if (!this.headerLine) {
       this.headerLine = normalizedHeader;
       this.headers = this.headerLine.split("\t");
+      updateHash(this.fingerprintState, `${this.headerLine}\n`);
       const headerBytes = encoder.encode(`${this.headerLine}\n`);
       this.outputByteCount += headerBytes.byteLength;
       if (this.directOutput) await this.directOutput.writable.write(headerBytes);
@@ -515,6 +576,7 @@ export class AirrResultStore {
     const bodyBytes = encoder.encode(bodyText);
     const lines = bodyText.split("\n").map((line) => line.replace(/\r$/, "")).filter(Boolean);
     if (!lines.length) return;
+    for (const line of lines) updateHash(this.fingerprintState, `${line}\n`);
     const doubleDByLine = new Map<number, Record<string, string>>();
     if (doubleD) {
       const incomingHeader = doubleD.header.replace(/\r$/, "");
@@ -574,6 +636,11 @@ export class AirrResultStore {
         chunk: chunkIndex,
         line,
         sequenceId: at(values, "sequence_id"),
+        datasetId: at(values, "swig_dataset_id"),
+        sampleId: at(values, "sample_id"),
+        subjectId: at(values, "subject_id"),
+        cohort: at(values, "swig_cohort"),
+        timepoint: at(values, "swig_timepoint"),
         locus: at(values, "locus"),
         vCall: at(values, "v_call"),
         dCall: doubleDByLine.get(line)?.d_call || at(values, "d_call"),
@@ -602,12 +669,17 @@ export class AirrResultStore {
       records.put(packRecord(record));
       const doubleDValues = doubleDByLine.get(line);
       if (doubleDValues) {
-        doubleDRecords.put({ ordinal: record.ordinal, values: doubleDValues } satisfies DoubleDRecord);
+        doubleDRecords.put({ ordinal: record.ordinal, values: doubleDValues } satisfies DoubleDEvidenceRecord);
         this.doubleDRecordCount += 1;
       }
       if (record.vCall && record.jCall) this.assigned += 1;
       if (record.productive === "T") this.productive += 1;
       if (record.cdr3 || record.cdr3Aa) this.withCdr3 += 1;
+      bump(this.facetMaps.datasets, record.datasetId);
+      bump(this.facetMaps.samples, record.sampleId);
+      bump(this.facetMaps.subjects, record.subjectId);
+      bump(this.facetMaps.cohorts, record.cohort);
+      bump(this.facetMaps.timepoints, record.timepoint);
       bump(this.facetMaps.loci, record.locus);
       bump(this.facetMaps.productive, record.productive);
       bump(this.facetMaps.vCalls, record.vCall);
@@ -642,6 +714,7 @@ export class AirrResultStore {
     const normalizedCdr3 = filters.cdr3.trim().toUpperCase();
     const filtered = Boolean(
       normalizedId || normalizedCdr3 || filters.locus || filters.productive ||
+      filters.datasetId || filters.sampleId || filters.subjectId || filters.cohort || filters.timepoint ||
       filters.vCall || filters.dCall || filters.jCall || filters.cCall || filters.isotype ||
       filters.minVIdentity || filters.minDIdentity || filters.minJIdentity || filters.minCIdentity || filters.minCdr3AaLength ||
       filters.maxCdr3AaLength || filters.vjInFrame || filters.stopCodon ||
@@ -659,16 +732,23 @@ export class AirrResultStore {
     let source: IDBObjectStore | IDBIndex = store;
     let range: IDBKeyRange | undefined;
     const exactCandidates: Array<[keyof ResultFilters, string]> = [
+      ["datasetId", "datasetId"], ["sampleId", "sampleId"], ["subjectId", "subjectId"],
+      ["cohort", "cohort"], ["timepoint", "timepoint"],
       ["vCall", "vCall"], ["jCall", "jCall"], ["dCall", "dCall"],
       ["cCall", "cCall"], ["isotype", "isotype"],
       ["locus", "locus"], ["productive", "productive"],
     ];
-    for (const [filterName, indexName] of exactCandidates) {
-      const value = filters[filterName];
-      if (typeof value === "string" && value) {
-        source = store.index(indexName);
-        range = IDBKeyRange.only(value);
-        break;
+    if (filters.hasDoubleD) {
+      source = store.index("d2Call");
+      range = IDBKeyRange.lowerBound("", true);
+    } else {
+      for (const [filterName, indexName] of exactCandidates) {
+        const value = filters[filterName];
+        if (typeof value === "string" && value) {
+          source = store.index(indexName);
+          range = IDBKeyRange.only(value);
+          break;
+        }
       }
     }
 
@@ -676,6 +756,11 @@ export class AirrResultStore {
       if (normalizedId && !record.sequenceId.toLowerCase().includes(normalizedId)) return false;
       if (normalizedCdr3 && !record.cdr3.toUpperCase().includes(normalizedCdr3) &&
         !record.cdr3Aa.toUpperCase().includes(normalizedCdr3)) return false;
+      if (filters.datasetId && record.datasetId !== filters.datasetId) return false;
+      if (filters.sampleId && record.sampleId !== filters.sampleId) return false;
+      if (filters.subjectId && record.subjectId !== filters.subjectId) return false;
+      if (filters.cohort && record.cohort !== filters.cohort) return false;
+      if (filters.timepoint && record.timepoint !== filters.timepoint) return false;
       if (filters.locus && record.locus !== filters.locus) return false;
       if (filters.productive && record.productive !== filters.productive) return false;
       if (filters.vCall && record.vCall !== filters.vCall) return false;
@@ -746,7 +831,7 @@ export class AirrResultStore {
     const values = line.split("\t");
     const row = Object.fromEntries(this.headers.map((header, index) => [header, values[index] ?? ""]));
     const doubleDTransaction = database.transaction("doubleD", "readonly");
-    const doubleD = await requestResult(doubleDTransaction.objectStore("doubleD").get(record.ordinal)) as DoubleDRecord | undefined;
+    const doubleD = await requestResult(doubleDTransaction.objectStore("doubleD").get(record.ordinal)) as DoubleDEvidenceRecord | undefined;
     return doubleD ? { ...row, ...doubleD.values } : row;
   }
 
@@ -787,7 +872,7 @@ export class AirrResultStore {
       const transaction = database.transaction("doubleD", "readonly");
       const doubleDStore = transaction.objectStore("doubleD");
       await Promise.all([...result.entries()].map(async ([ordinal, detail]) => {
-        const doubleD = await requestResult(doubleDStore.get(ordinal)) as DoubleDRecord | undefined;
+        const doubleD = await requestResult(doubleDStore.get(ordinal)) as DoubleDEvidenceRecord | undefined;
         if (doubleD) detail.values = { ...detail.values, ...doubleD.values };
       }));
     }
@@ -933,18 +1018,77 @@ export class AirrResultStore {
     }
   }
 
+  async writeAirrFormat(
+    format: TableExportFormat,
+    write: (part: string | Blob | Uint8Array) => Promise<void>,
+    includeMask?: Uint8Array,
+  ): Promise<void> {
+    if (format === "tsv" && !includeMask) return this.writeAirr(write);
+    if (includeMask && includeMask.length !== this.count) throw new Error("The export mask does not match the result-store record count.");
+    const header = tableHeader(this.headers, format);
+    if (header) await write(header);
+    await this.scanAirrRows(this.headers, async (rows) => {
+      let body = "";
+      for (const row of rows) body += tableRow(this.headers, row.values, format);
+      if (body) await write(body);
+    }, { batchSize: 2000, includeMask });
+  }
+
+  async doubleDRecords(): Promise<DoubleDEvidenceRecord[]> {
+    if (!this.doubleDRecordCount) return [];
+    const database = await this.database;
+    const transaction = database.transaction("doubleD", "readonly");
+    return requestResult(transaction.objectStore("doubleD").getAll()) as Promise<DoubleDEvidenceRecord[]>;
+  }
+
+  async doubleDMask(): Promise<Uint8Array> {
+    const mask = new Uint8Array(this.count);
+    for (const record of await this.doubleDRecords()) if (record.values.d2_call) mask[record.ordinal] = 1;
+    return mask;
+  }
+
+  async importDoubleDRecords(records: DoubleDEvidenceRecord[]): Promise<void> {
+    if (!records.length) return;
+    for (const evidence of records) if (!Number.isInteger(evidence.ordinal) || evidence.ordinal < 0 || evidence.ordinal >= this.count) {
+      throw new Error("The session contains a double-D ordinal outside the linked AIRR table.");
+    }
+    const indexed = new Map((await this.indexRecords(records.map((record) => record.ordinal))).map((record) => [record.ordinal, record]));
+    const database = await this.database;
+    const transaction = database.transaction(["doubleD", "records"], "readwrite");
+    const evidenceStore = transaction.objectStore("doubleD");
+    const recordStore = transaction.objectStore("records");
+    const headers = new Set<string>();
+    for (const evidence of records) {
+      Object.keys(evidence.values).forEach((header) => headers.add(header));
+      evidenceStore.put(evidence);
+      const current = indexed.get(evidence.ordinal);
+      if (current) recordStore.put(packRecord({ ...current, dCall: evidence.values.d_call || current.dCall, d2Call: evidence.values.d2_call ?? "", dIdentity: numeric(evidence.values.d_identity) ?? current.dIdentity }));
+    }
+    await transactionDone(transaction);
+    this.doubleDHeaders = [...headers];
+    this.doubleDHeaderLine = this.doubleDHeaders.join("\t");
+    this.doubleDRecordCount = records.length;
+  }
+
   async writeDoubleD(write: (part: string | Blob | Uint8Array) => Promise<void>): Promise<void> {
+    return this.writeDoubleDFormat("tsv", write);
+  }
+
+  async writeDoubleDFormat(
+    format: TableExportFormat,
+    write: (part: string | Blob | Uint8Array) => Promise<void>,
+  ): Promise<void> {
     if (!this.doubleDHeaderLine || !this.doubleDRecordCount) {
       throw new Error("This analysis has no supported double-D calls to export.");
     }
     const exportedHeaders = this.doubleDHeaders.filter((header) => header !== "swig_batch_record_index");
-    await write(`swig_airr_ordinal\t${exportedHeaders.join("\t")}\n`);
-    const database = await this.database;
-    const transaction = database.transaction("doubleD", "readonly");
-    const records = await requestResult(transaction.objectStore("doubleD").getAll()) as DoubleDRecord[];
+    const fields = ["swig_airr_ordinal", ...exportedHeaders];
+    const header = tableHeader(fields, format);
+    if (header) await write(header);
+    const records = await this.doubleDRecords();
     let body = "";
     for (const record of records) {
-      body += `${record.ordinal + 1}\t${exportedHeaders.map((header) => record.values[header] ?? "").join("\t")}\n`;
+      body += tableRow(fields, { swig_airr_ordinal: record.ordinal + 1, ...record.values }, format);
       if (body.length >= 1_000_000) {
         await write(body);
         body = "";
@@ -953,59 +1097,61 @@ export class AirrResultStore {
     if (body) await write(body);
   }
 
+  async doubleDTsv(): Promise<string> {
+    const parts: string[] = [];
+    await this.writeDoubleDFormat("tsv", async (part) => { parts.push(typeof part === "string" ? part : await new Response(part instanceof Blob ? part : new Blob([part.slice().buffer])).text()); });
+    return parts.join("");
+  }
+
   async writeDeduplicatedAirr(
     counts: Uint32Array,
     write: (part: string | Blob | Uint8Array) => Promise<void>,
   ): Promise<void> {
+    return this.writeDeduplicatedAirrFormat(counts, "tsv", write);
+  }
+
+  async writeDeduplicatedAirrFormat(
+    counts: Uint32Array,
+    format: TableExportFormat,
+    write: (part: string | Blob | Uint8Array) => Promise<void>,
+  ): Promise<void> {
     if (counts.length < this.count) throw new Error("The duplicate-count vector does not cover every AIRR record.");
-    await write(`${this.headerLine}\tduplicate_count\n`);
-    const database = await this.database;
-    let ordinal = 0;
-    for (let index = 0; index < this.nextChunk; index += 1) {
-      const transaction = database.transaction("chunks", "readonly");
-      const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
-      if (!chunk) continue;
-      const lines = (await this.chunkText(chunk)).split("\n");
+    const fields = [...this.headers, "duplicate_count"];
+    const header = tableHeader(fields, format);
+    if (header) await write(header);
+    await this.scanAirrRows(this.headers, async (rows) => {
       let body = "";
-      for (const rawLine of lines) {
-        const line = rawLine.replace(/\r$/, "");
-        if (!line) continue;
-        const count = counts[ordinal++];
-        if (count) body += `${line}\t${count}\n`;
-      }
+      for (const row of rows) if (counts[row.ordinal]) body += tableRow(fields, { ...row.values, duplicate_count: counts[row.ordinal] }, format);
       if (body) await write(body);
-    }
+    }, { batchSize: 2000 });
   }
 
   async writeLineageAirr(
     assignments: Int32Array,
     write: (part: string | Blob | Uint8Array) => Promise<void>,
   ): Promise<void> {
+    return this.writeLineageAirrFormat(assignments, "tsv", write);
+  }
+
+  async writeLineageAirrFormat(
+    assignments: Int32Array,
+    format: TableExportFormat,
+    write: (part: string | Blob | Uint8Array) => Promise<void>,
+  ): Promise<void> {
     if (assignments.length < this.count) throw new Error("The lineage-assignment vector does not cover every AIRR record.");
     const clonePosition = this.headers.indexOf("clone_id");
-    await write(`${clonePosition >= 0 ? this.headerLine : `${this.headerLine}\tclone_id`}\n`);
-    const database = await this.database;
-    let ordinal = 0;
-    for (let index = 0; index < this.nextChunk; index += 1) {
-      const transaction = database.transaction("chunks", "readonly");
-      const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
-      if (!chunk) continue;
-      const lines = (await this.chunkText(chunk)).split("\n");
+    const fields = clonePosition >= 0 ? [...this.headers] : [...this.headers, "clone_id"];
+    const header = tableHeader(fields, format);
+    if (header) await write(header);
+    await this.scanAirrRows(this.headers, async (rows) => {
       let body = "";
-      for (const rawLine of lines) {
-        const line = rawLine.replace(/\r$/, "");
-        if (!line) continue;
-        const lineage = assignments[ordinal++];
+      for (const row of rows) {
+        const lineage = assignments[row.ordinal];
         const cloneId = lineage > 0 ? `swig_lineage_${lineage}` : "";
-        if (clonePosition < 0) body += `${line}\t${cloneId}\n`;
-        else {
-          const values = line.split("\t");
-          values[clonePosition] = cloneId;
-          body += `${values.join("\t")}\n`;
-        }
+        body += tableRow(fields, { ...row.values, clone_id: cloneId }, format);
       }
       if (body) await write(body);
-    }
+    }, { batchSize: 2000 });
   }
 
   async clear(): Promise<void> {

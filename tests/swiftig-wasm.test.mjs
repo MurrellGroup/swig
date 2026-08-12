@@ -53,6 +53,10 @@ async function makeRuntime() {
     return count;
   }
 
+  function setCallingProfile(profile) {
+    return exports.swig_set_calling_profile(profile === "igblast_compatible" ? 1 : profile === "igblast_balanced" ? 2 : profile === "truth_optimized" ? 0 : Number(profile));
+  }
+
   function annotate(query, format, strand = 0) {
     const [pointer, size] = put(query);
     const count = exports.swig_annotate(pointer, size, format, 600, strand);
@@ -115,7 +119,7 @@ async function makeRuntime() {
     };
   }
 
-  return { initialize, annotate, annotateDoubleD };
+  return { initialize, annotate, annotateDoubleD, setCallingProfile };
 }
 
 function referenceFor(locus, customJName) {
@@ -189,6 +193,27 @@ test("reference pack covers complete IG and TR loci", () => {
     }
   }
   assert.deepEqual([...observed].sort(), ["IGH", "IGK", "IGL", "TRA", "TRB", "TRD", "TRG"]);
+});
+
+test("calling profiles are explicit, switchable, and reject unknown profile identifiers", async () => {
+  const human = pack.species.find((entry) => entry.name === "Homo sapiens");
+  assert.ok(human?.loci.IGH);
+  const v = human.loci.IGH.V[0];
+  const j = human.loci.IGH.J[0];
+  const d = ["IGHD_PROFILE_TEST*01", "ACGTA"];
+  const runtime = await makeRuntime();
+  runtime.initialize({ V: asFasta([v]), D: asFasta([d]), J: asFasta([j]), C: "" });
+  const query = `>profile_case\n${v[1]}AAA${d[1]}TTT${j[1]}\n`;
+
+  assert.equal(runtime.setCallingProfile("truth_optimized"), 0);
+  const defaultResult = runtime.annotate(query, 1);
+  assert.equal(runtime.setCallingProfile("igblast_compatible"), 0);
+  const compatibilityResult = runtime.annotate(query, 1);
+  assert.equal(runtime.setCallingProfile(2), -1);
+  assert.equal(runtime.setCallingProfile("truth_optimized"), 0);
+  assert.equal(runtime.annotate(query, 1).tsv, defaultResult.tsv, "resetting the profile did not restore default calls");
+  assert.equal(defaultResult.rows[0].d_call, "");
+  assert.equal(compatibilityResult.rows[0].d_call, d[0]);
 });
 
 test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, and J-only swaps", async () => {

@@ -1,5 +1,6 @@
 import type { ChmmOptions } from "./post-analysis-core";
 import type { AirrOutputWritable, AirrResultStore } from "./result-store";
+import { tableHeader, tableRow, type TableExportFormat } from "./export-formats";
 
 export type ChmmSegment = "V" | "J";
 
@@ -249,13 +250,29 @@ export async function writeChmmairraTsv(
   dashboard: ChmmDashboard,
   writable: Pick<AirrOutputWritable, "write">,
 ): Promise<void> {
+  return writeChmmairra(store, dashboard, "tsv", writable);
+}
+
+export async function writeChmmairra(
+  store: AirrResultStore,
+  dashboard: ChmmDashboard,
+  format: TableExportFormat,
+  writable: Pick<AirrOutputWritable, "write">,
+): Promise<void> {
   const segment = dashboard.segment.toLowerCase();
-  await writable.write(`sequence_id\t${segment}_chimera_probability\t${segment}_chimeric\t${segment}_distance_from_reference\n`);
+  const fields = ["sequence_id", `${segment}_chimera_probability`, `${segment}_chimeric`, `${segment}_distance_from_reference`];
+  const header = tableHeader(fields, format);
+  if (header) await writable.write(header);
   await store.scanAirrRows(["sequence_id"], async (rows) => {
     let body = "";
     for (const row of rows) {
       const probability = dashboard.probabilities[row.ordinal];
-      body += `${row.values.sequence_id}\t${Number.isNaN(probability) ? "" : probability.toFixed(8)}\t${Number.isNaN(probability) ? "" : probability >= dashboard.threshold ? "T" : "F"}\t${dashboard.dfr[row.ordinal]}\n`;
+      body += tableRow(fields, {
+        sequence_id: row.values.sequence_id,
+        [`${segment}_chimera_probability`]: Number.isNaN(probability) ? "" : probability.toFixed(8),
+        [`${segment}_chimeric`]: Number.isNaN(probability) ? "" : probability >= dashboard.threshold ? "T" : "F",
+        [`${segment}_distance_from_reference`]: dashboard.dfr[row.ordinal],
+      }, format);
     }
     await writable.write(body);
   });

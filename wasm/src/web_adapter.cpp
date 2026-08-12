@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -24,6 +25,8 @@ using swiftig::GermlineDatabase;
 using swiftig::SequenceRecord;
 
 std::unique_ptr<GermlineDatabase> g_database;
+std::optional<EngineOptions> g_engine_options_override;
+int g_calling_profile = 0;
 std::string g_result;
 std::string g_double_d_result;
 int g_double_d_count = 0;
@@ -276,6 +279,25 @@ std::string error_text() {
     return g_error.empty() ? "SwiftIG could not complete the request" : g_error;
 }
 
+EngineOptions configured_options(int minimum_identity_per_mille, int strand) {
+    EngineOptions options;
+    if (g_engine_options_override) {
+        options = *g_engine_options_override;
+    } else if (g_calling_profile == 1) {
+        // Calibrated solely against the supplied simulated human-IGH IgBLAST
+        // calls. This is an explicit compatibility profile, not the default.
+        options.d_scoring = {2, -4, -11, -1};
+        options.top_d = 3;
+        options.min_d_match = 5;
+        options.j_scoring = {2, -4, -13, -1};
+        options.top_j = 2;
+    }
+    options.min_identity = std::clamp(minimum_identity_per_mille, 0, 1000) / 1000.0;
+    options.search_forward = strand != 2;
+    options.search_reverse = strand != 1;
+    return options;
+}
+
 }  // namespace
 
 extern "C" {
@@ -285,6 +307,13 @@ void* swig_alloc(std::size_t size) { return std::malloc(size); }
 
 __attribute__((export_name("swig_free")))
 void swig_free(void* pointer) { std::free(pointer); }
+
+__attribute__((export_name("swig_set_calling_profile")))
+int swig_set_calling_profile(int profile) noexcept {
+    if (profile != 0 && profile != 1) return -1;
+    g_calling_profile = profile;
+    return 0;
+}
 
 __attribute__((export_name("swig_init_database")))
 int swig_init_database(
@@ -329,10 +358,7 @@ int swig_annotate(
     if (!memory_view(query_data, query_size, query_input)) return -1;
     std::vector<SequenceRecord> records;
     if (!parse_queries(query_input, format, records)) return -1;
-    EngineOptions options;
-    options.min_identity = std::clamp(minimum_identity_per_mille, 0, 1000) / 1000.0;
-    options.search_forward = strand != 2;
-    options.search_reverse = strand != 1;
+    const auto options = configured_options(minimum_identity_per_mille, strand);
     AnnotationEngine engine(*g_database, options);
     std::ostringstream output;
     swiftig::write_airr_header(output);
@@ -368,10 +394,7 @@ int swig_annotate_double_d(
     if (!memory_view(query_data, query_size, query_input)) return -1;
     std::vector<SequenceRecord> records;
     if (!parse_queries(query_input, format, records)) return -1;
-    EngineOptions engine_options;
-    engine_options.min_identity = std::clamp(minimum_identity_per_mille, 0, 1000) / 1000.0;
-    engine_options.search_forward = strand != 2;
-    engine_options.search_reverse = strand != 1;
+    const auto engine_options = configured_options(minimum_identity_per_mille, strand);
     AnnotationEngine engine(*g_database, engine_options);
     swiftig::DoubleDOptions double_d_options;
     double_d_options.mode = mode == 1
@@ -437,6 +460,46 @@ std::size_t swig_gene_count(int segment) noexcept {
         default: return 0;
     }
 }
+
+// Benchmark-only configuration hook. The browser UI never invokes this export;
+// normal annotation therefore continues to use EngineOptions defaults. Keeping
+// it in the WASM ABI makes simulated-reference tuning exactly reproducible
+// without rebuilding one binary for every scoring combination.
+__attribute__((export_name("swig_set_tuning_options")))
+int swig_set_tuning_options(
+    int d_match,
+    int d_mismatch,
+    int d_gap_open,
+    int d_gap_extend,
+    int top_d,
+    int min_d_match,
+    int j_match,
+    int j_mismatch,
+    int j_gap_open,
+    int j_gap_extend,
+    int top_j,
+    int min_j_length) noexcept {
+    EngineOptions options;
+    options.d_scoring = {
+        std::clamp(d_match, 1, 20),
+        std::clamp(d_mismatch, -50, 0),
+        std::clamp(d_gap_open, -100, 0),
+        std::clamp(d_gap_extend, -50, 0)};
+    options.top_d = static_cast<std::size_t>(std::clamp(top_d, 1, 1000));
+    options.min_d_match = static_cast<std::size_t>(std::clamp(min_d_match, 1, 100));
+    options.j_scoring = {
+        std::clamp(j_match, 1, 20),
+        std::clamp(j_mismatch, -50, 0),
+        std::clamp(j_gap_open, -100, 0),
+        std::clamp(j_gap_extend, -50, 0)};
+    options.top_j = static_cast<std::size_t>(std::clamp(top_j, 1, 1000));
+    options.min_j_length = static_cast<std::size_t>(std::clamp(min_j_length, 1, 500));
+    g_engine_options_override = options;
+    return 0;
+}
+
+__attribute__((export_name("swig_clear_tuning_options")))
+void swig_clear_tuning_options() noexcept { g_engine_options_override.reset(); }
 
 __attribute__((export_name("swig_version")))
 const char* swig_version() noexcept { return swiftig::kVersion; }

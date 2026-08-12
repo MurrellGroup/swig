@@ -1,12 +1,14 @@
 /// <reference lib="webworker" />
 
 import { WASI } from "@bjorn3/browser_wasi_shim";
-import type { DoubleDScreenOptions } from "./swiftig-runtime";
+import { applyBalancedDFilter, reconcileBalancedDoubleD } from "./balanced-calling-profile";
+import type { CallingProfile, DoubleDScreenOptions } from "./swiftig-runtime";
 
 interface SwiftIgExports extends WebAssembly.Exports {
   memory: WebAssembly.Memory;
   swig_alloc: (size: number) => number;
   swig_free: (pointer: number) => void;
+  swig_set_calling_profile: (profile: number) => number;
   swig_init_database: (
     vPointer: number, vSize: number, dPointer: number, dSize: number,
     jPointer: number, jSize: number, cPointer: number, cSize: number,
@@ -35,6 +37,7 @@ interface InitializeRequest {
   worker: number;
   module: WebAssembly.Module;
   references: { V: string; D: string; J: string; C: string };
+  callingProfile: CallingProfile;
 }
 
 interface AnnotateRequest {
@@ -51,6 +54,7 @@ interface AnnotateRequest {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 let runtime: SwiftIgExports | null = null;
+let activeCallingProfile: CallingProfile = "truth_optimized";
 
 function putBytes(exports: SwiftIgExports, bytes: Uint8Array): [number, number] {
   const pointer = exports.swig_alloc(bytes.byteLength);
@@ -81,6 +85,11 @@ async function initialize(request: InitializeRequest) {
     exports: { memory: WebAssembly.Memory; _initialize?: () => unknown };
   });
   const exports = instance.exports as SwiftIgExports;
+  if (exports.swig_set_calling_profile(
+    request.callingProfile === "truth_optimized" ? 0 : 1,
+  ) !== 0) {
+    throw new Error("SwiftIG rejected the selected calling profile.");
+  }
   const allocations = [
     putText(exports, request.references.V),
     putText(exports, request.references.D),
@@ -94,6 +103,7 @@ async function initialize(request: InitializeRequest) {
     );
     if (genes < 0) throw new Error(readError(exports));
     runtime = exports;
+    activeCallingProfile = request.callingProfile;
     self.postMessage({ type: "ready", worker: request.worker, genes });
   } finally {
     allocations.forEach(([pointer]) => exports.swig_free(pointer));
@@ -142,7 +152,11 @@ function annotate(request: AnnotateRequest) {
   const newline = wasmView.indexOf(10);
   if (newline < 0) throw new Error("SwiftIG returned an invalid AIRR table.");
   const header = decoder.decode(wasmView.subarray(0, newline)).replace(/\r$/, "");
-  const body = wasmView.slice(newline + 1);
+  let body = wasmView.slice(newline + 1);
+  const balanced = activeCallingProfile === "igblast_balanced"
+    ? applyBalancedDFilter(header, body)
+    : null;
+  if (balanced) body = balanced.body;
   const message: Record<string, unknown> = {
     type: "batch",
     batch: request.batch,
@@ -160,8 +174,16 @@ function annotate(request: AnnotateRequest) {
     );
     const doubleDNewline = doubleDView.indexOf(10);
     if (doubleDNewline < 0) throw new Error("SwiftIG returned an invalid double-D evidence table.");
-    const doubleDBody = doubleDView.slice(doubleDNewline + 1);
-    message.doubleDHeader = decoder.decode(doubleDView.subarray(0, doubleDNewline)).replace(/\r$/, "");
+    const doubleDHeader = decoder.decode(doubleDView.subarray(0, doubleDNewline)).replace(/\r$/, "");
+    let doubleDBody = doubleDView.slice(doubleDNewline + 1);
+    if (balanced) {
+      doubleDBody = reconcileBalancedDoubleD(
+        doubleDHeader,
+        doubleDBody,
+        balanced.suppressedSequenceIds,
+      );
+    }
+    message.doubleDHeader = doubleDHeader;
     message.doubleDBody = doubleDBody.buffer;
     message.doubleDCount = runtime.swig_double_d_count();
     transfers.push(doubleDBody.buffer);

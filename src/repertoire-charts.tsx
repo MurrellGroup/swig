@@ -6,6 +6,7 @@ import type {
   RepertoirePair,
   RepertoireSnapshot,
 } from "./result-store";
+import { tableHeader, tableRow } from "./export-formats";
 
 type Metric = "percent" | "count";
 type Palette = "teal" | "coral" | "indigo";
@@ -31,6 +32,8 @@ function downloadSvg(svg: SVGSVGElement | null, name: string) {
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+function downloadCsv(rows:Array<Record<string,string|number>>,name:string){if(!rows.length)return;const fields=Object.keys(rows[0]);let text=tableHeader(fields,"csv");for(const row of rows)text+=tableRow(fields,row,"csv");const url=URL.createObjectURL(new Blob([text],{type:"text/csv;charset=utf-8"}));const anchor=document.createElement("a");anchor.href=url;anchor.download=name.replace(/\.svg$/i,".csv");anchor.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
 
 function geneName(value: string): string {
   return value.replace(/\*[^,;]+/g, "");
@@ -80,7 +83,7 @@ function FrequencyChart({ data, total, metric, palette, title, subtitle, filenam
   const chartWidth = 570;
   return (
     <article className="figure-card">
-      <header><div><span className="section-kicker">Ranked composition</span><h3>{title}</h3><p>{subtitle}</p></div><SvgButton svg={svg} name={filename} /></header>
+      <header><div><span className="section-kicker">Ranked composition</span><h3>{title}</h3><p>{subtitle}</p></div><div className="post-chart-actions"><button type="button" onClick={()=>downloadCsv(plotted.map(item=>({call:item.value,count:item.count,value:item.plotted,measure:metric})),filename)}>Data CSV ↓</button><SvgButton svg={svg} name={filename} /></div></header>
       <div className="svg-frame">
         {plotted.length ? <svg ref={svg} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}>
           <title>{title}</title><desc>{subtitle}</desc>
@@ -135,7 +138,7 @@ function DistributionChart({ snapshot, series, metric, palette, filename }: {
   const barWidth = Math.max(2, plotWidth / range - 1);
   return (
     <article className="figure-card">
-      <header><div><span className="section-kicker">Distribution</span><h3>{title}</h3><p>{subtitle}</p></div><SvgButton svg={svg} name={filename} /></header>
+      <header><div><span className="section-kicker">Distribution</span><h3>{title}</h3><p>{subtitle}</p></div><div className="post-chart-actions"><button type="button" onClick={()=>downloadCsv(values.map(item=>({bin:item.value,count:item.count,value:item.plotted,measure:metric})),filename)}>Data CSV ↓</button><SvgButton svg={svg} name={filename} /></div></header>
       <div className="svg-frame">
         {values.length ? <svg ref={svg} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}>
           <title>{title}</title><desc>{subtitle}</desc><rect width={width} height={height} fill="#fffdf7" />
@@ -202,7 +205,7 @@ function PairingChart({ pairs, resolution, palette, filename }: {
   const subtitle = "Circle area is proportional to record count; axes retain the 12 most frequent calls.";
   return (
     <article className="figure-card figure-card-wide">
-      <header><div><span className="section-kicker">Pair structure</span><h3>{title}</h3><p>{subtitle}</p></div><SvgButton svg={svg} name={filename} /></header>
+      <header><div><span className="section-kicker">Pair structure</span><h3>{title}</h3><p>{subtitle}</p></div><div className="post-chart-actions"><button type="button" onClick={()=>downloadCsv(aggregated.map(pair=>({v_call:pair.v,j_call:pair.j,count:pair.count})),filename)}>Data CSV ↓</button><SvgButton svg={svg} name={filename} /></div></header>
       <div className="svg-frame">
         {matrix.length ? <svg ref={svg} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}>
           <title>{title}</title><desc>{subtitle}</desc><rect width={width} height={height} fill="#fffdf7" />

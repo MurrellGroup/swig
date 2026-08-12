@@ -9,6 +9,7 @@ import type {
   QueryHit,
   QueryOptions,
 } from "./post-analysis-core";
+import type { DatasetScope } from "./study-design";
 
 export interface DedupDashboard {
   mode: CollapseMode;
@@ -81,7 +82,8 @@ export class PostAnalysisRuntime {
       await this.request({ type: "init", total: this.store.count });
       const fields = [
         "sequence_id", "sequence", "sequence_alignment", "locus", "v_call", "j_call",
-        "cdr3", "cdr3_aa", "productive", "duplicate_count",
+        "cdr3", "cdr3_aa", "productive", "duplicate_count", "swig_dataset_id", "sample_id",
+        "subject_id", "swig_cohort", "swig_timepoint",
       ];
       await this.store.scanAirrRows(fields, async (rows) => {
         if (signal?.aborted) throw new DOMException("Post-analysis was cancelled.", "AbortError");
@@ -92,9 +94,9 @@ export class PostAnalysisRuntime {
     return this.indexing;
   }
 
-  async deduplicate(key: DedupKey, unresolvedPolicy: "discard" | "retain" = "discard"): Promise<DedupDashboard> {
+  async deduplicate(key: DedupKey, unresolvedPolicy: "discard" | "retain" = "discard", scope: DatasetScope = "global"): Promise<DedupDashboard> {
     await this.ensureIndexed();
-    return this.request<DedupDashboard>({ type: "dedup", key, unresolvedPolicy });
+    return this.request<DedupDashboard>({ type: "dedup", key, unresolvedPolicy, scope });
   }
 
   async denoise(options: DenoiseOptions, onProgress?: (processed: number, total: number) => void, signal?: AbortSignal): Promise<DedupDashboard> {
@@ -177,6 +179,19 @@ export class PostAnalysisRuntime {
     return result.counts;
   }
 
+  async dedupState(): Promise<{ counts: Uint32Array; representatives: Int32Array }> {
+    return this.request({ type: "dedupState" });
+  }
+
+  async restoreState(state: {
+    activeMask?: Uint8Array | null;
+    dedup?: { dashboard: DedupDashboard; counts: Uint32Array; representatives: Int32Array };
+    lineages?: { dashboard: LineageDashboard; assignments: Int32Array };
+  }): Promise<void> {
+    await this.ensureIndexed();
+    await this.request({ type: "restoreState", ...state });
+  }
+
   terminate() {
     this.worker.terminate();
     const error = new Error("Post-analysis was closed.");
@@ -189,6 +204,11 @@ function toWorkerRow(row: AirrScanRow): WorkerResult {
   return {
     ordinal: row.ordinal,
     sequence_id: row.values.sequence_id,
+    swig_dataset_id: row.values.swig_dataset_id,
+    sample_id: row.values.sample_id,
+    subject_id: row.values.subject_id,
+    swig_cohort: row.values.swig_cohort,
+    swig_timepoint: row.values.swig_timepoint,
     sequence: row.values.sequence,
     sequence_alignment: row.values.sequence_alignment,
     locus: row.values.locus,

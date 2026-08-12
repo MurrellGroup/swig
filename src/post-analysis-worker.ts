@@ -19,10 +19,16 @@ import {
   type PostAnalysisRecord,
   type QueryOptions,
 } from "./post-analysis-core";
+import type { DatasetScope } from "./study-design";
 
 interface IngestRow {
   ordinal: number;
   sequence_id: string;
+  swig_dataset_id: string;
+  sample_id: string;
+  subject_id: string;
+  swig_cohort: string;
+  swig_timepoint: string;
   sequence: string;
   sequence_alignment: string;
   locus: string;
@@ -39,7 +45,7 @@ type Request =
   | { id: number; type: "ingest"; rows: IngestRow[] }
   | { id: number; type: "initSketches" }
   | { id: number; type: "ingestSketches"; rows: Array<{ ordinal: number; sequence: string }> }
-  | { id: number; type: "dedup"; key: DedupKey; unresolvedPolicy: "discard" | "retain" }
+  | { id: number; type: "dedup"; key: DedupKey; unresolvedPolicy: "discard" | "retain"; scope: DatasetScope }
   | { id: number; type: "denoiseInit"; options: DenoiseOptions }
   | { id: number; type: "denoiseIngest"; rows: Array<{ ordinal: number; sequence: string }> }
   | { id: number; type: "denoiseFinish" }
@@ -53,6 +59,8 @@ type Request =
   | { id: number; type: "lineageAssignments" }
   | { id: number; type: "dedupMembers"; representative: number; offset: number; limit: number }
   | { id: number; type: "dedupCounts" }
+  | { id: number; type: "dedupState" }
+  | { id: number; type: "restoreState"; activeMask?: Uint8Array | null; dedup?: { dashboard: Omit<DedupResult, "counts" | "representatives">; counts: Uint32Array; representatives: Int32Array }; lineages?: { dashboard: Omit<LineageResult, "assignments">; assignments: Int32Array } }
   | { id: number; type: "clear" };
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
@@ -126,6 +134,11 @@ worker.onmessage = (event: MessageEvent<Request>) => {
         records.push({
           ordinal: row.ordinal,
           sequenceId: row.sequence_id,
+          datasetId: intern(row.swig_dataset_id),
+          sampleId: intern(row.sample_id),
+          subjectId: intern(row.subject_id),
+          cohort: intern(row.swig_cohort),
+          timepoint: intern(row.swig_timepoint),
           locus: intern(row.locus),
           vCall: intern(row.v_call),
           jCall: intern(row.j_call),
@@ -147,7 +160,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       for (const row of request.rows) packedSketches.set(minHashSketch(row.sequence), row.ordinal * 8);
       result = { sketched: request.rows.length };
     } else if (request.type === "dedup") {
-      currentDedup = deduplicate(records, request.key, request.unresolvedPolicy);
+      currentDedup = deduplicate(records, request.key, request.unresolvedPolicy, request.scope);
       denoiseAccumulator = undefined;
       currentLineages = undefined;
       currentActiveMask = undefined;
@@ -219,6 +232,15 @@ worker.onmessage = (event: MessageEvent<Request>) => {
     } else if (request.type === "dedupCounts") {
       if (!currentDedup) throw new Error("Run deduplication before exporting deduplicated AIRR data.");
       result = { counts: currentDedup.counts };
+    } else if (request.type === "dedupState") {
+      if (!currentDedup) throw new Error("Run deduplication before saving its state.");
+      result = { counts: currentDedup.counts, representatives: currentDedup.representatives };
+    } else if (request.type === "restoreState") {
+      if (request.activeMask && request.activeMask.length !== records.length) throw new Error("The saved working-set mask does not match the linked AIRR table.");
+      currentActiveMask = request.activeMask ? request.activeMask.slice() : undefined;
+      currentDedup = request.dedup ? { ...request.dedup.dashboard, counts: request.dedup.counts, representatives: request.dedup.representatives } : undefined;
+      currentLineages = request.lineages ? { ...request.lineages.dashboard, assignments: request.lineages.assignments } : undefined;
+      result = { restored: true };
     } else {
       records = [];
       currentDedup = undefined;

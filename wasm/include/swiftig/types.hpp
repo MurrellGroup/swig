@@ -139,15 +139,21 @@ struct Annotation {
 
 struct EngineOptions {
     Scoring v_scoring{2, -3, -5, -1};
-    Scoring d_scoring{2, -2, -5, -1};
-    Scoring j_scoring{2, -2, -5, -1};
+    // D segments are short enough that permissive mismatch scoring creates
+    // convincing local alignments in N-additions. Require a seven-base exact
+    // seed and penalize mismatches more strongly before reporting a D call.
+    Scoring d_scoring{2, -5, -5, -1};
+    // J calls are normally supported by a much longer tract. Stronger
+    // mismatch and gap-open penalties prevent short internal HSPs from
+    // outranking the biologically supported J alignment.
+    Scoring j_scoring{2, -5, -11, -1};
     Scoring c_scoring{2, -3, -5, -1};
     std::size_t top_v = 3;
     std::size_t top_d = 6;
     std::size_t top_j = 3;
     std::size_t top_c = 3;
     std::size_t min_v_length = 24;
-    std::size_t min_d_match = 5;
+    std::size_t min_d_match = 7;
     std::size_t min_j_length = 10;
     std::size_t min_c_length = 30;
     double min_identity = 0.60;

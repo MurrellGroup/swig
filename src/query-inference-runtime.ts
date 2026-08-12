@@ -1,7 +1,7 @@
 import type { QueryTarget } from "./post-analysis-core";
 import type { CompiledReferences } from "./reference-pack";
 import { AirrResultStore } from "./result-store";
-import { runSwiftIg } from "./swiftig-runtime";
+import { runSwiftIg, type CallingProfile } from "./swiftig-runtime";
 
 export interface InferredQueryAssignment {
   queryIndex: number;
@@ -30,6 +30,7 @@ export async function inferQueryAssignments(
   queries: string[],
   target: QueryTarget,
   references: CompiledReferences,
+  callingProfile: CallingProfile,
   minimumIdentity: number,
   strand: 0 | 1 | 2,
   workers: number,
@@ -40,6 +41,7 @@ export async function inferQueryAssignments(
       query: fastaForQueries(queries),
       format: 1,
       references,
+      callingProfile,
       minimumIdentity,
       strand,
       workers: Math.max(1, Math.min(workers, queries.length, 8)),

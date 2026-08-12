@@ -13,6 +13,8 @@ export interface ResultBatch {
 
 export type DoubleDScreenMode = "off" | "all" | "long_span";
 
+export type CallingProfile = "truth_optimized" | "igblast_compatible" | "igblast_balanced";
+
 export interface DoubleDScreenOptions {
   mode: DoubleDScreenMode;
   minimumVjSpan: number;
@@ -26,6 +28,7 @@ export interface RunOptions {
   query: string | File;
   format: 1 | 2 | 3;
   references: CompiledReferences;
+  callingProfile: CallingProfile;
   minimumIdentity: number;
   strand: 0 | 1 | 2;
   workers: number;
@@ -160,6 +163,7 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
         J: options.references.J,
         C: options.references.C,
       },
+      callingProfile: options.callingProfile,
       minimumIdentity: options.minimumIdentity,
       strand: options.strand,
       workers: options.workers,
