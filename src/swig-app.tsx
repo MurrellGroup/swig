@@ -938,7 +938,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     setSavingSession(true);setDownloadError("");
     try{
       const postAnalysis=postSessionRef.current?await postSessionRef.current.snapshot():session.postAnalysis??{workingStages:[]};
-      const artifact:SwigSession={schema:SWIG_SESSION_SCHEMA,application:"Swig",applicationVersion:"0.16.0",savedAt:new Date().toISOString(),linkedAirr:{name:outputName(session.inputName),size:session.outputBytes,lastModified:0,records:session.store.count,headers:[...session.store.airrHeaders],fingerprint:session.store.fingerprint},analysis:{inputName:session.inputName,species:session.species,scope:session.scope,workers:session.workers,callingProfile:session.callingProfile,minimumIdentity:session.minimumIdentity,strand:session.strand,references:session.references,doubleD:{...session.doubleD},datasets,studyDesign:session.studyDesign,pipeline:session.pipeline,sampleColors},doubleD:await session.store.doubleDRecords(),postAnalysis};
+      const artifact:SwigSession={schema:SWIG_SESSION_SCHEMA,application:"Swig",applicationVersion:"0.16.1",savedAt:new Date().toISOString(),linkedAirr:{name:outputName(session.inputName),size:session.outputBytes,lastModified:0,records:session.store.count,headers:[...session.store.airrHeaders],fingerprint:session.store.fingerprint},analysis:{inputName:session.inputName,species:session.species,scope:session.scope,workers:session.workers,callingProfile:session.callingProfile,minimumIdentity:session.minimumIdentity,strand:session.strand,references:session.references,doubleD:{...session.doubleD},datasets,studyDesign:session.studyDesign,pipeline:session.pipeline,sampleColors},doubleD:await session.store.doubleDRecords(),postAnalysis};
       downloadBlob(await encodeSession(artifact),sessionBaseName(session.inputName));
     }catch(error){setDownloadError(error instanceof Error?error.message:String(error));}finally{setSavingSession(false);}
   }
@@ -1776,7 +1776,7 @@ export default function SwigApp() {
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
         <p className="output-safety"><span>i</span> Query sequences remain in this browser and are not transmitted by Swig.</p>
       </section></div>}
-      <footer className="site-footer"><Brand /><p>Swig 0.16.0 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      <footer className="site-footer"><Brand /><p>Swig 0.16.1 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }

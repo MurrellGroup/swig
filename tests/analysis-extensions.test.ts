@@ -30,10 +30,45 @@ test("SHM metrics distinguish synonymous and replacement changes and retain mult
   const accumulator=new ShmAccumulator({metric:"vNtRate"});accumulator.add(row,0,7);const dashboard=accumulator.finish();assert.equal(dashboard.analyzedAbundance,3);assert.equal(dashboard.lineages[0].label,"Lineage 7");
 });
 
-test("lineage-aware missing-allele warning uses independent units and emits a candidate sequence", () => {
-  const reference="ACGT".repeat(55);const accumulator=new MissingAlleleAccumulator();
-  for(let index=0;index<24;index+=1){const germline=reference;const query=[...reference];if(index<9)query[49]=query[49]==="A"?"G":"A";accumulator.add({v_call:"IGHV1-2*01",j_call:`IGHJ${index%4+1}*01`,junction:"A".repeat(30+index%4),v_sequence_alignment:query.join(""),v_germline_alignment:germline},index,index+1);}
-  const result=accumulator.finish(`>IGHV1-2*01\n${reference}\n`);assert.equal(result.mode,"lineage");assert.equal(result.independentUnits,24);assert.ok(result.candidates.length>=1);assert.equal(result.candidates[0].independentUnits,9);assert.notEqual(result.candidates[0].sequence,reference);
+type GermlineTestRow={row:Record<string,string>;ordinal:number;lineageId:number};
+function cdr3For(index:number,length=30+index%4){const encoded=index.toString(4).split("").map(value=>"ACGT"[Number(value)]).join("");return `TGT${encoded}${"A".repeat(length-encoded.length-6)}TGG`;}
+function germlineRow(reference:string,index:number,mutations:number[]=[]):Record<string,string>{
+  const start=11;const germline=[...reference.slice(start-1)];const query=[...germline];for(const fullPosition of mutations){const local=fullPosition-start;query[local]=query[local]==="A"?"G":"A";}
+  const addPureGap=(value:string[])=>[...value.slice(0,20),".",...value.slice(20)].join("");
+  return {subject_id:"donor_1",v_call:"IGHV1-2*01",j_call:`IGHJ${index%4+1}*01`,cdr3:cdr3For(index),v_germline_start:String(start),v_sequence_alignment:addPureGap(query),v_germline_alignment:addPureGap(germline)};
+}
+function runMissingAllele(rows:GermlineTestRow[],reference:string,options:ConstructorParameters<typeof MissingAlleleAccumulator>[0]={}){
+  const discovery=new MissingAlleleAccumulator(options);for(const item of rows)discovery.add(item.row,item.ordinal,item.lineageId);const validator=discovery.prepareValidation(`>IGHV1-2*01\n${reference}\n`);for(const item of rows)validator.add(item.row,item.ordinal,item.lineageId);return validator.finish();
+}
+
+test("two-pass missing-V screen uses germline coordinates and emits independent-lineage evidence",()=>{
+  const reference="ACGT".repeat(55);const rows:GermlineTestRow[]=[];for(let index=0;index<24;index+=1)rows.push({row:germlineRow(reference,index,index<9?[50]:[]),ordinal:index,lineageId:index+1});
+  const result=runMissingAllele(rows,reference);assert.equal(result.mode,"lineage");assert.equal(result.validationPasses,2);assert.equal(result.independentUnits,24);assert.equal(result.candidates.length,1);assert.equal(result.candidates[0].independentUnits,9);assert.equal(result.candidates[0].substitutions[0].position,50);assert.equal(result.candidates[0].distinctCdr3s,9);assert.notEqual(result.candidates[0].sequence,reference);
+});
+
+test("a parent-reference nucleotide anywhere else in a supporting lineage vetoes that lineage",()=>{
+  const reference="ACGT".repeat(55);const rows:GermlineTestRow[]=[];let ordinal=0;
+  for(let index=0;index<24;index+=1){rows.push({row:germlineRow(reference,index,index<9?[50]:[]),ordinal:ordinal++,lineageId:index+1});if(index<9)rows.push({row:germlineRow(reference,index,[72,96,120]),ordinal:ordinal++,lineageId:index+1});}
+  const result=runMissingAllele(rows,reference);assert.equal(result.candidates.length,0);assert.equal(result.referenceVetoedLineagePatterns,9);
+});
+
+test("recurrent third nucleotide states suppress a hotspot-like candidate",()=>{
+  const reference="ACGT".repeat(55);const rows:GermlineTestRow[]=[];
+  for(let index=0;index<24;index+=1){const row=germlineRow(reference,index,index<9?[50]:[]);if(index>=9&&index<11){const query=[...row.v_sequence_alignment];const column=[...row.v_germline_alignment].findIndex((_,columnIndex)=>{let position=10;for(let offset=0;offset<=columnIndex;offset+=1)if(row.v_germline_alignment[offset]!==".")position+=1;return position===50;});query[column]=row.v_sequence_alignment[column]==="T"?"C":"T";row.v_sequence_alignment=query.join("");}rows.push({row,ordinal:index,lineageId:index+1});}
+  const result=runMissingAllele(rows,reference);assert.equal(result.candidates.length,0);assert.equal(result.conflictingLineagePatterns,2);
+});
+
+test("co-occurring candidate substitutions remain one linked haplotype rather than singleton warnings",()=>{
+  const reference="ACGT".repeat(55);const rows:GermlineTestRow[]=[];for(let index=0;index<24;index+=1)rows.push({row:germlineRow(reference,index,index<10?[50,82]:[]),ordinal:index,lineageId:index+1});
+  const result=runMissingAllele(rows,reference);assert.equal(result.candidates.length,1);assert.deepEqual(result.candidates[0].substitutions.map(item=>item.position),[50,82]);assert.equal(result.candidates[0].nearGermlineUnits,10);
+});
+
+test("clonal expansion cannot inflate missing-V support",()=>{
+  const reference="ACGT".repeat(55);const rows:GermlineTestRow[]=[];let ordinal=0;
+  for(let copy=0;copy<100;copy+=1)rows.push({row:germlineRow(reference,0,[50]),ordinal:ordinal++,lineageId:1});
+  for(let index=1;index<5;index+=1)rows.push({row:germlineRow(reference,index,[50]),ordinal:ordinal++,lineageId:index+1});
+  for(let index=5;index<25;index+=1)rows.push({row:germlineRow(reference,index,[]),ordinal:ordinal++,lineageId:index+1});
+  const result=runMissingAllele(rows,reference);assert.equal(result.independentUnits,25);assert.equal(result.candidates.length,0);
 });
 
 test("double-D positive repertoire selection uses sparse evidence and composes call/CDR3 filters", async () => {

@@ -1,6 +1,6 @@
 {
   "name": "swig-github-pages",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -21,6 +21,7 @@
     "benchmark:50k": "node tests/benchmark-wasm-pool.mjs",
     "benchmark:denoise-50k": "node --experimental-strip-types tests/benchmark-denoise-50k.mjs",
     "benchmark:indel-denoise-50k": "node --experimental-strip-types tests/benchmark-denoise-50k.mjs --indel",
+    "benchmark:missing-v-50k": "node --expose-gc --experimental-strip-types tests/benchmark-missing-v-50k.ts",
     "build:wasm": "bash scripts/build-swiftig-wasm.sh",
     "build:references": "node scripts/build-imgt-reference-pack.mjs"
   },
