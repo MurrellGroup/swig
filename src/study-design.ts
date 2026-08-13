@@ -13,6 +13,8 @@ export interface DatasetManifestEntry {
   subjectId: string;
   cohort: string;
   timepoint: string;
+  /** Optional anatomical compartment, tissue, or sampling site. */
+  compartment?: string;
   records?: number | null;
 }
 
@@ -42,6 +44,7 @@ export interface PipelinePlan {
     subjectId: string;
     cohort: string;
     timepoint: string;
+    compartment: string;
     locus: string;
     vCall: string;
     jCall: string;
@@ -94,6 +97,7 @@ export const DEFAULT_PIPELINE_PLAN: PipelinePlan = {
     subjectId: "",
     cohort: "",
     timepoint: "",
+    compartment: "",
     locus: "",
     vCall: "",
     jCall: "",
@@ -105,7 +109,7 @@ export const DEFAULT_PIPELINE_PLAN: PipelinePlan = {
   },
   lineage: {
     enabled: true,
-    scope: "sample",
+    scope: "subject",
     identity: 0.85,
     resolution: "gene",
     ambiguity: "overlap",
@@ -162,6 +166,7 @@ const METADATA_FIELDS = [
   "subject_id",
   "swig_cohort",
   "swig_timepoint",
+  "swig_compartment",
   "swig_source_sequence_id",
 ] as const;
 
@@ -194,7 +199,8 @@ export function annotateAirrBatch(
     replaceOrAppend(values, positions, "sample_id", dataset.sampleId);
     replaceOrAppend(values, positions, "subject_id", dataset.subjectId);
     replaceOrAppend(values, positions, "swig_cohort", dataset.cohort);
-    replaceOrAppend(values, positions, "swig_timepoint", dataset.timepoint);
+    replaceOrAppend(values, positions, "swig_timepoint", dataset.timepoint ?? "");
+    replaceOrAppend(values, positions, "swig_compartment", dataset.compartment ?? "");
     replaceOrAppend(values, positions, "swig_source_sequence_id", sourceSequenceId);
     return values.join("\t");
   }).join("\n");
@@ -209,7 +215,7 @@ export function annotateDoubleDBatch(
 ): { header: string; body: string } {
   const headers = headerLine.replace(/\r$/, "").split("\t");
   const positions = new Map(headers.map((field, index) => [field, index]));
-  for (const field of METADATA_FIELDS.slice(0, 5)) if (!positions.has(field)) headers.push(field);
+  for (const field of METADATA_FIELDS.slice(0, 6)) if (!positions.has(field)) headers.push(field);
   const sequencePosition = positions.get("sequence_id");
   const bodyText = normalizedLines(body).map((line) => {
     const values = line.split("\t");
@@ -218,7 +224,8 @@ export function annotateDoubleDBatch(
     replaceOrAppend(values, positions, "sample_id", dataset.sampleId);
     replaceOrAppend(values, positions, "subject_id", dataset.subjectId);
     replaceOrAppend(values, positions, "swig_cohort", dataset.cohort);
-    replaceOrAppend(values, positions, "swig_timepoint", dataset.timepoint);
+    replaceOrAppend(values, positions, "swig_timepoint", dataset.timepoint ?? "");
+    replaceOrAppend(values, positions, "swig_compartment", dataset.compartment ?? "");
     return values.join("\t");
   }).join("\n");
   return { header: headers.join("\t"), body: bodyText ? `${bodyText}\n` : "" };

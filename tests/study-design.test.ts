@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { assignLineages, deduplicate, sequenceFingerprint, type PostAnalysisRecord } from "../src/post-analysis-core.ts";
-import { annotateAirrBatch, annotateDoubleDBatch, datasetScopeKey, type DatasetManifestEntry } from "../src/study-design.ts";
+import { annotateAirrBatch, annotateDoubleDBatch, datasetScopeKey, DEFAULT_PIPELINE_PLAN, type DatasetManifestEntry } from "../src/study-design.ts";
 
 const manifest: DatasetManifestEntry = {
   datasetId: "dataset_2",
@@ -11,6 +11,7 @@ const manifest: DatasetManifestEntry = {
   subjectId: "donor_A",
   cohort: "vaccinated",
   timepoint: "day_7",
+  compartment: "blood",
 };
 
 function record(ordinal: number, sampleId: string, subjectId: string, sequence = "ACGTACGT"): PostAnalysisRecord {
@@ -22,6 +23,7 @@ function record(ordinal: number, sampleId: string, subjectId: string, sequence =
     subjectId,
     cohort: "cohort_1",
     timepoint: `t${ordinal}`,
+    compartment: ordinal ? "lymph_node" : "blood",
     locus: "IGH",
     vCall: "IGHV1-1*01",
     jCall: "IGHJ4*01",
@@ -44,6 +46,7 @@ test("AIRR batches receive collision-safe IDs and explicit study metadata", () =
   assert.equal(row.subject_id, "donor_A");
   assert.equal(row.swig_cohort, "vaccinated");
   assert.equal(row.swig_timepoint, "day_7");
+  assert.equal(row.swig_compartment, "blood");
   assert.equal(headers.length, values.length);
 });
 
@@ -55,6 +58,7 @@ test("double-D batches retain the relative record index while receiving study me
   assert.equal(row.swig_batch_record_index, "0");
   assert.equal(row.sequence_id, "dataset_2::read_1");
   assert.equal(row.sample_id, "sample_day7");
+  assert.equal(row.swig_compartment, "blood");
 });
 
 test("collapse scope treats technical libraries as one sample without crossing samples", () => {
@@ -82,4 +86,12 @@ test("lineages can span longitudinal samples within a donor but never cross dono
   assert.equal(donorScoped.assignments[0], donorScoped.assignments[1]);
   assert.notEqual(donorScoped.assignments[0], donorScoped.assignments[2]);
   assert.equal(datasetScopeKey(records[0], "subject"), datasetScopeKey(records[1], "subject"));
+  const shared=donorScoped.summaries.find((summary)=>summary.id===donorScoped.assignments[0]);
+  assert.deepEqual(shared?.sampleIds,["day_0","day_30"]);
+  assert.deepEqual(shared?.compartments,["blood","lymph_node"]);
+});
+
+test("longitudinal/compartmental defaults keep collapse within sample and lineages within donor",()=>{
+  assert.equal(DEFAULT_PIPELINE_PLAN.collapse.scope,"sample");
+  assert.equal(DEFAULT_PIPELINE_PLAN.lineage.scope,"subject");
 });

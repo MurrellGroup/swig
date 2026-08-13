@@ -65,7 +65,7 @@ export interface PostAnalysisSessionSnapshot {
   editedAlignments?: Array<{ key: string; lineageIds: number[]; fasta: string; source: string; savedAt: string }>;
   lineageMerges?: Array<{ id: string; label: string; originalLineageIds: number[]; createdAt: string }>;
   tree?: { rawNewick: string; rootedNewick: string; stableNewick: string; source: string; lineageIds?: number[]; run?: Record<string, unknown> };
-  shm?: { metric: ShmMetricKey; dashboard: ShmDashboard };
+  shm?: { metric: ShmMetricKey; dashboard: ShmDashboard; sampleOrder?: string[] };
   missingAlleles?: { options: MissingAlleleOptions; dashboard: MissingAlleleDashboard };
 }
 

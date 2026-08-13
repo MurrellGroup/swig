@@ -31,6 +31,7 @@ interface IngestRow {
   subject_id: string;
   swig_cohort: string;
   swig_timepoint: string;
+  swig_compartment: string;
   sequence: string;
   sequence_alignment: string;
   locus: string;
@@ -143,6 +144,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
           subjectId: intern(row.subject_id),
           cohort: intern(row.swig_cohort),
           timepoint: intern(row.swig_timepoint),
+          compartment: intern(row.swig_compartment),
           locus: intern(row.locus),
           vCall: intern(row.v_call),
           jCall: intern(row.j_call),

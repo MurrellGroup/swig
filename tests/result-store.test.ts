@@ -93,14 +93,14 @@ test("constant-region evidence yields isotype facets and repertoire summaries", 
   await store.clear();
 });
 
-test("study metadata is indexed for dataset, sample, donor, cohort, and timepoint filtering", async () => {
+test("study metadata is indexed for dataset, sample, donor, cohort, timepoint, and compartment filtering", async () => {
   const store = new AirrResultStore();
-  const studyHeader = `${header}\tswig_dataset_id\tsample_id\tsubject_id\tswig_cohort\tswig_timepoint`;
+  const studyHeader = `${header}\tswig_dataset_id\tsample_id\tsubject_id\tswig_cohort\tswig_timepoint\tswig_compartment`;
   const baseRows = new TextDecoder().decode(makeBody(0, 3)).trimEnd().split("\n");
   const body = [
-    `${baseRows[0]}\tdataset_1\tsample_A\tdonor_1\tcase\tday_0`,
-    `${baseRows[1]}\tdataset_2\tsample_B\tdonor_1\tcase\tday_30`,
-    `${baseRows[2]}\tdataset_3\tsample_C\tdonor_2\tcontrol\tday_0`,
+    `${baseRows[0]}\tdataset_1\tsample_A\tdonor_1\tcase\tday_0\tblood`,
+    `${baseRows[1]}\tdataset_2\tsample_B\tdonor_1\tcase\tday_30\tlymph_node`,
+    `${baseRows[2]}\tdataset_3\tsample_C\tdonor_2\tcontrol\tday_0\tblood`,
   ].join("\n") + "\n";
   await store.appendBatch(studyHeader, body);
   await store.finalize();
@@ -108,10 +108,11 @@ test("study metadata is indexed for dataset, sample, donor, cohort, and timepoin
   assert.equal(store.facets().subjects.find((item) => item.value === "donor_1")?.count, 2);
   assert.equal((await store.page({ ...EMPTY_FILTERS, subjectId: "donor_1" }, 0, 10)).rows.length, 2);
   assert.equal((await store.page({ ...EMPTY_FILTERS, cohort: "control", timepoint: "day_0" }, 0, 10)).rows[0].sampleId, "sample_C");
+  assert.equal((await store.page({ ...EMPTY_FILTERS, compartment: "lymph_node" }, 0, 10)).rows[0].sampleId, "sample_B");
   const updated=[
-    {datasetId:"dataset_1",inputName:"one.tsv",sampleId:"shared_sample",subjectId:"corrected_donor",cohort:"case",timepoint:"day_0"},
-    {datasetId:"dataset_2",inputName:"two.tsv",sampleId:"shared_sample",subjectId:"corrected_donor",cohort:"case",timepoint:"day_30"},
-    {datasetId:"dataset_3",inputName:"three.tsv",sampleId:"sample_C",subjectId:"donor_2",cohort:"control",timepoint:"day_0"},
+    {datasetId:"dataset_1",inputName:"one.tsv",sampleId:"shared_sample",subjectId:"corrected_donor",cohort:"case",timepoint:"day_0",compartment:"blood"},
+    {datasetId:"dataset_2",inputName:"two.tsv",sampleId:"shared_sample",subjectId:"corrected_donor",cohort:"case",timepoint:"day_30",compartment:"node"},
+    {datasetId:"dataset_3",inputName:"three.tsv",sampleId:"sample_C",subjectId:"donor_2",cohort:"control",timepoint:"day_0",compartment:"blood"},
   ];
   await store.updateStudyMetadata(updated);
   assert.equal((await store.page({...EMPTY_FILTERS,subjectId:"corrected_donor"},0,10)).rows.length,2);
@@ -119,6 +120,7 @@ test("study metadata is indexed for dataset, sample, donor, cohort, and timepoin
   const [updatedDetail]=await store.detailMany([1]);
   assert.equal(updatedDetail.values.sample_id,"shared_sample");
   assert.equal(updatedDetail.values.subject_id,"corrected_donor");
+  assert.equal(updatedDetail.values.swig_compartment,"node");
   const scanned:string[]=[];
   await store.scanAirrRows(["sample_id","subject_id"],(rows)=>{for(const row of rows)if(row.ordinal<2)scanned.push(`${row.values.sample_id}/${row.values.subject_id}`);});
   assert.deepEqual(scanned,["shared_sample/corrected_donor","shared_sample/corrected_donor"]);

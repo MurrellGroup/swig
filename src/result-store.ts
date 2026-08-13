@@ -11,6 +11,7 @@ export interface AirrIndexRecord {
   subjectId: string;
   cohort: string;
   timepoint: string;
+  compartment: string;
   locus: string;
   vCall: string;
   dCall: string;
@@ -41,6 +42,7 @@ export interface ResultFilters {
   subjectId: string;
   cohort: string;
   timepoint: string;
+  compartment: string;
   locus: string;
   productive: string;
   vCall: string;
@@ -74,6 +76,7 @@ export interface ResultFacets {
   subjects: FacetValue[];
   cohorts: FacetValue[];
   timepoints: FacetValue[];
+  compartments: FacetValue[];
   loci: FacetValue[];
   productive: FacetValue[];
   vCalls: FacetValue[];
@@ -136,6 +139,7 @@ interface PackedIndexRecord {
   b: string;
   g: string;
   t: string;
+  w: string;
   l: string;
   v: string;
   d: string;
@@ -332,7 +336,7 @@ function numeric(value: string): number | null {
 function packRecord(record: AirrIndexRecord): PackedIndexRecord {
   return {
     o: record.ordinal, c: record.chunk, n: record.line, i: record.sequenceId,
-    e: record.datasetId, m: record.sampleId, b: record.subjectId, g: record.cohort, t: record.timepoint,
+    e: record.datasetId, m: record.sampleId, b: record.subjectId, g: record.cohort, t: record.timepoint, w: record.compartment,
     l: record.locus, v: record.vCall, d: record.dCall, h: record.d2Call, j: record.jCall,
     k: record.cCall, y: record.isotype,
     p: record.productive, r: record.cdr3, a: record.cdr3Aa, u: record.junctionAa,
@@ -345,7 +349,7 @@ function packRecord(record: AirrIndexRecord): PackedIndexRecord {
 function unpackRecord(record: PackedIndexRecord): AirrIndexRecord {
   return {
     ordinal: record.o, chunk: record.c, line: record.n, sequenceId: record.i,
-    datasetId: record.e ?? "", sampleId: record.m ?? "", subjectId: record.b ?? "", cohort: record.g ?? "", timepoint: record.t ?? "",
+    datasetId: record.e ?? "", sampleId: record.m ?? "", subjectId: record.b ?? "", cohort: record.g ?? "", timepoint: record.t ?? "", compartment: record.w ?? "",
     locus: record.l, vCall: record.v, dCall: record.d, d2Call: record.h ?? "", jCall: record.j,
     cCall: record.k, isotype: record.y,
     productive: record.p, cdr3: record.r, cdr3Aa: record.a, junctionAa: record.u,
@@ -363,6 +367,7 @@ export const EMPTY_FILTERS: ResultFilters = {
   subjectId: "",
   cohort: "",
   timepoint: "",
+  compartment: "",
   locus: "",
   productive: "",
   vCall: "",
@@ -394,6 +399,7 @@ export class AirrResultStore {
     subjects: new Map<string, number>(),
     cohorts: new Map<string, number>(),
     timepoints: new Map<string, number>(),
+    compartments: new Map<string, number>(),
     loci: new Map<string, number>(),
     productive: new Map<string, number>(),
     vCalls: new Map<string, number>(),
@@ -434,6 +440,7 @@ export class AirrResultStore {
         records.createIndex("subjectId", "b");
         records.createIndex("cohort", "g");
         records.createIndex("timepoint", "t");
+        records.createIndex("compartment", "w");
         records.createIndex("locus", "l");
         records.createIndex("productive", "p");
         records.createIndex("vCall", "v");
@@ -487,6 +494,7 @@ export class AirrResultStore {
       subjects: facet(this.facetMaps.subjects),
       cohorts: facet(this.facetMaps.cohorts),
       timepoints: facet(this.facetMaps.timepoints),
+      compartments: facet(this.facetMaps.compartments),
       loci: facet(this.facetMaps.loci),
       productive: facet(this.facetMaps.productive),
       vCalls: facet(this.facetMaps.vCalls),
@@ -507,6 +515,7 @@ export class AirrResultStore {
       subject_id: dataset.subjectId,
       swig_cohort: dataset.cohort,
       swig_timepoint: dataset.timepoint,
+      swig_compartment: dataset.compartment ?? "",
     };
   }
 
@@ -531,12 +540,14 @@ export class AirrResultStore {
         subjectId: dataset.subjectId.trim(),
         cohort: dataset.cohort.trim(),
         timepoint: dataset.timepoint.trim(),
+        compartment: (dataset.compartment ?? "").trim(),
       });
     }
     const nextSamples = new Map<string, number>();
     const nextSubjects = new Map<string, number>();
     const nextCohorts = new Map<string, number>();
     const nextTimepoints = new Map<string, number>();
+    const nextCompartments = new Map<string, number>();
     const database = await this.database;
     const transaction = database.transaction("records", "readwrite");
     const records = transaction.objectStore("records");
@@ -558,12 +569,14 @@ export class AirrResultStore {
           subjectId: dataset.subjectId,
           cohort: dataset.cohort,
           timepoint: dataset.timepoint,
+          compartment: dataset.compartment ?? "",
         } : current;
         cursor.update(packRecord(updated));
         bump(nextSamples, updated.sampleId);
         bump(nextSubjects, updated.subjectId);
         bump(nextCohorts, updated.cohort);
         bump(nextTimepoints, updated.timepoint);
+        bump(nextCompartments, updated.compartment);
         processed += 1;
         if (processed % 2_500 === 0) onProgress?.(processed, this.count);
         cursor.continue();
@@ -575,10 +588,12 @@ export class AirrResultStore {
     this.facetMaps.subjects.clear();
     this.facetMaps.cohorts.clear();
     this.facetMaps.timepoints.clear();
+    this.facetMaps.compartments.clear();
     nextSamples.forEach((count, value) => this.facetMaps.samples.set(value, count));
     nextSubjects.forEach((count, value) => this.facetMaps.subjects.set(value, count));
     nextCohorts.forEach((count, value) => this.facetMaps.cohorts.set(value, count));
     nextTimepoints.forEach((count, value) => this.facetMaps.timepoints.set(value, count));
+    nextCompartments.forEach((count, value) => this.facetMaps.compartments.set(value, count));
     onProgress?.(processed, this.count);
     return this.facets();
   }
@@ -733,6 +748,7 @@ export class AirrResultStore {
         subjectId: at(values, "subject_id"),
         cohort: at(values, "swig_cohort"),
         timepoint: at(values, "swig_timepoint"),
+        compartment: at(values, "swig_compartment"),
         locus: at(values, "locus"),
         vCall: at(values, "v_call"),
         dCall: doubleDByLine.get(line)?.d_call || at(values, "d_call"),
@@ -772,6 +788,7 @@ export class AirrResultStore {
       bump(this.facetMaps.subjects, record.subjectId);
       bump(this.facetMaps.cohorts, record.cohort);
       bump(this.facetMaps.timepoints, record.timepoint);
+      bump(this.facetMaps.compartments, record.compartment);
       bump(this.facetMaps.loci, record.locus);
       bump(this.facetMaps.productive, record.productive);
       bump(this.facetMaps.vCalls, record.vCall);
@@ -806,7 +823,7 @@ export class AirrResultStore {
     const normalizedCdr3 = filters.cdr3.trim().toUpperCase();
     const filtered = Boolean(
       normalizedId || normalizedCdr3 || filters.locus || filters.productive ||
-      filters.datasetId || filters.sampleId || filters.subjectId || filters.cohort || filters.timepoint ||
+      filters.datasetId || filters.sampleId || filters.subjectId || filters.cohort || filters.timepoint || filters.compartment ||
       filters.vCall || filters.dCall || filters.jCall || filters.cCall || filters.isotype ||
       filters.minVIdentity || filters.minDIdentity || filters.minJIdentity || filters.minCIdentity || filters.minCdr3AaLength ||
       filters.maxCdr3AaLength || filters.vjInFrame || filters.stopCodon ||
@@ -825,7 +842,7 @@ export class AirrResultStore {
     let range: IDBKeyRange | undefined;
     const exactCandidates: Array<[keyof ResultFilters, string]> = [
       ["datasetId", "datasetId"], ["sampleId", "sampleId"], ["subjectId", "subjectId"],
-      ["cohort", "cohort"], ["timepoint", "timepoint"],
+      ["cohort", "cohort"], ["timepoint", "timepoint"], ["compartment", "compartment"],
       ["vCall", "vCall"], ["jCall", "jCall"], ["dCall", "dCall"],
       ["cCall", "cCall"], ["isotype", "isotype"],
       ["locus", "locus"], ["productive", "productive"],
@@ -853,6 +870,7 @@ export class AirrResultStore {
       if (filters.subjectId && record.subjectId !== filters.subjectId) return false;
       if (filters.cohort && record.cohort !== filters.cohort) return false;
       if (filters.timepoint && record.timepoint !== filters.timepoint) return false;
+      if (filters.compartment && record.compartment !== filters.compartment) return false;
       if (filters.locus && record.locus !== filters.locus) return false;
       if (filters.productive && record.productive !== filters.productive) return false;
       if (filters.vCall && record.vCall !== filters.vCall) return false;

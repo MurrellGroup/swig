@@ -13,6 +13,7 @@ export interface PostAnalysisRecord {
   subjectId?: string;
   cohort?: string;
   timepoint?: string;
+  compartment?: string;
   locus: string;
   vCall: string;
   jCall: string;
@@ -93,6 +94,11 @@ export interface LineageSummary {
   cdr3Length: number;
   studyScope: DatasetScope;
   studyGroup: string;
+  /** Study metadata represented among active members of this lineage summary. */
+  sampleIds: string[];
+  subjectIds: string[];
+  timepoints: string[];
+  compartments: string[];
 }
 
 export interface LineageResult {
@@ -1366,6 +1372,7 @@ export function assignLineages(
   const assignments = new Int32Array(records.length);
   const rootIds = new Int32Array(records.length);
   const top: LineageSummary[] = [];
+  const summaryLimit = 10_000;
   const sizeBins = new Uint32Array(7);
   const vUsageMap = new Map<string, { lineages: number; abundance: number }>();
   const jUsageMap = new Map<string, { lineages: number; abundance: number }>();
@@ -1375,7 +1382,7 @@ export function assignLineages(
     (left.abundance === right.abundance && left.uniqueMembers < right.uniqueMembers) ||
     (left.abundance === right.abundance && left.uniqueMembers === right.uniqueMembers && left.id > right.id);
   const retainTop = (summary: LineageSummary) => {
-    if (top.length < 1_000) {
+    if (top.length < summaryLimit) {
       top.push(summary);
       let index = top.length - 1;
       while (index > 0) {
@@ -1431,6 +1438,10 @@ export function assignLineages(
       cdr3Length: representative.cdr3Nt.length,
       studyScope: options.scope ?? "global",
       studyGroup: datasetScopeValue(representative, options.scope ?? "global"),
+      sampleIds: [],
+      subjectIds: [],
+      timepoints: [],
+      compartments: [],
     });
   }
   for (let index = 0; index < records.length; index += 1) {
@@ -1440,6 +1451,35 @@ export function assignLineages(
     for (let index = 0; index < dedup.representatives.length; index += 1) {
       assignments[index] = assignments[dedup.representatives[index]];
     }
+  }
+  // Enrich only the bounded set retained for interactive browsing. This keeps
+  // memory proportional to the table cap while preserving exact sample
+  // membership for every summary the user can filter or open.
+  const summaryById = new Map(top.map((summary) => [summary.id, summary]));
+  const samplesById = new Map<number, Set<string>>();
+  const subjectsById = new Map<number, Set<string>>();
+  const timepointsById = new Map<number, Set<string>>();
+  const compartmentsById = new Map<number, Set<string>>();
+  const addValue = (map: Map<number, Set<string>>, id: number, value?: string) => {
+    if (!value) return;
+    const values = map.get(id);
+    if (values) values.add(value); else map.set(id, new Set([value]));
+  };
+  for (let index = 0; index < records.length; index += 1) {
+    if (activeMask && !activeMask[index]) continue;
+    const id = assignments[index];
+    if (!id || !summaryById.has(id)) continue;
+    const record = records[index];
+    addValue(samplesById, id, record.sampleId);
+    addValue(subjectsById, id, record.subjectId);
+    addValue(timepointsById, id, record.timepoint);
+    addValue(compartmentsById, id, record.compartment);
+  }
+  for (const summary of top) {
+    summary.sampleIds = [...(samplesById.get(summary.id) ?? [])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    summary.subjectIds = [...(subjectsById.get(summary.id) ?? [])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    summary.timepoints = [...(timepointsById.get(summary.id) ?? [])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    summary.compartments = [...(compartmentsById.get(summary.id) ?? [])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   }
   const usage = (map: Map<string, { lineages: number; abundance: number }>) => [...map.entries()]
     .map(([call, value]) => ({ call, ...value }))

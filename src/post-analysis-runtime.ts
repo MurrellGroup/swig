@@ -85,7 +85,7 @@ export class PostAnalysisRuntime {
       const fields = [
         "sequence_id", "sequence", "sequence_alignment", "locus", "v_call", "j_call",
         "cdr3", "cdr3_aa", "productive", "duplicate_count", "swig_dataset_id", "sample_id",
-        "subject_id", "swig_cohort", "swig_timepoint",
+        "subject_id", "swig_cohort", "swig_timepoint", "swig_compartment",
       ];
       await this.store.scanAirrRows(fields, async (rows) => {
         if (signal?.aborted) throw new DOMException("Post-analysis was cancelled.", "AbortError");
@@ -225,6 +225,7 @@ function toWorkerRow(row: AirrScanRow): WorkerResult {
     subject_id: row.values.subject_id,
     swig_cohort: row.values.swig_cohort,
     swig_timepoint: row.values.swig_timepoint,
+    swig_compartment: row.values.swig_compartment,
     sequence: row.values.sequence,
     sequence_alignment: row.values.sequence_alignment,
     locus: row.values.locus,

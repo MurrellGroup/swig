@@ -11,6 +11,7 @@ export interface RepertoireSelectionOptions {
   subjectId: string;
   cohort: string;
   timepoint: string;
+  compartment: string;
   locus: string;
   vCall: string;
   d1Call: string;
@@ -42,7 +43,7 @@ export interface RepertoireSelectionOptions {
 }
 
 export const DEFAULT_REPERTOIRE_SELECTION: RepertoireSelectionOptions = {
-  sequenceId: "", datasetId: "", sampleId: "", subjectId: "", cohort: "", timepoint: "", locus: "", vCall: "", d1Call: "", d2Call: "", jCall: "", cCall: "", isotype: "",
+  sequenceId: "", datasetId: "", sampleId: "", subjectId: "", cohort: "", timepoint: "", compartment: "", locus: "", vCall: "", d1Call: "", d2Call: "", jCall: "", cCall: "", isotype: "",
   cdr3Nt: "", cdr3Aa: "", motif: "", motifTarget: "cdr3_aa", motifSyntax: "substring", motifMode: "any",
   productive: "any", completeVdj: "any", vjInFrame: "any", stopCodon: "any", hasD: "any", hasCdr3: "any",
   doubleD: "any", minCdr3NtLength: 0, maxCdr3NtLength: 0, minCdr3AaLength: 0, maxCdr3AaLength: 0,
@@ -117,7 +118,7 @@ export function repertoireRowMatches(
   if (options.sequenceId && !text("sequence_id").toLowerCase().includes(options.sequenceId.trim().toLowerCase())) return false;
   if (!callMatches(text("swig_dataset_id"), options.datasetId) || !callMatches(text("sample_id"), options.sampleId) ||
     !callMatches(text("subject_id"), options.subjectId) || !callMatches(text("swig_cohort"), options.cohort) ||
-    !callMatches(text("swig_timepoint"), options.timepoint)) return false;
+    !callMatches(text("swig_timepoint"), options.timepoint) || !callMatches(text("swig_compartment"), options.compartment)) return false;
   if (options.locus && !callMatches(text("locus"), options.locus)) return false;
   if (!callMatches(text("v_call"), options.vCall) || !callMatches(doubleD?.values.d_call || text("d_call"), options.d1Call) ||
     !callMatches(doubleD?.values.d2_call || text("d2_call"), options.d2Call) || !callMatches(text("j_call"), options.jCall) ||
@@ -169,6 +170,7 @@ export function selectionSummary(options: RepertoireSelectionOptions): string {
   if (options.subjectId) labels.push(`donor ${options.subjectId}`);
   if (options.cohort) labels.push(`cohort ${options.cohort}`);
   if (options.timepoint) labels.push(`timepoint ${options.timepoint}`);
+  if (options.compartment) labels.push(`compartment ${options.compartment}`);
   if (options.doubleD !== "any") labels.push(options.doubleD === "positive" ? "double-D positive" : "double-D negative");
   if (options.locus) labels.push(`locus ${options.locus}`);
   if (options.vCall) labels.push(`V ${options.vCall}`);
@@ -205,7 +207,7 @@ export async function selectRepertoire(
   } else {
     let retained = 0;
     await store.scanAirrRows(
-      ["sequence_id", "swig_dataset_id", "sample_id", "subject_id", "swig_cohort", "swig_timepoint", "sequence", "sequence_alignment", "locus", "v_call", "d_call", "j_call", "c_call", "isotype", "cdr3", "cdr3_aa", "junction", "junction_aa", "productive", "complete_vdj", "vj_in_frame", "stop_codon", "v_identity", "j_identity"],
+      ["sequence_id", "swig_dataset_id", "sample_id", "subject_id", "swig_cohort", "swig_timepoint", "swig_compartment", "sequence", "sequence_alignment", "locus", "v_call", "d_call", "j_call", "c_call", "isotype", "cdr3", "cdr3_aa", "junction", "junction_aa", "productive", "complete_vdj", "vj_in_frame", "stop_codon", "v_identity", "j_identity"],
       async (rows) => {
         for (const row of rows) {
           if (baseMask && !baseMask[row.ordinal]) continue;

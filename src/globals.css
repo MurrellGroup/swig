@@ -1141,7 +1141,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .study-metadata-editor summary > strong { font: 650 14px Georgia,serif; }
 .study-metadata-editor summary > small { color: var(--muted); font-size: 8px; }
 .study-metadata-table { padding: 14px; border-top: 1px solid var(--line); }
-.study-metadata-head,.study-metadata-row { display: grid; grid-template-columns: minmax(170px,1.35fr) repeat(4,minmax(110px,1fr)); gap: 8px; align-items: center; }
+.study-metadata-head,.study-metadata-row { display: grid; grid-template-columns: minmax(170px,1.35fr) repeat(5,minmax(110px,1fr)); gap: 8px; align-items: center; }
 .study-metadata-head { padding: 0 6px 7px; color: var(--muted); font-size: 7px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
 .study-metadata-row { padding: 7px 6px; border-top: 1px solid #e8e4d9; }
 .study-metadata-row > span { display: grid; gap: 2px; min-width: 0; }
@@ -1729,6 +1729,20 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .lineage-table-wrap tr:hover,
 .lineage-table-wrap tr.selected { background: #edf7f2; }
 .lineage-table-wrap button { padding: 6px 8px; border-radius: 3px; color: #fff; background: var(--teal); font-size: 7px; }
+.lineage-results > .lineage-table-wrap { display: none; }
+.lineage-explorer-controls { margin: 18px 24px 24px; padding: 16px; border: 1px solid var(--line); border-radius: 5px; background: #f8f6ef; }
+.lineage-explorer-controls > header { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; }
+.lineage-explorer-controls > header > div { display: grid; gap: 3px; }
+.lineage-explorer-controls > header small { color: var(--muted); font-size: 8px; }
+.lineage-filter-grid { display: grid; grid-template-columns: repeat(5,minmax(130px,1fr)); gap: 10px; margin-top: 14px; }
+.lineage-filter-grid label { display: grid; gap: 5px; align-content: start; }
+.lineage-filter-grid label > span,.lineage-sample-picker legend { color: var(--muted); font-size: 7px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+.lineage-filter-grid input,.lineage-filter-grid select { width: 100%; min-height: 34px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px; background: #fffdf8; color: var(--ink); font-size: 9px; }
+.lineage-filter-grid small { color: var(--muted); font-size: 7px; }
+.lineage-sample-picker { display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0 0; padding: 10px; border: 1px solid var(--line); }
+.lineage-sample-picker label { display: inline-flex; gap: 5px; align-items: center; padding: 5px 7px; border: 1px solid #d8d5ca; border-radius: 3px; background: #fffdf8; font-size: 8px; }
+.lineage-sample-picker i { width: 8px; height: 8px; border-radius: 50%; }
+.lineage-explorer-controls .lineage-table-wrap td small { display: block; max-width: 180px; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 7px; text-overflow: ellipsis; }
 .lineage-merge-register { margin: 14px 0; overflow: hidden; border: 1px solid #9dbab1; border-radius: 4px; background: #f0f7f3; }
 .lineage-merge-register > header { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 12px; border-bottom: 1px solid #b8cec7; }
 .lineage-merge-register > header div { display: flex; gap: 9px; align-items: baseline; }
@@ -1917,7 +1931,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 
 @media (max-width: 900px) {
   .study-metadata-table { overflow-x: auto; }
-  .study-metadata-head,.study-metadata-row { min-width: 820px; }
+  .study-metadata-head,.study-metadata-row { min-width: 960px; }
   .collapse-mode-grid { grid-template-columns: 1fr; }
   .app-header,
   .landing-page,
@@ -2238,6 +2252,17 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .diagnostic-grid h4 { margin: -8px 0 0; font-size: 20px; }
 .diagnostic-grid p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .analysis-extension-results { padding: 24px; border-top: 1px solid var(--line); }
+.shm-sample-order { margin: 18px 0; padding: 14px; border: 1px solid var(--line); border-radius: 5px; background: #f7f5ee; }
+.shm-sample-order > header { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; justify-content: space-between; }
+.shm-sample-order > header > div:first-child { display: grid; gap: 3px; }
+.shm-sample-order > header small { color: var(--muted); font-size: 8px; }
+.shm-sample-order > header label { display: grid; gap: 4px; }
+.shm-sample-order select { min-height: 32px; padding: 6px 8px; border: 1px solid var(--line); background: #fffdf8; }
+.shm-sample-order ol { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
+.shm-sample-order li { display: grid; grid-template-columns: 9px auto auto 24px 24px; gap: 6px; align-items: center; padding: 5px 6px; border: 1px solid var(--line); background: #fffdf8; font-size: 8px; }
+.shm-sample-order li i { width: 8px; height: 8px; border-radius: 50%; }
+.shm-sample-order li small { color: var(--muted); }
+.shm-sample-order li button { min-width: 22px; padding: 4px; }
 .extension-result-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 18px; }
 .extension-result-heading h3 { margin: 4px 0 5px; font-size: 24px; }
 .extension-result-heading p { max-width: 760px; margin: 0; color: var(--muted); line-height: 1.55; }
@@ -2277,7 +2302,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .dataset-import-heading button { padding: 8px 11px; border: 1px solid #8eb1a6; border-radius: 4px; color: var(--teal); background: #fffdf8; font-size: 10px; font-weight: 800; }
 .dataset-manifest-table { overflow-x: auto; border: 1px solid var(--line); border-radius: 5px; background: #fffdf8; }
 .dataset-manifest-head,
-.dataset-manifest-row { display: grid; grid-template-columns: minmax(190px,1.65fr) repeat(4,minmax(115px,1fr)) 34px; min-width: 830px; }
+.dataset-manifest-row { display: grid; grid-template-columns: minmax(190px,1.65fr) repeat(5,minmax(115px,1fr)) 34px; min-width: 960px; }
 .dataset-manifest-head { color: #64736e; background: #efeee7; font-size: 8px; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
 .dataset-manifest-head > span { padding: 8px 9px; border-right: 1px solid var(--line); }
 .dataset-manifest-row + .dataset-manifest-row { border-top: 1px solid var(--line); }
@@ -2293,7 +2318,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .paste-metadata input:focus,
 .study-design-panel input:focus { border-color: #7aa79b; background: #fff; outline: 2px solid rgba(8,121,111,.12); }
 .dataset-manifest-row > button { color: #976054; background: #faf5ef; font-size: 17px; }
-.paste-metadata { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; padding: 12px; border: 1px solid var(--line); border-top: 0; background: #f7f5ee; }
+.paste-metadata { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 10px; padding: 12px; border: 1px solid var(--line); border-top: 0; background: #f7f5ee; }
 .paste-metadata label { display: grid; gap: 4px; }
 .paste-metadata label > span { color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .paste-metadata input { border-color: var(--line); background: #fffdf8; }
@@ -2385,6 +2410,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
   .diagnostic-grid > article + article { border-left: 0; border-top: 1px solid var(--line); }
   .double-d-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .double-d-pair-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lineage-filter-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
 @media (max-width: 700px) {
   .study-design-panel > header,
@@ -2408,6 +2434,10 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
   .double-d-filter-grid,
   .double-d-pair-summary { grid-template-columns: 1fr; }
   .double-d-explorer { padding: 0 14px; }
+  .lineage-filter-grid { grid-template-columns: 1fr; }
+  .lineage-explorer-controls { margin-right: 12px; margin-left: 12px; }
+  .shm-sample-order > header { align-items: stretch; flex-direction: column; }
+  .shm-sample-order li { grid-template-columns: 9px minmax(80px,auto) 1fr 24px 24px; width: 100%; }
   .extension-result-heading,
   .double-d-alignment-detail > header { flex-direction: column; }
 }

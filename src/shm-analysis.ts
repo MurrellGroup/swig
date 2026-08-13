@@ -6,6 +6,10 @@ export interface ShmRecordMetric {
   sequenceId: string;
   vCall: string;
   jCall: string;
+  sampleId: string;
+  subjectId: string;
+  timepoint: string;
+  compartment: string;
   duplicateCount: number;
   comparedNt: number;
   vNtMutations: number;
@@ -31,6 +35,16 @@ export interface ShmDistribution {
   abundance: number;
   median: number;
   mean: number;
+  maximum: number;
+  p95: number;
+}
+
+export interface ShmLineageSampleDistribution extends ShmDistribution {
+  lineageId: number;
+  sampleId: string;
+  subjectId: string;
+  timepoint: string;
+  compartment: string;
 }
 
 export interface ShmDashboard {
@@ -43,6 +57,7 @@ export interface ShmDashboard {
   lineages: ShmDistribution[];
   vGenes: ShmDistribution[];
   strata: ShmDistribution[];
+  lineageSamples: ShmLineageSampleDistribution[];
   histogram: Array<{ label: string; count: number; abundance: number }>;
 }
 
@@ -119,6 +134,7 @@ export function computeShmMetric(row: Record<string,string>, ordinal = 0, lineag
   if (!comparedNt) return null;
   return {
     ordinal, lineageId, sequenceId: row.sequence_id || `record_${ordinal + 1}`, vCall: topCall(row.v_call), jCall: topCall(row.j_call),
+    sampleId: row.sample_id || "Unassigned sample", subjectId: row.subject_id || "", timepoint: row.swig_timepoint || "", compartment: row.swig_compartment || "",
     duplicateCount: positiveCount(row.duplicate_count || row.consensus_count || "1"), comparedNt, vNtMutations,
     vNtRate: vNtMutations / comparedNt, comparedCodons, vAaReplacements, vAaRate: comparedCodons ? vAaReplacements / comparedCodons : 0,
     synonymous, cdrNtCompared, cdrNtMutations, cdrNtRate: cdrNtCompared ? cdrNtMutations / cdrNtCompared : 0,
@@ -129,12 +145,12 @@ export function computeShmMetric(row: Record<string,string>, ordinal = 0, lineag
 
 export function metricValue(record: ShmRecordMetric, metric: ShmMetricKey): number { return record[metric]; }
 
-function weightedMedian(values: Array<{value:number;weight:number}>): number {
+function weightedQuantile(values: Array<{value:number;weight:number}>, quantile: number): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a,b) => a.value-b.value);
-  const half = sorted.reduce((sum,item)=>sum+item.weight,0)/2;
+  const threshold = sorted.reduce((sum,item)=>sum+item.weight,0) * Math.max(0, Math.min(1, quantile));
   let total=0;
-  for (const item of sorted) { total += item.weight; if (total >= half) return item.value; }
+  for (const item of sorted) { total += item.weight; if (total >= threshold) return item.value; }
   return sorted.at(-1)?.value ?? 0;
 }
 
@@ -144,14 +160,24 @@ function distributions(records: ShmRecordMetric[], metric: ShmMetricKey, key: (r
   return [...groups.entries()].map(([label,group]) => {
     const values=group.map((record)=>metricValue(record,metric)); const weights=group.map((record)=>record.duplicateCount);
     const abundance=weights.reduce((a,b)=>a+b,0); const weighted=values.map((value,index)=>({value,weight:weights[index]}));
-    return {label,values,weights,records:group.length,abundance,median:weightedMedian(weighted),mean:abundance?weighted.reduce((sum,item)=>sum+item.value*item.weight,0)/abundance:0};
+    return {label,values,weights,records:group.length,abundance,median:weightedQuantile(weighted,.5),mean:abundance?weighted.reduce((sum,item)=>sum+item.value*item.weight,0)/abundance:0,maximum:Math.max(...values),p95:weightedQuantile(weighted,.95)};
   }).sort((a,b)=>b.abundance-a.abundance||a.label.localeCompare(b.label));
+}
+
+function lineageSampleDistributions(records: ShmRecordMetric[], metric: ShmMetricKey): ShmLineageSampleDistribution[] {
+  const distributionsByPair = distributions(records, metric, (record) => record.lineageId > 0 ? `${record.lineageId}\u0000${record.sampleId}` : "");
+  const metadata = new Map<string, ShmRecordMetric>();
+  for (const record of records) if (record.lineageId > 0) metadata.set(`${record.lineageId}\u0000${record.sampleId}`, record);
+  return distributionsByPair.map((distribution) => {
+    const record = metadata.get(distribution.label)!;
+    return { ...distribution, label: `Lineage ${record.lineageId} · ${record.sampleId}`, lineageId: record.lineageId, sampleId: record.sampleId, subjectId: record.subjectId, timepoint: record.timepoint, compartment: record.compartment };
+  });
 }
 
 export class ShmAccumulator {
   private readonly options: Required<ShmAccumulatorOptions>;
   private readonly samples:ShmRecordMetric[]=[];
-  private readonly sampledByLineage=new Map<number,number>();
+  private readonly sampledByLineageSample=new Map<string,number>();
   private skipped = 0;
   private analyzed = 0;
   private abundance = 0;
@@ -164,12 +190,16 @@ export class ShmAccumulator {
     const metric=computeShmMetric(row,ordinal,lineageId,stratum);
     if (!metric) { this.skipped += 1; return; }
     this.analyzed += 1; this.abundance += metric.duplicateCount;
-    const lineageSamples=this.sampledByLineage.get(lineageId)??0;
-    if(lineageSamples>=this.options.maxSamplesPerLineage)return;
-    if(this.samples.length<this.options.maxGlobalSamples){this.samples.push(metric);this.sampledByLineage.set(lineageId,lineageSamples+1);return;}
+    // Cap each lineage × sample cell independently. A repertoire ordered by
+    // sample must not fill a lineage reservoir at the first timepoint and
+    // silently erase all later longitudinal observations.
+    const pair=`${lineageId}\u0000${metric.sampleId}`;
+    const pairSamples=this.sampledByLineageSample.get(pair)??0;
+    if(pairSamples>=this.options.maxSamplesPerLineage)return;
+    if(this.samples.length<this.options.maxGlobalSamples){this.samples.push(metric);this.sampledByLineageSample.set(pair,pairSamples+1);return;}
     // Deterministic global reservoir: plot/session memory remains bounded even when every row is a singleton lineage.
     const slot=((ordinal*2654435761)>>>0)%this.analyzed;
-    if(slot<this.options.maxGlobalSamples){const removed=this.samples[slot];const removedCount=this.sampledByLineage.get(removed.lineageId)??1;if(removedCount<=1)this.sampledByLineage.delete(removed.lineageId);else this.sampledByLineage.set(removed.lineageId,removedCount-1);this.samples[slot]=metric;this.sampledByLineage.set(lineageId,(this.sampledByLineage.get(lineageId)??0)+1);}
+    if(slot<this.options.maxGlobalSamples){const removed=this.samples[slot];const removedPair=`${removed.lineageId}\u0000${removed.sampleId}`;const removedCount=this.sampledByLineageSample.get(removedPair)??1;if(removedCount<=1)this.sampledByLineageSample.delete(removedPair);else this.sampledByLineageSample.set(removedPair,removedCount-1);this.samples[slot]=metric;this.sampledByLineageSample.set(pair,(this.sampledByLineageSample.get(pair)??0)+1);}
   }
 
   finish(): ShmDashboard {
@@ -179,6 +209,7 @@ export class ShmAccumulator {
     return {analyzedRecords:this.analyzed,analyzedAbundance:this.abundance,skippedRecords:this.skipped,sampledRecords:records.length,metric,records,
       lineages:distributions(records,metric,(record)=>record.lineageId?`Lineage ${record.lineageId}`:"Unassigned"),
       vGenes:distributions(records,metric,(record)=>record.vCall.replace(/\*.*$/,"")),strata:distributions(records,metric,(record)=>record.stratum),
+      lineageSamples:lineageSampleDistributions(records,metric),
       histogram:bins.map((bin,index)=>({label:`${index*5}–${(index+1)*5}%`,...bin}))};
   }
 }
