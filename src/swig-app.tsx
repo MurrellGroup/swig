@@ -166,7 +166,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.20.0";
+const APP_VERSION = "0.20.1";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;

@@ -9,7 +9,15 @@ import {
 } from "react";
 
 import { runCodonAwareKalign, runFastTree, runKalign, type FastTreeRun } from "./biowasm-runtime";
-import { readAlivibeNucleotideFasta } from "./alivibe-roundtrip";
+import {
+  ALIVIBE_SOURCE_REVISION,
+  assertAlivibeInitialLoad,
+  assertAlivibeRoundTripTarget,
+  getAlivibeBridge,
+  loadAlivibeNucleotideFasta,
+  readAlivibeNucleotideFasta,
+  type AlivibeEditorWindow,
+} from "./alivibe-roundtrip";
 import { inspectAlignment, validateCorrectedAlignment } from "./alignment-provenance";
 import { chimeraVisiblePositions, classifyChimeraQuerySite } from "./chimera-view-model";
 import { CommitNumberInput } from "./commit-number-input";
@@ -144,6 +152,16 @@ interface EditedAlignmentState {
   source: string;
   frameOffset?: AlignmentFrameOffset;
   savedAt: string;
+}
+
+interface AlivibeRoundTripSession {
+  token: string;
+  popup: AlivibeEditorWindow;
+  baseline: string;
+  baselineFingerprint: string;
+  lineageIds: number[];
+  groupKey: string;
+  frameOffset: AlignmentFrameOffset;
 }
 
 interface LineageMergeState {
@@ -476,7 +494,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [treeModel, setTreeModel] = useState<"gtr" | "jc">("gtr");
   const [treeFast, setTreeFast] = useState(false);
   const treeResultRef = useRef<HTMLDivElement>(null);
-  const alivibeWindowRef = useRef<Window | null>(null);
+  const alivibeSessionRef = useRef<AlivibeRoundTripSession | null>(null);
+  const alignmentRef = useRef(alignment);
   const [alignmentEditorStatus, setAlignmentEditorStatus] = useState("");
   const [alignmentEditorError, setAlignmentEditorError] = useState("");
   const alignmentInfo = useMemo(() => {
@@ -484,6 +503,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     try { return inspectAlignment(alignment); } catch { return null; }
   }, [alignment]);
   const selectedGroupKey = useMemo(()=>lineageGroupKey(selectedLineageIds),[selectedLineageIds]);
+  const selectedGroupKeyRef = useRef(selectedGroupKey);
+  useEffect(() => { alignmentRef.current = alignment; }, [alignment]);
+  useEffect(() => { selectedGroupKeyRef.current = selectedGroupKey; }, [selectedGroupKey]);
   const savedEditedAlignment = editedAlignments.get(selectedGroupKey);
   const mergedIdByOriginal = useMemo(()=>{
     const map=new Map<number,string>();
@@ -1440,66 +1462,102 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     }
   }
 
-  function importEditedAlignment(text: string, source = "Alivibe-corrected alignment", transferredFrameOffset?: AlignmentFrameOffset) {
-    if (!alignment) throw new Error("Create a lineage alignment before importing a correction.");
-    const inspected = validateCorrectedAlignment(alignment, text);
+  function importEditedAlignment(
+    text: string,
+    source = "Alivibe-corrected alignment",
+    transferredFrameOffset?: AlignmentFrameOffset,
+    options: { baseline?: string; lineageIds?: number[]; requireExactSerialization?: boolean } = {},
+  ) {
+    const baseline = options.baseline ?? alignment;
+    const lineageIds = options.lineageIds ?? selectedLineageIds;
+    if (!baseline) throw new Error("Create a lineage alignment before importing a correction.");
+    const inspected = validateCorrectedAlignment(baseline, text);
+    if (options.requireExactSerialization && inspected.fasta !== text) {
+      throw new Error("Swig would have to normalize the nucleotide FASTA returned by Alivibe. The return was refused instead of silently changing it.");
+    }
     const frameOffset = transferredFrameOffset ?? inferAlignedReadingFrame(inspected.records.map((record) => record.sequence), alignmentFrameOffset).offset;
-    installAlignment(inspected.fasta, source, true, selectedLineageIds, frameOffset);
+    installAlignment(inspected.fasta, source, true, lineageIds, frameOffset);
     setAlignmentEditorError("");
     setAlignmentEditorStatus(`Accepted corrected nucleotide alignment: ${inspected.rows.toLocaleString()} rows × ${inspected.columns.toLocaleString()} columns${inspected.removedRows.length?` · ${inspected.removedRows.length.toLocaleString()} biological row${inspected.removedRows.length===1?"":"s"} deleted`:""}${inspected.removedNucleotides?` · ${inspected.removedNucleotides.toLocaleString()} nucleotide character${inspected.removedNucleotides===1?"":"s"} deleted`:""} · AA reading frame starts at nucleotide column ${frameOffset + 1} · fingerprint ${inspected.fingerprint}. FastTree will use these exact retained rows and columns.`);
   }
 
+  function returnFromAlivibe(session: AlivibeRoundTripSession) {
+    if (alivibeSessionRef.current?.token !== session.token) {
+      throw new Error("This Alivibe editor belongs to an expired Swig round trip. Close it and reopen the current alignment.");
+    }
+    if (session.popup.closed) throw new Error("The Alivibe editor has been closed.");
+    const currentAlignment = alignmentRef.current;
+    if (!currentAlignment) throw new Error("The originating Swig alignment is no longer loaded.");
+    assertAlivibeRoundTripTarget(
+      { groupKey: session.groupKey, alignmentFingerprint: session.baselineFingerprint },
+      { groupKey: selectedGroupKeyRef.current, alignmentFingerprint: inspectAlignment(currentAlignment).fingerprint },
+    );
+    const returned = readAlivibeNucleotideFasta(session.popup);
+    importEditedAlignment(returned.fasta, `Alivibe-corrected alignment · ${returned.sourceRevision.slice(0, 12)}`, returned.frameOffset, {
+      baseline: session.baseline,
+      lineageIds: session.lineageIds,
+      requireExactSerialization: true,
+    });
+    alivibeSessionRef.current = null;
+    window.focus();
+    session.popup.close();
+  }
+
   function openAlivibeEditor() {
     if (!alignment) return;
+    const existing = alivibeSessionRef.current;
+    if (existing && !existing.popup.closed) {
+      existing.popup.focus();
+      setAlignmentEditorError("An Alivibe round trip is already open. Return or close that editor before opening another alignment.");
+      return;
+    }
     setAlignmentEditorError("");
-    setAlignmentEditorStatus("Opening Alivibe…");
-    const popup = window.open("https://murrellgroup.github.io/WebWidgets/alivibe.html", "swig-alivibe", "popup,width=1500,height=920");
+    setAlignmentEditorStatus("Opening the bundled Alivibe editor…");
+    const base = import.meta.env.BASE_URL.endsWith("/") ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
+    const editorUrl = new URL(`${base}tools/alivibe.html`, window.location.origin);
+    const token = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const popup = window.open(editorUrl.href, `swig-alivibe-${token}`, "popup,width=1500,height=920") as AlivibeEditorWindow | null;
     if (!popup) {
       setAlignmentEditorError("The browser blocked the Alivibe window. Allow pop-ups for this page and try again.");
       return;
     }
-    alivibeWindowRef.current = popup;
-    if (navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText(alignment).catch(() => undefined);
-    }
+    const baseline = alignment;
+    const baselineFingerprint = inspectAlignment(baseline).fingerprint;
+    const lineageIds = [...new Set(selectedLineageIds)].sort((left, right) => left - right);
+    const groupKey = lineageGroupKey(lineageIds);
+    const session: AlivibeRoundTripSession = { token, popup, baseline, baselineFingerprint, lineageIds, groupKey, frameOffset: alignmentFrameOffset };
+    alivibeSessionRef.current = session;
     let attempts = 0;
     const timer = window.setInterval(() => {
       attempts += 1;
       if (popup.closed) {
         window.clearInterval(timer);
-        setAlignmentEditorStatus("Alivibe closed. Import its downloaded alignment FASTA. Deliberately deleted biological rows and nucleotide characters are accepted; the N-masked germline must remain.");
+        if (alivibeSessionRef.current?.token === token) alivibeSessionRef.current = null;
+        setAlignmentEditorStatus("Alivibe closed without a direct return. Its downloaded nucleotide FASTA can still be loaded with Import corrected FASTA.");
         return;
       }
       try {
-        const editor = popup as Window & {
-          parseFasta?: (text: string) => void;
-          getClipboardContent?: (preferSelection?: boolean) => string;
-        };
-        if (typeof editor.parseFasta !== "function") return;
-        const controls = editor.document.getElementById("controls");
-        if (!controls) return;
-        editor.parseFasta(alignment);
-        const frameSelect = editor.document.getElementById("sel-frame") as HTMLSelectElement | null;
-        if (frameSelect) {
-          frameSelect.value = String(alignmentFrameOffset + 1);
-          frameSelect.dispatchEvent(new Event("change"));
+        if (!getAlivibeBridge(popup)) {
+          if (attempts < 240) return;
+          throw new Error("The bundled Alivibe bridge did not become ready. Close the editor and try again.");
         }
-        if (controls && !editor.document.getElementById("swig-return-control")) {
-          const group = editor.document.createElement("div");
+        const loaded = loadAlivibeNucleotideFasta(popup, session.baseline, session.frameOffset);
+        assertAlivibeInitialLoad(session.baseline, loaded);
+        const controls = popup.document.getElementById("controls");
+        if (!controls) return;
+        if (!popup.document.getElementById("swig-return-control")) {
+          const group = popup.document.createElement("div");
           group.id = "swig-return-control";
           group.className = "control-group";
-          const label = editor.document.createElement("label");
+          const label = popup.document.createElement("label");
           label.textContent = "Swig round trip";
-          const button = editor.document.createElement("button");
+          const button = popup.document.createElement("button");
           button.type = "button";
           button.textContent = "Return alignment to Swig";
           button.className = "active";
           button.onclick = () => {
             try {
-              const returned = readAlivibeNucleotideFasta(editor, alignmentFrameOffset);
-              importEditedAlignment(returned.fasta, "Alivibe-corrected alignment", returned.frameOffset);
-              window.focus();
-              popup.close();
+              returnFromAlivibe(session);
             } catch (importError) {
               setAlignmentEditorError(importError instanceof Error ? importError.message : String(importError));
               window.focus();
@@ -1508,34 +1566,23 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
           group.append(label, button);
           controls.prepend(group);
         }
-        setAlignmentEditorStatus(`Alignment loaded locally in Alivibe with reading frame ${alignmentFrameOffset + 1}. Edit it, then press Return alignment to Swig in Alivibe’s toolbar.`);
+        setAlignmentEditorStatus(`Exact nucleotide alignment loaded in bundled Alivibe ${ALIVIBE_SOURCE_REVISION.slice(0, 12)} with reading frame ${session.frameOffset + 1}. Edit it, then press Return alignment to Swig in Alivibe’s toolbar.`);
         window.clearInterval(timer);
-      } catch {
-        if (attempts < 20) return;
-        setAlignmentEditorStatus("Alivibe is on a different origin. The FASTA was copied locally: paste and edit it there, download the corrected alignment, then use Import corrected FASTA.");
+      } catch (openError) {
+        setAlignmentEditorError(openError instanceof Error ? openError.message : String(openError));
+        setAlignmentEditorStatus("Alivibe round trip stopped before editing. No Swig alignment was changed.");
+        if (alivibeSessionRef.current?.token === token) alivibeSessionRef.current = null;
         window.clearInterval(timer);
       }
     }, 250);
   }
 
-  async function importFromAlivibe() {
+  function importFromAlivibe() {
     setAlignmentEditorError("");
     try {
-      const editor = alivibeWindowRef.current as (Window & { getClipboardContent?: (preferSelection?: boolean) => string }) | null;
-      let corrected = "";
-      if (editor && !editor.closed) {
-        try {
-          const returned = readAlivibeNucleotideFasta(editor, alignmentFrameOffset);
-          corrected = returned.fasta;
-          if (corrected) {
-            importEditedAlignment(corrected, "Alivibe-corrected alignment", returned.frameOffset);
-            return;
-          }
-        } catch { /* cross-origin fallback below */ }
-      }
-      if (!corrected && navigator.clipboard?.readText) corrected = await navigator.clipboard.readText();
-      if (!corrected) throw new Error("No corrected FASTA was available. Download the alignment from Alivibe, then use Import corrected FASTA.");
-      importEditedAlignment(corrected);
+      const session = alivibeSessionRef.current;
+      if (!session || session.popup.closed) throw new Error("No live Alivibe round trip is available. Open the current alignment in Alivibe, or load an exported nucleotide FASTA file.");
+      returnFromAlivibe(session);
     } catch (importError) {
       setAlignmentEditorError(importError instanceof Error ? importError.message : String(importError));
     }
@@ -2162,7 +2209,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       </div>}
       <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">Ref-anchored quick view · default</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><CommitNumberInput min="2" max="500" value={alignmentLimit} onCommit={setAlignmentLimit} /></label><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runAlignment()}>{alignmentMethod==="quick"?"Prepare quick view":"Align selected lineage"}</button>{savedEditedAlignment&&!alignmentEdited&&<button type="button" onClick={()=>installAlignment(savedEditedAlignment.fasta,savedEditedAlignment.source,true,savedEditedAlignment.lineageIds,savedEditedAlignment.frameOffset)}>Restore saved manual edit</button>}{alignment && <><label><span>AA reading frame</span><select value={alignmentFrameOffset} onChange={(event)=>changeAlignmentFrameOffset(Number(event.target.value) as AlignmentFrameOffset)}><option value="0">Start at nucleotide column 1</option><option value="1">Start at nucleotide column 2</option><option value="2">Start at nucleotide column 3</option></select></label><label><span>Alignment export</span><select value={alignmentExportFormat} onChange={(event)=>setAlignmentExportFormat(event.target.value as AlignmentExportFormat)}><option value="fasta">Aligned FASTA</option><option value="clustal">Clustal</option><option value="phylip">Relaxed PHYLIP</option><option value="stockholm">Stockholm</option><option value="nexus">NEXUS</option></select></label><button type="button" onClick={downloadCurrentAlignment}>Download alignment ↓</button></>}</div>
       {alignment && <>
-        <div className={`alignment-editor-transfer${alignmentEdited?" edited-saved":""}`}><div><span className="section-kicker">Manual correction</span><h4>Round trip through Alivibe</h4><p>Gap edits, deleted alignment columns, deleted nucleotide characters, and removal of bad biological rows are accepted. Added or renamed rows and nucleotide substitutions are rejected. Keep <code>{GERMLINE_OUTGROUP}</code> so rooting remains reproducible. The direct return transfers Alivibe's selected AA frame and always returns nucleotide FASTA.</p>{alignmentEdited?<strong className="session-preserved-badge">Manual alignment + AA frame · included in Save session</strong>:<small>Generated alignments are reproducible and omitted from sessions unless a tree needs their exact input. Any manually returned/imported correction is preserved.</small>}</div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={() => void importFromAlivibe()}>Import returned alignment</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label>{savedEditedAlignment&&<button type="button" onClick={()=>{setEditedAlignments((current)=>{const next=new Map(current);next.delete(selectedGroupKey);return next;});if(alignmentEdited)setAlignmentEdited(false);}}>Discard saved manual edit</button>}</div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>For downloaded/imported corrected FASTA, verify the adjacent AA reading-frame control because FASTA itself does not encode codon phase. Sequence data remain in the browser.</small></div>
+        <div className={`alignment-editor-transfer${alignmentEdited?" edited-saved":""}`}><div><span className="section-kicker">Manual correction</span><h4>Round trip through Alivibe</h4><p>Gap edits, deleted alignment columns, deleted nucleotide characters, and removal of bad biological rows are accepted. Added or renamed rows and nucleotide substitutions are rejected. Keep <code>{GERMLINE_OUTGROUP}</code> so rooting remains reproducible. The bundled editor returns the complete ordered records from the same nucleotide state used by Alivibe’s NT viewer and NT export; its AA frame is transferred separately.</p>{alignmentEdited?<strong className="session-preserved-badge">Manual alignment + AA frame · included in Save session</strong>:<small>Generated alignments are reproducible and omitted from sessions unless a tree needs their exact input. Any manually returned/imported correction is preserved.</small>}</div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={importFromAlivibe}>Read live Alivibe NT view</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label>{savedEditedAlignment&&<button type="button" onClick={()=>{setEditedAlignments((current)=>{const next=new Map(current);next.delete(selectedGroupKey);return next;});if(alignmentEdited)setAlignmentEdited(false);}}>Discard saved manual edit</button>}</div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>The live return never reads the system clipboard and is bound to the lineage/alignment from which the editor was opened. For a downloaded corrected FASTA, verify the adjacent AA reading-frame control because FASTA itself does not encode codon phase. Sequence data remain in the browser.</small></div>
         <div className="alignment-view-controls"><div className="mode-toggle"><button className={alignmentMode === "nt" ? "active" : ""} type="button" onClick={() => setAlignmentMode("nt")}>Nucleotide</button><button className={alignmentMode === "aa" ? "active" : ""} type="button" onClick={() => setAlignmentMode("aa")}>Amino acid</button></div><span>{alignmentInfo?.rows.toLocaleString() ?? parseFasta(alignment, true).length.toLocaleString()} aligned rows · {alignmentInfo?.columns.toLocaleString() ?? "—"} columns · AA frame starts at nucleotide column {alignmentFrameOffset + 1} · {alignmentSource || "alignment"} · fingerprint {alignmentInfo?.fingerprint ?? "—"}</span></div>
         <AlignmentPreview fasta={alignment} mode={alignmentMode} frameOffset={alignmentFrameOffset} />
         <div ref={treeResultRef} className="tree-operation-region">
