@@ -54,6 +54,11 @@ private:
         std::size_t min_length,
         const std::string& locus_filter = "",
         const std::vector<Candidate>* candidate_hints = nullptr) const;
+    [[nodiscard]] std::vector<SegmentHit> align_v_allele_tree(
+        const std::string& query,
+        std::size_t top_n,
+        const Scoring& scoring,
+        std::size_t min_length) const;
     void annotate_junction(Annotation& annotation) const;
     void annotate_v_regions(Annotation& annotation) const;
     void stitch_alignment(Annotation& annotation) const;

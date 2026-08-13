@@ -14,6 +14,12 @@ inline constexpr const char* kVersion = "0.5.0";
 
 enum class Segment : std::uint8_t { V = 0, D = 1, J = 2, C = 3 };
 
+enum class AssignerStrategy : std::uint8_t {
+    Standard = 0,
+    RiatMp = 1,
+    Aer = 2,
+};
+
 struct SequenceRecord {
     std::string id;
     std::string description;
@@ -138,22 +144,23 @@ struct Annotation {
 };
 
 struct EngineOptions {
+    AssignerStrategy assigner_strategy = AssignerStrategy::Standard;
     Scoring v_scoring{2, -3, -5, -1};
-    // D segments are short enough that permissive mismatch scoring creates
-    // convincing local alignments in N-additions. Require a seven-base exact
-    // seed and penalize mismatches more strongly before reporting a D call.
-    Scoring d_scoring{2, -5, -5, -1};
-    // J calls are normally supported by a much longer tract. Stronger
-    // mismatch and gap-open penalties prevent short internal HSPs from
-    // outranking the biologically supported J alignment.
-    Scoring j_scoring{2, -5, -11, -1};
+    // Jointly calibrated on the supplied low-SHM and IgG simulations. D uses
+    // a six-base exact-support floor; the strong gap-open penalty avoids
+    // explaining N-additions as internal D gaps.
+    Scoring d_scoring{2, -3, -13, -1};
+    // J tolerates distributed SHM but strongly penalizes a new gap and mildly
+    // penalizes its extension, which favored the correct J allele across both
+    // supplied mutation regimes.
+    Scoring j_scoring{2, -3, -17, -2};
     Scoring c_scoring{2, -3, -5, -1};
     std::size_t top_v = 3;
-    std::size_t top_d = 6;
-    std::size_t top_j = 3;
+    std::size_t top_d = 2;
+    std::size_t top_j = 2;
     std::size_t top_c = 3;
     std::size_t min_v_length = 24;
-    std::size_t min_d_match = 7;
+    std::size_t min_d_match = 6;
     std::size_t min_j_length = 10;
     std::size_t min_c_length = 30;
     double min_identity = 0.60;

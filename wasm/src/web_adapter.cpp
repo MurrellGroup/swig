@@ -19,6 +19,7 @@
 namespace {
 
 using swiftig::AnnotationEngine;
+using swiftig::AssignerStrategy;
 using swiftig::EngineOptions;
 using swiftig::Gene;
 using swiftig::GermlineDatabase;
@@ -27,6 +28,7 @@ using swiftig::SequenceRecord;
 std::unique_ptr<GermlineDatabase> g_database;
 std::optional<EngineOptions> g_engine_options_override;
 int g_calling_profile = 0;
+AssignerStrategy g_assigner_strategy = AssignerStrategy::Standard;
 std::string g_result;
 std::string g_double_d_result;
 int g_double_d_count = 0;
@@ -292,6 +294,7 @@ EngineOptions configured_options(int minimum_identity_per_mille, int strand) {
         options.j_scoring = {2, -4, -13, -1};
         options.top_j = 2;
     }
+    options.assigner_strategy = g_assigner_strategy;
     options.min_identity = std::clamp(minimum_identity_per_mille, 0, 1000) / 1000.0;
     options.search_forward = strand != 2;
     options.search_reverse = strand != 1;
@@ -315,6 +318,14 @@ int swig_set_calling_profile(int profile) noexcept {
     return 0;
 }
 
+__attribute__((export_name("swig_set_assigner_strategy")))
+int swig_set_assigner_strategy(int strategy) noexcept {
+    if (strategy < static_cast<int>(AssignerStrategy::Standard) ||
+        strategy > static_cast<int>(AssignerStrategy::Aer)) return -1;
+    g_assigner_strategy = static_cast<AssignerStrategy>(strategy);
+    return 0;
+}
+
 __attribute__((export_name("swig_init_database")))
 int swig_init_database(
     const char* v_data, std::size_t v_size,
@@ -331,7 +342,15 @@ int swig_init_database(
         !parse_germline(j_input, "J", true, j_genes) ||
         !parse_germline(c_input, "C", false, c_genes)) return -1;
     auto database = std::make_unique<GermlineDatabase>();
-    database->v.reset(std::move(v_genes), 9);
+    if (g_assigner_strategy == AssignerStrategy::RiatMp) {
+        // RIAT-MP indexes only one representative root per close-allele tree.
+        // Descendant alleles are retained as sparse tree leaves and are never
+        // independently aligned by the production RIAT-MP path.
+        database->v.reset(std::move(v_genes), 0);
+        database->v_tree.reset(database->v.genes(), 12);
+    } else {
+        database->v.reset(std::move(v_genes), 9);
+    }
     database->d.reset(std::move(d_genes), 5);
     database->j.reset(std::move(j_genes), 7);
     database->c.reset(std::move(c_genes), 9);
@@ -460,6 +479,66 @@ std::size_t swig_gene_count(int segment) noexcept {
         default: return 0;
     }
 }
+
+// Experimental root-index diagnostics. These exports let the benchmark prove
+// that the complete V collection is not k-mer indexed or independently
+// aligned, and account for the sparse work done below the selected roots.
+__attribute__((export_name("swig_v_tree_cluster_count")))
+std::uint32_t swig_v_tree_cluster_count() noexcept {
+    return g_database
+        ? static_cast<std::uint32_t>(g_database->v_tree.clusters().size()) : 0;
+}
+
+__attribute__((export_name("swig_v_tree_edge_count")))
+std::uint32_t swig_v_tree_edge_count() noexcept {
+    return g_database ? static_cast<std::uint32_t>(g_database->v_tree.edge_count()) : 0;
+}
+
+__attribute__((export_name("swig_v_tree_mutation_count")))
+std::uint32_t swig_v_tree_mutation_count() noexcept {
+    return g_database ? static_cast<std::uint32_t>(g_database->v_tree.mutation_count()) : 0;
+}
+
+__attribute__((export_name("swig_v_tree_max_edge_mutations")))
+std::uint32_t swig_v_tree_max_edge_mutations() noexcept {
+    return g_database
+        ? static_cast<std::uint32_t>(g_database->v_tree.maximum_edge_mutations()) : 0;
+}
+
+__attribute__((export_name("swig_v_tree_full_v_kmer_size")))
+std::uint32_t swig_v_tree_full_v_kmer_size() noexcept {
+    return g_database ? g_database->v.kmer_size() : 0;
+}
+
+__attribute__((export_name("swig_v_tree_root_kmer_size")))
+std::uint32_t swig_v_tree_root_kmer_size() noexcept {
+    return g_database ? g_database->v_tree.roots().kmer_size() : 0;
+}
+
+__attribute__((export_name("swig_v_tree_reset_stats")))
+void swig_v_tree_reset_stats() noexcept {
+    if (g_database) g_database->v_tree.reset_search_stats();
+}
+
+#define SWIG_V_TREE_STAT_EXPORT(function_name, field) \
+    __attribute__((export_name(#function_name))) \
+    std::uint32_t function_name() noexcept { \
+        return g_database ? g_database->v_tree.search_stats().field : 0; \
+    }
+
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_queries, queries)
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_root_candidates, root_candidates)
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_root_alignments, root_alignments)
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_root_tracebacks, root_tracebacks)
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_multipath_searches, multipath_searches)
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_trace_states, trace_states)
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_trace_limit_hits, trace_limit_hits)
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_clusters_scored, clusters_scored)
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_nodes_scored, nodes_scored)
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_mutation_updates, mutation_updates)
+SWIG_V_TREE_STAT_EXPORT(swig_v_tree_stats_final_realignments, final_realignments)
+
+#undef SWIG_V_TREE_STAT_EXPORT
 
 // Benchmark-only configuration hook. The browser UI never invokes this export;
 // normal annotation therefore continues to use EngineOptions defaults. Keeping

@@ -2,7 +2,7 @@ import type { CompiledReferences, ScopeKey } from "./reference-pack";
 import type { RepertoireSelectionOptions } from "./repertoire-selection";
 import type { MissingAlleleDashboard, MissingAlleleOptions } from "./germline-evidence";
 import type { ShmDashboard, ShmMetricKey } from "./shm-analysis";
-import type { CallingProfile } from "./swiftig-runtime";
+import type { AssignerStrategy, CallingProfile } from "./swiftig-runtime";
 import type { DatasetManifestEntry, PipelinePlan, StudyDesign } from "./study-design";
 import type { SampleColorMap } from "./sample-colors";
 import type { LineageGermlineMethod } from "./lineage-alignment";
@@ -84,6 +84,7 @@ export interface SwigSession {
     scope: ScopeKey;
     workers: number;
     callingProfile?: CallingProfile;
+    assignerStrategy?: AssignerStrategy;
     minimumIdentity: number;
     strand: 0 | 1 | 2;
     references: CompiledReferences;

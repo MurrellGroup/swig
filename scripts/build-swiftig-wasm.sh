@@ -29,6 +29,7 @@ export LD_LIBRARY_PATH="$wasi_sdk/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 sources=(
   "$project_dir/wasm/src/types.cpp"
   "$project_dir/wasm/src/index.cpp"
+  "$project_dir/wasm/src/allele_tree.cpp"
   "$project_dir/wasm/src/alignment.cpp"
   "$project_dir/wasm/src/engine.cpp"
   "$project_dir/wasm/src/double_d.cpp"
@@ -47,6 +48,10 @@ sources=(
   -fno-exceptions \
   -fno-rtti \
   -DSWIG_WEB \
+  -DSWIG_V_TREE_ROOT_ALIGNMENTS=3 \
+  -DSWIG_V_TREE_TRACEBACKS=2 \
+  -DSWIG_V_TREE_TRACEBACK_TOLERANCE=4 \
+  -DSWIG_V_TREE_TRACE_STATE_LIMIT=1024 \
   -I"$project_dir/wasm/include" \
   "${sources[@]}" \
   -mexec-model=reactor \

@@ -254,7 +254,8 @@ GermlineDatabase GermlineDatabase::from_fastas(
     const std::string& j_path,
     const std::string& c_path) {
     GermlineDatabase database;
-    database.v.reset(read_germline_fasta(v_path), 9);
+    database.v.reset(read_germline_fasta(v_path), 0);
+    database.v_tree.reset(database.v.genes(), 12);
     database.d.reset(read_germline_fasta(d_path), 5);
     database.j.reset(read_germline_fasta(j_path), 7);
     database.c.reset(read_germline_fasta(c_path), 9);

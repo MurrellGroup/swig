@@ -1,0 +1,858 @@
+{
+  "candidate": {
+    "id": "Swig-0.20-standard-truth-profile",
+    "assigner": "standard",
+    "dMatch": 2,
+    "dMismatch": -3,
+    "dGapOpen": -13,
+    "dGapExtend": -1,
+    "topD": 2,
+    "minDMatch": 6,
+    "jMatch": 2,
+    "jMismatch": -3,
+    "jGapOpen": -17,
+    "jGapExtend": -2,
+    "topJ": 2,
+    "minJLength": 10,
+    "minimumIdentity": 600
+  },
+  "sample": {
+    "mod": 10,
+    "residue": 0
+  },
+  "wasm": {
+    "path": "../../swig-v0.20.0-work/public/swiftig.wasm",
+    "version": "0.5.0",
+    "referenceCount": 641,
+    "treeDiagnostic": {
+      "clusters": 0,
+      "edges": 0,
+      "mutationEvents": 0,
+      "maximumEdgeMutations": 0,
+      "completeVIndexKmerSize": 9,
+      "rootIndexKmerSize": 0
+    }
+  },
+  "datasets": {
+    "regular": {
+      "records": 9994,
+      "elapsedSeconds": 28.800125886,
+      "readsPerSecond": 347.01237208335164,
+      "cpuSeconds": 29.049532,
+      "cpuReadsPerSecond": 344.03308115256385,
+      "wasmCallElapsedSeconds": 28.470868649,
+      "wasmCallReadsPerSecond": 351.02546828514227,
+      "wasmCallCpuSeconds": 28.665375,
+      "wasmCallCpuReadsPerSecond": 348.6436162094513,
+      "hostCpuSeconds": 0.3841569999999983,
+      "vTreeStats": {
+        "queries": 0,
+        "rootCandidates": 0,
+        "rootAlignments": 0,
+        "rootTracebacks": 0,
+        "multipathSearches": 0,
+        "traceStates": 0,
+        "traceLimitHits": 0,
+        "clustersScored": 0,
+        "nodesScored": 0,
+        "mutationUpdates": 0,
+        "finalRealignments": 0
+      },
+      "targets": {
+        "truth": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.9027416449869922,
+              "firstSupported": 0.9027416449869922,
+              "referenceFirstSupported": 0.9426655993596158,
+              "compatible": 0.9426655993596158,
+              "exactSet": 0.8692215329197519,
+              "directionalFair": 0.9037088920018672,
+              "reciprocalCoverage": 0.9426655993596158,
+              "jaccard": 0.9037088920018672,
+              "callStatusAgreement": 1,
+              "callRate": 1,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.09725835501300781,
+              "meanAtoms": 1.115869521713028
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.7783670202121272,
+              "firstSupported": 0.7783670202121272,
+              "referenceFirstSupported": 0.8487092255353212,
+              "compatible": 0.8487092255353212,
+              "exactSet": 0.7102261356814088,
+              "directionalFair": 0.779851244079781,
+              "reciprocalCoverage": 0.8487092255353212,
+              "jaccard": 0.779851244079781,
+              "callStatusAgreement": 0.9579747848709226,
+              "callRate": 0.9256553932359416,
+              "referenceCallRate": 0.9458675205123074,
+              "multiCallRate": 0.2299379627776666,
+              "meanAtoms": 1.1665999599759855
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9758855313187913,
+              "firstSupported": 0.9758855313187913,
+              "referenceFirstSupported": 0.9854912947768661,
+              "compatible": 0.9854912947768661,
+              "exactSet": 0.9616770062037222,
+              "directionalFair": 0.9735841504902942,
+              "reciprocalCoverage": 0.9854912947768661,
+              "jaccard": 0.9735841504902942,
+              "callStatusAgreement": 0.9976986191715029,
+              "callRate": 0.9976986191715029,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.024114468681208725,
+              "meanAtoms": 1.0218130878527116
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.6865119071442866,
+            "firstSupported": 0.6865119071442866,
+            "compatible": 0.7884730838503102,
+            "exactSet": 0.5950570342205324,
+            "directionalFair": 0.6867731750161197,
+            "reciprocalCoverage": 0.7884730838503102,
+            "jaccard": 0.6867731750161197,
+            "callStatusAgreement": 0.9557734640784471
+          }
+        },
+        "igblast": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.9639783870322194,
+              "firstSupported": 0.9673804282569541,
+              "referenceFirstSupported": 0.9644786872123274,
+              "compatible": 0.9678807284370622,
+              "exactSet": 0.9417650590354213,
+              "directionalFair": 0.9672636915482623,
+              "reciprocalCoverage": 0.9563404709492372,
+              "jaccard": 0.9559002067907418,
+              "callStatusAgreement": 1,
+              "callRate": 1,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.09725835501300781,
+              "meanAtoms": 1.115869521713028
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.94106463878327,
+              "firstSupported": 0.9483690214128477,
+              "referenceFirstSupported": 0.9425655393235941,
+              "compatible": 0.9499699819891935,
+              "exactSet": 0.8576145687412448,
+              "directionalFair": 0.9480855179774531,
+              "reciprocalCoverage": 0.9147154959642486,
+              "jaccard": 0.9131745714095162,
+              "callStatusAgreement": 0.958375025015009,
+              "callRate": 0.9256553932359416,
+              "referenceCallRate": 0.9666800080048029,
+              "multiCallRate": 0.2299379627776666,
+              "meanAtoms": 1.1665999599759855
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9945967580548329,
+              "firstSupported": 0.9958975385231139,
+              "referenceFirstSupported": 0.995097058234941,
+              "compatible": 0.996397838703222,
+              "exactSet": 0.9929957974784871,
+              "directionalFair": 0.9961476886131679,
+              "reciprocalCoverage": 0.9950303515442599,
+              "jaccard": 0.9947802014542059,
+              "callStatusAgreement": 0.9976986191715029,
+              "callRate": 0.9976986191715029,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.024114468681208725,
+              "meanAtoms": 1.0218130878527116
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.902541524914949,
+            "firstSupported": 0.9137482489493696,
+            "compatible": 0.9161496898138883,
+            "exactSet": 0.8021813087852712,
+            "directionalFair": 0.913631512240678,
+            "reciprocalCoverage": 0.8704989660462998,
+            "jaccard": 0.8684833122095532,
+            "callStatusAgreement": 0.9561737042225336
+          }
+        },
+        "providedSwiftig": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.9997998799279568,
+              "firstSupported": 0.9997998799279568,
+              "referenceFirstSupported": 0.9997998799279568,
+              "compatible": 0.9997998799279568,
+              "exactSet": 0.9997998799279568,
+              "directionalFair": 0.9997998799279568,
+              "reciprocalCoverage": 0.9997998799279568,
+              "jaccard": 0.9997998799279568,
+              "callStatusAgreement": 1,
+              "callRate": 1,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.09725835501300781,
+              "meanAtoms": 1.115869521713028
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.8933360016009606,
+              "firstSupported": 0.9016409845907545,
+              "referenceFirstSupported": 0.898138883329998,
+              "compatible": 0.9064438663197919,
+              "exactSet": 0.8352011206724035,
+              "directionalFair": 0.9011907144286572,
+              "reciprocalCoverage": 0.8787694044998446,
+              "jaccard": 0.8742786147879225,
+              "callStatusAgreement": 0.9587752651590955,
+              "callRate": 0.9256553932359416,
+              "referenceCallRate": 0.9522713628176906,
+              "multiCallRate": 0.2299379627776666,
+              "meanAtoms": 1.1665999599759855
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9853912347408446,
+              "firstSupported": 0.9854912947768661,
+              "referenceFirstSupported": 0.9879927956774065,
+              "compatible": 0.9880928557134281,
+              "exactSet": 0.9831899139483691,
+              "directionalFair": 0.9859415649389633,
+              "reciprocalCoverage": 0.9877926756053632,
+              "jaccard": 0.9856747381762392,
+              "callStatusAgreement": 0.9977986792075245,
+              "callRate": 0.9976986191715029,
+              "referenceCallRate": 0.9960976585951571,
+              "multiCallRate": 0.024114468681208725,
+              "meanAtoms": 1.0218130878527116
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.8824294576746048,
+            "firstSupported": 0.8902341404842906,
+            "compatible": 0.8972383430058035,
+            "exactSet": 0.8230938563137883,
+            "directionalFair": 0.8902341404842906,
+            "reciprocalCoverage": 0.8697556629215649,
+            "jaccard": 0.8636555742969617,
+            "callStatusAgreement": 0.9569741845107064
+          }
+        }
+      },
+      "baselines": {
+        "igblastVsTruth": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.9238543125875526,
+              "firstSupported": 0.9238543125875526,
+              "referenceFirstSupported": 0.9767860716429858,
+              "compatible": 0.9767860716429858,
+              "exactSet": 0.8816289773864319,
+              "directionalFair": 0.9252217997465136,
+              "reciprocalCoverage": 0.9767860716429858,
+              "jaccard": 0.9252217997465136,
+              "callStatusAgreement": 1,
+              "callRate": 1,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.10756453872323395,
+              "meanAtoms": 1.1366820092055234
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.7649589753852312,
+              "firstSupported": 0.7649589753852312,
+              "referenceFirstSupported": 0.8589153492095257,
+              "compatible": 0.8589153492095257,
+              "exactSet": 0.6922153291975185,
+              "directionalFair": 0.7675672069908551,
+              "reciprocalCoverage": 0.8589153492095257,
+              "jaccard": 0.7675672069908551,
+              "callStatusAgreement": 0.9689813888333,
+              "callRate": 0.9666800080048029,
+              "referenceCallRate": 0.9458675205123074,
+              "multiCallRate": 0.27906744046427856,
+              "meanAtoms": 1.3664198519111468
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9786872123273964,
+              "firstSupported": 0.9786872123273964,
+              "referenceFirstSupported": 0.9889933960376226,
+              "compatible": 0.9889933960376226,
+              "exactSet": 0.9633780268160896,
+              "directionalFair": 0.9760689747181641,
+              "reciprocalCoverage": 0.9889933960376226,
+              "jaccard": 0.9760689747181641,
+              "callStatusAgreement": 1,
+              "callRate": 1,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.025815489293576147,
+              "meanAtoms": 1.0265159095457275
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.6937162297378427,
+            "firstSupported": 0.6937162297378427,
+            "compatible": 0.8294976986191716,
+            "exactSet": 0.5908545127076246,
+            "directionalFair": 0.6943955262046065,
+            "reciprocalCoverage": 0.8294976986191716,
+            "jaccard": 0.6943955262046065,
+            "callStatusAgreement": 0.9689813888333
+          }
+        },
+        "providedSwiftigVsTruth": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.902541524914949,
+              "firstSupported": 0.902541524914949,
+              "referenceFirstSupported": 0.9424654792875725,
+              "compatible": 0.9424654792875725,
+              "exactSet": 0.8690214128477086,
+              "directionalFair": 0.9035087719298239,
+              "reciprocalCoverage": 0.9424654792875725,
+              "jaccard": 0.9035087719298239,
+              "callStatusAgreement": 1,
+              "callRate": 1,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.09725835501300781,
+              "meanAtoms": 1.115869521713028
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.7372423454072443,
+              "firstSupported": 0.7372423454072443,
+              "referenceFirstSupported": 0.824194516710026,
+              "compatible": 0.824194516710026,
+              "exactSet": 0.6738042825695417,
+              "directionalFair": 0.7411280101394139,
+              "reciprocalCoverage": 0.824194516710026,
+              "jaccard": 0.7411280101394139,
+              "callStatusAgreement": 0.9597758655193116,
+              "callRate": 0.9522713628176906,
+              "referenceCallRate": 0.9458675205123074,
+              "multiCallRate": 0.24284570742445466,
+              "meanAtoms": 1.3248949369621774
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9653792275365219,
+              "firstSupported": 0.9653792275365219,
+              "referenceFirstSupported": 0.9736842105263158,
+              "compatible": 0.9736842105263158,
+              "exactSet": 0.9544726836101661,
+              "directionalFair": 0.9640284170502301,
+              "reciprocalCoverage": 0.9736842105263158,
+              "jaccard": 0.9640284170502301,
+              "callStatusAgreement": 0.9960976585951571,
+              "callRate": 0.9960976585951571,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.01961176706023614,
+              "meanAtoms": 1.016009605763458
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.643486091654993,
+            "firstSupported": 0.643486091654993,
+            "compatible": 0.7574544726836102,
+            "exactSet": 0.5600360216129677,
+            "directionalFair": 0.6464703822293348,
+            "reciprocalCoverage": 0.7574544726836102,
+            "jaccard": 0.6464703822293348,
+            "callStatusAgreement": 0.9567740644386632
+          }
+        },
+        "providedSwiftigVsIgblast": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.9637782669601761,
+              "firstSupported": 0.967180308184911,
+              "referenceFirstSupported": 0.9642785671402841,
+              "compatible": 0.967680608365019,
+              "exactSet": 0.941564938963378,
+              "directionalFair": 0.9670635714762191,
+              "reciprocalCoverage": 0.9561403508771941,
+              "jaccard": 0.9557000867186985,
+              "callStatusAgreement": 1,
+              "callRate": 1,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.09725835501300781,
+              "meanAtoms": 1.115869521713028
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.8993396037622573,
+              "firstSupported": 0.9169501701020613,
+              "referenceFirstSupported": 0.9096457874724835,
+              "compatible": 0.9276565939563738,
+              "exactSet": 0.8501100660396238,
+              "directionalFair": 0.9095655012054853,
+              "reciprocalCoverage": 0.9052197985457936,
+              "jaccard": 0.8888024481355475,
+              "callStatusAgreement": 0.9843906343806283,
+              "callRate": 0.9522713628176906,
+              "referenceCallRate": 0.9666800080048029,
+              "multiCallRate": 0.24284570742445466,
+              "meanAtoms": 1.3248949369621774
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9809885931558935,
+              "firstSupported": 0.9847908745247148,
+              "referenceFirstSupported": 0.9812887732639584,
+              "compatible": 0.9850910546327797,
+              "exactSet": 0.9781869121472884,
+              "directionalFair": 0.9848909345607364,
+              "reciprocalCoverage": 0.981822426789407,
+              "jaccard": 0.9816556600627044,
+              "callStatusAgreement": 0.9960976585951571,
+              "callRate": 0.9960976585951571,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.01961176706023614,
+              "meanAtoms": 1.016009605763458
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.8545127076245748,
+            "firstSupported": 0.8771262757654593,
+            "compatible": 0.8876325795477287,
+            "exactSet": 0.7868721232739644,
+            "directionalFair": 0.8700084336316077,
+            "reciprocalCoverage": 0.8532541747270583,
+            "jaccard": 0.8375781421233691,
+            "callStatusAgreement": 0.9814888933360016
+          }
+        }
+      }
+    },
+    "igg": {
+      "records": 9994,
+      "elapsedSeconds": 41.007842735000004,
+      "readsPerSecond": 243.70947929602175,
+      "cpuSeconds": 41.01918,
+      "cpuReadsPerSecond": 243.64212058846618,
+      "wasmCallElapsedSeconds": 40.677547672,
+      "wasmCallReadsPerSecond": 245.68836058126664,
+      "wasmCallCpuSeconds": 40.680653,
+      "wasmCallCpuReadsPerSecond": 245.6696061393115,
+      "hostCpuSeconds": 0.33852699999999913,
+      "vTreeStats": {
+        "queries": 0,
+        "rootCandidates": 0,
+        "rootAlignments": 0,
+        "rootTracebacks": 0,
+        "multipathSearches": 0,
+        "traceStates": 0,
+        "traceLimitHits": 0,
+        "clustersScored": 0,
+        "nodesScored": 0,
+        "mutationUpdates": 0,
+        "finalRealignments": 0
+      },
+      "targets": {
+        "truth": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.7700620372223334,
+              "firstSupported": 0.7700620372223334,
+              "referenceFirstSupported": 0.8407044226535921,
+              "compatible": 0.8407044226535921,
+              "exactSet": 0.7056233740244147,
+              "directionalFair": 0.7691865119071416,
+              "reciprocalCoverage": 0.8407044226535921,
+              "jaccard": 0.7691865119071416,
+              "callStatusAgreement": 0.9998999399639784,
+              "callRate": 0.9998999399639784,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.18771262757654592,
+              "meanAtoms": 1.2279367620572343
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.6847108264958975,
+              "firstSupported": 0.6847108264958975,
+              "referenceFirstSupported": 0.7647588553131879,
+              "compatible": 0.7647588553131879,
+              "exactSet": 0.6134680808485091,
+              "directionalFair": 0.6891634980988592,
+              "reciprocalCoverage": 0.7647588553131879,
+              "jaccard": 0.6891634980988592,
+              "callStatusAgreement": 0.9316589953972383,
+              "callRate": 0.9018411046627977,
+              "referenceCallRate": 0.947768661196718,
+              "multiCallRate": 0.24854912947768662,
+              "meanAtoms": 1.1630978587152292
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9313588152891735,
+              "firstSupported": 0.9313588152891735,
+              "referenceFirstSupported": 0.9586752051230738,
+              "compatible": 0.9586752051230738,
+              "exactSet": 0.9005403241945167,
+              "directionalFair": 0.9296077646587952,
+              "reciprocalCoverage": 0.9586752051230738,
+              "jaccard": 0.9296077646587952,
+              "callStatusAgreement": 0.9958975385231139,
+              "callRate": 0.9958975385231139,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.06153692215329198,
+              "meanAtoms": 1.057434460676406
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.5020012007204323,
+            "firstSupported": 0.5020012007204323,
+            "compatible": 0.6259755853512107,
+            "exactSet": 0.401240744446668,
+            "directionalFair": 0.5032554254775083,
+            "reciprocalCoverage": 0.6259755853512107,
+            "jaccard": 0.5032554254775083,
+            "callStatusAgreement": 0.9298579147488493
+          }
+        },
+        "igblast": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.9140484290574344,
+              "firstSupported": 0.9281568941364818,
+              "referenceFirstSupported": 0.9166499899939964,
+              "compatible": 0.9307584550730438,
+              "exactSet": 0.8646187712627577,
+              "directionalFair": 0.9280151424187845,
+              "reciprocalCoverage": 0.9010739777199648,
+              "jaccard": 0.8990777800013335,
+              "callStatusAgreement": 0.9998999399639784,
+              "callRate": 0.9998999399639784,
+              "referenceCallRate": 0.9997998799279568,
+              "multiCallRate": 0.18771262757654592,
+              "meanAtoms": 1.2279367620572343
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.8947368421052632,
+              "firstSupported": 0.9070442265359215,
+              "referenceFirstSupported": 0.8966379827896738,
+              "compatible": 0.9089453672203321,
+              "exactSet": 0.7990794476686012,
+              "directionalFair": 0.9061103328663866,
+              "reciprocalCoverage": 0.8653992395437303,
+              "jaccard": 0.8630878527116315,
+              "callStatusAgreement": 0.9314588753251951,
+              "callRate": 0.9018411046627977,
+              "referenceCallRate": 0.9697818691214729,
+              "multiCallRate": 0.24854912947768662,
+              "meanAtoms": 1.1630978587152292
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9831899139483691,
+              "firstSupported": 0.9899939963978387,
+              "referenceFirstSupported": 0.9835901540924554,
+              "compatible": 0.9903942365419252,
+              "exactSet": 0.9744846908144887,
+              "directionalFair": 0.9899439663798278,
+              "reciprocalCoverage": 0.9830231472216664,
+              "jaccard": 0.9827146287772666,
+              "callStatusAgreement": 0.9957974784870922,
+              "callRate": 0.9958975385231139,
+              "referenceCallRate": 0.9982989793876326,
+              "multiCallRate": 0.06153692215329198,
+              "meanAtoms": 1.057434460676406
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.8067840704422654,
+            "firstSupported": 0.8352011206724035,
+            "compatible": 0.8395037022213327,
+            "exactSet": 0.678407044226536,
+            "directionalFair": 0.8342588886665333,
+            "reciprocalCoverage": 0.7698132768550081,
+            "jaccard": 0.7660132190425426,
+            "callStatusAgreement": 0.929157494496698
+          }
+        },
+        "providedSwiftig": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.9998999399639784,
+              "firstSupported": 0.9998999399639784,
+              "referenceFirstSupported": 0.9998999399639784,
+              "compatible": 0.9998999399639784,
+              "exactSet": 0.9998999399639784,
+              "directionalFair": 0.9998999399639784,
+              "reciprocalCoverage": 0.9998999399639784,
+              "jaccard": 0.9998999399639784,
+              "callStatusAgreement": 1,
+              "callRate": 0.9998999399639784,
+              "referenceCallRate": 0.9998999399639784,
+              "multiCallRate": 0.18771262757654592,
+              "meanAtoms": 1.2279367620572343
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.8476085651390834,
+              "firstSupported": 0.8557134280568341,
+              "referenceFirstSupported": 0.8538122873724234,
+              "compatible": 0.8619171502901741,
+              "exactSet": 0.7830698419051431,
+              "directionalFair": 0.8545127076245748,
+              "reciprocalCoverage": 0.8325962244013111,
+              "jaccard": 0.8262868038283325,
+              "callStatusAgreement": 0.9368621172703622,
+              "callRate": 0.9018411046627977,
+              "referenceCallRate": 0.9485691414848909,
+              "multiCallRate": 0.24854912947768662,
+              "meanAtoms": 1.1630978587152292
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9761857114268561,
+              "firstSupported": 0.9765859515709425,
+              "referenceFirstSupported": 0.9794876926155693,
+              "compatible": 0.9798879327596558,
+              "exactSet": 0.9680808485091055,
+              "directionalFair": 0.9750350210126075,
+              "reciprocalCoverage": 0.9789540390901207,
+              "jaccard": 0.9741678340337535,
+              "callStatusAgreement": 0.9951971182709626,
+              "callRate": 0.9958975385231139,
+              "referenceCallRate": 0.9938963378026816,
+              "multiCallRate": 0.06153692215329198,
+              "meanAtoms": 1.057434460676406
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.8319991995197118,
+            "firstSupported": 0.839203522113268,
+            "compatible": 0.847708625175105,
+            "exactSet": 0.763958375025015,
+            "directionalFair": 0.8369771863117871,
+            "reciprocalCoverage": 0.8188907789117956,
+            "jaccard": 0.8094985562766267,
+            "callStatusAgreement": 0.9337602561536922
+          }
+        }
+      },
+      "baselines": {
+        "igblastVsTruth": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.8189913948369021,
+              "firstSupported": 0.8189913948369021,
+              "referenceFirstSupported": 0.919851911146688,
+              "compatible": 0.919851911146688,
+              "exactSet": 0.7344406643986392,
+              "directionalFair": 0.8185828163564745,
+              "reciprocalCoverage": 0.919851911146688,
+              "jaccard": 0.8185828163564745,
+              "callStatusAgreement": 0.9997998799279568,
+              "callRate": 0.9997998799279568,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.21152691614968983,
+              "meanAtoms": 1.2804682809685812
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.6730038022813688,
+              "firstSupported": 0.6730038022813688,
+              "referenceFirstSupported": 0.782069241544927,
+              "compatible": 0.782069241544927,
+              "exactSet": 0.5916549929957975,
+              "directionalFair": 0.6772396771396112,
+              "reciprocalCoverage": 0.782069241544927,
+              "jaccard": 0.6772396771396112,
+              "callStatusAgreement": 0.9665799479687812,
+              "callRate": 0.9697818691214729,
+              "referenceCallRate": 0.947768661196718,
+              "multiCallRate": 0.3263958375025015,
+              "meanAtoms": 1.4553732239343606
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9274564738843306,
+              "firstSupported": 0.9274564738843306,
+              "referenceFirstSupported": 0.961476886131679,
+              "compatible": 0.961476886131679,
+              "exactSet": 0.8913348008805283,
+              "directionalFair": 0.9257054232539522,
+              "reciprocalCoverage": 0.961476886131679,
+              "jaccard": 0.9257054232539522,
+              "callStatusAgreement": 0.9982989793876326,
+              "callRate": 0.9982989793876326,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.07504502701620973,
+              "meanAtoms": 1.0792475485291175
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.5207124274564738,
+            "firstSupported": 0.5207124274564738,
+            "compatible": 0.7008204922953772,
+            "exactSet": 0.4013408044826896,
+            "directionalFair": 0.5248754808440604,
+            "reciprocalCoverage": 0.7008204922953772,
+            "jaccard": 0.5248754808440604,
+            "callStatusAgreement": 0.9652791675005002
+          }
+        },
+        "providedSwiftigVsTruth": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.7699619771863118,
+              "firstSupported": 0.7699619771863118,
+              "referenceFirstSupported": 0.8406043626175705,
+              "compatible": 0.8406043626175705,
+              "exactSet": 0.7055233139883931,
+              "directionalFair": 0.76908645187112,
+              "reciprocalCoverage": 0.8406043626175705,
+              "jaccard": 0.76908645187112,
+              "callStatusAgreement": 0.9998999399639784,
+              "callRate": 0.9998999399639784,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.18781268761256753,
+              "meanAtoms": 1.228036822093256
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.6618971382829698,
+              "firstSupported": 0.6618971382829698,
+              "referenceFirstSupported": 0.7617570542325395,
+              "compatible": 0.7617570542325395,
+              "exactSet": 0.5922553532119271,
+              "directionalFair": 0.6683893669535024,
+              "reciprocalCoverage": 0.7617570542325395,
+              "jaccard": 0.6683893669535024,
+              "callStatusAgreement": 0.9555733440064038,
+              "callRate": 0.9485691414848909,
+              "referenceCallRate": 0.947768661196718,
+              "multiCallRate": 0.2655593356013608,
+              "meanAtoms": 1.3541124674804883
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9206523914348609,
+              "firstSupported": 0.9206523914348609,
+              "referenceFirstSupported": 0.9448669201520913,
+              "compatible": 0.9448669201520913,
+              "exactSet": 0.8955373223934361,
+              "directionalFair": 0.9200020012007204,
+              "reciprocalCoverage": 0.9448669201520913,
+              "jaccard": 0.9200020012007204,
+              "callStatusAgreement": 0.9938963378026816,
+              "callRate": 0.9938963378026816,
+              "referenceCallRate": 1,
+              "multiCallRate": 0.0517310386231739,
+              "meanAtoms": 1.0470282169301581
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.4777866720032019,
+            "firstSupported": 0.4777866720032019,
+            "compatible": 0.6140684410646388,
+            "exactSet": 0.3848308985391235,
+            "directionalFair": 0.4829558846418958,
+            "reciprocalCoverage": 0.6140684410646388,
+            "jaccard": 0.4829558846418958,
+            "callStatusAgreement": 0.9516710026015609
+          }
+        },
+        "providedSwiftigVsIgblast": {
+          "segments": {
+            "V": {
+              "records": 9994,
+              "firstExact": 0.9139483690214129,
+              "firstSupported": 0.9280568341004602,
+              "referenceFirstSupported": 0.9165499299579748,
+              "compatible": 0.9306583950370222,
+              "exactSet": 0.8645187112267361,
+              "directionalFair": 0.9279150823827629,
+              "reciprocalCoverage": 0.9009739176839432,
+              "jaccard": 0.898977719965312,
+              "callStatusAgreement": 0.9998999399639784,
+              "callRate": 0.9998999399639784,
+              "referenceCallRate": 0.9997998799279568,
+              "multiCallRate": 0.18781268761256753,
+              "meanAtoms": 1.228036822093256
+            },
+            "D": {
+              "records": 9994,
+              "firstExact": 0.8514108465079048,
+              "firstSupported": 0.8752251350810486,
+              "referenceFirstSupported": 0.8613167900740444,
+              "compatible": 0.8852311386832099,
+              "exactSet": 0.7876726035621373,
+              "directionalFair": 0.8666771491466314,
+              "reciprocalCoverage": 0.8530785137749312,
+              "jaccard": 0.8365510576186976,
+              "callStatusAgreement": 0.9765859515709425,
+              "callRate": 0.9485691414848909,
+              "referenceCallRate": 0.9697818691214729,
+              "multiCallRate": 0.2655593356013608,
+              "meanAtoms": 1.3541124674804883
+            },
+            "J": {
+              "records": 9994,
+              "firstExact": 0.9641785071042626,
+              "firstSupported": 0.974384630778467,
+              "referenceFirstSupported": 0.964578747248349,
+              "compatible": 0.9747848709225535,
+              "exactSet": 0.9506704022413448,
+              "directionalFair": 0.9739843906343806,
+              "reciprocalCoverage": 0.9631945834167165,
+              "jaccard": 0.9625275165099058,
+              "callStatusAgreement": 0.9935961576946167,
+              "callRate": 0.9938963378026816,
+              "referenceCallRate": 0.9982989793876326,
+              "multiCallRate": 0.0517310386231739,
+              "meanAtoms": 1.0470282169301581
+            }
+          },
+          "joint": {
+            "records": 9994,
+            "firstExact": 0.7572543526115669,
+            "firstSupported": 0.7972783670202122,
+            "compatible": 0.808184910946568,
+            "exactSet": 0.657694616770062,
+            "directionalFair": 0.7892223429295676,
+            "reciprocalCoverage": 0.7471524581415513,
+            "jaccard": 0.7315893504356572,
+            "callStatusAgreement": 0.9723834300580348
+          }
+        }
+      }
+    }
+  },
+  "aggregate": {
+    "truthUtility": 0.8406856613968378,
+    "igblastUtility": 0.9522651090654393,
+    "objectiveA": 0.8406856613968378,
+    "objectiveB": 0.9466861366820092
+  }
+}

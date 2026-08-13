@@ -58,6 +58,11 @@ async function makeRuntime() {
     return exports.swig_set_calling_profile(profile === "igblast_compatible" ? 1 : profile === "igblast_balanced" ? 2 : profile === "truth_optimized" ? 0 : Number(profile));
   }
 
+  function setAssignerStrategy(strategy) {
+    const value = strategy === "standard" ? 0 : strategy === "riat_mp" ? 1 : strategy === "aer" ? 2 : Number(strategy);
+    return exports.swig_set_assigner_strategy(value);
+  }
+
   function annotate(query, format, strand = 0) {
     const [pointer, size] = put(query);
     const count = exports.swig_annotate(pointer, size, format, 600, strand);
@@ -120,7 +125,7 @@ async function makeRuntime() {
     };
   }
 
-  return { initialize, annotate, annotateDoubleD, setCallingProfile };
+  return { initialize, annotate, annotateDoubleD, setCallingProfile, setAssignerStrategy };
 }
 
 function referenceFor(locus, customJName) {
@@ -215,6 +220,27 @@ test("calling profiles are explicit, switchable, and reject unknown profile iden
   assert.equal(runtime.annotate(query, 1).tsv, defaultResult.tsv, "resetting the profile did not restore default calls");
   assert.equal(defaultResult.rows[0].d_call, "");
   assert.equal(compatibilityResult.rows[0].d_call, d[0]);
+});
+
+test("standard, RIAT-MP, and AER assignment strategies initialize explicitly", async () => {
+  const human = pack.species.find((entry) => entry.name === "Homo sapiens");
+  assert.ok(human?.loci.IGH);
+  const v = human.loci.IGH.V.slice(0, 8);
+  const j = human.loci.IGH.J.slice(0, 3);
+  const query = `>strategy_case\n${v[0][1]}AACCGG${j[0][1]}\n`;
+  const observed = new Map();
+  for (const strategy of ["standard", "riat_mp", "aer"]) {
+    const runtime = await makeRuntime();
+    assert.equal(runtime.setAssignerStrategy(strategy), 0);
+    runtime.initialize({ V: asFasta(v), D: "", J: asFasta(j), C: "" });
+    const result = runtime.annotate(query, 1);
+    assert.equal(result.count, 1);
+    assert.ok(result.rows[0].v_call, `${strategy} did not assign V`);
+    assert.ok(result.rows[0].j_call, `${strategy} did not assign J`);
+    observed.set(strategy, [result.rows[0].v_call, result.rows[0].j_call]);
+  }
+  assert.equal((await makeRuntime()).setAssignerStrategy(3), -1);
+  assert.deepEqual(observed.get("aer"), observed.get("standard"));
 });
 
 test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, and J-only swaps", async () => {

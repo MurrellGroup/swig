@@ -2,13 +2,14 @@
 
 import { WASI } from "@bjorn3/browser_wasi_shim";
 import { applyBalancedDFilter, reconcileBalancedDoubleD } from "./balanced-calling-profile";
-import type { CallingProfile, DoubleDScreenOptions } from "./swiftig-runtime";
+import type { AssignerStrategy, CallingProfile, DoubleDScreenOptions } from "./swiftig-runtime";
 
 interface SwiftIgExports extends WebAssembly.Exports {
   memory: WebAssembly.Memory;
   swig_alloc: (size: number) => number;
   swig_free: (pointer: number) => void;
   swig_set_calling_profile: (profile: number) => number;
+  swig_set_assigner_strategy: (strategy: number) => number;
   swig_init_database: (
     vPointer: number, vSize: number, dPointer: number, dSize: number,
     jPointer: number, jSize: number, cPointer: number, cSize: number,
@@ -38,6 +39,7 @@ interface InitializeRequest {
   module: WebAssembly.Module;
   references: { V: string; D: string; J: string; C: string };
   callingProfile: CallingProfile;
+  assignerStrategy: AssignerStrategy;
 }
 
 interface AnnotateRequest {
@@ -85,6 +87,10 @@ async function initialize(request: InitializeRequest) {
     exports: { memory: WebAssembly.Memory; _initialize?: () => unknown };
   });
   const exports = instance.exports as SwiftIgExports;
+  const strategy = request.assignerStrategy === "riat_mp" ? 1 : request.assignerStrategy === "aer" ? 2 : 0;
+  if (exports.swig_set_assigner_strategy(strategy) !== 0) {
+    throw new Error("SwiftIG rejected the selected assignment strategy.");
+  }
   if (exports.swig_set_calling_profile(
     request.callingProfile === "truth_optimized" ? 0 : 1,
   ) !== 0) {

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <string>
@@ -10,6 +11,35 @@
 #include <vector>
 
 #include "swiftig/alignment.hpp"
+#include "swiftig/allele_tree.hpp"
+
+#ifndef SWIG_V_TREE_ROOT_ALIGNMENTS
+#define SWIG_V_TREE_ROOT_ALIGNMENTS 3
+#endif
+
+#ifndef SWIG_V_TREE_WEAK_ROOT_ALIGNMENTS
+#define SWIG_V_TREE_WEAK_ROOT_ALIGNMENTS 8
+#endif
+
+#ifndef SWIG_V_TREE_FINAL_REALIGN
+#define SWIG_V_TREE_FINAL_REALIGN 0
+#endif
+
+#ifndef SWIG_V_TREE_EXHAUSTIVE_LEAVES
+#define SWIG_V_TREE_EXHAUSTIVE_LEAVES 0
+#endif
+
+#ifndef SWIG_V_TREE_TRACEBACKS
+#define SWIG_V_TREE_TRACEBACKS 1
+#endif
+
+#ifndef SWIG_V_TREE_TRACEBACK_TOLERANCE
+#define SWIG_V_TREE_TRACEBACK_TOLERANCE 0
+#endif
+
+#ifndef SWIG_V_TREE_TRACE_STATE_LIMIT
+#define SWIG_V_TREE_TRACE_STATE_LIMIT 8192
+#endif
 
 namespace swiftig {
 namespace {
@@ -42,6 +72,223 @@ bool supports_rearranged_pair(const SegmentHit& v, const SegmentHit& j) {
 
 std::size_t aligned_bases(const Alignment& alignment) {
     return static_cast<std::size_t>(alignment.matches + alignment.mismatches);
+}
+
+bool canonical_base(char base) {
+    return base == 'A' || base == 'C' || base == 'G' || base == 'T';
+}
+
+int substitution_score(char query, char reference, const Scoring& scoring) {
+    if (!canonical_base(query) || !canonical_base(reference)) return 0;
+    return query == reference ? scoring.match : scoring.mismatch;
+}
+
+std::pair<int, int> substitution_counts(char query, char reference) {
+    if (query == '-' || reference == '-') return {0, 0};
+    return canonical_base(query) && query == reference
+        ? std::pair<int, int>{1, 0}
+        : std::pair<int, int>{0, 1};
+}
+
+struct FixedAlignmentPath {
+    std::string query;
+    std::string root_reference;
+    std::size_t query_origin = 0;
+    std::size_t reference_origin = 0;
+    std::vector<std::uint32_t> query_prefix;
+    std::vector<std::uint32_t> reference_prefix;
+    std::vector<std::uint32_t> aligned_prefix;
+    std::vector<int> reference_column;
+};
+
+FixedAlignmentPath extend_fixed_path(
+    const std::string& query,
+    const Gene& root,
+    const Alignment& alignment) {
+    FixedAlignmentPath path;
+    const auto left = std::min(alignment.query_start, alignment.reference_start);
+    const auto right = std::min(
+        query.size() - alignment.query_end,
+        root.sequence.size() - alignment.reference_end);
+    path.query_origin = alignment.query_start - left;
+    path.reference_origin = alignment.reference_start - left;
+    path.query.reserve(left + alignment.aligned_query.size() + right);
+    path.root_reference.reserve(left + alignment.aligned_reference.size() + right);
+    path.query.append(query, path.query_origin, left);
+    path.query += alignment.aligned_query;
+    path.query.append(query, alignment.query_end, right);
+    path.root_reference.append(root.sequence, path.reference_origin, left);
+    path.root_reference += alignment.aligned_reference;
+    path.root_reference.append(root.sequence, alignment.reference_end, right);
+
+    const auto columns = path.query.size();
+    path.query_prefix.assign(columns + 1, 0);
+    path.reference_prefix.assign(columns + 1, 0);
+    path.aligned_prefix.assign(columns + 1, 0);
+    path.reference_column.assign(root.sequence.size(), -1);
+    std::size_t reference_position = path.reference_origin;
+    for (std::size_t column = 0; column < columns; ++column) {
+        path.query_prefix[column + 1] = path.query_prefix[column] +
+            static_cast<std::uint32_t>(path.query[column] != '-');
+        path.reference_prefix[column + 1] = path.reference_prefix[column] +
+            static_cast<std::uint32_t>(path.root_reference[column] != '-');
+        path.aligned_prefix[column + 1] = path.aligned_prefix[column] +
+            static_cast<std::uint32_t>(
+                path.query[column] != '-' && path.root_reference[column] != '-');
+        if (path.root_reference[column] != '-' && reference_position < root.sequence.size()) {
+            path.reference_column[reference_position++] = static_cast<int>(column);
+        }
+    }
+    return path;
+}
+
+struct ScoredSpan {
+    int score = std::numeric_limits<int>::min() / 4;
+    std::size_t start = 0;
+    std::size_t end = 0;
+};
+
+bool better_span(const ScoredSpan& candidate, const ScoredSpan& current) {
+    if (candidate.score != current.score) return candidate.score > current.score;
+    if (candidate.end != current.end) return candidate.end < current.end;
+    return candidate.start < current.start;
+}
+
+struct RangeScore {
+    std::size_t left = 0;
+    std::size_t right = 0;
+    int sum = 0;
+    ScoredSpan prefix;
+    ScoredSpan suffix;
+    ScoredSpan best;
+};
+
+RangeScore merge_range_scores(const RangeScore& left, const RangeScore& right) {
+    RangeScore result;
+    result.left = left.left;
+    result.right = right.right;
+    result.sum = left.sum + right.sum;
+
+    result.prefix = left.prefix;
+    const ScoredSpan joined_prefix{
+        left.sum + right.prefix.score, left.left, right.prefix.end};
+    if (better_span(joined_prefix, result.prefix)) result.prefix = joined_prefix;
+
+    result.suffix = right.suffix;
+    const ScoredSpan joined_suffix{
+        left.suffix.score + right.sum, left.suffix.start, right.right};
+    if (better_span(joined_suffix, result.suffix)) result.suffix = joined_suffix;
+
+    result.best = left.best;
+    if (better_span(right.best, result.best)) result.best = right.best;
+    const ScoredSpan crossing{
+        left.suffix.score + right.prefix.score,
+        left.suffix.start,
+        right.prefix.end};
+    if (better_span(crossing, result.best)) result.best = crossing;
+    return result;
+}
+
+class FixedPathScorer {
+public:
+    FixedPathScorer(const FixedAlignmentPath& path, const Scoring& scoring)
+        : path_(path), scoring_(scoring) {
+        std::vector<int> values(path.query.size(), 0);
+        char previous_gap = '\0';
+        for (std::size_t column = 0; column < values.size(); ++column) {
+            const char query_base = path.query[column];
+            const char reference_base = path.root_reference[column];
+            const char gap = query_base == '-' ? 'D' : reference_base == '-' ? 'I' : '\0';
+            if (gap != '\0') {
+                values[column] = gap == previous_gap ? scoring.gap_extend : scoring.gap_open;
+            } else {
+                values[column] = substitution_score(query_base, reference_base, scoring);
+            }
+            previous_gap = gap;
+        }
+        tree_.resize(std::max<std::size_t>(1, values.size() * 4));
+        if (!values.empty()) build(1, 0, values.size(), values);
+    }
+
+    [[nodiscard]] ScoredSpan best() const noexcept {
+        return path_.query.empty() ? ScoredSpan{} : tree_[1].best;
+    }
+
+    void set_reference_base(std::size_t reference_position, char reference_base) {
+        if (reference_position >= path_.reference_column.size()) return;
+        const int signed_column = path_.reference_column[reference_position];
+        if (signed_column < 0) return;
+        const auto column = static_cast<std::size_t>(signed_column);
+        const int value = substitution_score(path_.query[column], reference_base, scoring_);
+        update(1, column, value);
+    }
+
+private:
+    const FixedAlignmentPath& path_;
+    const Scoring& scoring_;
+    std::vector<RangeScore> tree_;
+
+    void build(
+        std::size_t node,
+        std::size_t left,
+        std::size_t right,
+        const std::vector<int>& values) {
+        if (right - left == 1) {
+            const ScoredSpan span{values[left], left, right};
+            tree_[node] = RangeScore{left, right, values[left], span, span, span};
+            return;
+        }
+        const auto middle = left + (right - left) / 2;
+        build(node * 2, left, middle, values);
+        build(node * 2 + 1, middle, right, values);
+        tree_[node] = merge_range_scores(tree_[node * 2], tree_[node * 2 + 1]);
+    }
+
+    void update(std::size_t node, std::size_t position, int value) {
+        auto& range = tree_[node];
+        if (range.right - range.left == 1) {
+            const ScoredSpan span{value, range.left, range.right};
+            range = RangeScore{range.left, range.right, value, span, span, span};
+            return;
+        }
+        if (position < tree_[node * 2].right) update(node * 2, position, value);
+        else update(node * 2 + 1, position, value);
+        range = merge_range_scores(tree_[node * 2], tree_[node * 2 + 1]);
+    }
+};
+
+Alignment materialize_fixed_tree_alignment(
+    const FixedAlignmentPath& path,
+    const Gene& allele,
+    const ScoredSpan& span,
+    std::size_t query_size) {
+    Alignment result;
+    if (span.score <= 0 || span.start >= span.end || span.end > path.query.size()) return result;
+    result.score = span.score;
+    result.query_start = path.query_origin + path.query_prefix[span.start];
+    result.query_end = path.query_origin + path.query_prefix[span.end];
+    result.reference_start = path.reference_origin + path.reference_prefix[span.start];
+    result.reference_end = path.reference_origin + path.reference_prefix[span.end];
+    result.aligned_query = path.query.substr(span.start, span.end - span.start);
+    result.aligned_reference = path.root_reference.substr(span.start, span.end - span.start);
+    std::size_t reference_position = result.reference_start;
+    for (std::size_t column = 0; column < result.aligned_reference.size(); ++column) {
+        const char query_base = result.aligned_query[column];
+        char& reference_base = result.aligned_reference[column];
+        if (reference_base != '-' && reference_position < allele.sequence.size()) {
+            reference_base = allele.sequence[reference_position++];
+        }
+        if (query_base == '-' && reference_base != '-') {
+            ++result.deletions;
+        } else if (query_base != '-' && reference_base == '-') {
+            ++result.insertions;
+        } else if (query_base != '-' && reference_base != '-') {
+            if (canonical_base(query_base) && query_base == reference_base) ++result.matches;
+            else ++result.mismatches;
+        }
+    }
+    refresh_airr_cigar(result, query_size, allele.sequence.size());
+    return result;
 }
 
 std::size_t longest_exact_run(const Alignment& alignment) {
@@ -229,7 +476,20 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
     // reads rather than on every ordinary repertoire record.
     const bool exhaustive = work.front().diagonal == std::numeric_limits<int>::max();
     if (!exhaustive && !work.front().weak_seed_signal) {
-        const auto refinement_limit = std::max<std::size_t>(top_n, 3);
+        auto refinement_limit = std::max<std::size_t>(top_n, 3);
+        if (options_.assigner_strategy == AssignerStrategy::Aer &&
+            index.kmer_size() == 9 && min_length == options_.min_v_length &&
+            work.size() > refinement_limit) {
+            const auto relative_margin =
+                static_cast<std::uint32_t>(work.front().votes) * 5U / 100U;
+            const auto vote_margin = std::max<std::uint32_t>(8U, relative_margin);
+            const auto cap = std::min<std::size_t>(work.size(), 16);
+            while (refinement_limit < cap &&
+                   static_cast<std::uint32_t>(work[refinement_limit].votes) + vote_margin >=
+                       static_cast<std::uint32_t>(work.front().votes)) {
+                ++refinement_limit;
+            }
+        }
         if (work.size() > refinement_limit) work.resize(refinement_limit);
     }
     std::vector<SegmentHit> hits;
@@ -262,14 +522,291 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
     return hits;
 }
 
+std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
+    const std::string& query,
+    std::size_t top_n,
+    const Scoring& scoring,
+    std::size_t min_length) const {
+    std::vector<SegmentHit> hits;
+    AlleleTreeSearchStats stats;
+    stats.queries = 1;
+    const auto& tree = database_.v_tree;
+    const auto& root_index = tree.roots();
+    if (query.empty() || top_n == 0 || tree.empty() || root_index.empty()) {
+        tree.record_search(stats);
+        return hits;
+    }
+
+    const auto canonical_bases = static_cast<std::size_t>(std::count_if(
+        query.begin(), query.end(), canonical_base));
+    const auto minimum_possible_matches = static_cast<std::size_t>(
+        std::ceil(static_cast<double>(min_length) * options_.min_identity));
+    if (canonical_bases < minimum_possible_matches) {
+        tree.record_search(stats);
+        return hits;
+    }
+
+    const auto candidate_limit = std::min<std::size_t>(root_index.genes().size(), 16);
+    auto candidates = root_index.candidates(query, candidate_limit);
+    if (candidates.empty()) {
+        candidates.reserve(root_index.genes().size());
+        for (std::uint32_t index = 0; index < root_index.genes().size(); ++index) {
+            candidates.push_back(Candidate{index, std::numeric_limits<int>::max(), 0});
+        }
+    }
+    stats.root_candidates = static_cast<std::uint32_t>(candidates.size());
+    const bool exhaustive = candidates.front().diagonal == std::numeric_limits<int>::max();
+    const bool weak = !exhaustive && candidates.front().weak_seed_signal;
+    const auto configured_root_limit = weak
+        ? static_cast<std::size_t>(SWIG_V_TREE_WEAK_ROOT_ALIGNMENTS)
+        : static_cast<std::size_t>(SWIG_V_TREE_ROOT_ALIGNMENTS);
+    const auto root_limit = exhaustive
+        ? candidates.size()
+        : std::min(candidates.size(), configured_root_limit);
+
+    struct RootAlignment {
+        std::size_t cluster = 0;
+        Candidate candidate;
+        Alignment alignment;
+        FixedAlignmentPath path;
+    };
+    std::vector<RootAlignment> root_alignments;
+    root_alignments.reserve(root_limit);
+    for (std::size_t candidate_index = 0; candidate_index < root_limit; ++candidate_index) {
+        const auto& candidate = candidates[candidate_index];
+        if (candidate.gene_index >= tree.clusters().size()) continue;
+        const auto& cluster = tree.clusters()[candidate.gene_index];
+        const auto& root = database_.v.genes()[cluster.root_gene_index];
+        const bool seeded = candidate.diagonal != std::numeric_limits<int>::max();
+        const int adaptive_band = seeded
+            ? std::max(options_.band_width, std::min(
+                options_.max_band_width, candidate.diagonal_span + 8)) : -1;
+        auto alignment = local_align_affine(
+            query, root.sequence, scoring,
+            seeded ? candidate.diagonal : 0,
+            adaptive_band);
+        ++stats.root_alignments;
+        if (!alignment.valid() || aligned_bases(alignment) < min_length) continue;
+        ++stats.root_tracebacks;
+        root_alignments.push_back(RootAlignment{
+            candidate.gene_index,
+            candidate,
+            std::move(alignment),
+            {},
+        });
+        root_alignments.back().path = extend_fixed_path(
+            query, root, root_alignments.back().alignment);
+    }
+
+    struct ProxyHit {
+        std::size_t root_alignment = 0;
+        std::uint32_t gene_index = 0;
+        ScoredSpan span;
+    };
+    std::vector<ProxyHit> proxies;
+    const auto score_root_path = [&](std::size_t root_alignment_index) {
+        const auto& root = root_alignments[root_alignment_index];
+        const auto& cluster = tree.clusters()[root.cluster];
+        if (cluster.nodes.empty()) return;
+        ++stats.clusters_scored;
+        stats.nodes_scored += static_cast<std::uint32_t>(cluster.nodes.size());
+        FixedPathScorer scorer(root.path, scoring);
+        std::vector<std::vector<std::size_t>> children(cluster.nodes.size());
+        for (std::size_t node_index = 1; node_index < cluster.nodes.size(); ++node_index) {
+            children[cluster.nodes[node_index].parent].push_back(node_index);
+        }
+        const auto visit = [&](auto&& self, std::size_t node_index) -> void {
+            const auto& node = cluster.nodes[node_index];
+            proxies.push_back(ProxyHit{
+                root_alignment_index,
+                node.gene_index,
+                scorer.best(),
+            });
+            for (const auto child_index : children[node_index]) {
+                const auto& child = cluster.nodes[child_index];
+                for (const auto& mutation : child.edge_mutations) {
+                    ++stats.mutation_updates;
+                    scorer.set_reference_base(mutation.position, mutation.child_base);
+                }
+                self(self, child_index);
+                for (const auto& mutation : child.edge_mutations) {
+                    scorer.set_reference_base(mutation.position, mutation.parent_base);
+                }
+            }
+        };
+        visit(visit, 0);
+    };
+    for (std::size_t root_alignment_index = 0;
+         root_alignment_index < root_alignments.size(); ++root_alignment_index) {
+        score_root_path(root_alignment_index);
+    }
+    const auto proxy_better = [&](const ProxyHit& left, const ProxyHit& right) {
+        if (left.span.score != right.span.score) return left.span.score > right.span.score;
+        const auto& left_path = root_alignments[left.root_alignment].path;
+        const auto& right_path = root_alignments[right.root_alignment].path;
+        const auto left_aligned = left_path.aligned_prefix[left.span.end] -
+            left_path.aligned_prefix[left.span.start];
+        const auto right_aligned = right_path.aligned_prefix[right.span.end] -
+            right_path.aligned_prefix[right.span.start];
+        if (left_aligned != right_aligned) return left_aligned > right_aligned;
+        const auto& left_name = database_.v.genes()[left.gene_index].name;
+        const auto& right_name = database_.v.genes()[right.gene_index].name;
+        if (left_name != right_name) return left_name < right_name;
+        return left.root_alignment < right.root_alignment;
+    };
+    std::sort(proxies.begin(), proxies.end(), proxy_better);
+
+#if SWIG_V_TREE_TRACEBACKS > 1
+    // First score every selected root once. Only if the provisional winning
+    // allele actually contains an indel do we reopen that one root DP and
+    // enumerate its near-optimal traceback geometries. The selected-path
+    // trigger covered 33/38 fixed-path discrepancies in the diagnostic data,
+    // while avoiding multipath work on ordinary substitution-only queries.
+    std::optional<std::size_t> multipath_root_alignment;
+    for (const auto& proxy : proxies) {
+        const auto& gene = database_.v.genes()[proxy.gene_index];
+        const auto& root = root_alignments[proxy.root_alignment];
+        const auto provisional = materialize_fixed_tree_alignment(
+            root.path, gene, proxy.span, query.size());
+        if (!provisional.valid() || aligned_bases(provisional) < min_length ||
+            provisional.identity() < options_.min_identity) continue;
+        if (provisional.insertions + provisional.deletions > 0) {
+            multipath_root_alignment = proxy.root_alignment;
+        }
+        break;
+    }
+    if (multipath_root_alignment) {
+        const auto seed_index = *multipath_root_alignment;
+        const auto seed = root_alignments[seed_index];
+        const auto& cluster = tree.clusters()[seed.cluster];
+        const auto& root_gene = database_.v.genes()[cluster.root_gene_index];
+        const bool seeded = seed.candidate.diagonal != std::numeric_limits<int>::max();
+        const int adaptive_band = seeded
+            ? std::max(options_.band_width, std::min(
+                options_.max_band_width, seed.candidate.diagonal_span + 8)) : -1;
+        TracebackSearchStats traceback_stats;
+        auto alternatives = local_align_affine_paths(
+            query, root_gene.sequence, scoring,
+            seeded ? seed.candidate.diagonal : 0,
+            adaptive_band,
+            static_cast<std::size_t>(SWIG_V_TREE_TRACEBACKS),
+            SWIG_V_TREE_TRACEBACK_TOLERANCE,
+            static_cast<std::size_t>(SWIG_V_TREE_TRACE_STATE_LIMIT),
+            &traceback_stats);
+        ++stats.root_alignments;
+        ++stats.multipath_searches;
+        stats.trace_states += static_cast<std::uint32_t>(traceback_stats.expanded_states);
+        stats.trace_limit_hits += static_cast<std::uint32_t>(traceback_stats.state_limit_hit);
+        // alternatives[0] is the already-scored deterministic optimum.
+        for (std::size_t path_index = 1; path_index < alternatives.size(); ++path_index) {
+            auto& alignment = alternatives[path_index];
+            if (!alignment.valid() || aligned_bases(alignment) < min_length) continue;
+            root_alignments.push_back(RootAlignment{
+                seed.cluster,
+                seed.candidate,
+                std::move(alignment),
+                {},
+            });
+            root_alignments.back().path = extend_fixed_path(
+                query, root_gene, root_alignments.back().alignment);
+            ++stats.root_tracebacks;
+            score_root_path(root_alignments.size() - 1);
+        }
+        std::sort(proxies.begin(), proxies.end(), proxy_better);
+    }
+#endif
+
+    hits.reserve(top_n);
+#if SWIG_V_TREE_EXHAUSTIVE_LEAVES
+    // Validation build only: align every leaf admitted by the root search.
+    // Comparing this ranking with the sparse-delta ranking directly measures
+    // the approximation made by holding the root alignment fixed.
+    std::vector<SegmentHit> exhaustive_hits;
+    exhaustive_hits.reserve(proxies.size());
+    for (const auto& proxy : proxies) {
+        const auto& gene = database_.v.genes()[proxy.gene_index];
+        const auto& root = root_alignments[proxy.root_alignment];
+        const bool seeded = root.candidate.diagonal != std::numeric_limits<int>::max();
+        const int adaptive_band = seeded
+            ? std::max(options_.band_width, std::min(
+                options_.max_band_width, root.candidate.diagonal_span + 8)) : -1;
+        auto alignment = local_align_affine(
+            query, gene.sequence, scoring,
+            seeded ? root.candidate.diagonal : 0,
+            adaptive_band);
+        ++stats.final_realignments;
+        if (!alignment.valid() || aligned_bases(alignment) < min_length ||
+            alignment.identity() < options_.min_identity) continue;
+        exhaustive_hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name});
+    }
+    std::sort(exhaustive_hits.begin(), exhaustive_hits.end(), [](const SegmentHit& left, const SegmentHit& right) {
+        if (left.alignment.score != right.alignment.score) {
+            return left.alignment.score > right.alignment.score;
+        }
+        if (aligned_bases(left.alignment) != aligned_bases(right.alignment)) {
+            return aligned_bases(left.alignment) > aligned_bases(right.alignment);
+        }
+        if (left.alignment.identity() != right.alignment.identity()) {
+            return left.alignment.identity() > right.alignment.identity();
+        }
+        return left.gene->name < right.gene->name;
+    });
+    if (exhaustive_hits.size() > top_n) exhaustive_hits.resize(top_n);
+    hits = std::move(exhaustive_hits);
+#else
+    std::unordered_set<std::uint32_t> emitted_genes;
+    for (const auto& proxy : proxies) {
+        if (emitted_genes.contains(proxy.gene_index)) continue;
+        const auto& gene = database_.v.genes()[proxy.gene_index];
+        const auto& root = root_alignments[proxy.root_alignment];
+#if SWIG_V_TREE_FINAL_REALIGN
+        const bool seeded = root.candidate.diagonal != std::numeric_limits<int>::max();
+        const int adaptive_band = seeded
+            ? std::max(options_.band_width, std::min(
+                options_.max_band_width, root.candidate.diagonal_span + 8)) : -1;
+        auto alignment = local_align_affine(
+            query, gene.sequence, scoring,
+            seeded ? root.candidate.diagonal : 0,
+            adaptive_band);
+        ++stats.final_realignments;
+#else
+        auto alignment = materialize_fixed_tree_alignment(
+            root.path, gene, proxy.span, query.size());
+#endif
+        if (!alignment.valid() || aligned_bases(alignment) < min_length ||
+            alignment.identity() < options_.min_identity) continue;
+        emitted_genes.insert(proxy.gene_index);
+        hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name});
+        if (hits.size() == top_n) break;
+    }
+#endif
+    std::sort(hits.begin(), hits.end(), [](const SegmentHit& left, const SegmentHit& right) {
+        if (left.alignment.score != right.alignment.score) {
+            return left.alignment.score > right.alignment.score;
+        }
+        if (aligned_bases(left.alignment) != aligned_bases(right.alignment)) {
+            return aligned_bases(left.alignment) > aligned_bases(right.alignment);
+        }
+        if (left.alignment.identity() != right.alignment.identity()) {
+            return left.alignment.identity() > right.alignment.identity();
+        }
+        return left.gene->name < right.gene->name;
+    });
+    tree.record_search(stats);
+    return hits;
+}
+
 AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation(
     const std::string& sequence,
     const OrientationHints* hints) const {
     OrientationResult result;
     result.oriented_sequence = sequence;
-    const auto v_hits = align_candidates(
-        sequence, database_.v, options_.top_v, options_.v_scoring, options_.min_v_length,
-        "", hints ? &hints->v : nullptr);
+    const auto v_hits = options_.assigner_strategy == AssignerStrategy::RiatMp
+        ? align_v_allele_tree(
+            sequence, options_.top_v, options_.v_scoring, options_.min_v_length)
+        : align_candidates(
+            sequence, database_.v, options_.top_v, options_.v_scoring,
+            options_.min_v_length, "", hints ? &hints->v : nullptr);
     const auto j_hits = align_candidates(
         sequence, database_.j, options_.top_j, options_.j_scoring, options_.min_j_length,
         "", hints ? &hints->j : nullptr);
@@ -460,7 +997,9 @@ void AnnotationEngine::annotate_v_regions(Annotation& annotation) const {
 
 std::uint32_t AnnotationEngine::orientation_seed_strength(const std::string& sequence) const {
     std::uint32_t strength = 0;
-    const auto v = database_.v.candidates(sequence, 1);
+    const auto v = options_.assigner_strategy == AssignerStrategy::RiatMp
+        ? database_.v_tree.roots().candidates(sequence, 1)
+        : database_.v.candidates(sequence, 1);
     const auto j = database_.j.candidates(sequence, 1);
     if (!v.empty()) strength += v.front().votes;
     if (!j.empty()) strength += j.front().votes;

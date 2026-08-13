@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import { streamSequenceBatches, type SequenceBatch, type SequenceFormat } from "./sequence-stream";
-import type { CallingProfile, DoubleDScreenOptions } from "./swiftig-runtime";
+import type { AssignerStrategy, CallingProfile, DoubleDScreenOptions } from "./swiftig-runtime";
 
 interface StartRequest {
   type: "start";
@@ -10,6 +10,7 @@ interface StartRequest {
   format: SequenceFormat;
   references: { V: string; D: string; J: string; C: string };
   callingProfile: CallingProfile;
+  assignerStrategy: AssignerStrategy;
   minimumIdentity: number;
   strand: 0 | 1 | 2;
   workers: number;
@@ -86,6 +87,7 @@ async function initializeSlot(
   module: WebAssembly.Module,
   references: StartRequest["references"],
   callingProfile: CallingProfile,
+  assignerStrategy: AssignerStrategy,
 ): Promise<ComputeSlot> {
   const worker = new Worker(new URL("./swiftig-compute-worker.ts", import.meta.url), { type: "module" });
   const slot: ComputeSlot = { index, worker, busy: false };
@@ -103,7 +105,7 @@ async function initializeSlot(
       }
       resolve(slot);
     };
-    worker.postMessage({ type: "initialize", worker: index, module, references, callingProfile });
+    worker.postMessage({ type: "initialize", worker: index, module, references, callingProfile, assignerStrategy });
   });
 }
 
@@ -156,7 +158,9 @@ async function handleRequest(request: StartRequest) {
     postProgress(request.id, `Indexing germlines in ${workerCount} worker${workerCount === 1 ? "" : "s"}`, 0.08);
     slots.push(...await Promise.all(Array.from(
       { length: workerCount },
-      (_, index) => initializeSlot(index, module, request.references, request.callingProfile),
+      (_, index) => initializeSlot(
+        index, module, request.references, request.callingProfile, request.assignerStrategy,
+      ),
     )));
 
     let fatalError: Error | null = null;

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "swiftig/types.hpp"
+#include "swiftig/allele_tree.hpp"
 
 namespace swiftig {
 
@@ -43,6 +44,7 @@ private:
 class GermlineDatabase {
 public:
     SegmentIndex v;
+    AlleleTreeIndex v_tree;
     SegmentIndex d;
     SegmentIndex j;
     SegmentIndex c;
