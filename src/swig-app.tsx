@@ -2,6 +2,7 @@ import {
   ChangeEvent,
   DragEvent,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -67,6 +68,26 @@ import { streamSequenceBatches } from "./sequence-stream";
 import { prepareReferenceMsa } from "./post-analysis-core";
 import { createSampleColorMap, sampleColor, sampleIds, type SampleColorMap } from "./sample-colors";
 import { decodeSession, encodeSession, linkedAirrMatches, sessionBaseName, SWIG_SESSION_SCHEMA, type PostAnalysisSessionSnapshot, type SwigSession } from "./session-state";
+import {
+  candidatesFromDirectoryPicker,
+  collectDroppedInput,
+  donorForFlatRoot,
+  inferDirectoryDonors,
+  type InputFileCandidate,
+} from "./directory-input";
+import {
+  activeProjectRun,
+  appendProjectLog,
+  attachProjectDirectory,
+  loadActiveProjectFiles,
+  prepareProjectRun,
+  projectDirectoriesSupported,
+  saveProjectCheckpoint,
+  selectProjectDirectory,
+  writeProjectDatasetManifest,
+  type PreparedProjectRun,
+  type ProjectWorkspace,
+} from "./project-directory";
 import {
   annotateAirrBatch,
   annotateDoubleDBatch,
@@ -137,8 +158,11 @@ interface ResultSession {
   sampleColors: SampleColorMap;
   postAnalysis?: PostAnalysisSessionSnapshot;
   restored?: boolean;
+  project?: ProjectWorkspace;
+  projectStatus?: string;
 }
 
+const APP_VERSION = "0.18.2";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -369,6 +393,11 @@ function datasetInput(input: InputData, ordinal: number): DatasetInput {
   };
 }
 
+interface DirectoryDatasetInput extends DatasetInput {
+  directoryRoot?: string;
+  nestedDirectoryDonor?: string;
+}
+
 function copyPipeline(value?: PipelinePlan): PipelinePlan {
   const source = value ?? DEFAULT_PIPELINE_PLAN;
   return {
@@ -400,6 +429,46 @@ function downloadBlob(blob: Blob, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+async function sessionArtifact(
+  session: ResultSession,
+  datasets: DatasetManifestEntry[],
+  sampleColors: SampleColorMap,
+  postAnalysis: PostAnalysisSessionSnapshot,
+): Promise<SwigSession> {
+  const projectRun = session.project ? activeProjectRun(session.project) : null;
+  return {
+    schema: SWIG_SESSION_SCHEMA,
+    application: "Swig",
+    applicationVersion: APP_VERSION,
+    savedAt: new Date().toISOString(),
+    linkedAirr: {
+      name: projectRun?.airrPath.split("/").pop() || outputName(session.inputName),
+      size: session.outputBytes,
+      lastModified: 0,
+      records: session.store.count,
+      headers: [...session.store.airrHeaders],
+      fingerprint: session.store.fingerprint,
+    },
+    analysis: {
+      inputName: session.inputName,
+      species: session.species,
+      scope: session.scope,
+      workers: session.workers,
+      callingProfile: session.callingProfile,
+      minimumIdentity: session.minimumIdentity,
+      strand: session.strand,
+      references: session.references,
+      doubleD: { ...session.doubleD },
+      datasets,
+      studyDesign: session.studyDesign,
+      pipeline: session.pipeline,
+      sampleColors,
+    },
+    doubleD: await session.store.doubleDRecords(),
+    postAnalysis,
+  };
+}
+
 function Brand() {
   return (
     <span className="brand">
@@ -409,11 +478,13 @@ function Brand() {
   );
 }
 
-function AppHeader({ page, hasResults, onNavigate, onLoadSession }: {
+function AppHeader({ page, hasResults, projectName, onNavigate, onLoadSession, onOpenProject }: {
   page: AppPage;
   hasResults: boolean;
+  projectName?: string;
   onNavigate: (page: AppPage) => void;
   onLoadSession: () => void;
+  onOpenProject: () => void;
 }) {
   return (
     <header className="app-header">
@@ -423,6 +494,7 @@ function AppHeader({ page, hasResults, onNavigate, onLoadSession }: {
         <button className={page === "analyze" ? "active" : ""} type="button" onClick={() => onNavigate("analyze")}>Analyze</button>
         {hasResults && <button className={page === "results" ? "active" : ""} type="button" onClick={() => onNavigate("results")}>Results</button>}
         <button type="button" onClick={onLoadSession}>Load session</button>
+        <button type="button" onClick={onOpenProject}>{projectName ? `Project · ${projectName}` : "Load project directory"}</button>
       </nav>
       <span className="local-badge"><i /> Query records remain in this browser</span>
     </header>
@@ -451,7 +523,7 @@ function LandingPage({ references, onStart, onDemo }: {
         <div className="hero-copy">
           <p className="eyebrow"><span>V(D)J sequence annotation</span></p>
           <h1>Local annotation of<br /><em>BCR and TCR sequences.</em></h1>
-          <p className="hero-lede">Swig runs the SwiftIG annotation core as WebAssembly for IG and TR loci. Query records, uploaded germlines, and AIRR results are processed in the browser and are not transmitted by Swig.</p>
+          <p className="hero-lede">Swig runs the SwiftIG annotation core as WebAssembly for IG and TR loci. Query records, locally loaded germlines, and AIRR results are processed in the browser and are not transmitted by Swig.</p>
           <div className="hero-actions">
             <button className="primary-cta" type="button" onClick={onStart}>Start an analysis <span>→</span></button>
             <button className="secondary-cta" type="button" onClick={onDemo}>Load example data</button>
@@ -474,8 +546,8 @@ function LandingPage({ references, onStart, onDemo }: {
       <section className="workflow-story">
         <div className="section-heading"><p className="eyebrow"><span>Analysis workflow</span></p><h2>Input, annotation, and results.</h2><p>Each run has an explicit configuration, measured progress, and a browser-local result index.</p></div>
         <div className="workflow-cards">
-          <article><span>01</span><div className="workflow-icon upload-icon" /><h3>Provide sequences</h3><p>Upload or paste FASTA, FASTQ, or an AIRR table. Gzip inputs are decompressed incrementally.</p></article>
-          <article><span>02</span><div className="workflow-icon engine-icon" /><h3>Set references</h3><p>Choose a species and IG/TR search space, then compose IMGT, published, or uploaded V/D/J/C sets by locus.</p></article>
+          <article><span>01</span><div className="workflow-icon upload-icon" /><h3>Provide sequences</h3><p>Load or paste FASTA, FASTQ, or an AIRR table. Gzip inputs are decompressed incrementally.</p></article>
+          <article><span>02</span><div className="workflow-icon engine-icon" /><h3>Set references</h3><p>Choose a species and IG/TR search space, then compose IMGT, published, or local V/D/J/C sets by locus.</p></article>
           <article><span>03</span><div className="workflow-icon result-icon" /><h3>Review and post-analyze</h3><p>Download AIRR TSV, inspect calls, deduplicate with abundance, assign or query lineages, and align selected groups on demand.</p></article>
         </div>
       </section>
@@ -518,7 +590,7 @@ function ReferenceCellControl({ speciesName, locus, segment, builtInCount, built
       <select aria-label={`${locus} ${segment} reference source`} value={value} disabled={busy} onChange={(event) => onSelect(locus, segment, event.target.value)}>
         <option value={DEFAULT_DATABASE_ID}>IMGT/GENE-DB{builtInCount ? "" : " · no records"}</option>
         {databases.map((database) => <option value={database.id} key={database.id}>{database.name}</option>)}
-        {reference?.sourceKind === "upload" && <option value="upload">Uploaded · {reference.name}</option>}
+        {reference?.sourceKind === "upload" && <option value="upload">Loaded file · {reference.name}</option>}
       </select>
       <div className="composition-cell-meta">
         <b>{busy ? "Validating…" : `${count.toLocaleString()} allele${count === 1 ? "" : "s"}`}</b>
@@ -529,7 +601,7 @@ function ReferenceCellControl({ speciesName, locus, segment, builtInCount, built
         if (file) onFile(locus, segment, file);
         event.target.value = "";
       }} />
-      <button className="cell-upload" type="button" disabled={busy} onClick={() => input.current?.click()}>{reference?.sourceKind === "upload" ? "Replace FASTA" : "Upload FASTA"}</button>
+      <button className="cell-upload" type="button" disabled={busy} onClick={() => input.current?.click()}>{reference?.sourceKind === "upload" ? "Replace FASTA" : "Load FASTA"}</button>
     </div>
   );
 }
@@ -582,7 +654,7 @@ function CompositionSummary({
   busy: boolean;
   release: string;
 }) {
-  const sources = [`IMGT/GENE-DB ${release || "reference pack"}`, ...databases.map((database) => database.name), ...(hasUploads ? ["uploaded FASTA"] : [])];
+  const sources = [`IMGT/GENE-DB ${release || "reference pack"}`, ...databases.map((database) => database.name), ...(hasUploads ? ["local FASTA"] : [])];
   return (
     <section className={`database-summary ${databases.length || hasUploads ? "alternative" : ""}`} aria-label="Reference composition summary">
       <div>
@@ -728,9 +800,15 @@ function DoubleDExplorer({session,onInspect}:{session:ResultSession;onInspect:(o
   </section>;
 }
 
+type ResultsView = "repertoire" | "sequences" | "double-d" | "post";
+
 function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNewAnalysis: () => void }) {
-  const [view, setView] = useState<"repertoire" | "sequences" | "double-d" | "post">(session.pipeline.enabled ? "post" : session.total <= 3 ? "sequences" : "repertoire");
-  const [postOpened, setPostOpened] = useState(Boolean(session.postAnalysis) || session.pipeline.enabled);
+  const initialView: ResultsView = session.pipeline.enabled ? "post" : session.total <= 3 ? "sequences" : "repertoire";
+  const [view, setView] = useState<ResultsView>(initialView);
+  const [openedViews, setOpenedViews] = useState<Set<ResultsView>>(() => new Set([
+    initialView,
+    ...(session.postAnalysis || session.pipeline.enabled ? ["post" as const] : []),
+  ]));
   const [filters, setFilters] = useState<ResultFilters>({ ...EMPTY_FILTERS });
   const [page, setPage] = useState(0);
   const [results, setResults] = useState<ResultPage>({ rows: [], hasMore: false, totalMatches: session.total, scanned: 0 });
@@ -743,6 +821,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const [downloadError, setDownloadError] = useState("");
   const [downloadFormat,setDownloadFormat]=useState<TableExportFormat>("tsv");
   const [savingSession,setSavingSession]=useState(false);
+  const [projectSaveStatus,setProjectSaveStatus]=useState(session.project?session.projectStatus||"Project state current":"");
   const [datasets,setDatasets]=useState<DatasetManifestEntry[]>(()=>session.datasets.map((dataset)=>({...dataset})));
   const [metadataDraft,setMetadataDraft]=useState<DatasetManifestEntry[]>(()=>session.datasets.map((dataset)=>({...dataset})));
   const [facets,setFacets]=useState<ResultFacets>(session.facets);
@@ -755,6 +834,73 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const autoOpened = useRef(false);
   const detailRef = useRef<HTMLElement>(null);
   const scrollToDetail = useRef(false);
+  const resultsTabsRef=useRef<HTMLElement>(null);
+  const viewScrollPositionsRef=useRef<Partial<Record<ResultsView,number>>>({});
+  const pendingViewScrollRef=useRef<number|null>(null);
+  const projectSaveTimerRef=useRef<number|null>(null);
+  const projectSaveChainRef=useRef<Promise<void>>(Promise.resolve());
+  const projectMetadataReadyRef=useRef(false);
+
+  function tabDocumentTop():number{
+    let top=0;
+    let element:HTMLElement|null=resultsTabsRef.current;
+    while(element){top+=element.offsetTop;element=element.offsetParent as HTMLElement|null;}
+    return top;
+  }
+
+  function activateView(next:ResultsView,restoreScroll=true){
+    if(next===view)return;
+    viewScrollPositionsRef.current[view]=window.scrollY;
+    setOpenedViews((current)=>{if(current.has(next))return current;const updated=new Set(current);updated.add(next);return updated;});
+    pendingViewScrollRef.current=restoreScroll?(viewScrollPositionsRef.current[next]??Math.max(0,tabDocumentTop()-8)):null;
+    setView(next);
+  }
+
+  useLayoutEffect(()=>{
+    const target=pendingViewScrollRef.current;
+    if(target===null)return;
+    pendingViewScrollRef.current=null;
+    let second=0;
+    const first=window.requestAnimationFrame(()=>{second=window.requestAnimationFrame(()=>window.scrollTo({top:target,left:0,behavior:"auto"}));});
+    return()=>{window.cancelAnimationFrame(first);if(second)window.cancelAnimationFrame(second);};
+  },[view]);
+
+  async function persistProjectState(reason:string){
+    if(!session.project)return;
+    setProjectSaveStatus("Writing project checkpoint…");setDownloadError("");
+    const postAnalysis=postSessionRef.current?await postSessionRef.current.snapshot():session.postAnalysis??{workingStages:[]};
+    const artifact=await sessionArtifact(session,datasets,sampleColors,postAnalysis);
+    await saveProjectCheckpoint(session.project,artifact,await encodeSession(artifact),reason);
+    session.postAnalysis=postAnalysis;
+    setProjectSaveStatus(`Project checkpoint ${activeProjectRun(session.project)?.checkpointCount??""} written`);
+  }
+
+  function saveProjectNow(reason:string){
+    if(!session.project)return;
+    if(projectSaveTimerRef.current!==null){window.clearTimeout(projectSaveTimerRef.current);projectSaveTimerRef.current=null;}
+    projectSaveChainRef.current=projectSaveChainRef.current.then(()=>persistProjectState(reason)).catch((error)=>{
+      setProjectSaveStatus("Project checkpoint failed");
+      setDownloadError(error instanceof Error?error.message:String(error));
+    });
+  }
+
+  function scheduleProjectSave(reason:string,delay=900){
+    if(!session.project)return;
+    if(projectSaveTimerRef.current!==null)window.clearTimeout(projectSaveTimerRef.current);
+    setProjectSaveStatus("Project state changed · checkpoint pending");
+    projectSaveTimerRef.current=window.setTimeout(()=>{
+      projectSaveTimerRef.current=null;
+      saveProjectNow(reason);
+    },delay);
+  }
+
+  useEffect(()=>()=>{if(projectSaveTimerRef.current!==null)window.clearTimeout(projectSaveTimerRef.current);},[]);
+
+  useEffect(()=>{
+    if(!session.project)return;
+    if(!projectMetadataReadyRef.current){projectMetadataReadyRef.current=true;return;}
+    scheduleProjectSave("study_metadata_or_palette_changed");
+  },[datasets,sampleColors]);
 
   useEffect(() => {
     let cancelled = false;
@@ -824,7 +970,11 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   async function inspectOrdinal(ordinal: number) {
     const [record] = await session.store.indexRecords([ordinal]);
     if (!record) return;
-    setView("sequences");
+    activateView("sequences",false);
+    if(selected?.ordinal===record.ordinal){
+      window.requestAnimationFrame(()=>detailRef.current?.scrollIntoView({behavior:window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"start"}));
+      return;
+    }
     setDetail(null);
     scrollToDetail.current = true;
     setSelected(record);
@@ -939,7 +1089,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     setSavingSession(true);setDownloadError("");
     try{
       const postAnalysis=postSessionRef.current?await postSessionRef.current.snapshot():session.postAnalysis??{workingStages:[]};
-      const artifact:SwigSession={schema:SWIG_SESSION_SCHEMA,application:"Swig",applicationVersion:"0.17.0",savedAt:new Date().toISOString(),linkedAirr:{name:outputName(session.inputName),size:session.outputBytes,lastModified:0,records:session.store.count,headers:[...session.store.airrHeaders],fingerprint:session.store.fingerprint},analysis:{inputName:session.inputName,species:session.species,scope:session.scope,workers:session.workers,callingProfile:session.callingProfile,minimumIdentity:session.minimumIdentity,strand:session.strand,references:session.references,doubleD:{...session.doubleD},datasets,studyDesign:session.studyDesign,pipeline:session.pipeline,sampleColors},doubleD:await session.store.doubleDRecords(),postAnalysis};
+      const artifact=await sessionArtifact(session,datasets,sampleColors,postAnalysis);
       downloadBlob(await encodeSession(artifact),sessionBaseName(session.inputName));
     }catch(error){setDownloadError(error instanceof Error?error.message:String(error));}finally{setSavingSession(false);}
   }
@@ -952,7 +1102,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     <main className="results-page">
       <section className="results-hero">
         <WorkflowStepper active={3} />
-        <div className="results-title"><div><p className="eyebrow"><span>{session.restored?"Saved session restored":`Analysis complete · ${session.seconds.toFixed(2)} s · ${Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s`}</span></p><h1>{session.total.toLocaleString()} analyzed<br /><em>rearrangements.</em></h1><p>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"} · {friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {callingProfileLabel(session.callingProfile)} calling · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize ? ` · exact random sample per dataset from ${session.inputTotal.toLocaleString()} input records (base seed ${session.subsampleSeed})` : ""}{session.doubleD.mode !== "off" ? ` · double-D screen ${session.doubleD.mode === "all" ? "all eligible junctions" : `V–J spans ≥ ${session.doubleD.minimumVjSpan} nt`}` : ""}</p></div><div className="results-actions"><label className="compact-export-format"><span>Table format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing results…" : `Download ${downloadFormat.toUpperCase()}`}<span>↓</span></button>{session.doubleDCount > 0 && <button type="button" onClick={() => void downloadDoubleD()} disabled={doubleDDownloading}>{doubleDDownloading ? "Writing double-D evidence…" : `Double-D evidence (${session.doubleDCount.toLocaleString()})`}</button>}<button type="button" onClick={()=>void saveAnalysisSession()} disabled={savingSession}>{savingSession?"Saving session…":"Save session"}</button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
+        <div className="results-title"><div><p className="eyebrow"><span>{session.restored?"Saved state restored":`Analysis complete · ${session.seconds.toFixed(2)} s · ${Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s`}</span></p><h1>{session.total.toLocaleString()} analyzed<br /><em>rearrangements.</em></h1><p>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"} · {friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {callingProfileLabel(session.callingProfile)} calling · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize ? ` · exact random sample per dataset from ${session.inputTotal.toLocaleString()} input records (base seed ${session.subsampleSeed})` : ""}{session.doubleD.mode !== "off" ? ` · double-D screen ${session.doubleD.mode === "all" ? "all eligible junctions" : `V–J spans ≥ ${session.doubleD.minimumVjSpan} nt`}` : ""}</p>{session.project&&<span className="project-state-line"><b>Project directory · {session.project.root.name}</b><small>{projectSaveStatus}</small></span>}</div><div className="results-actions"><label className="compact-export-format"><span>Table format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing results…" : `Download ${downloadFormat.toUpperCase()}`}<span>↓</span></button>{session.doubleDCount > 0 && <button type="button" onClick={() => void downloadDoubleD()} disabled={doubleDDownloading}>{doubleDDownloading ? "Writing double-D evidence…" : `Double-D evidence (${session.doubleDCount.toLocaleString()})`}</button>}{session.project&&<button type="button" onClick={()=>saveProjectNow("manual_checkpoint")}>Save project checkpoint</button>}<button type="button" onClick={()=>void saveAnalysisSession()} disabled={savingSession}>{savingSession?"Saving session…":"Save portable session"}</button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
         <div className="result-summary">
           <article><span>V + J assigned</span><strong>{session.summary.assigned.toLocaleString()}</strong><small>{percentage(session.summary.assigned, session.total)} of input</small></article>
           <article><span>Productive</span><strong>{session.summary.productive.toLocaleString()}</strong><small>{percentage(session.summary.productive, session.total)} of input</small></article>
@@ -964,9 +1114,15 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         <details className="sample-palette-editor"><summary><span>Study palette</span><strong>Sample colors</strong><small>One association is reused in sample-level figures and phylogenies.</small></summary><div>{sampleIds(datasets).map((sample)=><label key={sample}><input type="color" value={sampleColor(sample,sampleColors)} onChange={(event)=>setSampleColors((current)=>({...current,[sample]:event.target.value}))}/><span><i style={{background:sampleColor(sample,sampleColors)}}/>{sample}</span></label>)}<button type="button" onClick={()=>setSampleColors(createSampleColorMap(datasets))}>Reset palette</button></div></details>
       </section>
 
-      <nav className="results-view-tabs" aria-label="Results view"><button className={view === "repertoire" ? "active" : ""} type="button" onClick={() => setView("repertoire")}><span>Repertoire</span><small>Figures + composition</small></button><button className={view === "sequences" ? "active" : ""} type="button" onClick={() => setView("sequences")}><span>Sequences</span><small>Filter + inspect calls</small></button>{session.doubleDCount>0?<button className={view === "double-d" ? "active" : ""} type="button" onClick={() => setView("double-d")}><span>Double-D</span><small>{session.doubleDCount.toLocaleString()} VDDJ calls + alignments</small></button>:null}<button className={view === "post" ? "active" : ""} type="button" onClick={() => { setPostOpened(true); setView("post"); }}><span>Post-analysis</span><small>Filter + lineages + SHM + trees</small></button></nav>
+      <nav ref={resultsTabsRef} className="results-view-tabs" aria-label="Results view" role="tablist">
+        <button id="results-tab-repertoire" role="tab" aria-selected={view === "repertoire"} aria-controls="results-panel-repertoire" className={view === "repertoire" ? "active" : ""} type="button" onClick={() => activateView("repertoire")}><span>Repertoire</span><small>Figures + composition</small></button>
+        <button id="results-tab-sequences" role="tab" aria-selected={view === "sequences"} aria-controls="results-panel-sequences" className={view === "sequences" ? "active" : ""} type="button" onClick={() => activateView("sequences")}><span>Sequences</span><small>Filter + inspect calls</small></button>
+        {session.doubleDCount > 0 && <button id="results-tab-double-d" role="tab" aria-selected={view === "double-d"} aria-controls="results-panel-double-d" className={view === "double-d" ? "active" : ""} type="button" onClick={() => activateView("double-d")}><span>Double-D</span><small>{session.doubleDCount.toLocaleString()} VDDJ calls + alignments</small></button>}
+        <button id="results-tab-post" role="tab" aria-selected={view === "post"} aria-controls="results-panel-post" className={view === "post" ? "active" : ""} type="button" onClick={() => activateView("post")}><span>Post-analysis</span><small>Filter + lineages + SHM + trees</small></button>
+      </nav>
 
-      {view === "repertoire" ? <RepertoireDashboard key={metadataRevision} store={session.store} loci={facets.loci} inputName={session.inputName} samples={facets.samples} sampleColors={sampleColors} /> : view === "sequences" ? <>
+      {openedViews.has("repertoire") && <div id="results-panel-repertoire" role="tabpanel" aria-labelledby="results-tab-repertoire" className="results-view-panel" hidden={view !== "repertoire"}><RepertoireDashboard key={metadataRevision} store={session.store} loci={facets.loci} inputName={session.inputName} samples={facets.samples} sampleColors={sampleColors} /></div>}
+      {openedViews.has("sequences") && <div id="results-panel-sequences" role="tabpanel" aria-labelledby="results-tab-sequences" className="results-view-panel" hidden={view !== "sequences"}>
 
       <section className="explorer-shell">
         <aside className="filter-panel">
@@ -1024,8 +1180,9 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
       </section>
 
       {selected && <section ref={detailRef} className="detail-shell" tabIndex={-1} aria-label={`Details for ${selected.sequenceId}`}>{detail ? <ResultDetail row={detail} onClose={() => setSelected(null)} /> : <div className="detail-loading">Loading selected AIRR record…</div>}</section>}
-      </> : view === "double-d" ? <DoubleDExplorer key={metadataRevision} session={session} onInspect={(ordinal)=>void inspectOrdinal(ordinal)}/> : null}
-      {postOpened && <div hidden={view !== "post"}><PostAnalysisWorkbench key={metadataRevision} store={session.store} references={session.references} scope={session.scope} loci={facets.loci} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={datasets} sampleColors={sampleColors} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} autoPipeline={metadataRevision===0&&session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} onInspect={(ordinal) => void inspectOrdinal(ordinal)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} /></div>}
+      </div>}
+      {openedViews.has("double-d") && <div id="results-panel-double-d" role="tabpanel" aria-labelledby="results-tab-double-d" className="results-view-panel" hidden={view !== "double-d"}><DoubleDExplorer key={metadataRevision} session={session} onInspect={(ordinal)=>void inspectOrdinal(ordinal)}/></div>}
+      {openedViews.has("post") && <div id="results-panel-post" role="tabpanel" aria-labelledby="results-tab-post" className="results-view-panel" hidden={view !== "post"}><PostAnalysisWorkbench key={metadataRevision} store={session.store} references={session.references} scope={session.scope} loci={facets.loci} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={datasets} sampleColors={sampleColors} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} doubleDCount={session.doubleDCount} autoPipeline={metadataRevision===0&&session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} onInspect={(ordinal) => void inspectOrdinal(ordinal)} onSessionChange={(reason)=>scheduleProjectSave(reason)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} /></div>}
     </main>
   );
 }
@@ -1037,7 +1194,8 @@ export default function SwigApp() {
   const [speciesName, setSpeciesName] = useState("Homo sapiens");
   const [scope, setScope] = useState<ScopeKey>("BCR");
   const [inputSource, setInputSource] = useState<InputSource>("upload");
-  const [fileInputs, setFileInputs] = useState<DatasetInput[]>([]);
+  const [fileInputs, setFileInputs] = useState<DirectoryDatasetInput[]>([]);
+  const [pendingDirectoryInputs,setPendingDirectoryInputs]=useState<{inputs:DirectoryDatasetInput[];flatRoots:string[]}|null>(null);
   const [pasteText, setPasteText] = useState("");
   const [pasteMetadata, setPasteMetadata] = useState<DatasetManifestEntry>({ datasetId: "dataset_paste", inputName: "pasted-sequences.txt", sampleId: "sample_1", subjectId: "subject_1", cohort: "cohort_1", timepoint: "", compartment: "", records: null });
   const [studyName, setStudyName] = useState("swig-study");
@@ -1069,7 +1227,11 @@ export default function SwigApp() {
   const [pageHidden, setPageHidden] = useState(typeof document !== "undefined" && document.hidden);
   const [runError, setRunError] = useState("");
   const [session, setSession] = useState<ResultSession | null>(null);
+  const [projectWorkspace,setProjectWorkspace]=useState<ProjectWorkspace|null>(null);
+  const [projectStatus,setProjectStatus]=useState("");
+  const [projectBusy,setProjectBusy]=useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const directoryInputRef=useRef<HTMLInputElement>(null);
   const sessionInputRef=useRef<HTMLInputElement>(null);
   const linkedAirrInputRef=useRef<HTMLInputElement>(null);
   const [pendingLoadedSession,setPendingLoadedSession]=useState<SwigSession|null>(null);
@@ -1130,7 +1292,7 @@ export default function SwigApp() {
   const usedDatabases = useMemo(() => databaseOptions.flatMap((option) => option.database && usedDatabaseIds.has(option.database.id) ? [option.database] : []), [databaseOptions, usedDatabaseIds]);
   const hasUploadedReferences = activeReferenceEntries.some(([, reference]) => reference.sourceKind === "upload");
   const compositionMode = activeReferenceEntries.length ? "mixed" : DEFAULT_DATABASE_ID;
-  const databaseLabel = activeReferenceEntries.length ? ["IMGT", ...usedDatabases.map((database) => database.name), ...(hasUploadedReferences ? ["uploaded FASTA"] : [])].join(" + ") : `IMGT/GENE-DB ${pack?.release ?? "reference pack"}`;
+  const databaseLabel = activeReferenceEntries.length ? ["IMGT", ...usedDatabases.map((database) => database.name), ...(hasUploadedReferences ? ["local FASTA"] : [])].join(" + ") : `IMGT/GENE-DB ${pack?.release ?? "reference pack"}`;
   const receptor = activeScope.startsWith("IG") || activeScope === "BCR" ? "BCR" : "TCR";
   const receptorScopes = scopes.filter((value) => receptor === "BCR" ? value === "BCR" || value.startsWith("IG") : value === "TCR" || value.startsWith("TR"));
   const pasteInput = useMemo(() => {
@@ -1159,8 +1321,8 @@ export default function SwigApp() {
     catch(error){setPendingLoadedSession(null);setSessionLoadError(error instanceof Error?error.message:String(error));}
   }
 
-  async function restoreLinkedAirr(file:File){
-    const saved=pendingLoadedSession;if(!saved)return;let store:AirrResultStore|undefined;
+  async function restoreSavedSession(saved:SwigSession,file:File,restoredProject?:ProjectWorkspace){
+    let store:AirrResultStore|undefined;
     setLoadingSession(true);setSessionLoadError("");setSessionLoadProgress({records:0,total:saved.linkedAirr.records,stage:"Streaming linked AIRR table into the local index"});
     try{
       store=new AirrResultStore();let records=0;
@@ -1177,27 +1339,82 @@ export default function SwigApp() {
       const restoredDatasets=(saved.analysis.datasets?.length?saved.analysis.datasets:[{datasetId:"legacy",inputName:saved.analysis.inputName,sampleId:"sample_1",subjectId:"subject_1",cohort:"",timepoint:"",compartment:"",records:store.count}]).map((dataset)=>({...dataset,compartment:dataset.compartment??""}));
       setSessionLoadProgress({records:0,total:store.count,stage:"Applying saved study metadata to local indexes"});
       await store.updateStudyMetadata(restoredDatasets,(processed,total)=>setSessionLoadProgress({records:processed,total,stage:"Applying saved study metadata to local indexes"}));
-      setSession({id:Date.now(),store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:null,subsampleSeed:null,references:saved.analysis.references,callingProfile:saved.analysis.callingProfile??"truth_optimized",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true});
+      setSession({id:Date.now(),store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:null,subsampleSeed:null,references:saved.analysis.references,callingProfile:saved.analysis.callingProfile??"truth_optimized",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true,project:restoredProject});
+      if(restoredProject){setProjectWorkspace(restoredProject);const run=activeProjectRun(restoredProject);if(run)await appendProjectLog(restoredProject,run,"project_opened",{records:store.count});setProjectStatus(`Restored ${run?.id??"active run"}`);}
       setPendingLoadedSession(null);setSessionLoadProgress({records:store.count,total:store.count,stage:"Session restored"});setPage("results");window.scrollTo({top:0});
     }catch(error){if(store)await store.clear();setSessionLoadError(error instanceof Error?error.message:String(error));}finally{setLoadingSession(false);}
   }
 
-  async function acceptInputFiles(files: File[]) {
-    if (!files.length) return;
+  async function restoreLinkedAirr(file:File){
+    const saved=pendingLoadedSession;if(!saved)return;
+    await restoreSavedSession(saved,file);
+  }
+
+  async function chooseProjectDirectory(){
+    setProjectBusy(true);setProjectStatus("");setSessionLoadError("");
+    try{
+      const root=await selectProjectDirectory();
+      const attached=await attachProjectDirectory(root,APP_VERSION);
+      setProjectWorkspace(attached.workspace);
+      if(attached.existing&&activeProjectRun(attached.workspace)){
+        setProjectStatus("Reading project manifest and active run…");
+        const files=await loadActiveProjectFiles(attached.workspace);
+        await restoreSavedSession(await decodeSession(files.sessionFile),files.airrFile,attached.workspace);
+      }else{
+        setProjectStatus(`Project directory ready · ${root.name}`);
+        setPage("analyze");window.scrollTo({top:0});
+      }
+    }catch(error){
+      if(!(error instanceof DOMException&&error.name==="AbortError")){
+        const message=error instanceof Error?error.message:String(error);
+        setProjectStatus(message);setSessionLoadError(message);
+      }
+    }finally{setProjectBusy(false);}
+  }
+
+  async function acceptInputCandidates(candidates: InputFileCandidate[]) {
+    if (!candidates.length) return;
     setInputError("");
     setRunError("");
-    const accepted: DatasetInput[] = [];
+    const donorPlan=inferDirectoryDonors(candidates);
+    const donorByPath=new Map(donorPlan.suggestions.map((entry)=>[entry.relativePath,entry.donor]));
+    const accepted: DirectoryDatasetInput[] = [];
     const failures: string[] = [];
-    for (const file of files) {
+    let ignored=0;
+    for (const candidate of candidates) {
+      if(candidate.fromDirectory&&(!/\.(fa|fasta|fna|fas|fq|fastq|tsv|csv|txt)(\.gz)?$/i.test(candidate.file.name)||candidate.file.name.startsWith("."))){ignored+=1;continue;}
       try {
         const ordinal = nextDatasetIdRef.current++;
-        accepted.push(datasetInput(await inspectFile(file), ordinal));
+        const inspected=await inspectFile(candidate.file);
+        if(candidate.fromDirectory)inspected.name=candidate.relativePath;
+        const input:DirectoryDatasetInput={...datasetInput(inspected,ordinal),directoryRoot:candidate.fromDirectory?candidate.rootName:undefined,nestedDirectoryDonor:donorByPath.get(candidate.relativePath)??undefined};
+        if(input.nestedDirectoryDonor)input.subjectId=input.nestedDirectoryDonor;
+        accepted.push(input);
       } catch (error) {
-        failures.push(`${file.name}: ${error instanceof Error ? error.message : String(error)}`);
+        failures.push(`${candidate.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (accepted.length) setFileInputs((current) => [...current, ...accepted]);
-    if (failures.length) setInputError(failures.join(" "));
+    const acceptedFlatRoots=donorPlan.flatRoots.filter((root)=>accepted.some((input)=>input.directoryRoot===root&&!input.nestedDirectoryDonor));
+    if(accepted.length){
+      if(acceptedFlatRoots.length)setPendingDirectoryInputs({inputs:accepted,flatRoots:acceptedFlatRoots});
+      else setFileInputs((current)=>[...current,...accepted]);
+    }
+    if(failures.length||(!accepted.length&&ignored))setInputError(`${failures.slice(0,8).join(" ")}${failures.length>8?` ${failures.length-8} additional file(s) could not be read.`:""}${ignored?` ${ignored.toLocaleString()} non-dataset file(s) were ignored.`:""}`.trim());
+  }
+
+  async function acceptInputFiles(files: File[]) {
+    await acceptInputCandidates(files.map((file)=>({file,relativePath:file.name,rootName:file.name,fromDirectory:false})));
+  }
+
+  function commitDirectoryInputs(sameDonor:boolean){
+    const pending=pendingDirectoryInputs;if(!pending)return;
+    const flatRoots=new Set(pending.flatRoots);
+    const resolved=pending.inputs.map((input)=>{
+      if(input.nestedDirectoryDonor||!input.directoryRoot||!flatRoots.has(input.directoryRoot)||!sameDonor)return input;
+      return {...input,subjectId:donorForFlatRoot(input.directoryRoot)};
+    });
+    setFileInputs((current)=>[...current,...resolved]);
+    setPendingDirectoryInputs(null);
   }
 
   function updateDataset(datasetId: string, patch: Partial<DatasetManifestEntry>) {
@@ -1467,6 +1684,7 @@ export default function SwigApp() {
       }
     }
     const selectedCount = subsampleEnabled ? Math.floor(subsampleSize) : null;
+    if(projectWorkspace){void run("browser");return;}
     const wantsDisk = outputStorage === "disk" || (outputStorage === "auto" && activeDatasets.some((input) => likelyLargeInput(input, selectedCount)));
     if (wantsDisk && !savePicker() && outputStorage === "disk") {
       setRunError("Direct-to-disk streaming is unavailable in this browser. Use Auto/browser storage or a Chromium-based browser.");
@@ -1486,7 +1704,21 @@ export default function SwigApp() {
     const runName = activeInputName;
 
     let directOutput: DirectAirrOutput | undefined;
-    if (outputDestination === "disk") {
+    let preparedProject:PreparedProjectRun|undefined;
+    if(projectWorkspace){
+      try{
+        setProjectStatus("Creating numbered project run…");
+        preparedProject=await prepareProjectRun(projectWorkspace,runName,APP_VERSION);
+        await writeProjectDatasetManifest(preparedProject.workspace,preparedProject.run,datasetSnapshot);
+        directOutput={handle:preparedProject.airrHandle,writable:{
+          write:(data)=>preparedProject!.writable.write(data instanceof Uint8Array?new Uint8Array(data).buffer:data),
+          close:()=>preparedProject!.writable.close(),
+          abort:()=>preparedProject!.writable.abort(),
+        }};
+        setProjectWorkspace(preparedProject.workspace);
+        setProjectStatus(`Writing ${preparedProject.run.airrPath}`);
+      }catch(error){await preparedProject?.writable.abort().catch(()=>undefined);setRunError(error instanceof Error?error.message:String(error));return;}
+    }else if (outputDestination === "disk") {
       const picker = savePicker();
       if (!picker) {
         setRunError("Direct-to-disk streaming is unavailable in this browser. Use Auto/browser storage or a Chromium-based browser.");
@@ -1582,7 +1814,7 @@ export default function SwigApp() {
         return { count, inputRecords, workers };
       });
       setProgress({ stage: "Results ready", value: 1 });
-      setSession({
+      const resultSession:ResultSession={
         id: Date.now(),
         store,
         total: result.count,
@@ -1608,12 +1840,27 @@ export default function SwigApp() {
         doubleD,
         doubleDCount: store.doubleDCount,
         sampleColors: createSampleColorMap(datasetSnapshot),
-      });
+        project:preparedProject?.workspace,
+      };
+      if(preparedProject){
+        try{
+          await appendProjectLog(preparedProject.workspace,preparedProject.run,"annotation_complete",{records:result.count,inputRecords:result.inputRecords,workers:result.workers,seconds:resultSession.seconds,outputBytes:store.outputBytes});
+          const artifact=await sessionArtifact(resultSession,resultSession.datasets,resultSession.sampleColors,{workingStages:[]});
+          await saveProjectCheckpoint(preparedProject.workspace,artifact,await encodeSession(artifact),"annotation_complete");
+          resultSession.projectStatus=`Project checkpoint ${preparedProject.run.checkpointCount} written`;
+          setProjectStatus(`${preparedProject.run.id} · annotation checkpoint written`);
+        }catch(error){
+          resultSession.projectStatus="AIRR result written; initial state checkpoint failed";
+          setProjectStatus(error instanceof Error?error.message:String(error));
+        }
+      }
+      setSession(resultSession);
       setPage("results");
       window.scrollTo({ top: 0 });
     } catch (error) {
       await store.abort();
       await store.clear();
+      if(preparedProject)await appendProjectLog(preparedProject.workspace,preparedProject.run,error instanceof DOMException&&error.name==="AbortError"?"analysis_cancelled":"analysis_failed",{message:error instanceof Error?error.message:String(error)}).catch(()=>undefined);
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         setRunError(error instanceof Error ? error.message : String(error));
       }
@@ -1629,7 +1876,7 @@ export default function SwigApp() {
 
   return (
     <div className="site-shell">
-      <AppHeader page={page} hasResults={Boolean(session)} onNavigate={navigate} onLoadSession={()=>sessionInputRef.current?.click()} />
+      <AppHeader page={page} hasResults={Boolean(session)} projectName={projectWorkspace?.root.name} onNavigate={navigate} onLoadSession={()=>sessionInputRef.current?.click()} onOpenProject={()=>void chooseProjectDirectory()} />
       <input ref={sessionInputRef} className="visually-hidden" type="file" accept=".swig-session,.json,.gz" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(file)void acceptSessionFile(file);}}/>
       <input ref={linkedAirrInputRef} className="visually-hidden" type="file" accept=".tsv,.tsv.gz,.gz" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(file)void restoreLinkedAirr(file);}}/>
       {page === "home" && <LandingPage references={pack?.species.length ?? null} onStart={() => navigate("analyze")} onDemo={chooseDemo} />}
@@ -1642,16 +1889,18 @@ export default function SwigApp() {
             <div className="analysis-layout">
               <div className="analysis-forms">
                 <section className="analysis-card input-card">
-                  <header><span className="card-number">01</span><div><h2>Datasets and study structure</h2><p>Upload one or more datasets, or paste one dataset directly.</p></div>{activeInput && <span className="ready-tag">{activeDatasets.length} dataset{activeDatasets.length===1?"":"s"}</span>}</header>
-                  <div className="source-tabs" role="tablist"><button className={inputSource === "upload" ? "active" : ""} type="button" onClick={() => setInputSource("upload")}>Upload dataset(s)</button><button className={inputSource === "paste" ? "active" : ""} type="button" onClick={() => setInputSource("paste")}>Paste one dataset</button></div>
+                  <header><span className="card-number">01</span><div><h2>Datasets and study structure</h2><p>Load one or more datasets, a directory tree, or paste one dataset directly.</p></div>{activeInput && <span className="ready-tag">{activeDatasets.length} dataset{activeDatasets.length===1?"":"s"}</span>}</header>
+                  <div className="project-directory-panel"><div><span>Optional project directory</span><strong>{projectWorkspace?projectWorkspace.root.name:"No project directory selected"}</strong><small>{projectWorkspace?projectStatus||"AIRR output, state checkpoints, and an event log will be written here.":projectDirectoriesSupported()?"Select a directory to write numbered runs, intermediate state, and logs automatically. Selecting an existing Swig project restores its active run.":"Unavailable in this browser; portable session files remain available."}</small></div><button type="button" disabled={projectBusy||!projectDirectoriesSupported()} onClick={()=>void chooseProjectDirectory()}>{projectBusy?"Reading directory…":projectWorkspace?"Change / load project":"Select / load project"}</button>{projectWorkspace&&<button type="button" onClick={()=>{setProjectWorkspace(null);setProjectStatus("");}}>Use browser storage only</button>}</div>
+                  <div className="source-tabs" role="tablist"><button className={inputSource === "upload" ? "active" : ""} type="button" onClick={() => setInputSource("upload")}>Load dataset(s)</button><button className={inputSource === "paste" ? "active" : ""} type="button" onClick={() => setInputSource("paste")}>Paste one dataset</button></div>
                   <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".fa,.fasta,.fna,.fas,.fq,.fastq,.tsv,.csv,.txt,.gz" onChange={(event: ChangeEvent<HTMLInputElement>) => {
                     const files = [...(event.target.files ?? [])];
                     if (files.length) void acceptInputFiles(files);
                     event.target.value = "";
                   }} />
+                  <input ref={directoryInputRef} className="visually-hidden" type="file" multiple {...{webkitdirectory:"",directory:""}} onChange={(event:ChangeEvent<HTMLInputElement>)=>{const files=[...(event.target.files??[])];event.target.value="";if(files.length)void acceptInputCandidates(candidatesFromDirectoryPicker(files));}}/>
                   {inputSource === "upload" ? fileInputs.length ? (
-                    <div className="dataset-import-stack">
-                      <div className="dataset-import-heading"><div><strong>{fileInputs.length.toLocaleString()} dataset{fileInputs.length === 1 ? "" : "s"}</strong><span>{knownInputCount === null ? "Record totals will be counted during analysis" : `${knownInputCount.toLocaleString()} total records`}</span></div><button type="button" onClick={() => inputRef.current?.click()}>＋ Add datasets</button></div>
+                    <div className="dataset-import-stack" onDragOver={(event:DragEvent)=>event.preventDefault()} onDrop={(event:DragEvent)=>{event.preventDefault();void collectDroppedInput(event.dataTransfer).then((candidates)=>acceptInputCandidates(candidates)).catch((error)=>setInputError(error instanceof Error?error.message:String(error)));}}>
+                      <div className="dataset-import-heading"><div><strong>{fileInputs.length.toLocaleString()} dataset{fileInputs.length === 1 ? "" : "s"}</strong><span>{knownInputCount === null ? "Record totals will be counted during analysis" : `${knownInputCount.toLocaleString()} total records`}</span></div><div><button type="button" onClick={() => inputRef.current?.click()}>＋ Add files</button><button type="button" onClick={()=>directoryInputRef.current?.click()}>＋ Add directory</button></div></div>
                       <div className="dataset-manifest-table" role="table" aria-label="Dataset metadata">
                         <div className="dataset-manifest-head" role="row"><span>Input</span><span>Sample ID</span><span>Donor / subject</span><span>Cohort</span><span>Timepoint</span><span>Compartment / tissue</span><span /></div>
                         {fileInputs.map((input) => <div className="dataset-manifest-row" role="row" key={input.datasetId}>
@@ -1664,13 +1913,13 @@ export default function SwigApp() {
                           <button type="button" aria-label={`Remove ${input.name}`} onClick={() => setFileInputs((current) => current.filter((candidate) => candidate.datasetId !== input.datasetId))}>×</button>
                         </div>)}
                       </div>
+                      <div className="dataset-add-dropzone">Drop additional files or a directory anywhere in this dataset panel.</div>
                     </div>
                   ) : (
-                    <button className="input-dropzone" type="button" onClick={() => inputRef.current?.click()} onDragOver={(event: DragEvent) => event.preventDefault()} onDrop={(event: DragEvent) => {
+                    <div className="input-dropzone" role="button" tabIndex={0} onKeyDown={(event)=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();inputRef.current?.click();}}} onClick={() => inputRef.current?.click()} onDragOver={(event: DragEvent) => event.preventDefault()} onDrop={(event: DragEvent) => {
                       event.preventDefault();
-                      const files = [...event.dataTransfer.files];
-                      if (files.length) void acceptInputFiles(files);
-                    }}><span>＋</span><strong>Drop one or more datasets here</strong><small>.fasta(.gz) · .fastq(.gz) · AIRR .tsv(.gz)</small><i>Choose files</i></button>
+                      void collectDroppedInput(event.dataTransfer).then((candidates)=>acceptInputCandidates(candidates)).catch((error)=>setInputError(error instanceof Error?error.message:String(error)));
+                    }}><span>＋</span><strong>Drop files or an entire directory here</strong><small>.fasta(.gz) · .fastq(.gz) · AIRR .tsv(.gz)</small><i>Choose files</i><button type="button" onClick={(event)=>{event.stopPropagation();directoryInputRef.current?.click();}}>Choose directory</button></div>
                   ) : (
                     <div className="paste-input"><textarea spellCheck={false} value={pasteText} onChange={(event) => setPasteText(event.target.value)} placeholder={">sequence_1\nCAGGTGCAGCTGGTG...\n\n—or—\n\nsequence_id\tsequence\nread_1\tCAGGTGCAGCTGGTG..."} /><footer><span>{pasteInput ? `${pasteInput.count?.toLocaleString()} ${pasteInput.format} records detected` : pasteText.trim() ? "Waiting for valid FASTA, FASTQ, or AIRR…" : "Nothing pasted yet"}</span><button type="button" onClick={chooseDemo}>Insert demo</button></footer>{pasteInput && <div className="paste-metadata"><label><span>Sample ID</span><input value={pasteMetadata.sampleId} onChange={(event)=>setPasteMetadata((current)=>({...current,sampleId:event.target.value}))}/></label><label><span>Donor / subject</span><input value={pasteMetadata.subjectId} onChange={(event)=>setPasteMetadata((current)=>({...current,subjectId:event.target.value}))}/></label><label><span>Cohort</span><input value={pasteMetadata.cohort} onChange={(event)=>setPasteMetadata((current)=>({...current,cohort:event.target.value}))}/></label><label><span>Timepoint</span><input value={pasteMetadata.timepoint} onChange={(event)=>setPasteMetadata((current)=>({...current,timepoint:event.target.value}))}/></label><label><span>Compartment / tissue</span><input value={pasteMetadata.compartment} onChange={(event)=>setPasteMetadata((current)=>({...current,compartment:event.target.value}))}/></label></div>}</div>
                   )}
@@ -1707,18 +1956,18 @@ export default function SwigApp() {
                   {packError && <p className="inline-error" role="alert">{packError}</p>}
                   <CompositionSummary databases={usedDatabases} hasUploads={hasUploadedReferences} busy={databaseBusy || Boolean(busyCells.size)} release={pack?.release ?? ""} />
                   {species && <ReferenceCompositionMatrix species={species} scope={activeScope} references={cellReferences} busyCells={busyCells} onSelect={(locus, segment, sourceId) => void selectCellSource(locus, segment, sourceId)} onFile={(locus, segment, file) => void acceptReferenceFile(locus, segment, file)} />}
-                  <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · {databaseLabel}. The database selector applies a preset only where compatible; every matrix cell remains independently selectable or uploadable. In-browser preprocessing assigns V FWR/CDR boundaries and J frame/junction-anchor metadata by transfer from validated, locus-matched IMGT relatives; metadata are retained only when mapped intervals and conserved anchors validate. D and C records are validated and indexed but do not have FWR/CDR boundaries.</p>
+                  <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · {databaseLabel}. The database selector applies a preset only where compatible; every matrix cell remains independently selectable or replaceable from a local file. In-browser preprocessing assigns V FWR/CDR boundaries and J frame/junction-anchor metadata by transfer from validated, locus-matched IMGT relatives; metadata are retained only when mapped intervals and conserved anchors validate. D and C records are validated and indexed but do not have FWR/CDR boundaries.</p>
                 </section>
 
                 <section className="analysis-card settings-card">
                   <header><span className="card-number">03</span><div><h2>Analysis parameters</h2><p>Review sampling, strand, identity, worker, and output settings.</p></div><button className="reset-button" type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} controls</button></header>
-                  <div className="settings-strip"><span><b>Profile</b> {callingProfileLabel(callingProfile)}</span><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "automatic"}</span><span><b>Input</b> {subsampleEnabled ? `random ${Math.floor(subsampleSize || 0).toLocaleString()}` : "all records"}</span><span><b>Double-D</b> {doubleDMode === "off" ? "off" : doubleDMode === "all" ? "screen all" : `span ≥ ${Math.round(doubleDMinimumSpan)} nt`}</span></div>
+                  <div className="settings-strip"><span><b>Profile</b> {callingProfileLabel(callingProfile)}</span><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {projectWorkspace?"project directory":outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "automatic"}</span><span><b>Input</b> {subsampleEnabled ? `random ${Math.floor(subsampleSize || 0).toLocaleString()}` : "all records"}</span><span><b>Double-D</b> {doubleDMode === "off" ? "off" : doubleDMode === "all" ? "screen all" : `span ≥ ${Math.round(doubleDMinimumSpan)} nt`}</span></div>
                   <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records {activeDatasets.length > 1 ? "from each dataset" : ""} in memory and output.</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>{activeDatasets.length > 1 ? "Records per dataset" : "Records to analyze"}</span><CommitNumberInput min="1" step="1000" value={subsampleSize} onCommit={setSubsampleSize} /></label><label><span>Base random seed</span><CommitNumberInput step="1" value={subsampleSeed} onCommit={setSubsampleSeed} /></label></div>}</div>
                   {showAdvanced && <div className="advanced-settings">
                     <label><span>Calling profile</span><select value={callingProfile} onChange={(event) => setCallingProfile(event.target.value as CallingProfile)}><option value="truth_optimized">Truth-optimized · default</option><option value="igblast_balanced">IgBLAST-balanced · agreement + truth constraint</option><option value="igblast_compatible">IgBLAST-agreement · agreement only</option></select></label>
                     <label><span>Search strand</span><select value={strand} onChange={(event) => setStrand(Number(event.target.value) as 0 | 1 | 2)}><option value={0}>Both orientations</option><option value={1}>Plus only</option><option value={2}>Minus only</option></select></label>
                     <label><span>Parallel WASM workers</span><select value={workerCount} onChange={(event) => setWorkerCount(Number(event.target.value))}>{Array.from({ length: browserWorkerLimit() }, (_, index) => index + 1).map((count) => <option value={count} key={count}>{count}{count === recommendedWorkerCount() ? " · recommended" : ""}</option>)}</select></label>
-                    <label><span>AIRR results destination</span><select value={outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}><option value="auto">Auto · ask to save large results</option><option value="browser">Browser · compressed local index</option><option value="disk">File · save while analyzing</option></select></label>
+                    <label><span>AIRR results destination</span><select disabled={Boolean(projectWorkspace)} value={projectWorkspace?"project":outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}>{projectWorkspace&&<option value="project">Project directory · save while analyzing</option>}<option value="auto">Auto · ask to save large results</option><option value="browser">Browser · compressed local index</option><option value="disk">File · save while analyzing</option></select></label>
                     <label className="minimum-slider"><span>Minimum alignment identity <b>{Math.round(minimumIdentity * 100)}%</b></span><input type="range" min="0.45" max="0.9" step="0.01" value={minimumIdentity} onChange={(event) => setMinimumIdentity(Number(event.target.value))} /></label>
                     <p className="scientific-note calling-profile-note"><span>i</span>{callingProfile === "igblast_compatible" ? "Selected solely for agreement with the supplied IgBLAST calls: D +2/−4/−11/−1, minimum 5-nt exact run, 3 candidates; J +2/−4/−13/−1, 2 candidates. Calibrated on simulated human IGH; it is not an IgBLAST implementation." : callingProfile === "igblast_balanced" ? "Maximizes IgBLAST agreement subject to combined V/D/J first-call and fair-scored truth accuracy exceeding IgBLAST on the supplied simulation. It uses the IgBLAST-agreement settings, then removes a D call only when its strongest support is exactly five consecutive matches and j_sequence_start − v_sequence_end ≤ 11 nt. Calibrated on simulated human IGH." : "Default profile selected for simulated ground-truth accuracy. Optional agreement-oriented profiles are never selected automatically."}</p>
                     <label><span>Double-D / VDDJ screening</span><select value={doubleDMode} onChange={(event) => setDoubleDMode(event.target.value as DoubleDScreenMode)}><option value="off">Off · standard V(D)J only</option><option value="long_span">Long inter-V/J spans only</option><option value="all">All eligible D-bearing junctions</option></select></label>
@@ -1742,7 +1991,7 @@ export default function SwigApp() {
                       <article className={pipeline.collapse.enabled?"enabled":""}><label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.collapse.enabled} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,enabled:event.target.checked}}))}/><span><b>1 · Collapse / denoise</b><small>Never crosses the selected boundary.</small></span></label><div className="pipeline-fields"><label><span>Method</span><select value={pipeline.collapse.mode} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,mode:event.target.value as PipelinePlan["collapse"]["mode"]}}))}><option value="exact">Exact deduplication</option><option value="fad">FAD-compatible denoising</option><option value="conservative">Conservative indexed model</option><option value="indel">Indel-aware method D</option></select></label>{pipeline.collapse.mode==="exact"&&<label><span>Exact key</span><select value={pipeline.collapse.key} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,key:event.target.value as PipelinePlan["collapse"]["key"]}}))}><option value="sequence">Full input sequence</option><option value="trimmed">V–J-trimmed sequence</option><option value="cdr3">CDR3 nucleotide</option><option value="rearrangement">V/J calls + CDR3</option></select></label>}<label><span>Boundary</span><select value={pipeline.collapse.scope} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,scope:event.target.value as DatasetScope}}))}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><label><span>Unusable V/J or trim</span><select value={pipeline.collapse.unresolvedPolicy} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,unresolvedPolicy:event.target.value as "discard"|"retain"}}))}><option value="discard">Discard · default</option><option value="retain">Retain unchanged</option></select></label></div></article>
                       <article className={pipeline.chimera.enabled?"enabled":""}>
                         <label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.chimera.enabled} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,enabled:event.target.checked}}))}/><span><b>2 · CHMMAIRRa filter</b><small>Consumes the collapsed working set.</small></span></label>
-                        <div className="pipeline-fields"><label><span>Segment</span><select value={pipeline.chimera.segment} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,segment:event.target.value as "V"|"J"}}))}><option value="V">V</option><option value="J">J</option></select></label><label><span>Model</span><select value={pipeline.chimera.model} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,model:event.target.value as "auto"|"BW"|"DB"}}))}><option value="auto">Auto · IG BW / TR DB</option><option value="BW">Baum–Welch</option><option value="DB">Discretized Bayesian</option></select></label><label><span>Exclude posterior ≥</span><CommitNumberInput min="0" max="1" step="0.01" value={pipeline.chimera.posteriorThreshold} onCommit={(posteriorThreshold)=>setPipeline((current)=>({...current,chimera:{...current.chimera,posteriorThreshold}}))}/></label><label className="check-line"><input type="checkbox" checked={pipeline.chimera.retainUnevaluated} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,retainUnevaluated:event.target.checked}}))}/><span>Retain unevaluated</span></label><label><span>Reference MSA</span><select value={pipeline.chimera.msaSource} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,msaSource:event.target.value as "selected"|"upload"}}))}><option value="selected">Build from selected references</option><option value="upload">Use uploaded aligned FASTA</option></select></label>{pipeline.chimera.msaSource==="upload"&&<label className="pipeline-file-field"><span>Aligned FASTA</span><input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(!file)return;void file.text().then((text)=>{prepareReferenceMsa(text);setPipeline((current)=>({...current,chimera:{...current.chimera,uploadedMsa:text,uploadedMsaName:file.name}}));setRunError("");}).catch((error)=>setRunError(error instanceof Error?error.message:String(error)));}}/><small>{pipeline.chimera.uploadedMsaName||"No MSA selected"}</small></label>}</div>
+                        <div className="pipeline-fields"><label><span>Segment</span><select value={pipeline.chimera.segment} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,segment:event.target.value as "V"|"J"}}))}><option value="V">V</option><option value="J">J</option></select></label><label><span>Model</span><select value={pipeline.chimera.model} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,model:event.target.value as "auto"|"BW"|"DB"}}))}><option value="auto">Auto · IG BW / TR DB</option><option value="BW">Baum–Welch</option><option value="DB">Discretized Bayesian</option></select></label><label><span>Exclude posterior ≥</span><CommitNumberInput min="0" max="1" step="0.01" value={pipeline.chimera.posteriorThreshold} onCommit={(posteriorThreshold)=>setPipeline((current)=>({...current,chimera:{...current.chimera,posteriorThreshold}}))}/></label><label className="check-line"><input type="checkbox" checked={pipeline.chimera.retainUnevaluated} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,retainUnevaluated:event.target.checked}}))}/><span>Retain unevaluated</span></label><label><span>Reference MSA</span><select value={pipeline.chimera.msaSource} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,msaSource:event.target.value as "selected"|"upload"}}))}><option value="selected">Build from selected references</option><option value="upload">Use aligned FASTA from file</option></select></label>{pipeline.chimera.msaSource==="upload"&&<label className="pipeline-file-field"><span>Aligned FASTA</span><input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(!file)return;void file.text().then((text)=>{prepareReferenceMsa(text);setPipeline((current)=>({...current,chimera:{...current.chimera,uploadedMsa:text,uploadedMsaName:file.name}}));setRunError("");}).catch((error)=>setRunError(error instanceof Error?error.message:String(error)));}}/><small>{pipeline.chimera.uploadedMsaName||"No MSA selected"}</small></label>}</div>
                       </article>
                       <article className={pipeline.selection.enabled?"enabled":""}>
                         <label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.selection.enabled} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,enabled:event.target.checked}}))}/><span><b>3 · Repertoire selection</b><small>Commit study, call, CDR3, and QC filters before lineage assignment.</small></span></label>
@@ -1759,10 +2008,10 @@ export default function SwigApp() {
 
               <aside className="run-summary">
                 <span className="section-kicker">Run manifest</span><h2>{activeInput ? `${activeDatasets.length.toLocaleString()} dataset${activeDatasets.length === 1 ? "" : "s"}` : "Awaiting data"}</h2><p>{activeInput ? activeInputName : "Add an input to configure the run."}</p>
-                <dl><div><dt>Records</dt><dd>{subsampleEnabled ? `${Math.floor(subsampleSize).toLocaleString()} per dataset` : knownInputCount === null ? "Count during streaming" : knownInputCount.toLocaleString()}</dd></div><div><dt>Study</dt><dd>{studyDesign.replace(/^./,(value)=>value.toUpperCase())}</dd></div><div><dt>Species</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Sources</dt><dd>{databaseLabel}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>Calling profile</dt><dd>{callingProfileLabel(callingProfile)}</dd></div><div><dt>V / D / J / C</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J} / ${compiled.counts.C}` : "—"}</dd></div><div><dt>Non-IMGT cells</dt><dd>{activeReferenceEntries.length ? activeReferenceEntries.map(([key]) => key.replace(":", " ")).join(" · ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · datasets sequential</dd></div><div><dt>Post-analysis</dt><dd>{pipeline.enabled ? [pipeline.collapse.enabled&&"collapse",pipeline.chimera.enabled&&"chimera",pipeline.selection.enabled&&"selection",pipeline.lineage.enabled&&"lineages",pipeline.shm.enabled&&"SHM",pipeline.missingAlleles.enabled&&"allele hints"].filter(Boolean).join(" → ")||"No stages selected" : "Interactive"}</dd></div><div><dt>Double-D</dt><dd>{doubleDMode === "off" ? "Off · standard path" : doubleDMode === "all" ? "Screen all eligible junctions" : `Screen inter-V/J spans ≥ ${Math.round(doubleDMinimumSpan)} nt`}</dd></div><div><dt>Storage</dt><dd>{outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
+                <dl><div><dt>Records</dt><dd>{subsampleEnabled ? `${Math.floor(subsampleSize).toLocaleString()} per dataset` : knownInputCount === null ? "Count during streaming" : knownInputCount.toLocaleString()}</dd></div><div><dt>Study</dt><dd>{studyDesign.replace(/^./,(value)=>value.toUpperCase())}</dd></div><div><dt>Species</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Sources</dt><dd>{databaseLabel}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>Calling profile</dt><dd>{callingProfileLabel(callingProfile)}</dd></div><div><dt>V / D / J / C</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J} / ${compiled.counts.C}` : "—"}</dd></div><div><dt>Non-IMGT cells</dt><dd>{activeReferenceEntries.length ? activeReferenceEntries.map(([key]) => key.replace(":", " ")).join(" · ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · datasets sequential</dd></div><div><dt>Post-analysis</dt><dd>{pipeline.enabled ? [pipeline.collapse.enabled&&"collapse",pipeline.chimera.enabled&&"chimera",pipeline.selection.enabled&&"selection",pipeline.lineage.enabled&&"lineages",pipeline.shm.enabled&&"SHM",pipeline.missingAlleles.enabled&&"allele hints"].filter(Boolean).join(" → ")||"No stages selected" : "Interactive"}</dd></div><div><dt>Double-D</dt><dd>{doubleDMode === "off" ? "Off · standard path" : doubleDMode === "all" ? "Screen all eligible junctions" : `Screen inter-V/J spans ≥ ${Math.round(doubleDMinimumSpan)} nt`}</dd></div><div><dt>Storage</dt><dd>{projectWorkspace?`Project · ${projectWorkspace.root.name}`:outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
                 {runError && <p className="run-error" role="alert">{runError}</p>}
                 <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError) || databaseBusy || Boolean(busyCells.size)} onClick={requestRun}><span>{databaseBusy || busyCells.size ? "Validating references…" : pipeline.enabled ? "Run annotation + pipeline" : "Analyze with SwiftIG"}</span><b>→</b></button>
-                <p className="privacy-copy"><span>i</span> Query sequences, uploaded germlines, and AIRR results are processed in this browser; Swig does not transmit them. A remotely hosted alternative database is requested from its named provider only when selected.</p>
+                <p className="privacy-copy"><span>i</span> Query sequences, locally loaded germlines, and AIRR results are processed in this browser; Swig does not transmit them. A remotely hosted alternative database is requested from its named provider only when selected.</p>
               </aside>
             </div>
           )}
@@ -1770,7 +2019,8 @@ export default function SwigApp() {
       )}
 
       {page === "results" && session && <ResultsPage session={session} onNewAnalysis={() => navigate("analyze")} />}
-      {(pendingLoadedSession||sessionLoadError)&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal session-load-modal" role="dialog" aria-modal="true" aria-labelledby="session-load-title"><button className="output-modal-close" type="button" disabled={loadingSession} onClick={()=>{setPendingLoadedSession(null);setSessionLoadError("");}}>×</button><span className="output-direction">SESSION · LINKED AIRR DATA</span><h2 id="session-load-title">{pendingLoadedSession?"Select the AIRR table linked to this session.":"Session could not be loaded."}</h2>{pendingLoadedSession?<><p>The session stores references, options, masks, counts, lineage assignments, plots, and sparse double-D evidence. It deliberately does not duplicate the main AIRR table.</p><div className="output-flow"><div><span>Saved analysis</span><strong>{pendingLoadedSession.analysis.inputName}</strong><small>{pendingLoadedSession.linkedAirr.records.toLocaleString()} records · fingerprint {pendingLoadedSession.linkedAirr.fingerprint.slice(0,12)}…</small></div><b>+</b><div className="destination"><span>Required linked file</span><strong>{pendingLoadedSession.linkedAirr.name}</strong><small>AIRR TSV or TSV.gz; content is verified before restoration</small></div></div>{loadingSession?<div className="post-progress"><div><span>{sessionLoadProgress.stage}</span><strong>{sessionLoadProgress.total?`${Math.min(100,sessionLoadProgress.records/sessionLoadProgress.total*100).toFixed(1)}%`:"working"}</strong></div><progress max={Math.max(1,sessionLoadProgress.total)} value={sessionLoadProgress.records}/><small>{sessionLoadProgress.records.toLocaleString()} / {sessionLoadProgress.total.toLocaleString()} records</small></div>:<button className="output-save-primary" type="button" onClick={()=>linkedAirrInputRef.current?.click()}><span>Choose linked AIRR TSV</span><b>Open →</b></button>}</>:null}{sessionLoadError?<p className="run-error" role="alert">{sessionLoadError}</p>:null}</section></div>}
+      {pendingDirectoryInputs&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal directory-donor-modal" role="dialog" aria-modal="true" aria-labelledby="directory-donor-title"><button className="output-modal-close" type="button" onClick={()=>setPendingDirectoryInputs(null)} aria-label="Cancel directory loading">×</button><span className="output-direction">DIRECTORY · DONOR METADATA</span><h2 id="directory-donor-title">Do files directly inside {pendingDirectoryInputs.flatRoots.length===1?<em>{pendingDirectoryInputs.flatRoots[0]}</em>:"these directories"} come from the same donor?</h2><p>{pendingDirectoryInputs.inputs.length.toLocaleString()} compatible dataset file{pendingDirectoryInputs.inputs.length===1?" was":"s were"} found. This choice only initializes <b>Donor / subject</b>; every value remains editable in the dataset table.</p><div className="directory-donor-summary">{pendingDirectoryInputs.flatRoots.map((root)=><span key={root}><b>{root}</b><small>{pendingDirectoryInputs.inputs.filter((input)=>input.directoryRoot===root&&!input.nestedDirectoryDonor).length} direct file(s)</small></span>)}</div><div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={()=>commitDirectoryInputs(true)}><span>Same donor within each directory</span><b>Group →</b></button><button type="button" onClick={()=>commitDirectoryInputs(false)}><span>Different donor for each file</span><small>Keep separate initial donor IDs</small></button></div><p className="output-safety"><span>i</span>Nested directories are assigned automatically from the first folder beneath the selected root.</p></section></div>}
+      {(pendingLoadedSession||sessionLoadError||loadingSession)&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal session-load-modal" role="dialog" aria-modal="true" aria-labelledby="session-load-title"><button className="output-modal-close" type="button" disabled={loadingSession} onClick={()=>{setPendingLoadedSession(null);setSessionLoadError("");}}>×</button><span className="output-direction">{pendingLoadedSession?"SESSION · LINKED AIRR DATA":"PROJECT DIRECTORY · RESTORE"}</span><h2 id="session-load-title">{pendingLoadedSession?"Select the AIRR table linked to this session.":loadingSession?"Restoring the active project run.":"Saved state could not be loaded."}</h2>{pendingLoadedSession?<><p>The session stores references, options, masks, counts, lineage assignments, plots, and sparse double-D evidence. It deliberately does not duplicate the main AIRR table.</p><div className="output-flow"><div><span>Saved analysis</span><strong>{pendingLoadedSession.analysis.inputName}</strong><small>{pendingLoadedSession.linkedAirr.records.toLocaleString()} records · fingerprint {pendingLoadedSession.linkedAirr.fingerprint.slice(0,12)}…</small></div><b>+</b><div className="destination"><span>Required linked file</span><strong>{pendingLoadedSession.linkedAirr.name}</strong><small>AIRR TSV or TSV.gz; content is verified before restoration</small></div></div>{!loadingSession&&<button className="output-save-primary" type="button" onClick={()=>linkedAirrInputRef.current?.click()}><span>Choose linked AIRR TSV</span><b>Open →</b></button>}</>:loadingSession?<p>The active run's AIRR table is being verified and indexed from the selected directory.</p>:null}{loadingSession&&<div className="post-progress"><div><span>{sessionLoadProgress.stage}</span><strong>{sessionLoadProgress.total?`${Math.min(100,sessionLoadProgress.records/sessionLoadProgress.total*100).toFixed(1)}%`:"working"}</strong></div><progress max={Math.max(1,sessionLoadProgress.total)} value={sessionLoadProgress.records}/><small>{sessionLoadProgress.records.toLocaleString()} / {sessionLoadProgress.total.toLocaleString()} records</small></div>}{sessionLoadError?<p className="run-error" role="alert">{sessionLoadError}</p>:null}</section></div>}
       {outputPrompt && activeInput && <div className="output-modal-backdrop" role="presentation"><section className="output-modal" role="dialog" aria-modal="true" aria-labelledby="output-dialog-title">
         <button className="output-modal-close" type="button" onClick={() => setOutputPrompt(false)} aria-label="Cancel output selection">×</button>
         <span className="output-direction">OUTPUT · SAVE RESULTS</span>
@@ -1780,7 +2030,7 @@ export default function SwigApp() {
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
         <p className="output-safety"><span>i</span> Query sequences remain in this browser and are not transmitted by Swig.</p>
       </section></div>}
-      <footer className="site-footer"><Brand /><p>Swig 0.17.0 · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      <footer className="site-footer"><Brand /><p>Swig {APP_VERSION} · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }

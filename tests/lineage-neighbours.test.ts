@@ -23,6 +23,37 @@ function detail(ordinal: number, sequence: string, germline: string, start = 1):
   } as AirrDetailRow;
 }
 
+function doubleDDetail(ordinal: number, vIdentity = 0.98, jIdentity = 0.98): AirrDetailRow {
+  const row = detail(ordinal, "AAAACCGGGTTCCCAATTTT", "AAAACCCCCCCCCCCCTTTT");
+  Object.assign(row.values, {
+    v_sequence_start: "1",
+    v_sequence_end: "4",
+    j_sequence_start: "17",
+    j_sequence_end: "20",
+    v_sequence_alignment: "AAAA",
+    v_germline_alignment: "AAAA",
+    j_sequence_alignment: "TTTT",
+    j_germline_alignment: "TTTT",
+    v_identity: String(vIdentity),
+    j_identity: String(jIdentity),
+    d_call: "IGHD1-1*01",
+    d2_call: "IGHD2-2*01",
+    d_sequence_start: "7",
+    d_sequence_end: "9",
+    d_germline_start: "1",
+    d_germline_end: "3",
+    d2_sequence_start: "12",
+    d2_sequence_end: "14",
+    d2_germline_start: "1",
+    d2_germline_end: "3",
+    d_sequence_alignment: "GGG",
+    d_germline_alignment: "GGG",
+    d2_sequence_alignment: "CCC",
+    d2_germline_alignment: "CCC",
+  });
+  return row;
+}
+
 test("lineage germline defaults to the closest member and keeps consensus as an explicit mode", () => {
   const rows = [
     detail(0, "AAATCCC", "CAANCCC"),
@@ -65,6 +96,66 @@ test("reference quick view anchors rows on the V germline coordinate", () => {
   assert.match(fasta, />read_0__1\nACGT/);
   assert.match(fasta, />read_1__2\n-CGT/);
   assert.match(fasta, />__germline_N_masked__\nACGT/);
+});
+
+test("Double-D lineage roots replace the baseline D with explicit D1 and D2", () => {
+  const inferred = inferLineageGermline([doubleDDetail(0)]);
+  assert.equal(inferred.template, "AAAANNGGGNNCCCNNTTTT");
+  assert.equal(inferred.uca, "AAAACCGGGTTCCCAATTTT");
+  assert.equal(inferred.doubleDTemplate, true);
+  assert.equal(inferred.doubleDPositiveRows, 1);
+  assert.equal(inferred.doubleDResolvedRows, 1);
+  assert.equal(inferred.doubleDIncompleteRows, 0);
+  assert.equal(inferred.selectedDCall, "IGHD1-1*01");
+  assert.equal(inferred.selectedD2Call, "IGHD2-2*01");
+  assert.match(quickAirrAlignment([doubleDDetail(0)]), />__germline_N_masked__\nAAAANNGGGNNCCCNNTTTT/);
+});
+
+test("Double-D coordinates project through gaps in the combined AIRR query", () => {
+  const row = doubleDDetail(0);
+  row.values.sequence_alignment = "AA-AACCGGGTTCCCAATTTT";
+  row.values.germline_alignment = "AACAACCCCCCCCCCCCTTTT";
+  const inferred = inferLineageGermline([row]);
+  assert.equal(inferred.template, "AACAANNGGGNNCCCNNTTTT");
+  assert.equal(inferred.uca, "AACAACCGGGTTCCCAATTTT");
+});
+
+test("Double-D lineages select a VDDJ-aware root member instead of a cleaner single-D composite", () => {
+  const singleD = detail(0, "AAAACCGGGTTCCCAATTTT", "AAAANNNGGGNNNNNNTTTT");
+  Object.assign(singleD.values, {
+    v_sequence_start: "1", v_sequence_end: "4", j_sequence_start: "17", j_sequence_end: "20",
+    v_sequence_alignment: "AAAA", v_germline_alignment: "AAAA", j_sequence_alignment: "TTTT", j_germline_alignment: "TTTT",
+    v_identity: "1", j_identity: "1",
+  });
+  const inferred = inferLineageGermline([singleD, doubleDDetail(1, 0.98, 0.98)]);
+  assert.equal(inferred.selectedOrdinal, 1);
+  assert.equal(inferred.template, "AAAANNGGGNNCCCNNTTTT");
+  assert.equal(inferred.doubleDTemplate, true);
+  assert.equal(inferred.doubleDRowsUsed, 1);
+});
+
+test("Double-D consensus votes only VDDJ-aware templates and leaves ordinary VDJ behavior unchanged", () => {
+  const ordinary = detail(0, "AAAACCGGGTTCCCAATTTT", "AAAANNNGGGNNNNNNTTTT");
+  Object.assign(ordinary.values, { v_sequence_start: "1", v_sequence_end: "4", j_sequence_start: "17" });
+  const doubleDConsensus = inferLineageGermline([ordinary, doubleDDetail(1)], "consensus");
+  assert.equal(doubleDConsensus.template, "AAAANNGGGNNCCCNNTTTT");
+  assert.equal(doubleDConsensus.rowsUsed, 1);
+  assert.equal(doubleDConsensus.doubleDRowsUsed, 1);
+  const ordinaryOnly = inferLineageGermline([ordinary], "consensus");
+  assert.equal(ordinaryOnly.template, ordinary.values.germline_alignment);
+  assert.equal(ordinaryOnly.doubleDTemplate, false);
+  assert.equal(ordinaryOnly.rowsUsed, 1);
+});
+
+test("an incomplete imported D2 sidecar is reported and never partially projected", () => {
+  const incomplete = doubleDDetail(0);
+  incomplete.values.d2_germline_alignment = "";
+  const inferred = inferLineageGermline([incomplete]);
+  assert.equal(inferred.template, incomplete.values.germline_alignment);
+  assert.equal(inferred.doubleDTemplate, false);
+  assert.equal(inferred.doubleDPositiveRows, 1);
+  assert.equal(inferred.doubleDResolvedRows, 0);
+  assert.equal(inferred.doubleDIncompleteRows, 1);
 });
 
 function record(ordinal: number, cdr3Nt: string, subjectId: string, vCall = "IGHV1-2*01"): PostAnalysisRecord {

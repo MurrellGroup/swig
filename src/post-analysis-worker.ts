@@ -44,7 +44,7 @@ interface IngestRow {
 }
 
 type Request =
-  | { id: number; type: "init"; total: number }
+  | { id: number; type: "init"; total: number; doubleDMask: Uint8Array }
   | { id: number; type: "ingest"; rows: IngestRow[] }
   | { id: number; type: "initSketches" }
   | { id: number; type: "ingestSketches"; rows: Array<{ ordinal: number; sequence: string }> }
@@ -75,6 +75,7 @@ let currentDedup: DedupResult | undefined;
 let currentLineages: LineageResult | undefined;
 let packedSketches: Uint32Array | undefined;
 let currentActiveMask: Uint8Array | undefined;
+let currentDoubleDMask: Uint8Array | undefined;
 let denoiseAccumulator: DenoiseAccumulator | undefined;
 const interned = new Map<string, string>();
 
@@ -119,6 +120,23 @@ function compactDedupResult(result: DedupResult) {
   };
 }
 
+function refreshDoubleDLineageSummaries(result: LineageResult, dedup?: DedupResult, activeMask?: Uint8Array) {
+  const summaries = new Map(result.summaries.map((summary) => {
+    summary.doubleDPositiveMembers = 0;
+    summary.doubleDPositiveAbundance = 0;
+    return [summary.id, summary] as const;
+  }));
+  for (let index = 0; index < records.length; index += 1) {
+    if (activeMask && !activeMask[index]) continue;
+    const weight = dedup ? dedup.counts[index] : Math.max(1, Math.floor(records[index].inputCount ?? 1));
+    if (!weight || !currentDoubleDMask?.[index]) continue;
+    const summary = summaries.get(result.assignments[index]);
+    if (!summary) continue;
+    summary.doubleDPositiveMembers = (summary.doubleDPositiveMembers ?? 0) + 1;
+    summary.doubleDPositiveAbundance = (summary.doubleDPositiveAbundance ?? 0) + weight;
+  }
+}
+
 worker.onmessage = (event: MessageEvent<Request>) => {
   const request = event.data;
   try {
@@ -130,6 +148,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       currentLineages = undefined;
       packedSketches = undefined;
       currentActiveMask = undefined;
+      currentDoubleDMask = request.doubleDMask;
       denoiseAccumulator = undefined;
       interned.clear();
       result = { expected };
@@ -204,7 +223,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
     } else if (request.type === "activeMask") {
       result = { mask: currentActiveMask?.slice() ?? null };
     } else if (request.type === "lineages") {
-      currentLineages = assignLineages(records, request.options, request.useDedup ? currentDedup : undefined, currentActiveMask);
+      currentLineages = assignLineages(records, request.options, request.useDedup ? currentDedup : undefined, currentActiveMask, currentDoubleDMask);
       result = compactLineageResult(currentLineages);
     } else if (request.type === "query") {
       if (request.options.target === "trimmed" && !packedSketches) throw new Error("Build the VDJ sketch index before querying aligned sequences.");
@@ -277,13 +296,15 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       currentActiveMask = request.activeMask ? request.activeMask.slice() : undefined;
       currentDedup = request.dedup ? { ...request.dedup.dashboard, counts: request.dedup.counts, representatives: request.dedup.representatives } : undefined;
       currentLineages = request.lineages ? { ...request.lineages.dashboard, assignments: request.lineages.assignments } : undefined;
-      result = { restored: true };
+      if (currentLineages) refreshDoubleDLineageSummaries(currentLineages, currentDedup, currentActiveMask);
+      result = { restored: true, lineages: currentLineages ? compactLineageResult(currentLineages) : null };
     } else {
       records = [];
       currentDedup = undefined;
       currentLineages = undefined;
       packedSketches = undefined;
       currentActiveMask = undefined;
+      currentDoubleDMask = undefined;
       denoiseAccumulator = undefined;
       interned.clear();
       result = { cleared: true };

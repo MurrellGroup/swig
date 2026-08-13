@@ -81,7 +81,8 @@ export class PostAnalysisRuntime {
     if (this.indexed) return Promise.resolve();
     if (this.indexing) return this.indexing;
     this.indexing = (async () => {
-      await this.request({ type: "init", total: this.store.count });
+      const doubleDMask = await this.store.doubleDMask();
+      await this.request({ type: "init", total: this.store.count, doubleDMask });
       const fields = [
         "sequence_id", "sequence", "sequence_alignment", "locus", "v_call", "j_call",
         "cdr3", "cdr3_aa", "productive", "duplicate_count", "swig_dataset_id", "sample_id",
@@ -203,9 +204,9 @@ export class PostAnalysisRuntime {
     activeMask?: Uint8Array | null;
     dedup?: { dashboard: DedupDashboard; counts: Uint32Array; representatives: Int32Array };
     lineages?: { dashboard: LineageDashboard; assignments: Int32Array };
-  }): Promise<void> {
+  }): Promise<{ lineages: LineageDashboard | null }> {
     await this.ensureIndexed();
-    await this.request({ type: "restoreState", ...state });
+    return this.request({ type: "restoreState", ...state });
   }
 
   terminate() {

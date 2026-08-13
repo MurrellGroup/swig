@@ -20,6 +20,12 @@ export interface AnchoredLineageRow {
   sequence: string;
   germline: string;
   frame: number;
+  /** A sparse Double-D call was present on the AIRR detail row. */
+  doubleDPositive: boolean;
+  /** Both D alignments were safely projected into the combined AIRR columns. */
+  doubleDGermlineApplied: boolean;
+  dCall?: string;
+  d2Call?: string;
 }
 
 export interface InferredLineageGermline {
@@ -39,14 +45,147 @@ export interface InferredLineageGermline {
   inferredColumns: number;
   conflictingColumns: number;
   minimumEndpointSupport: number;
+  /** Rows carrying a sparse supported D2 call, whether or not projection succeeded. */
+  doubleDPositiveRows: number;
+  /** Double-D rows whose D1 and D2 germlines were projected into the root template. */
+  doubleDResolvedRows: number;
+  /** Positive rows omitted from VDDJ reconstruction because their coordinates were incomplete. */
+  doubleDIncompleteRows: number;
+  /** True when the returned root was reconstructed from V-D1-D2-J-aware rows. */
+  doubleDTemplate: boolean;
+  /** Number of VDDJ-aware rows used by the selected reconstruction method. */
+  doubleDRowsUsed: number;
   /** AIRR member used by closest-member reconstruction. */
   selectedOrdinal?: number;
   selectedSequenceId?: string;
+  selectedDCall?: string;
+  selectedD2Call?: string;
   /** Equal-weight V/J identity across informative matched segment columns. */
   selectedVjIdentity?: number;
   selectedVIdentity?: number;
   selectedJIdentity?: number;
   selectedComparedColumns?: number;
+}
+
+interface DoubleDGermlineProjection {
+  germline: string;
+  positive: boolean;
+  applied: boolean;
+  dCall?: string;
+  d2Call?: string;
+}
+
+function positiveInteger(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 10_000_000 ? parsed : null;
+}
+
+/**
+ * Replace the baseline single-D portion of a combined AIRR germline alignment
+ * with the independently screened D1 and D2 alignments. Sequence coordinates
+ * are projected through the gapped combined query, so V/J indels do not shift
+ * either D. The current Double-D screener emits ungapped D alignments; the gap
+ * branch below also accepts a future gapped sidecar when the corresponding
+ * combined AIRR gap column exists.
+ */
+function projectDoubleDGermline(
+  values: Record<string, string>,
+  rawSequence: string,
+  rawGermline: string,
+): DoubleDGermlineProjection {
+  const dCall = String(values.d_call || "").trim();
+  const d2Call = String(values.d2_call || "").trim();
+  if (!d2Call) return { germline: rawGermline, positive: false, applied: false };
+
+  const unresolved = (): DoubleDGermlineProjection => ({
+    germline: rawGermline,
+    positive: true,
+    applied: false,
+    dCall: dCall || undefined,
+    d2Call,
+  });
+  // Absolute AIRR sequence coordinates can be mapped only against the actual
+  // combined alignment. Falling back to an unaligned full-length `sequence`
+  // would silently shift every D column when V begins internally.
+  if (!String(values.sequence_alignment || "").trim() || !String(values.germline_alignment || "").trim()) return unresolved();
+  const alignmentStart = positiveInteger(values.v_sequence_start);
+  const vEnd = positiveInteger(values.v_sequence_end);
+  const jStart = positiveInteger(values.j_sequence_start);
+  const dStart = positiveInteger(values.d_sequence_start);
+  const dEnd = positiveInteger(values.d_sequence_end);
+  const d2Start = positiveInteger(values.d2_sequence_start);
+  const d2End = positiveInteger(values.d2_sequence_end);
+  if (alignmentStart === null || vEnd === null || jStart === null || dStart === null || dEnd === null ||
+      d2Start === null || d2End === null || alignmentStart > vEnd || vEnd >= dStart || dStart > dEnd ||
+      dEnd >= d2Start || d2Start > d2End || d2End >= jStart) return unresolved();
+
+  const sequence = rawSequence.padEnd(Math.max(rawSequence.length, rawGermline.length), "-");
+  const corrected = [...rawGermline.padEnd(sequence.length, "-")];
+  const coordinateToColumn = new Map<number, number>();
+  let queryCoordinate = alignmentStart;
+  for (let column = 0; column < sequence.length; column += 1) {
+    if (sequence[column] === "-") continue;
+    coordinateToColumn.set(queryCoordinate, column);
+    queryCoordinate += 1;
+  }
+  const vEndColumn = coordinateToColumn.get(vEnd);
+  const jStartColumn = coordinateToColumn.get(jStart);
+  if (vEndColumn === undefined || jStartColumn === undefined || vEndColumn >= jStartColumn) return unresolved();
+
+  // Remove every baseline single-D reference state before adding the supported
+  // D1/D2 pair. Query-bearing insertion sites remain N; gap columns remain gaps.
+  for (let column = vEndColumn + 1; column < jStartColumn; column += 1) {
+    corrected[column] = sequence[column] === "-" ? "-" : "N";
+  }
+
+  const occupiedGapColumns = new Set<number>();
+  const projectSegment = (start: number, end: number, queryValue: string, germlineValue: string): boolean => {
+    const alignedQuery = normalizedAlignment(queryValue);
+    const alignedGermline = normalizedAlignment(germlineValue);
+    if (!alignedQuery || !alignedGermline || alignedQuery.length !== alignedGermline.length) return false;
+    let coordinate = start;
+    let previousColumn = (coordinateToColumn.get(start) ?? vEndColumn + 1) - 1;
+    for (let index = 0; index < alignedQuery.length; index += 1) {
+      const queryBase = alignedQuery[index];
+      const germlineBase = alignedGermline[index];
+      if (queryBase !== "-") {
+        const column = coordinateToColumn.get(coordinate);
+        if (column === undefined) return false;
+        const combinedBase = sequence[column];
+        if (BASE_INDEX[queryBase] !== undefined && BASE_INDEX[combinedBase] !== undefined && queryBase !== combinedBase) return false;
+        corrected[column] = germlineBase;
+        previousColumn = column;
+        coordinate += 1;
+        continue;
+      }
+
+      // A reference insertion can be represented only if that gap column is
+      // already present in the combined AIRR alignment shared by every row.
+      const nextColumn = coordinateToColumn.get(coordinate) ?? jStartColumn;
+      let gapColumn = -1;
+      for (let column = previousColumn + 1; column < nextColumn; column += 1) {
+        if (sequence[column] === "-" && !occupiedGapColumns.has(column)) {
+          gapColumn = column;
+          break;
+        }
+      }
+      if (gapColumn < 0) return false;
+      corrected[gapColumn] = germlineBase;
+      occupiedGapColumns.add(gapColumn);
+      previousColumn = gapColumn;
+    }
+    return coordinate === end + 1;
+  };
+
+  if (!projectSegment(dStart, dEnd, values.d_sequence_alignment, values.d_germline_alignment) ||
+      !projectSegment(d2Start, d2End, values.d2_sequence_alignment, values.d2_germline_alignment)) return unresolved();
+  return {
+    germline: corrected.join(""),
+    positive: true,
+    applied: true,
+    dCall: dCall || undefined,
+    d2Call,
+  };
 }
 
 /**
@@ -60,15 +199,20 @@ export function referenceAnchoredLineageRows(rows: AirrDetailRow[]): AnchoredLin
   const provisional = rows.map((row, index) => {
     const rawSequence = normalizedAlignment(row.values.sequence_alignment, row.values.sequence);
     const rawGermline = normalizedAlignment(row.values.germline_alignment, rawSequence.replace(/[ACGT]/g, "N"));
-    const localColumns = Math.max(rawSequence.length, rawGermline.length);
+    const doubleD = projectDoubleDGermline(row.values, rawSequence, rawGermline);
+    const localColumns = Math.max(rawSequence.length, doubleD.germline.length);
     const reportedStart = Math.floor(Number(row.values.v_germline_start));
     const left = Number.isFinite(reportedStart) && reportedStart >= 1 && reportedStart <= 10_000 ? reportedStart - 1 : 0;
     return {
       row,
       name: `${safeName(row.values.sequence_id, `sequence_${index + 1}`)}__${row.record.ordinal + 1}`,
       sequence: "-".repeat(left) + rawSequence.padEnd(localColumns, "-"),
-      germline: "-".repeat(left) + rawGermline.padEnd(localColumns, "-"),
+      germline: "-".repeat(left) + doubleD.germline.padEnd(localColumns, "-"),
       frame: biologicalFrameOffset(Number(row.values.v_sequence_start) || 1, Number(row.values.sequence_frame) || 1),
+      doubleDPositive: doubleD.positive,
+      doubleDGermlineApplied: doubleD.applied,
+      dCall: doubleD.dCall,
+      d2Call: doubleD.d2Call,
     };
   });
   const columns = Math.max(...provisional.map((record) => Math.max(record.sequence.length, record.germline.length)));
@@ -166,7 +310,11 @@ function closestMember(anchored: AnchoredLineageRow[]): ClosestMemberScore {
 
 function inferClosestLineageGermline(rows: AirrDetailRow[]): InferredLineageGermline {
   const anchored = referenceAnchoredLineageRows(rows);
-  const selected = closestMember(anchored);
+  const doubleDResolved = anchored.filter((record) => record.doubleDGermlineApplied);
+  // If this lineage contains a supported VDDJ architecture, do not let a
+  // baseline single-D member silently replace it merely because its V/J ends
+  // are marginally less mutated. Rank the VDDJ-aware members by the same rule.
+  const selected = closestMember(doubleDResolved.length ? doubleDResolved : anchored);
   const template = [...selected.anchored.germline];
   const uca = [...selected.anchored.germline];
   const supported = template.map((base, column) => base !== "-" || selected.anchored.sequence[column] !== "-");
@@ -201,8 +349,15 @@ function inferClosestLineageGermline(rows: AirrDetailRow[]): InferredLineageGerm
     inferredColumns,
     conflictingColumns: 0,
     minimumEndpointSupport: 1,
+    doubleDPositiveRows: anchored.filter((record) => record.doubleDPositive).length,
+    doubleDResolvedRows: doubleDResolved.length,
+    doubleDIncompleteRows: anchored.filter((record) => record.doubleDPositive && !record.doubleDGermlineApplied).length,
+    doubleDTemplate: selected.anchored.doubleDGermlineApplied,
+    doubleDRowsUsed: selected.anchored.doubleDGermlineApplied ? 1 : 0,
     selectedOrdinal: selected.row.record.ordinal,
     selectedSequenceId,
+    selectedDCall: selected.anchored.dCall,
+    selectedD2Call: selected.anchored.d2Call,
     selectedVjIdentity: selected.equalWeightIdentity >= 0 ? selected.equalWeightIdentity : undefined,
     selectedVIdentity: selected.v.identity ?? undefined,
     selectedJIdentity: selected.j.identity ?? undefined,
@@ -221,7 +376,12 @@ function inferClosestLineageGermline(rows: AirrDetailRow[]): InferredLineageGerm
  */
 export function inferConsensusLineageGermline(rows: AirrDetailRow[]): InferredLineageGermline {
   const anchored = referenceAnchoredLineageRows(rows);
-  const minimumEndpointSupport = Math.max(1, Math.ceil(anchored.length * 0.2));
+  const doubleDResolved = anchored.filter((record) => record.doubleDGermlineApplied);
+  // Mixing the unchanged baseline single-D composite into a VDDJ junction vote
+  // can erase D2. Once a supported D2 architecture exists, use those members
+  // for the complete root vote; all ordinary lineages retain the prior path.
+  const votingRows = doubleDResolved.length ? doubleDResolved : anchored;
+  const minimumEndpointSupport = Math.max(1, Math.ceil(votingRows.length * 0.2));
   const template: string[] = [];
   const uca: string[] = [];
   const supported: boolean[] = [];
@@ -233,7 +393,7 @@ export function inferConsensusLineageGermline(rows: AirrDetailRow[]): InferredLi
     const germlineCounts = [0, 0, 0, 0];
     const queryCounts = [0, 0, 0, 0];
     let coverage = 0;
-    for (const record of anchored) {
+    for (const record of votingRows) {
       const germlineBase = record.germline[column] ?? "-";
       const queryBase = record.sequence[column] ?? "-";
       const germlineIndex = BASE_INDEX[germlineBase];
@@ -270,7 +430,7 @@ export function inferConsensusLineageGermline(rows: AirrDetailRow[]): InferredLi
     uca: uca.join(""),
     trimmedTemplate: template.slice(start, end).join(""),
     trimmedUca: uca.slice(start, end).join(""),
-    rowsUsed: anchored.length,
+    rowsUsed: votingRows.length,
     columns: template.length,
     startColumn: start,
     endColumn: end,
@@ -278,6 +438,11 @@ export function inferConsensusLineageGermline(rows: AirrDetailRow[]): InferredLi
     inferredColumns,
     conflictingColumns,
     minimumEndpointSupport,
+    doubleDPositiveRows: anchored.filter((record) => record.doubleDPositive).length,
+    doubleDResolvedRows: doubleDResolved.length,
+    doubleDIncompleteRows: anchored.filter((record) => record.doubleDPositive && !record.doubleDGermlineApplied).length,
+    doubleDTemplate: doubleDResolved.length > 0,
+    doubleDRowsUsed: doubleDResolved.length,
   };
 }
 

@@ -125,7 +125,7 @@ export const DEFAULT_PIPELINE_PLAN: PipelinePlan = {
 };
 
 export const DATASET_SCOPE_LABELS: Record<DatasetScope, string> = {
-  dataset: "Uploaded dataset / library",
+  dataset: "Loaded dataset / library",
   sample: "Biological sample",
   subject: "Donor / subject",
   cohort: "Cohort",

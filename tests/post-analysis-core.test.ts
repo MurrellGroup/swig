@@ -8,6 +8,7 @@ import {
   DenoiseAccumulator,
   deduplicate,
   expandSingleLinkage,
+  lineageDoubleDMatches,
   minHashSketch,
   prepareReferenceMsa,
   poissonStrictUpperTail,
@@ -299,6 +300,29 @@ test("lineages use V/J ambiguity overlap, exact CDR3 length, and bounded Hamming
   assert.notEqual(result.assignments[1], result.assignments[2]);
   assert.notEqual(result.assignments[1], result.assignments[3]);
   assert.equal(result.summaries[0].abundance, 2);
+});
+
+test("lineage summaries retain exact active Double-D membership for explorer filtering", () => {
+  const records = [record(0, "TGTGCCAAAA"), record(1, "TGTGCCAAAT"), record(2, "TGTGCCAATA")];
+  records[0].inputCount = 3;
+  records[1].inputCount = 2;
+  records[2].inputCount = 4;
+  const result = assignLineages(records, {
+    identity: 0.8,
+    callResolution: "gene",
+    ambiguity: "overlap",
+    productiveOnly: true,
+    requireSameLocus: true,
+    maxCandidateComparisons: 10_000,
+  }, undefined, undefined, Uint8Array.from([1, 0, 1]));
+  const summary = result.summaries[0];
+  assert.equal(summary.uniqueMembers, 3);
+  assert.equal(summary.doubleDPositiveMembers, 2);
+  assert.equal(summary.doubleDPositiveAbundance, 7);
+  assert.equal(lineageDoubleDMatches(summary, "any"), true);
+  assert.equal(lineageDoubleDMatches(summary, "present"), true);
+  assert.equal(lineageDoubleDMatches(summary, "all"), false);
+  assert.equal(lineageDoubleDMatches(summary, "absent"), false);
 });
 
 test("sequence query and single-linkage expansion recover a transitive CDR3 neighborhood", () => {

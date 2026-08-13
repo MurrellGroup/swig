@@ -1,6 +1,6 @@
 {
   "name": "swig-github-pages",
-  "version": "0.17.0",
+  "version": "0.18.2",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "check": "tsc --noEmit",
     "test": "npm run test:stream && npm run test:store && npm run test:germline && npm run test:alignment && npm run test:post && npm run test:wasm",
-    "test:stream": "node --experimental-strip-types --test tests/sequence-stream.test.ts",
+    "test:stream": "node --experimental-strip-types --test tests/sequence-stream.test.ts tests/project-directory.test.ts",
     "test:store": "node --experimental-strip-types --test tests/result-store.test.ts",
     "test:germline": "node --experimental-strip-types --test tests/germline-preprocess.test.ts",
     "test:alignment": "node --experimental-strip-types --test tests/alignment-model.test.ts tests/balanced-calling-profile.test.ts",

@@ -5,6 +5,7 @@ import zlib from "node:zlib";
 
 import { WASI } from "@bjorn3/browser_wasi_shim";
 import { preprocessGermlineFasta } from "../src/germline-preprocess.ts";
+import { inferLineageGermline } from "../src/lineage-alignment.ts";
 
 const pack = JSON.parse(
   zlib.gunzipSync(fs.readFileSync(new URL("../public/references/imgt-202632-7-swig-0.7.json.gz", import.meta.url))),
@@ -362,6 +363,48 @@ test("opt-in double-D screening is sparse and leaves the standard AIRR result by
   assert.ok(Number(screened.doubleDRows[0].d_sequence_end) < Number(screened.doubleDRows[0].d2_sequence_start));
   assert.equal(screened.doubleDRows[0].np2, "GGGGGG");
   assert.ok(Number(screened.doubleDRows[0].swig_double_d_score_gain) >= options.minimumScoreGain);
+
+  const values = { ...screened.rows[0], ...screened.doubleDRows[0] };
+  const inferred = inferLineageGermline([{
+    record: {
+      ordinal: 0,
+      sequenceId: values.sequence_id,
+      locus: values.locus,
+      vIdentity: Number(values.v_identity),
+      jIdentity: Number(values.j_identity),
+    },
+    values,
+  }]);
+  assert.equal(inferred.doubleDTemplate, true);
+  assert.equal(inferred.selectedDCall, d1[0]);
+  assert.equal(inferred.selectedD2Call, d2[0]);
+
+  const leftPadding = Math.max(0, Number(values.v_germline_start || 1) - 1);
+  const coordinateToColumn = new Map();
+  let coordinate = Number(values.v_sequence_start);
+  for (let column = 0; column < values.sequence_alignment.length; column += 1) {
+    if (values.sequence_alignment[column] === "-") continue;
+    coordinateToColumn.set(coordinate, leftPadding + column);
+    coordinate += 1;
+  }
+  for (const prefix of ["d", "d2"]) {
+    let queryCoordinate = Number(values[`${prefix}_sequence_start`]);
+    for (let column = 0; column < values[`${prefix}_sequence_alignment`].length; column += 1) {
+      if (values[`${prefix}_sequence_alignment`][column] === "-") continue;
+      assert.equal(
+        inferred.template[coordinateToColumn.get(queryCoordinate)],
+        values[`${prefix}_germline_alignment`][column],
+        `${prefix.toUpperCase()} germline base was not retained in the lineage root`,
+      );
+      queryCoordinate += 1;
+    }
+  }
+  for (let position = Number(values.d_sequence_end) + 1; position < Number(values.d2_sequence_start); position += 1) {
+    assert.equal(inferred.template[coordinateToColumn.get(position)], "N", "NP2 must remain unknown in the tree root");
+  }
+  for (let position = Number(values.d2_sequence_end) + 1; position < Number(values.j_sequence_start); position += 1) {
+    assert.equal(inferred.template[coordinateToColumn.get(position)], "N", "NP3 must remain unknown in the tree root");
+  }
 
   const gated = runtime.annotateDoubleD(query, 1, { ...options, mode: 2, minimumVjSpan: 10_000 });
   assert.equal(gated.tsv, baseline.tsv);

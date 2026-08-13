@@ -99,6 +99,20 @@ export interface LineageSummary {
   subjectIds: string[];
   timepoints: string[];
   compartments: string[];
+  /** Active unique lineage representatives with supported VDDJ evidence. */
+  doubleDPositiveMembers?: number;
+  /** Multiplicity-weighted abundance represented by those positive members. */
+  doubleDPositiveAbundance?: number;
+}
+
+export type LineageDoubleDFilter = "any" | "present" | "all" | "absent";
+
+export function lineageDoubleDMatches(summary: LineageSummary, mode: LineageDoubleDFilter): boolean {
+  const positives = Math.max(0, summary.doubleDPositiveMembers ?? 0);
+  if (mode === "present") return positives > 0;
+  if (mode === "all") return positives > 0 && positives === summary.uniqueMembers;
+  if (mode === "absent") return positives === 0;
+  return true;
 }
 
 export interface LineageResult {
@@ -1292,6 +1306,7 @@ export function assignLineages(
   options: LineageOptions,
   dedup?: DedupResult,
   activeMask?: Uint8Array,
+  doubleDMask?: Uint8Array,
 ): LineageResult {
   const union = new UnionFind(records.length);
   const bucket = new Map<string, number[]>();
@@ -1442,6 +1457,8 @@ export function assignLineages(
       subjectIds: [],
       timepoints: [],
       compartments: [],
+      doubleDPositiveMembers: 0,
+      doubleDPositiveAbundance: 0,
     });
   }
   for (let index = 0; index < records.length; index += 1) {
@@ -1467,6 +1484,8 @@ export function assignLineages(
   };
   for (let index = 0; index < records.length; index += 1) {
     if (activeMask && !activeMask[index]) continue;
+    const activeWeight = dedup ? dedup.counts[index] : Math.max(1, Math.floor(records[index].inputCount ?? 1));
+    if (!activeWeight) continue;
     const id = assignments[index];
     if (!id || !summaryById.has(id)) continue;
     const record = records[index];
@@ -1474,6 +1493,11 @@ export function assignLineages(
     addValue(subjectsById, id, record.subjectId);
     addValue(timepointsById, id, record.timepoint);
     addValue(compartmentsById, id, record.compartment);
+    if (doubleDMask?.[index]) {
+      const summary = summaryById.get(id)!;
+      summary.doubleDPositiveMembers = (summary.doubleDPositiveMembers ?? 0) + 1;
+      summary.doubleDPositiveAbundance = (summary.doubleDPositiveAbundance ?? 0) + activeWeight;
+    }
   }
   for (const summary of top) {
     summary.sampleIds = [...(samplesById.get(summary.id) ?? [])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
