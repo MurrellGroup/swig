@@ -5,7 +5,7 @@ import { inferLineageGermline, quickAirrAlignment } from "../src/lineage-alignme
 import { inferredGermlineIdentity } from "../src/lineage-neighbours.ts";
 import { assignLineages, findLineageNeighbours, sequenceFingerprint, type PostAnalysisRecord } from "../src/post-analysis-core.ts";
 import type { AirrDetailRow } from "../src/result-store.ts";
-import { createSampleColorMap, sampleColor } from "../src/sample-colors.ts";
+import { categoricalValueColor, createSampleColorMap, sampleColor } from "../src/sample-colors.ts";
 
 function detail(ordinal: number, sequence: string, germline: string, start = 1): AirrDetailRow {
   return {
@@ -210,4 +210,7 @@ test("sample colors are stable, editable associations", () => {
   const edited = createSampleColorMap(datasets, { ...defaults, sample_A: "#123456" });
   assert.equal(sampleColor("sample_A", edited), "#123456");
   assert.equal(sampleColor("sample_B", edited), defaults.sample_B);
+  assert.equal(categoricalValueColor("IGHG1"),categoricalValueColor("IGHG1"));
+  assert.notEqual(categoricalValueColor("IGHG1"),categoricalValueColor("IGHM"));
+  assert.equal(categoricalValueColor("Unassigned"),"#70817b");
 });

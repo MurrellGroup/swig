@@ -37,6 +37,7 @@ interface IngestRow {
   locus: string;
   v_call: string;
   j_call: string;
+  c_call: string;
   cdr3: string;
   cdr3_aa: string;
   productive: string;
@@ -48,7 +49,7 @@ type Request =
   | { id: number; type: "ingest"; rows: IngestRow[] }
   | { id: number; type: "initSketches" }
   | { id: number; type: "ingestSketches"; rows: Array<{ ordinal: number; sequence: string }> }
-  | { id: number; type: "dedup"; key: DedupKey; unresolvedPolicy: "discard" | "retain"; scope: DatasetScope }
+  | { id: number; type: "dedup"; key: DedupKey; unresolvedPolicy: "discard" | "retain"; scope: DatasetScope; respectConstantCall: boolean }
   | { id: number; type: "denoiseInit"; options: DenoiseOptions }
   | { id: number; type: "denoiseIngest"; rows: Array<{ ordinal: number; sequence: string }> }
   | { id: number; type: "denoiseFinish" }
@@ -167,6 +168,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
           locus: intern(row.locus),
           vCall: intern(row.v_call),
           jCall: intern(row.j_call),
+          cCall: intern(row.c_call),
           cdr3Nt: normalizeNt(row.cdr3),
           cdr3Aa: row.cdr3_aa.toUpperCase().replace(/[^A-Z*]/g, ""),
           productive: row.productive === "T" || row.productive.toLowerCase() === "true",
@@ -185,7 +187,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       for (const row of request.rows) packedSketches.set(minHashSketch(row.sequence), row.ordinal * 8);
       result = { sketched: request.rows.length };
     } else if (request.type === "dedup") {
-      currentDedup = deduplicate(records, request.key, request.unresolvedPolicy, request.scope);
+      currentDedup = deduplicate(records, request.key, request.unresolvedPolicy, request.scope, request.respectConstantCall);
       denoiseAccumulator = undefined;
       currentLineages = undefined;
       currentActiveMask = undefined;
@@ -202,7 +204,9 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       result = { ingested: request.rows.length };
     } else if (request.type === "denoiseFinish") {
       if (!denoiseAccumulator) throw new Error("Initialize denoising before finalization.");
-      currentDedup = denoiseAccumulator.finish();
+      currentDedup = denoiseAccumulator.finish((processed, total, phase) => {
+        worker.postMessage({ id: request.id, progress: { processed, total, phase } });
+      });
       denoiseAccumulator = undefined;
       result = compactDedupResult(currentDedup);
     } else if (request.type === "applyDedupFilter") {

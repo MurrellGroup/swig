@@ -31,10 +31,11 @@ export interface KabatNumberer {
  * attaching the entire alignment's coordinates to one sequence-specific gap
  * pattern while preserving Kabat insertion labels (for example 35A).
  */
-export function inferKabatColumnsWithNumberer(records: FastaRecord[], annotator: KabatNumberer, maximumContributors = 24): KabatColumnMap {
+export function inferKabatColumnsWithNumberer(records: FastaRecord[], annotator: KabatNumberer, maximumContributors = 24, frameOffset = 0): KabatColumnMap {
   if (!records.length) throw new Error("Kabat numbering requires a lineage alignment.");
-  const partialCodonRecords = records.filter((record) => record.sequence.length % 3 !== 0).length;
-  const translatedRecords = records.map((record) => translateAlignedNucleotides(record.sequence));
+  const offset = frameOffset === 1 || frameOffset === 2 ? frameOffset : 0;
+  const partialCodonRecords = records.filter((record) => Math.max(0, record.sequence.length - offset) % 3 !== 0).length;
+  const translatedRecords = records.map((record) => translateAlignedNucleotides(record.sequence, offset));
   const stopCodons = translatedRecords.reduce((total, sequence) => total + [...sequence].filter((residue) => residue === "*").length, 0);
   const warnings: string[] = [];
   if (partialCodonRecords || stopCodons) {
@@ -44,7 +45,7 @@ export function inferKabatColumnsWithNumberer(records: FastaRecord[], annotator:
     ].filter(Boolean).join("; ");
     warnings.push(`Partial or stop codons detected (${details}). Kabat numbering may be unreliable near those columns.`);
   }
-  const width = Math.max(...records.map((record) => Math.ceil(record.sequence.length / 3)));
+  const width = Math.max(...records.map((record) => Math.ceil(Math.max(0, record.sequence.length - offset) / 3)));
   const votes = Array.from({ length: width }, () => new Map<string, number>());
   const chainVotes = new Map<"H" | "K" | "L", number>();
   let confidence = 0;
@@ -53,7 +54,8 @@ export function inferKabatColumnsWithNumberer(records: FastaRecord[], annotator:
     const record = records[recordIndex];
     if (record.name === GERMLINE_OUTGROUP || contributingSequences >= maximumContributors) continue;
     const aligned = translatedRecords[recordIndex];
-    const partialColumn = record.sequence.length % 3 ? Math.floor(record.sequence.length / 3) : -1;
+    const translatedLength = Math.max(0, record.sequence.length - offset);
+    const partialColumn = translatedLength % 3 ? Math.floor(translatedLength / 3) : -1;
     const columns: number[] = [];
     const sequence = [...aligned].filter((residue, column) => {
       // A terminal one- or two-base overhang is displayed as X but must not be
@@ -91,12 +93,12 @@ export function inferKabatColumnsWithNumberer(records: FastaRecord[], annotator:
   };
 }
 
-export async function inferKabatColumns(records: FastaRecord[], maximumContributors = 24): Promise<KabatColumnMap> {
+export async function inferKabatColumns(records: FastaRecord[], maximumContributors = 24, frameOffset = 0): Promise<KabatColumnMap> {
   const { Annotator, initializeImmunum } = await import("virtual:immunum-browser");
   await initializeImmunum();
   const annotator = new Annotator(["H", "K", "L"], "kabat", 0.25);
   try {
-    return inferKabatColumnsWithNumberer(records, annotator, maximumContributors);
+    return inferKabatColumnsWithNumberer(records, annotator, maximumContributors, frameOffset);
   } finally {
     annotator.free();
   }

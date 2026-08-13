@@ -17,6 +17,8 @@ export interface PostAnalysisRecord {
   locus: string;
   vCall: string;
   jCall: string;
+  /** AIRR constant-region call. Used as a gene-level collapse partition when requested. */
+  cCall?: string;
   cdr3Nt: string;
   cdr3Aa: string;
   productive: boolean;
@@ -70,6 +72,8 @@ export interface DenoiseOptions {
   maxCandidatesPerVariant: number;
   /** Hard boundary for candidate generation; defaults to global for legacy API calls. */
   scope?: DatasetScope;
+  /** Keep records with different C-gene/isotype assignments in separate partitions. */
+  respectConstantCall?: boolean;
 }
 
 export interface LineageOptions {
@@ -328,8 +332,14 @@ export function bandedEditDistance(left: string, right: string, maximum: number)
   return previous[right.length];
 }
 
-function dedupKey(record: PostAnalysisRecord, key: DedupKey, scope: DatasetScope): string {
-  const prefix = `${datasetScopeKey(record, scope)}\u0000`;
+function constantCallPartition(record: PostAnalysisRecord, enabled: boolean): string {
+  if (!enabled) return "";
+  const topGene = callSet(record.cCall ?? "", "gene", "top")[0] ?? "__C_UNASSIGNED__";
+  return `\u0000C:${topGene}`;
+}
+
+function dedupKey(record: PostAnalysisRecord, key: DedupKey, scope: DatasetScope, respectConstantCall: boolean): string {
+  const prefix = `${datasetScopeKey(record, scope)}${constantCallPartition(record, respectConstantCall)}\u0000`;
   if (key === "sequence") return `${prefix}${record.sequenceFingerprint}`;
   if (key === "trimmed") return `${prefix}${record.trimmedFingerprint}`;
   if (key === "cdr3") return `${prefix}${record.locus}\u0000${record.cdr3Nt}`;
@@ -386,6 +396,7 @@ export function deduplicate(
   key: DedupKey,
   unresolvedPolicy: "discard" | "retain" = "discard",
   scope: DatasetScope = "global",
+  respectConstantCall = true,
 ): DedupResult {
   const representatives = new Int32Array(records.length);
   representatives.fill(-1);
@@ -406,7 +417,7 @@ export function deduplicate(
       }
       continue;
     }
-    const value = dedupKey(records[index], key, scope);
+    const value = dedupKey(records[index], key, scope, respectConstantCall);
     const previous = seen.get(value);
     if (previous === undefined) {
       seen.set(value, index);
@@ -526,7 +537,7 @@ function denoisePartition(record: PostAnalysisRecord, options: DenoiseOptions): 
   const v = callSet(record.vCall, options.callResolution, options.ambiguity);
   const j = callSet(record.jCall, options.callResolution, options.ambiguity);
   if (!v.length || !j.length) return null;
-  return `${datasetScopeKey(record, options.scope ?? "global")}\u0000${record.locus || "?"}\u0000${v.join("+")}\u0000${j.join("+")}`;
+  return `${datasetScopeKey(record, options.scope ?? "global")}${constantCallPartition(record, options.respectConstantCall ?? true)}\u0000${record.locus || "?"}\u0000${v.join("+")}\u0000${j.join("+")}`;
 }
 
 function kmerProfile(sequence: string, blockCount: number, k = 6): KmerProfile {
@@ -912,7 +923,7 @@ export class DenoiseAccumulator {
     this.variantByOrdinal[ordinal] = variantIndex;
   }
 
-  finish(): DedupResult {
+  finish(onProgress?: (processed: number, total: number, phase: "variants" | "finalize") => void): DedupResult {
     for (let ordinal = 0; ordinal < this.records.length; ordinal += 1) {
       if (!this.processed[ordinal]) {
         if (this.options.unresolvedPolicy === "retain") this.standalone.push(ordinal);
@@ -929,12 +940,22 @@ export class DenoiseAccumulator {
     let truncated = 0;
     let indelMergedVariants = 0;
     let substitutionMergedVariants = 0;
+    const variantWork = this.options.mode === "fad"
+      ? this.variants.length + this.variants.reduce((count, variant) => count + (variant.count >= this.options.minimumParentCount ? 1 : 0), 0)
+      : this.variants.length;
+    let processedVariantWork = 0;
+    const progressStride = Math.max(1, Math.floor(Math.max(1, variantWork) / 500));
+    const variantProgress = () => {
+      processedVariantWork += 1;
+      if (processedVariantWork === variantWork || processedVariantWork % progressStride === 0) onProgress?.(processedVariantWork, Math.max(1, variantWork), "variants");
+    };
+    onProgress?.(0, Math.max(1, variantWork), "variants");
     for (const group of partitions.values()) {
       const result = this.options.mode === "fad"
-        ? this.processFadPartition(group)
+        ? this.processFadPartition(group, variantProgress)
         : this.options.mode === "indel"
-          ? this.processIndelPartition(group)
-          : this.processConservativePartition(group);
+          ? this.processIndelPartition(group, variantProgress)
+          : this.processConservativePartition(group, variantProgress);
       candidateComparisons += result.comparisons;
       truncated += result.truncated;
       indelMergedVariants += result.indelMergedVariants;
@@ -944,15 +965,26 @@ export class DenoiseAccumulator {
     const representatives = new Int32Array(this.records.length);
     representatives.fill(-1);
     const counts = new Uint32Array(this.records.length);
+    const finalizeTotal = Math.max(1, this.records.length * 3 + this.variants.length + this.standalone.length);
+    let finalized = 0;
+    const finalizeStride = Math.max(1, Math.floor(finalizeTotal / 500));
+    const reportFinalize = (increment = 1) => {
+      finalized += increment;
+      if (finalized >= finalizeTotal || finalized % finalizeStride === 0) onProgress?.(Math.min(finalized, finalizeTotal), finalizeTotal, "finalize");
+    };
+    onProgress?.(0, finalizeTotal, "finalize");
     for (let ordinal = 0; ordinal < this.records.length; ordinal += 1) {
       const variantIndex = this.variantByOrdinal[ordinal];
-      if (variantIndex < 0) continue;
-      const target = this.variants[this.variants[variantIndex].target];
-      representatives[ordinal] = target.representative;
+      if (variantIndex >= 0) {
+        const target = this.variants[this.variants[variantIndex].target];
+        representatives[ordinal] = target.representative;
+      }
+      reportFinalize();
     }
     for (const variant of this.variants) {
       const target = this.variants[variant.target];
       counts[target.representative] += variant.count;
+      reportFinalize();
     }
     for (const group of this.retainedAmbiguous.values()) {
       counts[group.representative] = group.count;
@@ -962,9 +994,13 @@ export class DenoiseAccumulator {
       const weight = Math.max(1, Math.floor(this.records[ordinal].inputCount ?? 1));
       counts[ordinal] = weight;
       representatives[ordinal] = ordinal;
+      reportFinalize();
     }
     let uniqueRecords = 0;
-    for (const count of counts) if (count > 0) uniqueRecords += 1;
+    for (const count of counts) {
+      if (count > 0) uniqueRecords += 1;
+      reportFinalize();
+    }
     const largestGroups = largestCountGroups(counts);
     const warnings: string[] = [];
     if (this.excludedAmbiguous) warnings.push(`${this.excludedAmbiguous.toLocaleString()} records containing ambiguous nucleotide symbols were excluded to match the selected policy.`);
@@ -972,7 +1008,11 @@ export class DenoiseAccumulator {
       `${this.unresolvedRecords.toLocaleString()} records without a usable trimmed sequence or both V/J calls were ${this.options.unresolvedPolicy === "retain" ? "retained unchanged" : "discarded from the downstream representative set"}.`,
     );
     if (truncated) warnings.push(`${truncated.toLocaleString()} variants reached the candidate cap; increase it before treating this denoising result as complete.`);
-    const inputAbundance = this.records.reduce((sum, record) => sum + Math.max(1, Math.floor(record.inputCount ?? 1)), 0);
+    let inputAbundance = 0;
+    for (const record of this.records) {
+      inputAbundance += Math.max(1, Math.floor(record.inputCount ?? 1));
+      reportFinalize();
+    }
     return {
       mode: this.options.mode,
       key: "trimmed",
@@ -998,7 +1038,7 @@ export class DenoiseAccumulator {
     };
   }
 
-  private processFadPartition(group: number[]): DenoisePartitionStats {
+  private processFadPartition(group: number[], onVariant?: () => void): DenoisePartitionStats {
     const maximumSquared = Math.max(0, Math.floor(12 * this.options.fadNeighborThreshold + 1e-9));
     const blockCount = Math.max(1, maximumSquared + 1);
     const profiles = new Map<number, KmerProfile>();
@@ -1011,6 +1051,7 @@ export class DenoiseAccumulator {
     const ordered = [...group].sort((left, right) => this.variants[right].count - this.variants[left].count || this.variants[left].representative - this.variants[right].representative);
     const accepted: number[] = [];
     const index = new Map<string, number[]>();
+    const candidates = new Set<number>();
     let comparisons = 0;
     let truncated = 0;
     const addAccepted = (variantIndex: number) => {
@@ -1025,7 +1066,7 @@ export class DenoiseAccumulator {
     };
     for (const variantIndex of ordered.filter((value) => this.variants[value].count >= this.options.minimumParentCount)) {
       const profile = profiles.get(variantIndex)!;
-      const candidates = new Set<number>();
+      candidates.clear();
       profile.hashes.forEach((hash, block) => {
         if (candidates.size >= this.options.maxCandidatesPerVariant) return;
         for (const candidate of index.get(`${block}:${hash}`) ?? []) {
@@ -1042,6 +1083,7 @@ export class DenoiseAccumulator {
       }
       if (!neighbors.length) {
         addAccepted(variantIndex);
+        onVariant?.();
         continue;
       }
       neighbors.sort((left, right) => this.variants[right.index].count - this.variants[left.index].count || left.distance - right.distance || this.variants[left.index].representative - this.variants[right.index].representative);
@@ -1052,6 +1094,7 @@ export class DenoiseAccumulator {
       const adjusted = Math.min(1, poissonStrictUpperTail(child.count, lambda) * (sequences.get(variantIndex)?.length ?? 1));
       if (this.options.fadMethod === 2 && adjusted < this.options.alpha) addAccepted(variantIndex);
       else child.target = parent;
+      onVariant?.();
     }
     if (!accepted.length && ordered.length) addAccepted(ordered[0]);
     // The published FAD implementation assigns every non-template variant to
@@ -1063,14 +1106,16 @@ export class DenoiseAccumulator {
     for (const variantIndex of ordered) {
       if (acceptedSet.has(variantIndex)) {
         this.variants[variantIndex].target = variantIndex;
+        onVariant?.();
         continue;
       }
       this.variants[variantIndex].target = vpTree ? nearestKmerPoint(vpTree, variantIndex, profiles, (point) => this.variants[point].count, () => { comparisons += 1; }) : variantIndex;
+      onVariant?.();
     }
     return { comparisons, truncated, indelMergedVariants: 0, substitutionMergedVariants: 0 };
   }
 
-  private processIndelPartition(group: number[]): DenoisePartitionStats {
+  private processIndelPartition(group: number[], onVariant?: () => void): DenoisePartitionStats {
     const distanceLimit = this.options.maximumEditDistance;
     const blockCount = distanceLimit + 1;
     const sequences = new Map(group.map((index) => [index, this.arena.decode(this.variants[index].location)]));
@@ -1082,6 +1127,7 @@ export class DenoiseAccumulator {
     let truncated = 0;
     let indelMergedVariants = 0;
     let substitutionMergedVariants = 0;
+    const candidates = new Set<number>();
 
     const addParent = (variantIndex: number) => {
       if (this.variants[variantIndex].count < this.options.minimumParentCount) return;
@@ -1104,7 +1150,7 @@ export class DenoiseAccumulator {
     for (const variantIndex of ordered) {
       const child = this.variants[variantIndex];
       const sequence = sequences.get(variantIndex)!;
-      const candidates = new Set<number>();
+      candidates.clear();
       let capped = false;
       const addCandidates = (values: number[]) => {
         for (const candidate of values) {
@@ -1177,11 +1223,12 @@ export class DenoiseAccumulator {
         child.target = variantIndex;
         addParent(variantIndex);
       }
+      onVariant?.();
     }
     return { comparisons, truncated, indelMergedVariants, substitutionMergedVariants };
   }
 
-  private processConservativePartition(group: number[]): DenoisePartitionStats {
+  private processConservativePartition(group: number[], onVariant?: () => void): DenoisePartitionStats {
     const distanceLimit = this.options.maximumHammingDistance;
     const blockCount = distanceLimit + 1;
     const sequences = new Map(group.map((index) => [index, this.arena.decode(this.variants[index].location)]));
@@ -1190,6 +1237,7 @@ export class DenoiseAccumulator {
     let comparisons = 0;
     let truncated = 0;
     let substitutionMergedVariants = 0;
+    const candidates = new Set<number>();
     const addParent = (variantIndex: number) => {
       if (this.variants[variantIndex].count < this.options.minimumParentCount) return;
       const sequence = sequences.get(variantIndex)!;
@@ -1203,7 +1251,7 @@ export class DenoiseAccumulator {
     for (const variantIndex of ordered) {
       const child = this.variants[variantIndex];
       const sequence = sequences.get(variantIndex)!;
-      const candidates = new Set<number>();
+      candidates.clear();
       sequenceBlocks(sequence, blockCount).forEach((block, blockIndex) => {
         if (candidates.size >= this.options.maxCandidatesPerVariant) return;
         for (const candidate of parentIndex.get(`${sequence.length}:${blockIndex}:${block}`) ?? []) {
@@ -1239,6 +1287,7 @@ export class DenoiseAccumulator {
         child.target = variantIndex;
         addParent(variantIndex);
       }
+      onVariant?.();
     }
     return { comparisons, truncated, indelMergedVariants: 0, substitutionMergedVariants };
   }

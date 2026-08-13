@@ -26,6 +26,8 @@ export interface PipelinePlan {
     key: "sequence" | "trimmed" | "cdr3" | "rearrangement";
     scope: DatasetScope;
     unresolvedPolicy: "discard" | "retain";
+    /** Partition on the normalized top C-gene/isotype call, independent of tail length. */
+    respectConstantCall: boolean;
   };
   chimera: {
     enabled: boolean;
@@ -36,6 +38,8 @@ export interface PipelinePlan {
     msaSource: "selected" | "upload";
     uploadedMsa: string;
     uploadedMsaName: string;
+    /** Exact FASTA identifiers omitted before MSA validation or construction. */
+    excludedAlleles: string[];
   };
   selection: {
     enabled: boolean;
@@ -76,9 +80,10 @@ export const DEFAULT_PIPELINE_PLAN: PipelinePlan = {
   collapse: {
     enabled: true,
     mode: "exact",
-    key: "sequence",
+    key: "trimmed",
     scope: "sample",
     unresolvedPolicy: "discard",
+    respectConstantCall: true,
   },
   chimera: {
     enabled: false,
@@ -89,6 +94,7 @@ export const DEFAULT_PIPELINE_PLAN: PipelinePlan = {
     msaSource: "selected",
     uploadedMsa: "",
     uploadedMsaName: "",
+    excludedAlleles: [],
   },
   selection: {
     enabled: false,

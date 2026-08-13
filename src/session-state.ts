@@ -6,6 +6,7 @@ import type { CallingProfile } from "./swiftig-runtime";
 import type { DatasetManifestEntry, PipelinePlan, StudyDesign } from "./study-design";
 import type { SampleColorMap } from "./sample-colors";
 import type { LineageGermlineMethod } from "./lineage-alignment";
+import type { AlignmentFrameOffset } from "./lineage-phylogeny";
 
 export const SWIG_SESSION_SCHEMA = 1 as const;
 
@@ -60,13 +61,15 @@ export interface PostAnalysisSessionSnapshot {
   selectedLineageIds?: number[];
   lineageGermlineMethod?: LineageGermlineMethod;
   query?: Record<string, unknown>;
-  alignment?: { fasta: string; source: string; selectedLineageId?: number };
+  alignment?: { fasta: string; source: string; selectedLineageId?: number; frameOffset?: AlignmentFrameOffset };
+  /** Shared nucleotide-column offset used for codon translation in the current lineage MSA. */
+  alignmentFrameOffset?: AlignmentFrameOffset;
   /** Only manual/corrected alignments are retained; generated alignments are reproducible from AIRR rows. */
-  editedAlignments?: Array<{ key: string; lineageIds: number[]; fasta: string; source: string; savedAt: string }>;
+  editedAlignments?: Array<{ key: string; lineageIds: number[]; fasta: string; source: string; frameOffset?: AlignmentFrameOffset; savedAt: string }>;
   lineageMerges?: Array<{ id: string; label: string; originalLineageIds: number[]; createdAt: string }>;
   tree?: { rawNewick: string; rootedNewick: string; stableNewick: string; source: string; lineageIds?: number[]; run?: Record<string, unknown> };
   shm?: { metric: ShmMetricKey; dashboard: ShmDashboard; sampleOrder?: string[] };
-  missingAlleles?: { options: MissingAlleleOptions; dashboard: MissingAlleleDashboard };
+  missingAlleles?: { options: MissingAlleleOptions; dashboard: MissingAlleleDashboard; selectedCandidateIds?: string[] };
 }
 
 export interface SwigSession {

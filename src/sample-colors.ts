@@ -38,6 +38,18 @@ export function categoricalLineageColor(lineageId: number): string {
   return SAMPLE_COLOR_SEQUENCE[(lineageId * 7 + 3) % SAMPLE_COLOR_SEQUENCE.length];
 }
 
+/** Stable color for any non-sample categorical annotation across renders/exports. */
+export function categoricalValueColor(value: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized === "Unassigned") return "#70817b";
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return SAMPLE_COLOR_SEQUENCE[(hash >>> 0) % SAMPLE_COLOR_SEQUENCE.length];
+}
+
 export function contrastingText(background: string): string {
   const red = Number.parseInt(background.slice(1, 3), 16);
   const green = Number.parseInt(background.slice(3, 5), 16);

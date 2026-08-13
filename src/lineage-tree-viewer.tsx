@@ -22,7 +22,7 @@ import { ladderizeTree, layoutTree, parseNewick, serializeNewick } from "./phylo
 import { parseFasta } from "./post-analysis-core";
 import type { AirrDetailRow } from "./result-store";
 import { sequenceColor } from "./sequence-colors";
-import { categoricalLineageColor, sampleColor, type SampleColorMap } from "./sample-colors";
+import { categoricalLineageColor, categoricalValueColor, sampleColor, type SampleColorMap } from "./sample-colors";
 
 export type CoordinatedTreeVariant = "stable" | "rooted" | "raw";
 
@@ -37,6 +37,7 @@ interface Props {
   collapseThreshold?: number;
   mode: "nt" | "aa";
   onModeChange: (mode: "nt" | "aa") => void;
+  frameOffset: 0 | 1 | 2;
   isTcr: boolean;
   sampleColors: SampleColorMap;
   lineageByOrdinal: Map<number, number>;
@@ -49,6 +50,42 @@ const REGION_COLORS: Record<VariableRegion, string> = {
   fwr1: "#dfe9e4", cdr1: "#f5d9a8", fwr2: "#dfe9e4", cdr2: "#edb9ae", fwr3: "#dfe9e4", cdr3: "#d4c4eb", fwr4: "#dfe9e4",
 };
 const MOTIF_COLORS = ["#d64b64", "#3f78c5", "#da8d1e", "#128a79", "#8b5cc4", "#a1633f", "#d85fa6", "#55713a"];
+
+type TipColorMode = "sample" | "lineage" | "isotype" | "constant" | "subject" | "cohort" | "timepoint" | "compartment" | "v_gene" | "j_gene" | "productive" | "double_d" | "uniform";
+
+const TIP_COLOR_LABELS: Record<TipColorMode, string> = {
+  sample: "Sample", lineage: "Original lineage", isotype: "Isotype", constant: "Constant gene",
+  subject: "Donor / subject", cohort: "Cohort", timepoint: "Timepoint", compartment: "Compartment",
+  v_gene: "V gene", j_gene: "J gene", productive: "Productivity", double_d: "Double-D status", uniform: "Uniform",
+};
+
+function topGene(value: string): string {
+  return value.split(",", 1)[0]?.trim().replace(/\*.*$/, "") || "Unassigned";
+}
+
+function truthLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "t" || normalized === "true" || normalized === "yes" || normalized === "1") return "Productive";
+  if (normalized === "f" || normalized === "false" || normalized === "no" || normalized === "0") return "Non-productive";
+  return "Unassigned";
+}
+
+function tipCategory(row: AirrDetailRow | undefined, mode: TipColorMode, originalLineage: number): string {
+  if (mode === "uniform") return "Uniform";
+  if (mode === "lineage") return originalLineage > 0 ? `Lineage ${originalLineage}` : "Unassigned";
+  if (!row) return "Unassigned";
+  if (mode === "sample") return row.values.sample_id || row.record.sampleId || "Unassigned";
+  if (mode === "isotype") return row.values.isotype || row.record.isotype || "Unassigned";
+  if (mode === "constant") return topGene(row.values.c_call || row.record.cCall || "");
+  if (mode === "subject") return row.values.subject_id || row.record.subjectId || "Unassigned";
+  if (mode === "cohort") return row.values.swig_cohort || row.record.cohort || "Unassigned";
+  if (mode === "timepoint") return row.values.swig_timepoint || row.record.timepoint || "Unassigned";
+  if (mode === "compartment") return row.values.swig_compartment || row.record.compartment || "Unassigned";
+  if (mode === "v_gene") return topGene(row.values.v_call || row.record.vCall || "");
+  if (mode === "j_gene") return topGene(row.values.j_call || row.record.jCall || "");
+  if (mode === "productive") return truthLabel(row.values.productive || row.record.productive || "");
+  return row.values.d2_call || row.record.d2Call ? "Double-D positive" : "No double-D call";
+}
 
 function downloadText(value: string, name: string, type: string) {
   const url = URL.createObjectURL(new Blob([value], { type }));
@@ -122,6 +159,7 @@ export function LineageTreeViewer({
   collapseThreshold = 1e-8,
   mode,
   onModeChange,
+  frameOffset,
   isTcr,
   sampleColors,
   lineageByOrdinal,
@@ -144,19 +182,28 @@ export function LineageTreeViewer({
   const [colorMode, setColorMode] = useState<"residue" | "motif">("residue");
   const [motifText, setMotifText] = useState("");
   const [fullscreen, setFullscreen] = useState(false);
-  const [tipColorMode, setTipColorMode] = useState<"sample" | "lineage" | "uniform">(() => new Set(lineageByOrdinal.values()).size > 1 ? "lineage" : Object.keys(sampleColors).length > 1 ? "sample" : "uniform");
+  const [tipColorMode, setTipColorMode] = useState<TipColorMode>(() => new Set(lineageByOrdinal.values()).size > 1 ? "lineage" : Object.keys(sampleColors).length > 1 ? "sample" : "uniform");
 
   const records = useMemo(() => parseFasta(alignmentFasta, true), [alignmentFasta]);
   const nucleotideByName = useMemo(() => new Map(records.map((record) => [record.name, record.sequence])), [records]);
-  const displayedByName = useMemo(() => new Map(records.map((record) => [record.name, mode === "nt" ? record.sequence : translateAlignedNucleotides(record.sequence)])), [records, mode]);
+  const displayedByName = useMemo(() => new Map(records.map((record) => [record.name, mode === "nt" ? record.sequence : translateAlignedNucleotides(record.sequence, frameOffset)])), [records, mode, frameOffset]);
   const tree = useMemo(() => parseNewick(newick), [newick]);
   const displayTree = useMemo(() => ladderization === "none" ? tree : ladderizeTree(tree, ladderization), [tree, ladderization]);
   const layout = useMemo(() => layoutTree(displayTree, treeWidth, rowHeight, layoutMode, 24, 74), [displayTree, treeWidth, rowHeight, layoutMode]);
   const nucleotideRegions = useMemo(() => alignmentRegionMap(records, rows), [records, rows]);
   const rowByOrdinal = useMemo(() => new Map(rows.map((row) => [row.record.ordinal, row])), [rows]);
-  const visibleSamples = useMemo(() => [...new Set(rows.map((row) => row.values.sample_id || row.record.sampleId).filter(Boolean))], [rows]);
-  const visibleLineages = useMemo(() => [...new Set(lineageByOrdinal.values())].filter((value) => value > 0).sort((a,b)=>a-b), [lineageByOrdinal]);
-  const regions = useMemo(() => mode === "nt" ? nucleotideRegions : aminoAcidRegionMap(nucleotideRegions), [mode, nucleotideRegions]);
+  const tipLegendEntries = useMemo(() => {
+    if (tipColorMode === "uniform") return [];
+    const categories = new Map<string,string>();
+    for (const row of rows) {
+      const originalLineage = lineageByOrdinal.get(row.record.ordinal) ?? 0;
+      const category = tipCategory(row, tipColorMode, originalLineage);
+      const color = tipColorMode === "sample" ? sampleColor(category, sampleColors) : tipColorMode === "lineage" ? categoricalLineageColor(originalLineage) : categoricalValueColor(category);
+      categories.set(category, color);
+    }
+    return [...categories].sort((left,right)=>left[0].localeCompare(right[0],undefined,{numeric:true})).slice(0,32).map(([label,color])=>({label,color}));
+  }, [rows, lineageByOrdinal, tipColorMode, sampleColors]);
+  const regions = useMemo(() => mode === "nt" ? nucleotideRegions : aminoAcidRegionMap(nucleotideRegions, frameOffset), [mode, nucleotideRegions, frameOffset]);
   const alignmentColumns = displayedByName.values().next().value?.length ?? 0;
   const alignmentLabels = useMemo(() => Array.from({ length: alignmentColumns }, (_, index) => String(index + 1)), [alignmentColumns]);
   const coordinateLabels = mode === "aa" && numbering === "kabat" && kabat ? kabat.labels : alignmentLabels;
@@ -184,16 +231,21 @@ export function LineageTreeViewer({
       const childSignature = cladeSignature(edge.child);
       const parentSequence = parsimony.sequencesByClade.get(cladeSignature(edge.parent));
       const childSequence = parsimony.sequencesByClade.get(childSignature);
-      if (parentSequence && childSequence) result.set(childSignature, aminoAcidBranchMutations(parentSequence, childSequence, childSignature));
+      if (parentSequence && childSequence) result.set(childSignature, aminoAcidBranchMutations(parentSequence, childSequence, childSignature, frameOffset));
     }
     return result;
-  }, [parsimony, layout]);
+  }, [parsimony, layout, frameOffset]);
+
+  useEffect(() => {
+    setKabat(null);
+    setKabatStatus("");
+  }, [frameOffset]);
 
   useEffect(() => {
     if (numbering !== "kabat" || mode !== "aa" || isTcr || kabat) return;
     let cancelled = false;
     setKabatStatus("Numbering aligned IG variable domains in-browser…");
-    void inferKabatColumns(records).then((result) => {
+    void inferKabatColumns(records, 24, frameOffset).then((result) => {
       if (cancelled) return;
       setKabat(result);
       setKabatStatus("");
@@ -203,7 +255,7 @@ export function LineageTreeViewer({
       setKabatStatus(error instanceof Error ? error.message : String(error));
     });
     return () => { cancelled = true; };
-  }, [numbering, mode, isTcr, kabat, records]);
+  }, [numbering, mode, isTcr, kabat, records, frameOffset]);
 
   useEffect(() => {
     const changed = () => setFullscreen(document.fullscreenElement === containerRef.current);
@@ -216,7 +268,10 @@ export function LineageTreeViewer({
   const displayColumnX = spacedColumnOffsets(selectedColumns, cellWidth);
   const matrixWidth = selectedColumns.length ? displayColumnX.at(-1)! + cellWidth : cellWidth;
   const svgWidth = matrixX + matrixWidth + 34;
-  const svgHeight = layout.height;
+  const svgLegendColumns = Math.max(1, Math.min(4, Math.floor(svgWidth / 230)));
+  const svgLegendRows = Math.ceil(tipLegendEntries.length / svgLegendColumns);
+  const svgLegendHeight = tipLegendEntries.length ? 34 + svgLegendRows * 19 : 0;
+  const svgHeight = layout.height + svgLegendHeight;
   const runs = regionRuns(selectedColumns, regions);
   const leaves = layout.nodes.filter((node) => !node.children.length);
   const maximumMultiplicity = Math.max(1, ...leaves.map((leaf) => {
@@ -242,14 +297,14 @@ export function LineageTreeViewer({
 
   return <div ref={containerRef} className={`coordinated-tree-viewer${fullscreen ? " is-fullscreen" : ""}`}>
     <header className="coordinated-tree-header">
-      <div><span className="section-kicker">{variantLabel}</span><h4>Tree, abundance and aligned leaf sequences</h4><p>{layout.leaves.toLocaleString()} tips · {layout.mode} · {selectedColumns.length.toLocaleString()} of {alignmentColumns.toLocaleString()} {mode === "nt" ? "nucleotide" : "amino-acid"} columns shown</p></div>
+      <div><span className="section-kicker">{variantLabel}</span><h4>Tree, abundance and aligned leaf sequences</h4><p>{layout.leaves.toLocaleString()} tips · {layout.mode} · {selectedColumns.length.toLocaleString()} of {alignmentColumns.toLocaleString()} {mode === "nt" ? "nucleotide" : `amino-acid · frame starts at nucleotide column ${frameOffset + 1}`} columns shown</p></div>
       <div className="tree-header-actions"><button type="button" onClick={() => void toggleFullscreen()}>{fullscreen ? "Exit full screen" : "Full screen"}</button><button type="button" onClick={() => saveSvg(svgRef.current, `${name}.svg`)}>SVG with alignment ↓</button><button type="button" onClick={() => downloadText(`${serializeNewick(displayTree)};\n`, `${name}.nwk`, "text/plain;charset=utf-8")}>Displayed Newick</button></div>
     </header>
     <div className="coordinated-tree-controls">
       <div className="mode-toggle"><button className={mode === "nt" ? "active" : ""} type="button" onClick={() => onModeChange("nt")}>Nucleotide</button><button className={mode === "aa" ? "active" : ""} type="button" onClick={() => onModeChange("aa")}>Amino acid</button></div>
       <div className="mode-toggle"><button className={layoutMode === "phylogram" ? "active" : ""} type="button" onClick={() => setLayoutMode("phylogram")}>Branch lengths</button><button className={layoutMode === "cladogram" ? "active" : ""} type="button" onClick={() => setLayoutMode("cladogram")}>Topology</button></div>
       <label className="check-line"><input type="checkbox" checked={showMutations} disabled={!parsimony} onChange={(event) => setShowMutations(event.target.checked)} /><span>{mode === "nt" ? "Nucleotide branch mutations" : "AA replacements only"}</span></label>
-      <label className="tip-color-control"><span>Tip circles</span><select value={tipColorMode} onChange={(event)=>setTipColorMode(event.target.value as typeof tipColorMode)}><option value="sample">Color by sample</option><option value="lineage">Color by original lineage</option><option value="uniform">Uniform</option></select></label>
+      <label className="tip-color-control"><span>Tip circles</span><select value={tipColorMode} onChange={(event)=>setTipColorMode(event.target.value as TipColorMode)}><option value="sample">Color by sample</option><option value="lineage">Color by original lineage</option><option value="isotype">Color by isotype</option><option value="constant">Color by constant gene</option><option value="subject">Color by donor / subject</option><option value="cohort">Color by cohort</option><option value="timepoint">Color by timepoint</option><option value="compartment">Color by compartment</option><option value="v_gene">Color by V gene</option><option value="j_gene">Color by J gene</option><option value="productive">Color by productivity</option><option value="double_d">Color by double-D status</option><option value="uniform">Uniform</option></select></label>
       {mode === "aa" && <div className="mode-toggle"><button className={numbering === "alignment" ? "active" : ""} type="button" onClick={() => setNumbering("alignment")}>Alignment positions</button><button className={numbering === "kabat" ? "active" : ""} type="button" disabled={isTcr} title={isTcr ? "Kabat numbering is defined for IGH, IGK and IGL, not TCR chains." : "Number IG variable domains with Kabat positions"} onClick={() => setNumbering("kabat")}>Kabat</button></div>}
     </div>
     <div className="coordinated-tree-options">
@@ -268,8 +323,7 @@ export function LineageTreeViewer({
     {mode === "aa" && numbering === "kabat" && kabat?.warnings.map((warning) => <div key={warning} className="viewer-numbering-status warning">{warning}</div>)}
     <div className="coordinated-tree-legend">
       <span><i className="bubble-key" />tip bubble area is proportional to multiplicity (maximum {maximumMultiplicity.toLocaleString()}; radius capped at 14 px)</span>
-      {tipColorMode==="sample"&&visibleSamples.map((sample)=><span key={`sample-${sample}`}><i style={{background:sampleColor(sample,sampleColors)}}/>{sample}</span>)}
-      {tipColorMode==="lineage"&&visibleLineages.map((lineageId)=><span key={`lineage-${lineageId}`}><i style={{background:categoricalLineageColor(lineageId)}}/>original lineage {lineageId}</span>)}
+      {tipLegendEntries.map((entry)=><span key={`tip-${tipColorMode}-${entry.label}`}><i style={{background:entry.color}}/>{entry.label}</span>)}
       {parsimony && <span><i className="mutation-key" />{mode === "nt" ? "germline-constrained nucleotide mutations" : "nonsynonymous amino-acid replacements"} · {parsimony.score.toLocaleString()} nucleotide parsimony steps · {inferredN.toLocaleString()} germline N sites inferred</span>}
       {variant === "stable" && <span>{collapsedEdges.toLocaleString()} internal edges ≤ {collapseThreshold.toExponential(0)} shown as polytomies</span>}
       {colorMode === "motif" && motifs.map((motif, index) => <span key={`${motif}-${index}`}><i style={{ background: MOTIF_COLORS[index % MOTIF_COLORS.length] }} />{index + 1}. {motif}</span>)}
@@ -293,7 +347,7 @@ export function LineageTreeViewer({
         const show = displayIndex === 0 || displayIndex === selectedColumns.length - 1 || displayIndex % Math.max(1, Math.ceil(45 / cellWidth)) === 0 || selectedColumns[displayIndex - 1] + 1 !== column;
         return show ? <text key={`tick-${column}`} transform={`translate(${matrixX + displayColumnX[displayIndex] + cellWidth / 2},67) rotate(-55)`} textAnchor="end" fontFamily="ui-monospace,monospace" fontSize="7" fill="#65736e">{label}</text> : null;
       })}
-      <line x1={treeWidth} x2={treeWidth} y1="23" y2={svgHeight - 10} stroke="#c9d0ca" />
+      <line x1={treeWidth} x2={treeWidth} y1="23" y2={layout.height - 10} stroke="#c9d0ca" />
       {layout.edges.map((edge, index) => {
         const childSignature = cladeSignature(edge.child);
         const mutations = (mode === "nt" ? parsimony?.mutationsByClade.get(childSignature) : aminoMutationsByClade.get(childSignature))?.filter((mutation) => selectedColumnSet.has(mutation.column)) ?? [];
@@ -318,10 +372,11 @@ export function LineageTreeViewer({
         const row = ordinal === null ? undefined : rowByOrdinal.get(ordinal);
         const sample = row?.values.sample_id || row?.record.sampleId || "";
         const originalLineage = ordinal === null ? 0 : lineageByOrdinal.get(ordinal) ?? 0;
-        const tipFill = node.name === GERMLINE_OUTGROUP ? "#d49a19" : tipColorMode === "sample" ? sampleColor(sample,sampleColors) : tipColorMode === "lineage" ? categoricalLineageColor(originalLineage) : "#08796f";
+        const category = tipCategory(row,tipColorMode,originalLineage);
+        const tipFill = node.name === GERMLINE_OUTGROUP ? "#d49a19" : tipColorMode === "sample" ? sampleColor(category,sampleColors) : tipColorMode === "lineage" ? categoricalLineageColor(originalLineage) : tipColorMode === "uniform" ? "#08796f" : categoricalValueColor(category);
         return <g key={`node-${index}`}>
           {leaf && <><line x1={node.x + radius + 2} x2={treeWidth + 6} y1={node.y} y2={node.y} stroke="#b3bdb8" strokeWidth="0.65" strokeDasharray="2 3" /><text x={treeWidth + 10} y={node.y + 3.4} fontFamily="ui-monospace,monospace" fontSize="9" fontWeight={node.name === GERMLINE_OUTGROUP ? "700" : "500"} fill="#263630">{shortName(node.name)}<title>{node.name} · multiplicity {multiplicity}</title></text></>}
-          <circle cx={node.x} cy={node.y} r={radius} fill={leaf ? tipFill : "#fbfaf5"} fillOpacity={leaf ? 0.9 : 1} stroke={leaf ? "#244d45" : "#3f5650"} strokeWidth={leaf ? 0.8 : 0.75}><title>{leaf ? `${node.name} · multiplicity ${multiplicity}${sample?` · sample ${sample}`:""}${originalLineage?` · original lineage ${originalLineage}`:""}${bubble.capped ? " · display radius capped" : ""}` : `Internal node · ${cladeSignature(node).split("\u0000").length} descendants`}</title></circle>
+          <circle cx={node.x} cy={node.y} r={radius} fill={leaf ? tipFill : "#fbfaf5"} fillOpacity={leaf ? 0.9 : 1} stroke={leaf ? "#244d45" : "#3f5650"} strokeWidth={leaf ? 0.8 : 0.75}><title>{leaf ? `${node.name} · multiplicity ${multiplicity} · ${TIP_COLOR_LABELS[tipColorMode]}: ${category}${sample?` · sample ${sample}`:""}${originalLineage?` · original lineage ${originalLineage}`:""}${bubble.capped ? " · display radius capped" : ""}` : `Internal node · ${cladeSignature(node).split("\u0000").length} descendants`}</title></circle>
           {leaf && selectedColumns.map((column, displayIndex) => {
             const value = recordSequence[column] ?? "-";
             const motif = motifsForRecord?.[column] ?? 0;
@@ -331,6 +386,11 @@ export function LineageTreeViewer({
           })}
         </g>;
       })}
+      {tipLegendEntries.length>0&&<g aria-label={`${TIP_COLOR_LABELS[tipColorMode]} tip-color legend`}>
+        <line x1="12" x2={svgWidth-12} y1={layout.height+4} y2={layout.height+4} stroke="#c9d0ca"/>
+        <text x="14" y={layout.height+20} fontFamily="Inter,Arial,sans-serif" fontSize="9" fontWeight="700" fill="#31413c">Tip color · {TIP_COLOR_LABELS[tipColorMode]}</text>
+        {tipLegendEntries.map((entry,index)=>{const column=index%svgLegendColumns,row=Math.floor(index/svgLegendColumns),cell=(svgWidth-28)/svgLegendColumns,x=18+column*cell,y=layout.height+35+row*19;return <g key={`svg-legend-${entry.label}`}><circle cx={x} cy={y-3} r="4" fill={entry.color} stroke="#244d45" strokeWidth=".6"/><text x={x+9} y={y} fontFamily="Inter,Arial,sans-serif" fontSize="8" fill="#34453f">{shortName(entry.label)}<title>{entry.label}</title></text></g>;})}
+      </g>}
     </svg></div>
     <p className="scientific-note"><span>i</span>{variant === "raw" ? "Mutation mapping is disabled for the unrooted raw tree. Choose a germline-rooted view to reconstruct the UCA and branch changes." : mode === "nt" ? "Equal-cost nucleotide parsimony is reconstructed on demand. Known germline bases constrain the UCA; N bases are unknown A/C/G/T states inferred from descendants, and gaps are explicit indel states." : "Amino-acid branch labels are translated from the reconstructed parent and child codons. Synonymous nucleotide changes and unresolved X codons are omitted; multiple nucleotide changes in one codon are shown as one replacement."} {isTcr ? "Kabat is not defined for TCR chains, so TCR amino-acid views use alignment positions." : "Kabat numbering is computed in-browser from a multi-member consensus of IG variable-domain assignments."}</p>
   </div>;

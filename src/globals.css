@@ -2392,6 +2392,34 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .pipeline-diagnostic-switches { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .pipeline-card > .scientific-note { margin-bottom: 0; }
 
+.constant-collapse-policy { margin: -8px 24px 20px; padding: 12px 14px; border: 1px solid #c2cec9; border-radius: 6px; background: #f7f5ee; }
+.constant-collapse-policy > span { display: grid; gap: 3px; }
+.constant-collapse-policy strong { font-size: 10px; }
+.constant-collapse-policy small { color: var(--muted); font-size: 8px; font-weight: 500; line-height: 1.45; }
+
+.reference-exclusion-editor > div { display: grid; gap: 11px; }
+.reference-exclusion-editor p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.reference-exclusion-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 12px; }
+.reference-exclusion-toolbar > label { display: grid; flex: 1; max-width: 420px; gap: 4px; }
+.reference-exclusion-toolbar > label > span { color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.reference-exclusion-toolbar input { width: 100%; min-height: 36px; border: 1px solid var(--line-dark); border-radius: 4px; background: #fffdf8; padding: 0 9px; }
+.reference-exclusion-summary { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 9px; }
+.reference-exclusion-summary strong { color: var(--ink); }
+.reference-exclusion-list { display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); max-height: 280px; overflow: auto; border: 1px solid var(--line); border-radius: 5px; background: #fffdf8; }
+.reference-exclusion-list > label { display: grid; grid-template-columns: 18px minmax(0,1fr) auto; align-items: center; gap: 7px; min-height: 34px; padding: 6px 8px; border-bottom: 1px solid #e5e4dc; cursor: pointer; }
+.reference-exclusion-list input { accent-color: #a65d45; }
+.reference-exclusion-list code { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.reference-exclusion-list span { color: var(--muted); font-size: 7px; text-transform: uppercase; }
+.pipeline-stage-grid .reference-exclusion-editor { grid-column: 1 / -1; margin: 12px 0 0; background: rgba(255,255,255,.55); }
+
+.missing-allele-selection { display: grid; grid-template-columns: minmax(280px,1fr) auto; gap: 8px 18px; align-items: center; margin: 16px 0; padding: 16px; border: 1px solid #d7bc78; border-radius: 7px; background: #fff8e6; }
+.missing-allele-selection > div:first-child { display: grid; gap: 3px; }
+.missing-allele-selection strong { font-size: 13px; }
+.missing-allele-selection p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.missing-allele-selection > small { grid-column: 1 / -1; color: #6f6243; font-size: 8px; line-height: 1.5; }
+.missing-allele-results tbody tr.selected { background: #fff4cf; }
+.missing-allele-results tbody input { accent-color: #b97810; }
+
 .study-filter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; padding: 12px; border: 1px solid #b7cac3; border-radius: 6px; background: #eaf2ef; }
 .study-filter-grid .filter-field { margin: 0; }
 .study-filter-grid .filter-field:first-child { grid-column: 1 / -1; }
@@ -2467,6 +2495,10 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
   .project-directory-panel { align-items: stretch; flex-direction: column; }
   .project-directory-panel > button { width: 100%; }
   .directory-donor-modal .output-modal-actions { grid-template-columns: 1fr; }
+  .reference-exclusion-toolbar { align-items: stretch; flex-direction: column; }
+  .reference-exclusion-toolbar > label { max-width: none; }
+  .missing-allele-selection { grid-template-columns: 1fr; }
+  .missing-allele-selection > small { grid-column: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

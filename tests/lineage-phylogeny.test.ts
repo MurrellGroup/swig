@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   aminoAcidBranchMutations,
+  inferAlignedReadingFrame,
   mapParsimonyMutations,
   motifCellMap,
   parseColumnSelection,
@@ -39,6 +40,16 @@ test("known germline bases constrain the UCA and gaps remain parsimony states", 
 
 test("codon translation preserves codon columns", () => {
   assert.equal(translateAlignedNucleotides("ATG---GCNTA-"), "M-XX");
+});
+
+test("Alivibe frame offset preserves a complete gap codon without accepting split codons", () => {
+  const alignment = ["A---ATGGCC", "A---ATGGCT", "A---ATGGCA"];
+  const inferred = inferAlignedReadingFrame(alignment);
+  assert.equal(inferred.offset, 1);
+  assert.equal(inferred.completeGapCodons, 3);
+  assert.equal(inferred.mixedGapCodons, 0);
+  assert.equal(translateAlignedNucleotides(alignment[0], inferred.offset), "-MA");
+  assert.equal(translateAlignedNucleotides("A--AATGGCC", 0)[0], "X");
 });
 
 test("amino-acid branch mapping omits synonymous nucleotide changes", () => {

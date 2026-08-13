@@ -47,7 +47,7 @@ type WorkerResult = Record<string, unknown>;
 
 export class PostAnalysisRuntime {
   private readonly worker = new Worker(new URL("./post-analysis-worker.ts", import.meta.url), { type: "module" });
-  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; onProgress?: (progress: { processed: number; total: number; phase: string }) => void }>();
   private nextId = 1;
   private indexed = false;
   private indexing: Promise<void> | null = null;
@@ -55,9 +55,13 @@ export class PostAnalysisRuntime {
   private sketching: Promise<void> | null = null;
 
   constructor(private readonly store: AirrResultStore) {
-    this.worker.onmessage = (event: MessageEvent<{ id: number; result?: unknown; error?: string }>) => {
+    this.worker.onmessage = (event: MessageEvent<{ id: number; result?: unknown; error?: string; progress?: { processed: number; total: number; phase: string } }>) => {
       const pending = this.pending.get(event.data.id);
       if (!pending) return;
+      if (event.data.progress) {
+        pending.onProgress?.(event.data.progress);
+        return;
+      }
       this.pending.delete(event.data.id);
       if (event.data.error) pending.reject(new Error(event.data.error));
       else pending.resolve(event.data.result);
@@ -69,10 +73,10 @@ export class PostAnalysisRuntime {
     };
   }
 
-  private request<T>(message: Record<string, unknown>): Promise<T> {
+  private request<T>(message: Record<string, unknown>, onProgress?: (progress: { processed: number; total: number; phase: string }) => void): Promise<T> {
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, onProgress });
       this.worker.postMessage({ id, ...message });
     });
   }
@@ -84,7 +88,7 @@ export class PostAnalysisRuntime {
       const doubleDMask = await this.store.doubleDMask();
       await this.request({ type: "init", total: this.store.count, doubleDMask });
       const fields = [
-        "sequence_id", "sequence", "sequence_alignment", "locus", "v_call", "j_call",
+        "sequence_id", "sequence", "sequence_alignment", "locus", "v_call", "j_call", "c_call",
         "cdr3", "cdr3_aa", "productive", "duplicate_count", "swig_dataset_id", "sample_id",
         "subject_id", "swig_cohort", "swig_timepoint", "swig_compartment",
       ];
@@ -97,12 +101,12 @@ export class PostAnalysisRuntime {
     return this.indexing;
   }
 
-  async deduplicate(key: DedupKey, unresolvedPolicy: "discard" | "retain" = "discard", scope: DatasetScope = "global"): Promise<DedupDashboard> {
+  async deduplicate(key: DedupKey, unresolvedPolicy: "discard" | "retain" = "discard", scope: DatasetScope = "global", respectConstantCall = true): Promise<DedupDashboard> {
     await this.ensureIndexed();
-    return this.request<DedupDashboard>({ type: "dedup", key, unresolvedPolicy, scope });
+    return this.request<DedupDashboard>({ type: "dedup", key, unresolvedPolicy, scope, respectConstantCall });
   }
 
-  async denoise(options: DenoiseOptions, onProgress?: (processed: number, total: number) => void, signal?: AbortSignal): Promise<DedupDashboard> {
+  async denoise(options: DenoiseOptions, onProgress?: (processed: number, total: number, phase?: "ingest" | "variants" | "finalize") => void, signal?: AbortSignal): Promise<DedupDashboard> {
     await this.ensureIndexed(onProgress, signal);
     await this.request({ type: "denoiseInit", options });
     await this.store.scanAirrRows(["sequence_alignment", "sequence", "v_sequence_start", "j_sequence_end"], async (rows) => {
@@ -111,8 +115,11 @@ export class PostAnalysisRuntime {
         type: "denoiseIngest",
         rows: rows.map((row) => ({ ordinal: row.ordinal, sequence: denoiseVdjSequence(row) })),
       });
-    }, { batchSize: 2_000, onProgress, signal });
-    return this.request<DedupDashboard>({ type: "denoiseFinish" });
+    }, { batchSize: 2_000, onProgress: onProgress ? (processed, total) => onProgress(processed, total, "ingest") : undefined, signal });
+    return this.request<DedupDashboard>({ type: "denoiseFinish" }, (progress) => {
+      const phase = progress.phase === "finalize" ? "finalize" : "variants";
+      onProgress?.(progress.processed, progress.total, phase);
+    });
   }
 
   async applyDedupFilter(): Promise<{ mask: Uint8Array; retained: number }> {
@@ -232,6 +239,7 @@ function toWorkerRow(row: AirrScanRow): WorkerResult {
     locus: row.values.locus,
     v_call: row.values.v_call,
     j_call: row.values.j_call,
+    c_call: row.values.c_call,
     cdr3: row.values.cdr3,
     cdr3_aa: row.values.cdr3_aa,
     productive: row.values.productive,

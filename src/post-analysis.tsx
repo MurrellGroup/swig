@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { runCodonAwareKalign, runFastTree, runKalign, type FastTreeRun } from "./biowasm-runtime";
+import { readAlivibeNucleotideFasta } from "./alivibe-roundtrip";
 import { inspectAlignment, validateCorrectedAlignment } from "./alignment-provenance";
 import { chimeraVisiblePositions, classifyChimeraQuerySite } from "./chimera-view-model";
 import { CommitNumberInput } from "./commit-number-input";
@@ -34,6 +35,7 @@ import {
   type LineageGermlineSketchIndex,
 } from "./lineage-neighbours";
 import { LineageTreeViewer } from "./lineage-tree-viewer";
+import { inferAlignedReadingFrame, translateAlignedNucleotides, type AlignmentFrameOffset } from "./lineage-phylogeny";
 import { withAnalysisWebLock, type CallingProfile } from "./swiftig-runtime";
 import {
   canonicalizeTree,
@@ -69,6 +71,8 @@ import type { CompiledReferences, ScopeKey } from "./reference-pack";
 import type { AirrDetailRow, AirrIndexRecord, AirrResultStore, FacetValue } from "./result-store";
 import { ColoredSequence, sequenceColor } from "./sequence-colors";
 import { MissingAlleleResultsPanel, ShmResultsPanel } from "./post-analysis-extensions";
+import { ReferenceAlleleExclusionEditor } from "./reference-allele-exclusion";
+import { filterReferenceFasta } from "./reference-fasta";
 import { DEFAULT_REPERTOIRE_SELECTION, selectRepertoire, validateRepertoireSelection, type RepertoireSelectionOptions, type RepertoireSelectionResult } from "./repertoire-selection";
 import { ShmAccumulator, type ShmDashboard, type ShmMetricKey } from "./shm-analysis";
 import { packSessionVector, unpackSessionVector, type PostAnalysisSessionSnapshot } from "./session-state";
@@ -126,6 +130,7 @@ interface TreeSnapshot extends FastTreeRun {
   collapsedEdges: number;
   collapseThreshold: number;
   source: string;
+  frameOffset: AlignmentFrameOffset;
 }
 
 type TreeViewMode = "stable" | "rooted" | "raw";
@@ -136,6 +141,7 @@ interface EditedAlignmentState {
   lineageIds: number[];
   fasta: string;
   source: string;
+  frameOffset?: AlignmentFrameOffset;
   savedAt: string;
 }
 
@@ -159,6 +165,10 @@ interface QueryLineageHit {
   bestOrdinal: number;
   matchedSequences: number;
   matchedQueries: number;
+}
+
+function validAlignmentFrameOffset(value: unknown): AlignmentFrameOffset | undefined {
+  return value === 0 || value === 1 || value === 2 ? value : undefined;
 }
 
 type LineageSortKey = "id" | "studyGroup" | "abundance" | "uniqueMembers" | "doubleDPositiveMembers" | "sampleCount" | "locus" | "vCalls" | "jCalls" | "cdr3Length" | "shmMean" | "shmMaximum" | "shmP95";
@@ -279,26 +289,11 @@ function BarChart({ title, subtitle, data, color, name, controls }: {
   </article>;
 }
 
-function translateAligned(sequence: string): string {
-  const codons: Record<string, string> = {
-    TTT: "F", TTC: "F", TTA: "L", TTG: "L", TCT: "S", TCC: "S", TCA: "S", TCG: "S", TAT: "Y", TAC: "Y", TAA: "*", TAG: "*", TGT: "C", TGC: "C", TGA: "*", TGG: "W",
-    CTT: "L", CTC: "L", CTA: "L", CTG: "L", CCT: "P", CCC: "P", CCA: "P", CCG: "P", CAT: "H", CAC: "H", CAA: "Q", CAG: "Q", CGT: "R", CGC: "R", CGA: "R", CGG: "R",
-    ATT: "I", ATC: "I", ATA: "I", ATG: "M", ACT: "T", ACC: "T", ACA: "T", ACG: "T", AAT: "N", AAC: "N", AAA: "K", AAG: "K", AGT: "S", AGC: "S", AGA: "R", AGG: "R",
-    GTT: "V", GTC: "V", GTA: "V", GTG: "V", GCT: "A", GCC: "A", GCA: "A", GCG: "A", GAT: "D", GAC: "D", GAA: "E", GAG: "E", GGT: "G", GGC: "G", GGA: "G", GGG: "G",
-  };
-  let result = "";
-  for (let index = 0; index < sequence.length; index += 3) {
-    const codon = sequence.slice(index, index + 3);
-    result += codon === "---" ? "-" : codon.includes("-") || codon.includes("N") || codon.length < 3 ? "X" : codons[codon] ?? "X";
-  }
-  return result;
-}
-
-function AlignmentPreview({ fasta, mode }: { fasta: string; mode: "nt" | "aa" }) {
+function AlignmentPreview({ fasta, mode, frameOffset }: { fasta: string; mode: "nt" | "aa"; frameOffset: AlignmentFrameOffset }) {
   const records = parseFasta(fasta, true);
   return <div className="lineage-alignment-preview">
     <div className="alignment-ruler"><span>Name</span><span>{mode === "nt" ? "Nucleotide alignment" : "Codon translation"} · showing {Math.min(80, records.length)} of {records.length}</span></div>
-    {records.slice(0, 80).map((record) => <div className={record.name === GERMLINE_OUTGROUP ? "germline-row" : ""} key={record.name}><strong title={record.name}>{record.name}</strong><ColoredSequence sequence={mode === "nt" ? record.sequence : translateAligned(record.sequence)} alphabet={mode} /></div>)}
+    {records.slice(0, 80).map((record) => <div className={record.name === GERMLINE_OUTGROUP ? "germline-row" : ""} key={record.name}><strong title={record.name}>{record.name}</strong><ColoredSequence sequence={mode === "nt" ? record.sequence : translateAlignedNucleotides(record.sequence, frameOffset)} alphabet={mode} /></div>)}
   </div>;
 }
 
@@ -391,13 +386,14 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   }, [runtime]);
   const [busy, setBusy] = useState("");
   const [postLockState, setPostLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
-  const [progress, setProgress] = useState({ processed: 0, total: store.count });
+  const [progress, setProgress] = useState<{ processed: number; total: number; unit?: string }>({ processed: 0, total: store.count });
   const [error, setError] = useState("");
   const [openModules,setOpenModules]=useState<Set<PostModuleId>>(()=>new Set(["dedup"]));
 
-  const [dedupKey, setDedupKey] = useState<DedupKey>("sequence");
+  const [dedupKey, setDedupKey] = useState<DedupKey>("trimmed");
   const [collapseMode, setCollapseMode] = useState<CollapseMode>("exact");
   const [collapseScope, setCollapseScope] = useState<DatasetScope>(defaultCollapseScope);
+  const [respectConstantCall, setRespectConstantCall] = useState(true);
   const [dedup, setDedup] = useState<DedupDashboard | null>(null);
   const [denoiseErrorRate, setDenoiseErrorRate] = useState(0.00473);
   const [denoiseAlpha, setDenoiseAlpha] = useState(0.01);
@@ -429,6 +425,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [shmSampleOrder, setShmSampleOrder] = useState<string[]>(()=>[...new Set(datasets.map((dataset)=>dataset.sampleId).filter(Boolean))]);
   const [missingAlleleOptions, setMissingAlleleOptions] = useState<MissingAlleleOptions>({ ...DEFAULT_MISSING_ALLELE_OPTIONS });
   const [missingAlleles, setMissingAlleles] = useState<MissingAlleleDashboard | null>(null);
+  const [selectedMissingAlleleIds, setSelectedMissingAlleleIds] = useState<Set<string>>(new Set());
 
   const [identity, setIdentity] = useState(0.85);
   const [lineageScope, setLineageScope] = useState<DatasetScope>(defaultLineageScope);
@@ -463,6 +460,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const workbenchRef = useRef<HTMLElement>(null);
   const [alignment, setAlignment] = useState("");
   const [alignmentMode, setAlignmentMode] = useState<"nt" | "aa">("nt");
+  const [alignmentFrameOffset, setAlignmentFrameOffset] = useState<AlignmentFrameOffset>(0);
   const [alignmentMethod, setAlignmentMethod] = useState<"quick" | "kalign" | "codon">("quick");
   const [lineageGermlineMethod, setLineageGermlineMethod] = useState<LineageGermlineMethod>("closest");
   const [alignmentLimit, setAlignmentLimit] = useState(200);
@@ -497,24 +495,40 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setAlignment("");
     setAlignmentSource("");
     setAlignmentEdited(false);
+    setAlignmentFrameOffset(0);
     setTreeRun(null);
     setTreeError("");
   }
 
-  function installAlignment(next: string, source: string, edited = false, lineageIds: number[] = selectedLineageIds) {
+  function installAlignment(next: string, source: string, edited = false, lineageIds: number[] = selectedLineageIds, frameOffset?: AlignmentFrameOffset) {
     const inspected = inspectAlignment(next);
+    const resolvedFrameOffset = frameOffset ?? inferAlignedReadingFrame(inspected.records.map((record) => record.sequence)).offset;
     alignmentRevisionRef.current += 1;
     setAlignment(inspected.fasta);
     setAlignmentSource(source);
     setAlignmentEdited(edited);
+    setAlignmentFrameOffset(resolvedFrameOffset);
     setTreeRun(null);
     setTreeError("");
     const key=lineageGroupKey(lineageIds);
     if(edited&&key){
-      const entry:EditedAlignmentState={key,lineageIds:[...new Set(lineageIds)].sort((a,b)=>a-b),fasta:inspected.fasta,source,savedAt:new Date().toISOString()};
+      const entry:EditedAlignmentState={key,lineageIds:[...new Set(lineageIds)].sort((a,b)=>a-b),fasta:inspected.fasta,source,frameOffset:resolvedFrameOffset,savedAt:new Date().toISOString()};
       setEditedAlignments((current)=>{const updated=new Map(current);updated.set(key,entry);return updated;});
     }
     return inspected;
+  }
+
+  function changeAlignmentFrameOffset(frameOffset: AlignmentFrameOffset) {
+    setAlignmentFrameOffset(frameOffset);
+    setTreeRun((current) => current ? { ...current, frameOffset } : current);
+    if (!alignmentEdited || !selectedGroupKey) return;
+    setEditedAlignments((current) => {
+      const entry = current.get(selectedGroupKey);
+      if (!entry) return current;
+      const updated = new Map(current);
+      updated.set(selectedGroupKey, { ...entry, frameOffset });
+      return updated;
+    });
   }
 
   function downloadCurrentAlignment() {
@@ -528,6 +542,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [chmmSegment, setChmmSegment] = useState<ChmmSegment>("V");
   const [chmmMethod, setChmmMethod] = useState<"BW" | "DB">(isTcr ? "DB" : "BW");
   const [chmmSource, setChmmSource] = useState<"selected" | "upload">("selected");
+  const [chmmExcludedBySegment, setChmmExcludedBySegment] = useState<Record<ChmmSegment, string[]>>({ V: [], J: [] });
   const [uploadedMsa, setUploadedMsa] = useState("");
   const [uploadedMsaName, setUploadedMsaName] = useState("");
   const [preparedMsa, setPreparedMsa] = useState("");
@@ -542,6 +557,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [retainUnevaluated, setRetainUnevaluated] = useState(true);
   const [chimeraDetail, setChimeraDetail] = useState<ChmmDetail | null>(null);
   const chimeraDetailRef = useRef<HTMLDivElement>(null);
+  const chmmExcludedAlleles = chmmExcludedBySegment[chmmSegment] ?? [];
 
   const [queryText, setQueryText] = useState("");
   const [queryTarget, setQueryTarget] = useState<QueryTarget>("cdr3_nt");
@@ -626,9 +642,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
             setDedupKey(autoPipeline.collapse.key);
             setCollapseScope(autoPipeline.collapse.scope);
             setDenoiseUnresolvedPolicy(autoPipeline.collapse.unresolvedPolicy);
+            setRespectConstantCall(autoPipeline.collapse.respectConstantCall ?? true);
             setBusy(`Pipeline · ${autoPipeline.collapse.mode === "exact" ? "exact collapse" : `${autoPipeline.collapse.mode} denoising`}`);
             collapseResult = autoPipeline.collapse.mode === "exact"
-              ? await runtime.deduplicate(autoPipeline.collapse.key, autoPipeline.collapse.unresolvedPolicy, autoPipeline.collapse.scope)
+              ? await runtime.deduplicate(autoPipeline.collapse.key, autoPipeline.collapse.unresolvedPolicy, autoPipeline.collapse.scope, autoPipeline.collapse.respectConstantCall ?? true)
               : await runtime.denoise({
                 mode: autoPipeline.collapse.mode,
                 errorRate: 0.00473,
@@ -646,7 +663,12 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
                 minimumIndelParentRatio: 2,
                 maxCandidatesPerVariant: 50_000,
                 scope: autoPipeline.collapse.scope,
-              }, (processed, total) => setProgress({ processed, total }));
+                respectConstantCall: autoPipeline.collapse.respectConstantCall ?? true,
+              }, (processed, total, phase) => {
+                const stage = phase === "variants" ? "indexed variant denoising" : phase === "finalize" ? "representative materialization" : "streaming VDJ sequences";
+                setBusy(`Pipeline · ${autoPipeline.collapse.mode} denoising · ${stage}`);
+                setProgress({ processed, total, unit: phase === "variants" ? "unique sequence variants processed" : phase === "finalize" ? "representative-state operations completed" : "AIRR records streamed into the denoising index" });
+              });
             setDedup(collapseResult);
             const applied = await runtime.applyDedupFilter();
             activeMask = applied.mask;
@@ -665,9 +687,13 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
             const segment = autoPipeline.chimera.segment;
             setChmmSegment(segment);
             setBusy(autoPipeline.chimera.msaSource === "upload" ? `Pipeline · validating loaded ${segment} reference MSA` : `Pipeline · building ${segment} reference MSA`);
-            const msa = autoPipeline.chimera.msaSource === "upload" ? autoPipeline.chimera.uploadedMsa : await runKalign(references[segment]);
+            const referenceSource = autoPipeline.chimera.msaSource === "upload" ? autoPipeline.chimera.uploadedMsa : references[segment];
+            const filteredReference = filterReferenceFasta(referenceSource, autoPipeline.chimera.excludedAlleles ?? []);
+            if (filteredReference.retained < 2) throw new Error(`CHMMAIRRa requires at least two retained ${segment} reference records after exclusions; ${filteredReference.retained} remain.`);
+            const msa = autoPipeline.chimera.msaSource === "upload" ? filteredReference.fasta : await runKalign(filteredReference.fasta);
             prepareReferenceMsa(msa);
             setPreparedMsa(msa);
+            setChmmExcludedBySegment((current) => ({ ...current, [segment]: [...(autoPipeline.chimera.excludedAlleles ?? [])] }));
             const tcr = scope === "TCR" || String(scope).startsWith("TR");
             const method = autoPipeline.chimera.model === "auto" ? (tcr ? "DB" : "BW") : autoPipeline.chimera.model;
             const options: ChmmRunOptions = {
@@ -786,6 +812,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
             await store.scanAirrRows(fields, async (rows) => { for (const row of rows) validator.add(row.values, row.ordinal, assignments[row.ordinal] ?? 0); }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed: total + processed, total: total * 2 }) });
             const dashboard = validator.finish();
             setMissingAlleles(dashboard);
+            setSelectedMissingAlleleIds(new Set());
             report.push(`Missing-allele screen produced ${dashboard.candidates.length.toLocaleString()} candidate${dashboard.candidates.length === 1 ? "" : "s"}.`);
           }
 
@@ -806,15 +833,16 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     if(!sessionHandleRef)return;
     const handle:PostAnalysisSessionHandle={snapshot:async()=>{
       const activeMask=await runtime.activeMask();
-      const collapse=dedup?await (async()=>{const state=await runtime.dedupState();return {mode:dedup.mode,options:{dedupKey,collapseMode,collapseScope,denoiseErrorRate,denoiseAlpha,denoiseResolution,denoiseAmbiguity,minimumParentCount,denoiseAmbiguousPolicy,denoiseUnresolvedPolicy,fadNeighborThreshold,fadMethod,expectedZeroErrorFraction,maximumDenoiseDistance,maximumEditDistance,minimumIndelParentRatio,denoiseCandidateCap},counts:packSessionVector(state.counts),representatives:packSessionVector(state.representatives),dashboard:{...dedup}};})():undefined;
+      const collapse=dedup?await (async()=>{const state=await runtime.dedupState();return {mode:dedup.mode,options:{dedupKey,collapseMode,collapseScope,respectConstantCall,denoiseErrorRate,denoiseAlpha,denoiseResolution,denoiseAmbiguity,minimumParentCount,denoiseAmbiguousPolicy,denoiseUnresolvedPolicy,fadNeighborThreshold,fadMethod,expectedZeroErrorFraction,maximumDenoiseDistance,maximumEditDistance,minimumIndelParentRatio,denoiseCandidateCap},counts:packSessionVector(state.counts),representatives:packSessionVector(state.representatives),dashboard:{...dedup}};})():undefined;
       const lineage=lineages?{options:{identity,resolution,ambiguity,productiveOnly,candidateCap,lineageScope},assignments:packSessionVector(await runtime.lineageAssignments()),dashboard:{...lineages}}:undefined;
-      const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
+      const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated,excludedReferenceAlleles:JSON.stringify(chmmExcludedBySegment[chmmRun.options.segment]??[])},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
       return {workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
+        alignmentFrameOffset,
         query:{queryText,queryTarget,queryMetric,queryIdentity,queryLimit,queryLocus,queryV,queryJ,queryConstraintMode,queryResultMode,queryInference,queryHits,queryLineageHits,expanded},
         editedAlignments:[...editedAlignments.values()].map((entry)=>({...entry,lineageIds:[...entry.lineageIds]})),
         lineageMerges:lineageMerges.map((merge)=>({...merge,originalLineageIds:[...merge.originalLineageIds]})),
         tree:treeRun?{rawNewick:treeRun.newick,rootedNewick:treeRun.rootedNewick,stableNewick:treeRun.stableNewick,source:treeRun.source,lineageIds:[...selectedLineageIds],run:{...treeRun}}:undefined,
-        shm:shmDashboard?{metric:shmMetric,dashboard:shmDashboard,sampleOrder:[...shmSampleOrder]}:undefined,missingAlleles:missingAlleles?{options:missingAlleleOptions,dashboard:missingAlleles}:undefined} satisfies PostAnalysisSessionSnapshot;
+        shm:shmDashboard?{metric:shmMetric,dashboard:shmDashboard,sampleOrder:[...shmSampleOrder]}:undefined,missingAlleles:missingAlleles?{options:missingAlleleOptions,dashboard:missingAlleles,selectedCandidateIds:[...selectedMissingAlleleIds]}:undefined} satisfies PostAnalysisSessionSnapshot;
     }};
     sessionHandleRef.current=handle;
     return()=>{if(sessionHandleRef.current===handle)sessionHandleRef.current=null;};
@@ -827,10 +855,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     const reason=treeRun?"phylogeny_changed":editedAlignments.size?"edited_alignment_changed":alignment?"lineage_alignment_changed":missingAlleles?"missing_allele_screen_changed":shmDashboard?"shm_changed":lineages?"lineages_changed":chmm?"chimera_state_changed":dedup?"collapse_state_changed":selectionApplied||selectionPreview?"repertoire_selection_changed":"post_analysis_state_changed";
     sessionChangeCallbackRef.current?.(reason);
   },[
-    alignment,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,
+    alignment,alignmentFrameOffset,chmm,chmmExcludedBySegment,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
     missingAlleleOptions,missingAlleles,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
     queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,
-    selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,workingStages,
+    selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,workingStages,
   ]);
 
   useEffect(()=>{
@@ -845,7 +873,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         const lineageState=lineage?.assignments&&lineage.dashboard?{dashboard:lineage.dashboard as unknown as LineageDashboard,assignments:unpackSessionVector(lineage.assignments) as Int32Array}:undefined;
         const restoredRuntimeState=await runtime.restoreState({activeMask:active,dedup:dedupState,lineages:lineageState});
         setWorkingMask(active);setWorkingStages(initialSession.workingStages as WorkingSetStage[]);
-        if(collapse?.dashboard){setDedup(collapse.dashboard as unknown as DedupDashboard);setCollapseMode(collapse.mode);const o=collapse.options; if(typeof o.dedupKey==="string")setDedupKey(o.dedupKey as DedupKey);if(typeof o.collapseScope==="string")setCollapseScope(o.collapseScope as DatasetScope);if(typeof o.denoiseUnresolvedPolicy==="string")setDenoiseUnresolvedPolicy(o.denoiseUnresolvedPolicy as "discard"|"retain");}
+        if(collapse?.dashboard){setDedup(collapse.dashboard as unknown as DedupDashboard);setCollapseMode(collapse.mode);const o=collapse.options; if(typeof o.dedupKey==="string")setDedupKey(o.dedupKey as DedupKey);if(typeof o.collapseScope==="string")setCollapseScope(o.collapseScope as DatasetScope);if(typeof o.respectConstantCall==="boolean")setRespectConstantCall(o.respectConstantCall);if(typeof o.denoiseUnresolvedPolicy==="string")setDenoiseUnresolvedPolicy(o.denoiseUnresolvedPolicy as "discard"|"retain");}
         if(initialSession.selection){setSelectionDraft({...DEFAULT_REPERTOIRE_SELECTION,...initialSession.selection.options});setSelectionApplied(initialSession.workingStages.some(stage=>stage.id==="selection"));if(initialSession.selection.baseMask)setSelectionBaseMask(unpackSessionVector(initialSession.selection.baseMask) as Uint8Array);if(initialSession.selection.mask){const mask=unpackSessionVector(initialSession.selection.mask) as Uint8Array;let retained=0;for(const value of mask)retained+=value?1:0;setSelectionPreview({mask,inputRecords:initialSession.workingStages.find(stage=>stage.id==="selection")?.input??store.count,retainedRecords:retained,discardedRecords:(initialSession.workingStages.find(stage=>stage.id==="selection")?.input??store.count)-retained,summary:"restored saved selection"});}}
         const rawRestoredLineages=restoredRuntimeState.lineages??(lineage?.dashboard?lineage.dashboard as unknown as LineageDashboard:null);
         const restoredLineages=rawRestoredLineages?{...rawRestoredLineages,summaries:rawRestoredLineages.summaries.map((summary)=>({...summary,studyScope:summary.studyScope??"global",studyGroup:summary.studyGroup||"complete study",sampleIds:summary.sampleIds??[],subjectIds:summary.subjectIds??[],timepoints:summary.timepoints??[],compartments:summary.compartments??[],doubleDPositiveMembers:summary.doubleDPositiveMembers??0,doubleDPositiveAbundance:summary.doubleDPositiveAbundance??0}))}:null;
@@ -853,11 +881,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         const restoredMerges=(initialSession.lineageMerges??[]).map((merge)=>({...merge,originalLineageIds:[...new Set(merge.originalLineageIds)].filter((value)=>value>0).sort((a,b)=>a-b)}));
         setLineageMerges(restoredMerges);
         const restoredEdited=new Map<string,EditedAlignmentState>();
-        for(const entry of initialSession.editedAlignments??[]){const key=lineageGroupKey(entry.lineageIds);if(key)restoredEdited.set(key,{...entry,key,lineageIds:[...new Set(entry.lineageIds)].sort((a,b)=>a-b)});}
-        if(initialSession.alignment&&/(corrected|manual|alivibe|edited)/i.test(initialSession.alignment.source)){const lineageIds=initialSession.alignment.selectedLineageId?[initialSession.alignment.selectedLineageId]:[];const key=lineageGroupKey(lineageIds);if(key&&!restoredEdited.has(key))restoredEdited.set(key,{key,lineageIds,fasta:initialSession.alignment.fasta,source:initialSession.alignment.source,savedAt:new Date().toISOString()});}
+        for(const entry of initialSession.editedAlignments??[]){const key=lineageGroupKey(entry.lineageIds);if(key)restoredEdited.set(key,{...entry,key,lineageIds:[...new Set(entry.lineageIds)].sort((a,b)=>a-b),frameOffset:validAlignmentFrameOffset(entry.frameOffset)});}
+        if(initialSession.alignment&&/(corrected|manual|alivibe|edited)/i.test(initialSession.alignment.source)){const lineageIds=initialSession.alignment.selectedLineageId?[initialSession.alignment.selectedLineageId]:[];const key=lineageGroupKey(lineageIds);if(key&&!restoredEdited.has(key))restoredEdited.set(key,{key,lineageIds,fasta:initialSession.alignment.fasta,source:initialSession.alignment.source,frameOffset:validAlignmentFrameOffset(initialSession.alignment.frameOffset),savedAt:new Date().toISOString()});}
         setEditedAlignments(restoredEdited);
-        const chimera=initialSession.chimera;if(chimera?.dashboard&&chimera.probabilities&&chimera.dfr&&chimera.msa){const dashboard={...chimera.dashboard,probabilities:unpackSessionVector(chimera.probabilities) as Float32Array,dfr:unpackSessionVector(chimera.dfr) as Uint16Array} as unknown as ChmmDashboard;const options=chimera.options as unknown as ChmmRunOptions;const inputMask=chimera.retainedMask?unpackSessionVector(chimera.retainedMask) as Uint8Array:null;setChmm(dashboard);setChmmRun({msa:chimera.msa,options,inputMask});setPreparedMsa(chimera.msa);setChmmFilterThreshold(chimera.filterThreshold);}
-        if(initialSession.shm){setShmMetric(initialSession.shm.metric);setShmDashboard(initialSession.shm.dashboard);if(initialSession.shm.sampleOrder?.length)setShmSampleOrder([...initialSession.shm.sampleOrder]);}if(initialSession.missingAlleles){setMissingAlleleOptions({...DEFAULT_MISSING_ALLELE_OPTIONS,...initialSession.missingAlleles.options,unit:"lineage"});setMissingAlleles(initialSession.missingAlleles.dashboard?.validationPasses===2?initialSession.missingAlleles.dashboard:null);}
+        const chimera=initialSession.chimera;if(chimera?.dashboard&&chimera.probabilities&&chimera.dfr&&chimera.msa){const dashboard={...chimera.dashboard,probabilities:unpackSessionVector(chimera.probabilities) as Float32Array,dfr:unpackSessionVector(chimera.dfr) as Uint16Array} as unknown as ChmmDashboard;const rawOptions=chimera.options;const options=rawOptions as unknown as ChmmRunOptions;const inputMask=chimera.retainedMask?unpackSessionVector(chimera.retainedMask) as Uint8Array:null;setChmm(dashboard);setChmmRun({msa:chimera.msa,options,inputMask});setPreparedMsa(chimera.msa);setChmmFilterThreshold(chimera.filterThreshold);setChmmSegment(options.segment);if(rawOptions.chmmSource==="selected"||rawOptions.chmmSource==="upload")setChmmSource(rawOptions.chmmSource);if(typeof rawOptions.uploadedMsaName==="string")setUploadedMsaName(rawOptions.uploadedMsaName);if(rawOptions.chmmSource==="upload")setUploadedMsa(chimera.msa);if(typeof rawOptions.excludedReferenceAlleles==="string"){try{const parsed=JSON.parse(rawOptions.excludedReferenceAlleles);if(Array.isArray(parsed))setChmmExcludedBySegment((current)=>({...current,[options.segment]:parsed.filter((value):value is string=>typeof value==="string")}));}catch{/* Older sessions have no exclusion list. */}}}
+        if(initialSession.shm){setShmMetric(initialSession.shm.metric);setShmDashboard(initialSession.shm.dashboard);if(initialSession.shm.sampleOrder?.length)setShmSampleOrder([...initialSession.shm.sampleOrder]);}if(initialSession.missingAlleles){setMissingAlleleOptions({...DEFAULT_MISSING_ALLELE_OPTIONS,...initialSession.missingAlleles.options,unit:"lineage"});setMissingAlleles(initialSession.missingAlleles.dashboard?.validationPasses===2?initialSession.missingAlleles.dashboard:null);setSelectedMissingAlleleIds(new Set(initialSession.missingAlleles.selectedCandidateIds??[]));}
         const q=initialSession.query??{};if(typeof q.queryText==="string")setQueryText(q.queryText);if(q.queryResultMode==="lineages"||q.queryResultMode==="sequences")setQueryResultMode(q.queryResultMode);
         if(Array.isArray(q.queryLineageHits))setQueryLineageHits(q.queryLineageHits as QueryLineageHit[]);
         const restoredHits=Array.isArray(q.queryHits)?q.queryHits as QueryHit[]:[];setQueryHits(restoredHits);const restoredExpansion=q.expanded as NonNullable<typeof expanded>|undefined;if(restoredExpansion)setExpanded(restoredExpansion);
@@ -875,8 +903,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
             setSelectedLineage(summary);setSelectedLineageIds(restoredSelectedIds);setLineageRows(rows);setLineageTotal(memberGroups.reduce((sum,group)=>sum+group.total,0));setOriginalLineageByOrdinal(originalByOrdinal);setLineageMultiplicity(new Map(rows.map(row=>{const imported=Number(row.values.duplicate_count);const count=counts?.[row.record.ordinal]||(Number.isFinite(imported)&&imported>0?imported:1);return [row.record.ordinal,Math.max(1,Math.floor(count))] as const;})));
           }
           const key=lineageGroupKey(restoredSelectedIds);const restored=restoredEdited.get(key);
-          if(restored)installAlignment(restored.fasta,restored.source,true,restored.lineageIds);
-          else if(initialSession.tree?.run&&typeof initialSession.tree.run.alignmentFasta==="string")installAlignment(initialSession.tree.run.alignmentFasta,initialSession.tree.source||"Saved tree input",false,restoredSelectedIds);
+          const savedFrameOffset=validAlignmentFrameOffset(initialSession.alignmentFrameOffset);
+          if(restored)installAlignment(restored.fasta,restored.source,true,restored.lineageIds,restored.frameOffset??savedFrameOffset);
+          else if(initialSession.tree?.run&&typeof initialSession.tree.run.alignmentFasta==="string")installAlignment(initialSession.tree.run.alignmentFasta,initialSession.tree.source||"Saved tree input",false,restoredSelectedIds,validAlignmentFrameOffset(initialSession.tree.run.frameOffset)??savedFrameOffset);
         }
         if(initialSession.tree?.run)setTreeRun(initialSession.tree.run as unknown as TreeSnapshot);
       }catch(restoreError){setError(restoreError instanceof Error?restoreError.message:String(restoreError));}finally{setBusy("");}
@@ -913,7 +942,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   async function runDedup() {
     setProgress({ processed: 0, total: store.count });
     const label = collapseMode === "exact" ? "Deduplicating AIRR records" : collapseMode === "fad" ? "Running FAD-compatible denoising" : collapseMode === "indel" ? "Running indel-aware denoising" : "Running conservative error-model denoising";
-    const result = await operation(label, () => collapseMode === "exact" ? runtime.deduplicate(dedupKey, denoiseUnresolvedPolicy, collapseScope) : runtime.denoise({
+    const result = await operation(label, () => collapseMode === "exact" ? runtime.deduplicate(dedupKey, denoiseUnresolvedPolicy, collapseScope, respectConstantCall) : runtime.denoise({
       mode: collapseMode,
       errorRate: denoiseErrorRate,
       alpha: denoiseAlpha,
@@ -930,7 +959,12 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       minimumIndelParentRatio,
       maxCandidatesPerVariant: denoiseCandidateCap,
       scope: collapseScope,
-    }, (processed, total) => setProgress({ processed, total })));
+      respectConstantCall,
+    }, (processed, total, phase) => {
+      const stage = phase === "variants" ? "Denoising indexed sequence variants" : phase === "finalize" ? "Materializing representatives and multiplicities" : "Streaming VDJ sequences into the denoising index";
+      setBusy(stage);
+      setProgress({ processed, total, unit: phase === "variants" ? "unique sequence variants processed" : phase === "finalize" ? "representative-state operations completed" : "AIRR records streamed into the denoising index" });
+    }));
     if (result) {
       setDedup(result);
       setWorkingMask(null);
@@ -1000,6 +1034,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setExpanded(null);
     setShmDashboard(null);
     setMissingAlleles(null);
+    setSelectedMissingAlleleIds(new Set());
   }
 
   async function previewSelection() {
@@ -1076,7 +1111,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       await store.scanAirrRows(fields,async(rows)=>{for(const row of rows)validator.add(row.values,row.ordinal,assignments[row.ordinal]??0);},{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed:total+processed,total:total*2})});
       return validator.finish();
     });
-    if(result)setMissingAlleles(result);
+    if(result){setMissingAlleles(result);setSelectedMissingAlleleIds(new Set());}
   }
 
   async function downloadDeduplicated() {
@@ -1197,7 +1232,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       setLineageTotal(memberGroups.reduce((sum, group) => sum + group.total, 0));
       clearAlignmentArtifacts();
       const restored = editedAlignments.get(lineageGroupKey(lineageIds));
-      if (restored) installAlignment(restored.fasta, restored.source, true, restored.lineageIds);
+      if (restored) installAlignment(restored.fasta, restored.source, true, restored.lineageIds, restored.frameOffset);
       setAlignmentEditorStatus("");
       setAlignmentEditorError("");
       clearNeighbourResults();
@@ -1392,6 +1427,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         collapsedEdges: stable.collapsedEdges,
         collapseThreshold: stable.threshold,
         source: sourceSnapshot,
+        frameOffset: alignmentFrameOffset,
       });
       setTreeViewMode("rooted");
       window.requestAnimationFrame(() => treeResultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -1403,12 +1439,13 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     }
   }
 
-  function importEditedAlignment(text: string, source = "Alivibe-corrected alignment") {
+  function importEditedAlignment(text: string, source = "Alivibe-corrected alignment", transferredFrameOffset?: AlignmentFrameOffset) {
     if (!alignment) throw new Error("Create a lineage alignment before importing a correction.");
     const inspected = validateCorrectedAlignment(alignment, text);
-    installAlignment(inspected.fasta, source, true, selectedLineageIds);
+    const frameOffset = transferredFrameOffset ?? inferAlignedReadingFrame(inspected.records.map((record) => record.sequence), alignmentFrameOffset).offset;
+    installAlignment(inspected.fasta, source, true, selectedLineageIds, frameOffset);
     setAlignmentEditorError("");
-    setAlignmentEditorStatus(`Accepted corrected alignment: ${inspected.rows.toLocaleString()} rows × ${inspected.columns.toLocaleString()} columns${inspected.removedRows.length?` · ${inspected.removedRows.length.toLocaleString()} biological row${inspected.removedRows.length===1?"":"s"} deleted`:""}${inspected.removedNucleotides?` · ${inspected.removedNucleotides.toLocaleString()} nucleotide character${inspected.removedNucleotides===1?"":"s"} deleted`:""} · fingerprint ${inspected.fingerprint}. FastTree will use these exact retained rows and columns.`);
+    setAlignmentEditorStatus(`Accepted corrected nucleotide alignment: ${inspected.rows.toLocaleString()} rows × ${inspected.columns.toLocaleString()} columns${inspected.removedRows.length?` · ${inspected.removedRows.length.toLocaleString()} biological row${inspected.removedRows.length===1?"":"s"} deleted`:""}${inspected.removedNucleotides?` · ${inspected.removedNucleotides.toLocaleString()} nucleotide character${inspected.removedNucleotides===1?"":"s"} deleted`:""} · AA reading frame starts at nucleotide column ${frameOffset + 1} · fingerprint ${inspected.fingerprint}. FastTree will use these exact retained rows and columns.`);
   }
 
   function openAlivibeEditor() {
@@ -1441,6 +1478,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         const controls = editor.document.getElementById("controls");
         if (!controls) return;
         editor.parseFasta(alignment);
+        const frameSelect = editor.document.getElementById("sel-frame") as HTMLSelectElement | null;
+        if (frameSelect) {
+          frameSelect.value = String(alignmentFrameOffset + 1);
+          frameSelect.dispatchEvent(new Event("change"));
+        }
         if (controls && !editor.document.getElementById("swig-return-control")) {
           const group = editor.document.createElement("div");
           group.id = "swig-return-control";
@@ -1453,8 +1495,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
           button.className = "active";
           button.onclick = () => {
             try {
-              const corrected = editor.getClipboardContent?.(false) ?? "";
-              importEditedAlignment(corrected);
+              const returned = readAlivibeNucleotideFasta(editor, alignmentFrameOffset);
+              importEditedAlignment(returned.fasta, "Alivibe-corrected alignment", returned.frameOffset);
               window.focus();
               popup.close();
             } catch (importError) {
@@ -1465,7 +1507,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
           group.append(label, button);
           controls.prepend(group);
         }
-        setAlignmentEditorStatus("Alignment loaded locally in Alivibe. Edit it, then press Return alignment to Swig in Alivibe’s toolbar.");
+        setAlignmentEditorStatus(`Alignment loaded locally in Alivibe with reading frame ${alignmentFrameOffset + 1}. Edit it, then press Return alignment to Swig in Alivibe’s toolbar.`);
         window.clearInterval(timer);
       } catch {
         if (attempts < 20) return;
@@ -1481,7 +1523,14 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       const editor = alivibeWindowRef.current as (Window & { getClipboardContent?: (preferSelection?: boolean) => string }) | null;
       let corrected = "";
       if (editor && !editor.closed) {
-        try { corrected = editor.getClipboardContent?.(false) ?? ""; } catch { /* cross-origin fallback below */ }
+        try {
+          const returned = readAlivibeNucleotideFasta(editor, alignmentFrameOffset);
+          corrected = returned.fasta;
+          if (corrected) {
+            importEditedAlignment(corrected, "Alivibe-corrected alignment", returned.frameOffset);
+            return;
+          }
+        } catch { /* cross-origin fallback below */ }
       }
       if (!corrected && navigator.clipboard?.readText) corrected = await navigator.clipboard.readText();
       if (!corrected) throw new Error("No corrected FASTA was available. Download the alignment from Alivibe, then use Import corrected FASTA.");
@@ -1513,6 +1562,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       setUploadedMsaName(file.name);
       setChmmSource("upload");
       setPreparedMsa("");
+      setChmm(null);
+      setChmmRun(null);
+      setChimeraDetail(null);
       setError("");
     } catch (operationError) {
       setError(operationError instanceof Error ? operationError.message : String(operationError));
@@ -1524,8 +1576,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setError("");
     try {
       await runInActiveLock(async () => {
-        let msa = chmmSource === "upload" ? uploadedMsa : preparedMsa;
-        if (!msa) msa = await runKalign(references[chmmSegment]);
+        const referenceSource = chmmSource === "upload" ? uploadedMsa : references[chmmSegment];
+        const filteredReference = filterReferenceFasta(referenceSource, chmmExcludedAlleles);
+        if (filteredReference.retained < 2) throw new Error(`CHMMAIRRa requires at least two retained ${chmmSegment} reference records after exclusions; ${filteredReference.retained} remain.`);
+        let msa = chmmSource === "upload" ? filteredReference.fasta : preparedMsa;
+        if (!msa) msa = await runKalign(filteredReference.fasta);
         prepareReferenceMsa(msa);
         setPreparedMsa(msa);
         setBusy(`Running CHMMAIRRa ${chmmSegment} model with ${Math.min(workers, 16)} workers`);
@@ -1814,7 +1869,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
 
     <section className="post-export-center"><div><span className="section-kicker">Export center</span><h3>Machine-readable analysis outputs</h3><p>The selected table is streamed from browser storage. CSV and JSONL do not require building the complete output in memory.</p></div><label><span>Tabular format</span><select value={exportFormat} onChange={(event)=>setExportFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button type="button" disabled={Boolean(busy)} onClick={()=>void downloadActivePopulation()}>Download current population</button></section>
 
-    {busy && <div className="post-progress" role="status"><div><span>{busy}</span><strong>{progress.total ? `${Math.min(100, progress.processed / progress.total * 100).toFixed(1)}%` : "working"}</strong></div><progress max={Math.max(1, progress.total)} value={progress.processed} /><small>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()} AIRR records indexed or scanned · {postLockState === "held" ? "background-run lock held" : postLockState === "waiting" ? "waiting for another Swig tab" : "Web Locks unavailable"}</small></div>}
+    {busy && <div className="post-progress" role="status"><div><span>{busy}</span><strong>{progress.total ? `${Math.min(100, progress.processed / progress.total * 100).toFixed(1)}%` : "working"}</strong></div><progress max={Math.max(1, progress.total)} value={progress.processed} /><small>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()} {progress.unit ?? "AIRR records indexed or scanned"} · {postLockState === "held" ? "background-run lock held" : postLockState === "waiting" ? "waiting for another Swig tab" : "Web Locks unavailable"}</small></div>}
     {error && <div className="post-error" role="alert"><strong>Post-analysis stopped</strong><span>{error}</span><button type="button" onClick={() => setError("")}>Dismiss</button></div>}
 
     <section className={moduleClass("dedup","post-module dedup-module")}>
@@ -1826,6 +1881,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         <button type="button" role="radio" aria-checked={collapseMode === "indel"} className={collapseMode === "indel" ? "selected" : ""} onClick={() => { setCollapseMode("indel"); setDenoiseAmbiguousPolicy("retain"); setDedup(null); }}><b>D</b><span><strong>Indel-aware error model</strong><small>Complete 1–2 edit index; abundance-directed indel collapse.</small></span></button>
       </div>
       <div className="scope-policy-row"><label><span>Collapse boundary</span><select value={collapseScope} onChange={(event)=>{setCollapseScope(event.target.value as DatasetScope);setDedup(null);}}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><p><b>{DATASET_SCOPE_LABELS[collapseScope]}:</b> exact matches and denoising parents are never compared across this boundary. Files sharing a sample ID are treated as technical libraries of the same specimen.</p></div>
+      <label className="check-line constant-collapse-policy"><input type="checkbox" checked={respectConstantCall} onChange={(event)=>{setRespectConstantCall(event.target.checked);setDedup(null);}} /><span><strong>Keep different constant-gene/isotype calls separate</strong><small>Default. The top C call is normalized to gene level and used only as a partition; constant-region tail sequence and tail length are not part of the VDJ comparison key. Records without a C call form a separate unassigned partition.</small></span></label>
       {collapseMode === "exact" ? <>
         <div className="module-controls">
           <label><span>Identity key</span><select value={dedupKey} onChange={(event) => setDedupKey(event.target.value as DedupKey)}><option value="sequence">Full input sequence</option><option value="trimmed">VDJ-aligned sequence</option><option value="cdr3">Locus + CDR3 nucleotide</option><option value="rearrangement">Locus + V/J calls + CDR3</option></select></label>
@@ -1865,7 +1921,18 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       <div className="chmm-grid">
         <div className="chmm-config">
           <div className="control-grid three"><label><span>Segment</span><select value={chmmSegment} onChange={(event) => { setChmmSegment(event.target.value as ChmmSegment); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }}><option value="V">V (recommended)</option><option value="J">J (optional)</option></select></label><label><span>Model</span><select value={chmmMethod} onChange={(event) => setChmmMethod(event.target.value as "BW" | "DB")}><option value="BW">Baum–Welch · IG default</option><option value="DB">Discretized Bayesian · TCR default</option></select></label><label><span>Posterior threshold</span><CommitNumberInput min="0" max="1" step="0.01" value={chmmThreshold} onCommit={setChmmThreshold} /></label></div>
-          <fieldset className="msa-source"><legend>Reference multiple-sequence alignment</legend><label className={chmmSource === "selected" ? "selected" : ""}><input type="radio" checked={chmmSource === "selected"} onChange={() => setChmmSource("selected")} /><span><strong>Build from this run’s {chmmSegment} references</strong><small>Kalign 3.3.1 WASM; preserves selected IMGT/KI/local-file composition.</small></span></label><label className={chmmSource === "upload" ? "selected" : ""}><input type="radio" checked={chmmSource === "upload"} onChange={() => setChmmSource("upload")} /><span><strong>Use an aligned FASTA MSA from file</strong><small>{uploadedMsaName || "Every record must have equal aligned length and names matching AIRR calls."}</small></span><input className="file-inline" type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptMsa(event)} /></label></fieldset>
+          <fieldset className="msa-source"><legend>Reference multiple-sequence alignment</legend><label className={chmmSource === "selected" ? "selected" : ""}><input type="radio" checked={chmmSource === "selected"} onChange={() => { setChmmSource("selected"); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }} /><span><strong>Build from this run’s {chmmSegment} references</strong><small>Kalign 3.3.1 WASM; preserves selected IMGT/KI/local-file composition.</small></span></label><label className={chmmSource === "upload" ? "selected" : ""}><input type="radio" checked={chmmSource === "upload"} onChange={() => { setChmmSource("upload"); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }} /><span><strong>Use an aligned FASTA MSA from file</strong><small>{uploadedMsaName || "Every record must have equal aligned length and names matching AIRR calls."}</small></span><input className="file-inline" type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptMsa(event)} /></label></fieldset>
+          <ReferenceAlleleExclusionEditor
+            fasta={chmmSource === "upload" ? uploadedMsa : references[chmmSegment]}
+            excluded={chmmExcludedAlleles}
+            onChange={(excluded) => {
+              setChmmExcludedBySegment((current) => ({ ...current, [chmmSegment]: excluded }));
+              setPreparedMsa("");
+              setChmm(null);
+              setChmmRun(null);
+              setChimeraDetail(null);
+            }}
+          />
           <details className="post-advanced"><summary>Model parameters</summary><div className="control-grid three"><label><span>Chimera prior</span><CommitNumberInput min="0.00001" max="0.5" step="0.01" value={chmmPrior} onCommit={setChmmPrior} /></label><label><span>Minimum DFR</span><CommitNumberInput min="0" max="100" step="1" value={chmmMinDfr} onCommit={setChmmMinDfr} /></label><label><span>DB mutation rates</span><CommitTextInput value={mutationRates} onCommit={setMutationRates} /></label><label className="check-line"><input type="checkbox" checked={chmmDetailed} onChange={(event) => setChmmDetailed(event.target.checked)} /><span>Precompute breakpoint labels during the repertoire scan (the full path remains on-demand)</span></label></div></details>
           <div className="scientific-note warning"><span>!</span><p>Reference completeness matters: an absent true V/J allele can produce a false switch signal. Loaded MSAs are never silently supplemented. Low-DFR records are reported as unevaluated rather than forced through the model.</p></div>
           <div className="result-actions"><button className={guidedClass("run-chimera","post-primary amber")} type="button" disabled={Boolean(busy) || (chmmSource === "upload" && !uploadedMsa)} onClick={() => void runChmmAnalysis()}>Run CHMMAIRRa on {workingCount.toLocaleString()}</button>{preparedMsa && <button type="button" onClick={() => downloadText(preparedMsa, `${baseName(inputName)}.${chmmSegment.toLowerCase()}-reference-msa.fasta`)}>Download reference MSA</button>}</div>
@@ -2029,7 +2096,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         </article>
       </div>
       {shmDashboard?<ShmResultsPanel dashboard={shmDashboard} name={baseName(inputName)} color={chartColor} sampleColors={sampleColors} stratum={shmStratum} datasets={datasets} sampleOrder={shmSampleOrder} onSampleOrderChange={setShmSampleOrder}/>:null}
-      {missingAlleles?<MissingAlleleResultsPanel dashboard={missingAlleles} name={baseName(inputName)}/>:null}
+      {missingAlleles?<MissingAlleleResultsPanel dashboard={missingAlleles} name={baseName(inputName)} referenceFasta={references.V} selectedIds={selectedMissingAlleleIds} onSelectedIdsChange={setSelectedMissingAlleleIds}/>:null}
     </section>
 
     <section className={moduleClass("query","post-module query-module")}>
@@ -2092,11 +2159,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         <div><b>{lineageGermline.inferredColumns.toLocaleString()}</b><span>N sites filled in comparison UCA</span></div>
         <div><b>{lineageGermlineMethod==="closest"&&lineageGermline.selectedVjIdentity!==undefined?`${(lineageGermline.selectedVjIdentity*100).toFixed(2)}%`:lineageGermline.conflictingColumns.toLocaleString()}</b><span>{lineageGermlineMethod==="closest"?"equal-weight V/J identity":"conflicting columns retained as N"}</span></div>
       </div>}
-      <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">Ref-anchored quick view · default</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><CommitNumberInput min="2" max="500" value={alignmentLimit} onCommit={setAlignmentLimit} /></label><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runAlignment()}>{alignmentMethod==="quick"?"Prepare quick view":"Align selected lineage"}</button>{savedEditedAlignment&&!alignmentEdited&&<button type="button" onClick={()=>installAlignment(savedEditedAlignment.fasta,savedEditedAlignment.source,true,savedEditedAlignment.lineageIds)}>Restore saved manual edit</button>}{alignment && <><label><span>Alignment export</span><select value={alignmentExportFormat} onChange={(event)=>setAlignmentExportFormat(event.target.value as AlignmentExportFormat)}><option value="fasta">Aligned FASTA</option><option value="clustal">Clustal</option><option value="phylip">Relaxed PHYLIP</option><option value="stockholm">Stockholm</option><option value="nexus">NEXUS</option></select></label><button type="button" onClick={downloadCurrentAlignment}>Download alignment ↓</button></>}</div>
+      <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">Ref-anchored quick view · default</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><CommitNumberInput min="2" max="500" value={alignmentLimit} onCommit={setAlignmentLimit} /></label><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runAlignment()}>{alignmentMethod==="quick"?"Prepare quick view":"Align selected lineage"}</button>{savedEditedAlignment&&!alignmentEdited&&<button type="button" onClick={()=>installAlignment(savedEditedAlignment.fasta,savedEditedAlignment.source,true,savedEditedAlignment.lineageIds,savedEditedAlignment.frameOffset)}>Restore saved manual edit</button>}{alignment && <><label><span>AA reading frame</span><select value={alignmentFrameOffset} onChange={(event)=>changeAlignmentFrameOffset(Number(event.target.value) as AlignmentFrameOffset)}><option value="0">Start at nucleotide column 1</option><option value="1">Start at nucleotide column 2</option><option value="2">Start at nucleotide column 3</option></select></label><label><span>Alignment export</span><select value={alignmentExportFormat} onChange={(event)=>setAlignmentExportFormat(event.target.value as AlignmentExportFormat)}><option value="fasta">Aligned FASTA</option><option value="clustal">Clustal</option><option value="phylip">Relaxed PHYLIP</option><option value="stockholm">Stockholm</option><option value="nexus">NEXUS</option></select></label><button type="button" onClick={downloadCurrentAlignment}>Download alignment ↓</button></>}</div>
       {alignment && <>
-        <div className={`alignment-editor-transfer${alignmentEdited?" edited-saved":""}`}><div><span className="section-kicker">Manual correction</span><h4>Round trip through Alivibe</h4><p>Gap edits, deleted alignment columns, deleted nucleotide characters, and removal of bad biological rows are accepted. Added or renamed rows and nucleotide substitutions are rejected. Keep <code>{GERMLINE_OUTGROUP}</code> so rooting remains reproducible.</p>{alignmentEdited?<strong className="session-preserved-badge">Manual alignment · included in Save session</strong>:<small>Generated alignments are reproducible and omitted from sessions unless a tree needs their exact input. Any manually returned/imported correction is preserved.</small>}</div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={() => void importFromAlivibe()}>Import returned alignment</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label>{savedEditedAlignment&&<button type="button" onClick={()=>{setEditedAlignments((current)=>{const next=new Map(current);next.delete(selectedGroupKey);return next;});if(alignmentEdited)setAlignmentEdited(false);}}>Discard saved manual edit</button>}</div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>For the cross-origin fallback, use Alivibe’s alignment download. Sequence data remain in the browser.</small></div>
-        <div className="alignment-view-controls"><div className="mode-toggle"><button className={alignmentMode === "nt" ? "active" : ""} type="button" onClick={() => setAlignmentMode("nt")}>Nucleotide</button><button className={alignmentMode === "aa" ? "active" : ""} type="button" onClick={() => setAlignmentMode("aa")}>Amino acid</button></div><span>{alignmentInfo?.rows.toLocaleString() ?? parseFasta(alignment, true).length.toLocaleString()} aligned rows · {alignmentInfo?.columns.toLocaleString() ?? "—"} columns · {alignmentSource || "alignment"} · fingerprint {alignmentInfo?.fingerprint ?? "—"}</span></div>
-        <AlignmentPreview fasta={alignment} mode={alignmentMode} />
+        <div className={`alignment-editor-transfer${alignmentEdited?" edited-saved":""}`}><div><span className="section-kicker">Manual correction</span><h4>Round trip through Alivibe</h4><p>Gap edits, deleted alignment columns, deleted nucleotide characters, and removal of bad biological rows are accepted. Added or renamed rows and nucleotide substitutions are rejected. Keep <code>{GERMLINE_OUTGROUP}</code> so rooting remains reproducible. The direct return transfers Alivibe's selected AA frame and always returns nucleotide FASTA.</p>{alignmentEdited?<strong className="session-preserved-badge">Manual alignment + AA frame · included in Save session</strong>:<small>Generated alignments are reproducible and omitted from sessions unless a tree needs their exact input. Any manually returned/imported correction is preserved.</small>}</div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={() => void importFromAlivibe()}>Import returned alignment</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label>{savedEditedAlignment&&<button type="button" onClick={()=>{setEditedAlignments((current)=>{const next=new Map(current);next.delete(selectedGroupKey);return next;});if(alignmentEdited)setAlignmentEdited(false);}}>Discard saved manual edit</button>}</div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>For downloaded/imported corrected FASTA, verify the adjacent AA reading-frame control because FASTA itself does not encode codon phase. Sequence data remain in the browser.</small></div>
+        <div className="alignment-view-controls"><div className="mode-toggle"><button className={alignmentMode === "nt" ? "active" : ""} type="button" onClick={() => setAlignmentMode("nt")}>Nucleotide</button><button className={alignmentMode === "aa" ? "active" : ""} type="button" onClick={() => setAlignmentMode("aa")}>Amino acid</button></div><span>{alignmentInfo?.rows.toLocaleString() ?? parseFasta(alignment, true).length.toLocaleString()} aligned rows · {alignmentInfo?.columns.toLocaleString() ?? "—"} columns · AA frame starts at nucleotide column {alignmentFrameOffset + 1} · {alignmentSource || "alignment"} · fingerprint {alignmentInfo?.fingerprint ?? "—"}</span></div>
+        <AlignmentPreview fasta={alignment} mode={alignmentMode} frameOffset={alignmentFrameOffset} />
         <div ref={treeResultRef} className="tree-operation-region">
           <div className="tree-controls"><div><span className="section-kicker">On-demand tree</span><h4>FastTree 2.1.11 double-precision WASM</h4><p>The exact current nucleotide alignment is rewritten into the WASM filesystem before every run. Rooting is a separate post-inference operation.</p></div><label><span>Model</span><select value={treeModel} onChange={(event) => setTreeModel(event.target.value as "gtr" | "jc")}><option value="gtr">GTR</option><option value="jc">Jukes–Cantor</option></select></label><label className="check-line"><input type="checkbox" checked={treeFast} onChange={(event) => setTreeFast(event.target.checked)} /><span>Fastest heuristic</span></label><button className="post-primary dark" type="button" disabled={Boolean(busy)} onClick={() => void inferTree()}>{busy.startsWith("Running FastTree") ? "Inferring tree…" : "Infer tree"}</button></div>
           {treeError && <div className="inline-method-error tree-error" role="alert"><strong>Tree inference stopped</strong><span>{treeError}</span><button type="button" onClick={() => setTreeError("")}>Dismiss</button></div>}
@@ -2115,6 +2182,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
               collapseThreshold={treeRun.collapseThreshold}
               mode={alignmentMode}
               onModeChange={setAlignmentMode}
+              frameOffset={alignmentFrameOffset}
               isTcr={isTcr}
               name={`${baseName(inputName)}.lineage-${selectedLineage.id}.${treeViewMode === "stable" ? "rooted-floor-collapsed" : treeViewMode === "rooted" ? "rooted-resolved" : "raw-fasttree"}-tree`}
             />

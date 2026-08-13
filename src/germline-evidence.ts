@@ -1,3 +1,5 @@
+import { parseReferenceFasta, serializeReferenceFasta, type ReferenceFastaRecord } from "./reference-fasta.ts";
+
 export interface MissingAlleleOptions {
   /** Retained for version-one session compatibility. Screening is always lineage based. */
   unit: "lineage" | "record";
@@ -393,8 +395,65 @@ export class MissingAlleleValidator {
   }
 }
 
-export function candidateFasta(dashboard: MissingAlleleDashboard): string {
-  return dashboard.candidates.map((candidate) => `>${candidate.id} parent=${candidate.parentAllele} lineages=${candidate.independentUnits} cdr3s=${candidate.distinctCdr3s} subjects=${candidate.distinctSubjects} reference_vetoes=${candidate.referencePresentUnits} fraction=${candidate.alleleFraction.toFixed(4)}\n${candidate.sequence}\n`).join("");
+function selectedCandidates(dashboard: MissingAlleleDashboard, selectedIds?: Iterable<string>): MissingAlleleCandidate[] {
+  if (selectedIds === undefined) return dashboard.candidates;
+  const selected = new Set(selectedIds);
+  return dashboard.candidates.filter((candidate) => selected.has(candidate.id));
+}
+
+export function candidateFasta(dashboard: MissingAlleleDashboard, selectedIds?: Iterable<string>): string {
+  return selectedCandidates(dashboard, selectedIds).map((candidate) => `>${candidate.id} parent=${candidate.parentAllele} lineages=${candidate.independentUnits} cdr3s=${candidate.distinctCdr3s} subjects=${candidate.distinctSubjects} reference_vetoes=${candidate.referencePresentUnits} fraction=${candidate.alleleFraction.toFixed(4)}\n${candidate.sequence}\n`).join("");
+}
+
+export interface AugmentedReferenceFasta {
+  fasta: string;
+  originalRecords: number;
+  addedRecords: number;
+  addedNames: string[];
+  inheritedAnnotationRecords: number;
+}
+
+/**
+ * Append explicitly selected diagnostic candidates to the exact V FASTA used
+ * by the run. Candidate names remain visibly non-standard, and SWIGMETA is
+ * inherited only from the exact parent record because every proposed sequence
+ * has the same coordinate system and length as that parent.
+ */
+export function augmentReferenceFasta(
+  referenceFasta: string,
+  dashboard: MissingAlleleDashboard,
+  selectedIds: Iterable<string>,
+): AugmentedReferenceFasta {
+  const records = parseReferenceFasta(referenceFasta);
+  const parentByName = new Map(records.map((record) => [record.name, record]));
+  const usedNames = new Set(records.map((record) => record.name));
+  const additions: ReferenceFastaRecord[] = [];
+  const addedNames: string[] = [];
+  let inheritedAnnotationRecords = 0;
+  for (const candidate of selectedCandidates(dashboard, selectedIds)) {
+    let name = candidate.id.replace(/[^A-Za-z0-9_.|*+\-]/g, "_") || "swig_missing_allele_candidate";
+    const stem = name;
+    let suffix = 2;
+    while (usedNames.has(name)) name = `${stem}_${suffix++}`;
+    usedNames.add(name);
+    const parent = parentByName.get(candidate.parentAllele);
+    const metadata = parent?.header.match(/(?:^|\s)(SWIGMETA=[\d,\-]+)/i)?.[1] ?? "";
+    if (metadata) inheritedAnnotationRecords += 1;
+    const substitutions = candidate.substitutions.map((item) => `${item.reference}${item.position}${item.alternate}`).join("+");
+    additions.push({
+      name,
+      header: `${name}${metadata ? ` ${metadata}` : ""} SWIG_CANDIDATE=missing_allele_hint PARENT=${candidate.parentAllele} SUBSTITUTIONS=${substitutions}`,
+      sequence: candidate.sequence,
+    });
+    addedNames.push(name);
+  }
+  return {
+    fasta: serializeReferenceFasta([...records, ...additions]),
+    originalRecords: records.length,
+    addedRecords: additions.length,
+    addedNames,
+    inheritedAnnotationRecords,
+  };
 }
 
 export function candidateEvidenceRows(dashboard: MissingAlleleDashboard): Array<Record<string, string | number>> {

@@ -158,9 +158,60 @@ const CODONS: Record<string, string> = {
   GTT: "V", GTC: "V", GTA: "V", GTG: "V", GCT: "A", GCC: "A", GCA: "A", GCG: "A", GAT: "D", GAC: "D", GAA: "E", GAG: "E", GGT: "G", GGC: "G", GGA: "G", GGG: "G",
 };
 
-export function translateAlignedNucleotides(sequence: string): string {
+export type AlignmentFrameOffset = 0 | 1 | 2;
+
+export interface AlignmentFrameEvidence {
+  offset: AlignmentFrameOffset;
+  completeGapCodons: number;
+  mixedGapCodons: number;
+  stopCodons: number;
+  ambiguousCodons: number;
+}
+
+function normalizedFrameOffset(value: number): AlignmentFrameOffset {
+  return value === 1 || value === 2 ? value : 0;
+}
+
+/**
+ * Infer the shared codon phase of a nucleotide MSA without redefining a mixed
+ * base/gap triplet as a gap. Codon-preserving editors emit complete `---`
+ * triplets in the selected phase, so mixed gap codons are the primary signal;
+ * stop codons and unresolved codons are conservative tie-breakers.
+ */
+export function inferAlignedReadingFrame(
+  sequences: Iterable<string>,
+  preferred: AlignmentFrameOffset = 0,
+): AlignmentFrameEvidence {
+  const normalized = [...sequences].map((sequence) => sequence.toUpperCase().replaceAll(".", "-"));
+  const evidence = ([0, 1, 2] as AlignmentFrameOffset[]).map((offset): AlignmentFrameEvidence => {
+    let completeGapCodons = 0;
+    let mixedGapCodons = 0;
+    let stopCodons = 0;
+    let ambiguousCodons = 0;
+    for (const sequence of normalized) {
+      for (let index = offset; index + 2 < sequence.length; index += 3) {
+        const codon = sequence.slice(index, index + 3);
+        if (codon === "---") completeGapCodons += 1;
+        else if (codon.includes("-")) mixedGapCodons += 1;
+        else if (/[^ACGT]/.test(codon)) ambiguousCodons += 1;
+        else if (CODONS[codon] === "*") stopCodons += 1;
+      }
+    }
+    return { offset, completeGapCodons, mixedGapCodons, stopCodons, ambiguousCodons };
+  });
+  return evidence.sort((left, right) =>
+    left.mixedGapCodons - right.mixedGapCodons ||
+    left.stopCodons - right.stopCodons ||
+    right.completeGapCodons - left.completeGapCodons ||
+    left.ambiguousCodons - right.ambiguousCodons ||
+    Number(right.offset === preferred) - Number(left.offset === preferred) ||
+    left.offset - right.offset
+  )[0];
+}
+
+export function translateAlignedNucleotides(sequence: string, frameOffset: number = 0): string {
   let result = "";
-  for (let index = 0; index < sequence.length; index += 3) {
+  for (let index = normalizedFrameOffset(frameOffset); index < sequence.length; index += 3) {
     const codon = sequence.slice(index, index + 3).toUpperCase();
     result += codon === "---" ? "-" : codon.includes("-") || /[^ACGT]/.test(codon) || codon.length < 3 ? "X" : CODONS[codon] ?? "X";
   }
@@ -172,10 +223,10 @@ export function translateAlignedNucleotides(sequence: string): string {
  * Multiple nucleotide events in one codon become one amino-acid event;
  * synonymous events and codons with an unresolved translation are omitted.
  */
-export function aminoAcidBranchMutations(parentSequence: string, childSequence: string, childClade = ""): BranchMutation[] {
+export function aminoAcidBranchMutations(parentSequence: string, childSequence: string, childClade = "", frameOffset: number = 0): BranchMutation[] {
   if (parentSequence.length !== childSequence.length) throw new Error("Amino-acid branch mapping requires equal-length nucleotide states.");
-  const parent = translateAlignedNucleotides(parentSequence);
-  const child = translateAlignedNucleotides(childSequence);
+  const parent = translateAlignedNucleotides(parentSequence, frameOffset);
+  const child = translateAlignedNucleotides(childSequence, frameOffset);
   const mutations: BranchMutation[] = [];
   for (let column = 0; column < Math.min(parent.length, child.length); column += 1) {
     const from = parent[column];
@@ -243,9 +294,9 @@ export function alignmentRegionMap(records: FastaRecord[], rows: AirrDetailRow[]
   });
 }
 
-export function aminoAcidRegionMap(nucleotideRegions: Array<VariableRegion | null>): Array<VariableRegion | null> {
+export function aminoAcidRegionMap(nucleotideRegions: Array<VariableRegion | null>, frameOffset: number = 0): Array<VariableRegion | null> {
   const result: Array<VariableRegion | null> = [];
-  for (let index = 0; index < nucleotideRegions.length; index += 3) {
+  for (let index = normalizedFrameOffset(frameOffset); index < nucleotideRegions.length; index += 3) {
     const votes = new Map<VariableRegion, number>();
     nucleotideRegions.slice(index, index + 3).forEach((region) => {
       if (region) votes.set(region, (votes.get(region) ?? 0) + 1);

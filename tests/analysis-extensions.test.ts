@@ -3,7 +3,8 @@ import test from "node:test";
 
 import "fake-indexeddb/auto";
 import { alignmentText, tableHeader, tableRow, treeNexus } from "../src/export-formats.ts";
-import { MissingAlleleAccumulator } from "../src/germline-evidence.ts";
+import { augmentReferenceFasta, candidateFasta, MissingAlleleAccumulator } from "../src/germline-evidence.ts";
+import { filterReferenceFasta, parseReferenceFasta } from "../src/reference-fasta.ts";
 import { DEFAULT_REPERTOIRE_SELECTION, selectRepertoire } from "../src/repertoire-selection.ts";
 import { AirrResultStore } from "../src/result-store.ts";
 import { decodeSession, encodeSession, packSessionVector, SWIG_SESSION_SCHEMA, unpackSessionVector, type SwigSession } from "../src/session-state.ts";
@@ -44,6 +45,25 @@ function runMissingAllele(rows:GermlineTestRow[],reference:string,options:Constr
 test("two-pass missing-V screen uses germline coordinates and emits independent-lineage evidence",()=>{
   const reference="ACGT".repeat(55);const rows:GermlineTestRow[]=[];for(let index=0;index<24;index+=1)rows.push({row:germlineRow(reference,index,index<9?[50]:[]),ordinal:index,lineageId:index+1});
   const result=runMissingAllele(rows,reference);assert.equal(result.mode,"lineage");assert.equal(result.validationPasses,2);assert.equal(result.independentUnits,24);assert.equal(result.candidates.length,1);assert.equal(result.candidates[0].independentUnits,9);assert.equal(result.candidates[0].substitutions[0].position,50);assert.equal(result.candidates[0].distinctCdr3s,9);assert.notEqual(result.candidates[0].sequence,reference);
+});
+
+test("reference exclusions are exact and preserve aligned FASTA metadata",()=>{
+  const source=">IGHV1*01 SWIGMETA=1,2,3,4\nAC-GT\n>IGHV1*02 note\nACCGT\n";
+  const filtered=filterReferenceFasta(source,["IGHV1*01","absent*01"]);
+  assert.equal(filtered.total,2);assert.equal(filtered.retained,1);assert.equal(filtered.excluded,1);
+  assert.deepEqual(filtered.excludedNames,["IGHV1*01"]);assert.deepEqual(filtered.unmatchedExclusions,["absent*01"]);
+  assert.equal(parseReferenceFasta(filtered.fasta)[0].header,"IGHV1*02 note");
+});
+
+test("selected missing-V candidates export alone and append to an annotated V reference",()=>{
+  const reference="ACGT".repeat(55);const rows:GermlineTestRow[]=[];for(let index=0;index<24;index+=1)rows.push({row:germlineRow(reference,index,index<9?[50]:[]),ordinal:index,lineageId:index+1});
+  const dashboard=runMissingAllele(rows,reference);const candidate=dashboard.candidates[0];
+  assert.ok(candidate);assert.equal(candidateFasta(dashboard,[]),"");assert.match(candidateFasta(dashboard,[candidate.id]),new RegExp(`>${candidate.id}`));
+  const original=`>IGHV1-2*01 SWIGMETA=1,2,3,4\n${reference}\n>IGHV9-9*01\n${reference}\n`;
+  const augmented=augmentReferenceFasta(original,dashboard,[candidate.id]);
+  assert.equal(augmented.originalRecords,2);assert.equal(augmented.addedRecords,1);assert.equal(augmented.inheritedAnnotationRecords,1);
+  const parsed=parseReferenceFasta(augmented.fasta);assert.equal(parsed.length,3);assert.equal(parsed[2].sequence,candidate.sequence);
+  assert.match(parsed[2].header,/SWIGMETA=1,2,3,4/);assert.match(parsed[2].header,/SWIG_CANDIDATE=missing_allele_hint/);assert.match(parsed[2].header,/PARENT=IGHV1-2\*01/);
 });
 
 test("a parent-reference nucleotide anywhere else in a supporting lineage vetoes that lineage",()=>{

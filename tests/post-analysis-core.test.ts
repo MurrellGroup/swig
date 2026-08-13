@@ -59,6 +59,23 @@ test("exact deduplication sums an existing AIRR duplicate_count", () => {
   assert.deepEqual([...result.counts], [10, 0]);
 });
 
+test("collapse partitions on C gene by default without using constant-tail sequence length", () => {
+  const first = record(0, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", "AAAACCCCTAIL");
+  const second = record(1, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", "AAAACCCCTAIL-LONGER");
+  first.cCall = "IGHM*01";
+  second.cCall = "IGHG1*03";
+  first.trimmedFingerprint = sequenceFingerprint("AAAACCCC");
+  second.trimmedFingerprint = sequenceFingerprint("AAAACCCC");
+  const separated = deduplicate([first, second], "trimmed");
+  assert.equal(separated.uniqueRecords, 2);
+  second.cCall = "IGHM*02";
+  const sameConstantGene = deduplicate([first, second], "trimmed");
+  assert.equal(sameConstantGene.uniqueRecords, 1);
+  second.cCall = "IGHG1*03";
+  const ignored = deduplicate([first, second], "trimmed", "discard", "global", false);
+  assert.equal(ignored.uniqueRecords, 1);
+});
+
 test("exact collapse discards unusable keys by default and can retain them unchanged", () => {
   const records = [record(0, "TGTGCCAAA"), record(1, "TGTGCCAAA"), record(2, "")];
   records[2].trimmedFingerprint = sequenceFingerprint("");
@@ -108,6 +125,31 @@ test("FAD-compatible denoising preserves multiplicity and partitions by V/J call
   assert.equal(result.uniqueRecords, 1);
   assert.deepEqual([...result.counts], [101, 0]);
   assert.deepEqual([...result.representatives], [0, 0]);
+});
+
+test("denoising reports variant and finalization progress and respects C-gene partitions", () => {
+  const parent = "ACGT".repeat(15);
+  const child = `${parent.slice(0, 29)}A${parent.slice(30)}`;
+  const records = [record(0, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", parent), record(1, "TGTGCCAAA", "IGHV1-2*01", "IGHJ4*02", child)];
+  records[0].inputCount = 100;
+  records[0].cCall = "IGHM*01";
+  records[1].cCall = "IGHG1*01";
+  const options = {
+    mode: "indel" as const, errorRate: 0.00473, alpha: 0.01, callResolution: "allele" as const,
+    ambiguity: "strict" as const, minimumParentCount: 2, ambiguousPolicy: "retain" as const,
+    fadNeighborThreshold: 1, fadMethod: 2 as const, expectedZeroErrorFraction: 1,
+    maximumHammingDistance: 1, maximumEditDistance: 2, minimumIndelParentRatio: 2,
+    maxCandidatesPerVariant: 10_000,
+  };
+  const separated = new DenoiseAccumulator(records, options);
+  records.forEach((value) => separated.add(value.ordinal, value.ordinal ? child : parent));
+  const phases = new Set<string>();
+  const separatedResult = separated.finish((_processed, _total, phase) => phases.add(phase));
+  assert.equal(separatedResult.uniqueRecords, 2);
+  assert.deepEqual([...phases].sort(), ["finalize", "variants"]);
+  const combined = new DenoiseAccumulator(records, { ...options, respectConstantCall: false });
+  records.forEach((value) => combined.add(value.ordinal, value.ordinal ? child : parent));
+  assert.equal(combined.finish().uniqueRecords, 1);
 });
 
 test("conservative denoising merges plausible one-base errors but retains isolated singletons", () => {

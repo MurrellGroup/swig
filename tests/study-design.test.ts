@@ -93,5 +93,8 @@ test("lineages can span longitudinal samples within a donor but never cross dono
 
 test("longitudinal/compartmental defaults keep collapse within sample and lineages within donor",()=>{
   assert.equal(DEFAULT_PIPELINE_PLAN.collapse.scope,"sample");
+  assert.equal(DEFAULT_PIPELINE_PLAN.collapse.key,"trimmed");
+  assert.equal(DEFAULT_PIPELINE_PLAN.collapse.respectConstantCall,true);
   assert.equal(DEFAULT_PIPELINE_PLAN.lineage.scope,"subject");
+  assert.deepEqual(DEFAULT_PIPELINE_PLAN.chimera.excludedAlleles,[]);
 });
