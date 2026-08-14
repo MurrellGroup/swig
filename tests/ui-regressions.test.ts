@@ -31,23 +31,38 @@ test("FASTQ quality control is an initially collapsed pre-assignment step", () =
   assert.match(app, /FASTA and AIRR records will pass through this step unchanged/);
 });
 
-test("analysis and result tools use contextual single-panel workspaces", () => {
+test("assignment is one progressive action page while independent result tools remain contextual", () => {
   const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const repertoire = fs.readFileSync(new URL("../src/repertoire-charts.tsx", import.meta.url), "utf8");
   const post = fs.readFileSync(new URL("../src/post-analysis.tsx", import.meta.url), "utf8");
   const css = fs.readFileSync(new URL("../src/globals.css", import.meta.url), "utf8");
 
-  assert.match(app, /aria-label="Analysis setup sections"/);
-  assert.match(app, /analysisWorkspace!=="data"/);
+  assert.match(app, /analysis-layout single-action-layout/);
+  assert.doesNotMatch(app, /AnalysisWorkspace|analysisWorkspace|Analysis setup sections/);
+  assert.doesNotMatch(app, /settings-strip/);
+  assert.match(app, /Advanced assignment and compute settings/);
+  assert.match(app, /Customize individual loci, V\/D\/J\/C sources, or allele inclusion/);
   assert.match(app, /aria-label="Sequence result panels"/);
   assert.match(app, /setSequenceWorkspace\("detail"\)/);
-  assert.match(app, /aria-label="Double-D panels"/);
+  assert.match(app, /<span>Double-D evidence<small>/);
+  assert.doesNotMatch(app, /results-tab-double-d|results-panel-double-d/);
+  assert.match(app, /sequence-\$\{key\}-suggestions/);
+  assert.match(app, /Include ambiguous multi-hit calls containing this/);
+  assert.match(app, /addFieldHelp\(root\)/);
 
   assert.match(repertoire, /aria-label="Repertoire panels"/);
   assert.match(repertoire, /panel==="usage"/);
+  assert.doesNotMatch(repertoire, /panel==="controls"|setPanel\("controls"\)/);
+  assert.match(repertoire, /repertoire-global-settings/);
 
   assert.match(post, /type PostWorkspaceId = "overview" \| PostModuleId/);
   assert.match(post, /aria-label="Post-analysis sections"/);
   assert.match(post, /new Set<PostModuleId>\(activeWorkspace === "overview" \? \[\] : \[activeWorkspace\]\)/);
+  assert.match(post, /Advanced \{collapseMode === "fad"/);
+  assert.match(post, /Advanced call matching and performance settings/);
+  assert.match(post, /Advanced missing-allele evidence thresholds/);
+  assert.match(post, /Study metadata filters/);
+  assert.match(post, /Additional D, constant-gene, and isotype filters/);
   assert.match(css, /\.post-context-main > \.post-module\.is-collapsed \{ display: none !important; \}/);
+  assert.match(css, /\.pipeline-stage-grid article:not\(\.enabled\) \.pipeline-fields/);
 });

@@ -46,9 +46,13 @@ export interface ResultFilters {
   locus: string;
   productive: string;
   vCall: string;
+  vCallIncludeAmbiguous: boolean;
   dCall: string;
+  dCallIncludeAmbiguous: boolean;
   jCall: string;
+  jCallIncludeAmbiguous: boolean;
   cCall: string;
+  cCallIncludeAmbiguous: boolean;
   isotype: string;
   minVIdentity: number;
   minDIdentity: number;
@@ -142,10 +146,14 @@ interface PackedIndexRecord {
   w: string;
   l: string;
   v: string;
+  va: string[];
   d: string;
+  da: string[];
   h: string;
   j: string;
+  ja: string[];
   k: string;
+  ka: string[];
   y: string;
   p: string;
   r: string;
@@ -261,6 +269,32 @@ function calls(value: string): string[] {
   return value.split(",").map((call) => call.trim()).filter(Boolean);
 }
 
+function callTokens(value: string): string[] {
+  const tokens = new Set<string>();
+  for (const call of calls(value)) {
+    const normalized = call.toUpperCase();
+    tokens.add(normalized);
+    tokens.add(normalized.replace(/\*.*$/, ""));
+  }
+  return [...tokens].filter(Boolean);
+}
+
+function matchesCall(value: string, query: string, includeAmbiguous: boolean): boolean {
+  const assignments = calls(value);
+  if (!query.trim()) return true;
+  const requestedAssignments=calls(query).map((call)=>call.toUpperCase()).sort();
+  if(requestedAssignments.length>1){
+    const observed=assignments.map((call)=>call.toUpperCase()).sort();
+    return observed.length===requestedAssignments.length&&observed.every((call,index)=>call===requestedAssignments[index]);
+  }
+  if (!includeAmbiguous && assignments.length > 1) return false;
+  const normalized = query.trim().toUpperCase();
+  return assignments.some((assignment) => {
+    const allele = assignment.toUpperCase();
+    return allele === normalized || allele.replace(/\*.*$/, "") === normalized;
+  });
+}
+
 function topCall(value: string): string {
   return calls(value)[0] ?? "";
 }
@@ -337,8 +371,8 @@ function packRecord(record: AirrIndexRecord): PackedIndexRecord {
   return {
     o: record.ordinal, c: record.chunk, n: record.line, i: record.sequenceId,
     e: record.datasetId, m: record.sampleId, b: record.subjectId, g: record.cohort, t: record.timepoint, w: record.compartment,
-    l: record.locus, v: record.vCall, d: record.dCall, h: record.d2Call, j: record.jCall,
-    k: record.cCall, y: record.isotype,
+    l: record.locus, v: record.vCall, va: callTokens(record.vCall), d: record.dCall, da: callTokens(record.dCall), h: record.d2Call, j: record.jCall, ja: callTokens(record.jCall),
+    k: record.cCall, ka: callTokens(record.cCall), y: record.isotype,
     p: record.productive, r: record.cdr3, a: record.cdr3Aa, u: record.junctionAa,
     vi: record.vIdentity, di: record.dIdentity, ji: record.jIdentity, ci: record.cIdentity,
     z: record.cdr3AaLength, f: record.vjInFrame, s: record.stopCodon,
@@ -371,9 +405,13 @@ export const EMPTY_FILTERS: ResultFilters = {
   locus: "",
   productive: "",
   vCall: "",
+  vCallIncludeAmbiguous: false,
   dCall: "",
+  dCallIncludeAmbiguous: false,
   jCall: "",
+  jCallIncludeAmbiguous: false,
   cCall: "",
+  cCallIncludeAmbiguous: false,
   isotype: "",
   minVIdentity: 0,
   minDIdentity: 0,
@@ -444,10 +482,14 @@ export class AirrResultStore {
         records.createIndex("locus", "l");
         records.createIndex("productive", "p");
         records.createIndex("vCall", "v");
+        records.createIndex("vCallToken", "va", { multiEntry: true });
         records.createIndex("dCall", "d");
+        records.createIndex("dCallToken", "da", { multiEntry: true });
         records.createIndex("d2Call", "h");
         records.createIndex("jCall", "j");
+        records.createIndex("jCallToken", "ja", { multiEntry: true });
         records.createIndex("cCall", "k");
+        records.createIndex("cCallToken", "ka", { multiEntry: true });
         records.createIndex("isotype", "y");
       };
       request.onsuccess = () => resolve(request.result);
@@ -843,15 +885,21 @@ export class AirrResultStore {
     const exactCandidates: Array<[keyof ResultFilters, string]> = [
       ["datasetId", "datasetId"], ["sampleId", "sampleId"], ["subjectId", "subjectId"],
       ["cohort", "cohort"], ["timepoint", "timepoint"], ["compartment", "compartment"],
-      ["vCall", "vCall"], ["jCall", "jCall"], ["dCall", "dCall"],
-      ["cCall", "cCall"], ["isotype", "isotype"],
+      ["isotype", "isotype"],
       ["locus", "locus"], ["productive", "productive"],
     ];
     if (filters.hasDoubleD) {
       source = store.index("d2Call");
       range = IDBKeyRange.lowerBound("", true);
     } else {
-      for (const [filterName, indexName] of exactCandidates) {
+      const callCandidate = ([
+        [filters.vCall, "vCallToken"], [filters.dCall, "dCallToken"],
+        [filters.jCall, "jCallToken"], [filters.cCall, "cCallToken"],
+      ] as Array<[string, string]>).find(([value]) => value.trim()&&!value.includes(","));
+      if (callCandidate) {
+        source = store.index(callCandidate[1]);
+        range = IDBKeyRange.only(callCandidate[0].trim().toUpperCase());
+      } else for (const [filterName, indexName] of exactCandidates) {
         const value = filters[filterName];
         if (typeof value === "string" && value) {
           source = store.index(indexName);
@@ -873,10 +921,10 @@ export class AirrResultStore {
       if (filters.compartment && record.compartment !== filters.compartment) return false;
       if (filters.locus && record.locus !== filters.locus) return false;
       if (filters.productive && record.productive !== filters.productive) return false;
-      if (filters.vCall && record.vCall !== filters.vCall) return false;
-      if (filters.dCall && record.dCall !== filters.dCall) return false;
-      if (filters.jCall && record.jCall !== filters.jCall) return false;
-      if (filters.cCall && record.cCall !== filters.cCall) return false;
+      if (!matchesCall(record.vCall, filters.vCall, filters.vCallIncludeAmbiguous)) return false;
+      if (!matchesCall(record.dCall, filters.dCall, filters.dCallIncludeAmbiguous)) return false;
+      if (!matchesCall(record.jCall, filters.jCall, filters.jCallIncludeAmbiguous)) return false;
+      if (!matchesCall(record.cCall, filters.cCall, filters.cCallIncludeAmbiguous)) return false;
       if (filters.isotype && record.isotype !== filters.isotype) return false;
       if (filters.minVIdentity && (record.vIdentity ?? 0) < filters.minVIdentity) return false;
       if (filters.minDIdentity && (record.dIdentity ?? 0) < filters.minDIdentity) return false;

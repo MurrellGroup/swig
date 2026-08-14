@@ -71,6 +71,25 @@ test("50k AIRR records are committed, filtered, retrieved, and exported batchwis
   await store.clear();
 });
 
+test("gene and allele filters distinguish unambiguous from multi-hit calls", async () => {
+  const store = new AirrResultStore();
+  const rows = new TextDecoder().decode(makeBody(0, 3)).trimEnd().split("\n").map((line) => line.split("\t"));
+  rows[0][3] = "IGHV1-2*01";
+  rows[1][3] = "IGHV1-2*02,IGHV3-23*01";
+  rows[2][3] = "IGHV3-23*01";
+  await store.appendBatch(header, `${rows.map((row) => row.join("\t")).join("\n")}\n`);
+  await store.finalize();
+
+  const geneStrict = await store.page({ ...EMPTY_FILTERS, vCall: "IGHV1-2" }, 0, 10);
+  assert.deepEqual(geneStrict.rows.map((row) => row.sequenceId), ["read_0"]);
+  const geneAmbiguous = await store.page({ ...EMPTY_FILTERS, vCall: "ighv1-2", vCallIncludeAmbiguous: true }, 0, 10);
+  assert.deepEqual(geneAmbiguous.rows.map((row) => row.sequenceId), ["read_0", "read_1"]);
+  assert.equal((await store.page({ ...EMPTY_FILTERS, vCall: "IGHV1-2*02" }, 0, 10)).rows.length, 0);
+  assert.equal((await store.page({ ...EMPTY_FILTERS, vCall: "IGHV1-2*02", vCallIncludeAmbiguous: true }, 0, 10)).rows.length, 1);
+  assert.deepEqual((await store.page({ ...EMPTY_FILTERS, vCall: "IGHV3-23*01, IGHV1-2*02" }, 0, 10)).rows.map((row)=>row.sequenceId),["read_1"]);
+  await store.clear();
+});
+
 test("constant-region evidence yields isotype facets and repertoire summaries", async () => {
   const store = new AirrResultStore();
   const constantHeader = [

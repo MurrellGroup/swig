@@ -264,7 +264,7 @@ export function RepertoireDashboard({ store, loci, inputName, samples, sampleCol
   const [series, setSeries] = useState<CallSeries>("vCalls");
   const [topN, setTopN] = useState(20);
   const [distribution, setDistribution] = useState<"cdr3Lengths" | "vIdentityBins">("cdr3Lengths");
-  const [panel, setPanel] = useState<"controls" | "usage" | "distribution" | "pairing" | "samples">("usage");
+  const [panel, setPanel] = useState<"usage" | "distribution" | "pairing" | "samples">("usage");
   const snapshot = useMemo(
     () => store.repertoire({ locus, productiveOnly, ambiguity }),
     [store, locus, productiveOnly, ambiguity],
@@ -281,24 +281,22 @@ export function RepertoireDashboard({ store, loci, inputName, samples, sampleCol
     <section className="repertoire-workspace contextual-workspace">
       <nav className="context-rail" aria-label="Repertoire panels">
         <div className="context-rail-heading"><span>Repertoire</span><small>{snapshot.records.toLocaleString()} records</small></div>
-        <button type="button" className={panel==="controls"?"active":""} onClick={()=>setPanel("controls")}><b>01</b><span>Settings<small>Population + figure style</small></span></button>
-        <button type="button" className={panel==="usage"?"active":""} onClick={()=>setPanel("usage")}><b>02</b><span>Gene use<small>{SERIES_LABELS[series]}</small></span></button>
-        <button type="button" className={panel==="distribution"?"active":""} onClick={()=>setPanel("distribution")}><b>03</b><span>Distribution<small>{distribution==="cdr3Lengths"?"CDR3 length":"V identity"}</small></span></button>
-        <button type="button" className={panel==="pairing"?"active":""} onClick={()=>setPanel("pairing")}><b>04</b><span>V–J pairs<small>{resolution} labels</small></span></button>
-        {samples.length>1&&<button type="button" className={panel==="samples"?"active":""} onClick={()=>setPanel("samples")}><b>05</b><span>Samples<small>{samples.length} observed</small></span></button>}
+        <button type="button" className={panel==="usage"?"active":""} onClick={()=>setPanel("usage")}><b>01</b><span>Gene use<small>{SERIES_LABELS[series]}</small></span></button>
+        <button type="button" className={panel==="distribution"?"active":""} onClick={()=>setPanel("distribution")}><b>02</b><span>Distribution<small>{distribution==="cdr3Lengths"?"CDR3 length":"V identity"}</small></span></button>
+        <button type="button" className={panel==="pairing"?"active":""} onClick={()=>setPanel("pairing")}><b>03</b><span>V–J pairs<small>{resolution} labels</small></span></button>
+        {samples.length>1&&<button type="button" className={panel==="samples"?"active":""} onClick={()=>setPanel("samples")}><b>04</b><span>Samples<small>{samples.length} observed</small></span></button>}
       </nav>
       <div className="context-main repertoire-dashboard">
-        <header className="repertoire-heading"><div><span className="section-kicker">Repertoire analysis</span><h2>{panel==="controls"?"Figure settings":panel==="usage"?SERIES_LABELS[series]:panel==="distribution"?distribution==="cdr3Lengths"?"CDR3 amino-acid length":"V-region identity":panel==="pairing"?"V–J call pairs":"Sample composition"}</h2><p>Frequencies are calculated per input record. Ambiguous-call handling and the active population are explicit settings.</p></div><span className="aggregate-badge">{snapshot.records.toLocaleString()} records in view</span></header>
+        <header className="repertoire-heading"><div><span className="section-kicker">Repertoire analysis</span><h2>{panel==="usage"?SERIES_LABELS[series]:panel==="distribution"?distribution==="cdr3Lengths"?"CDR3 amino-acid length":"V-region identity":panel==="pairing"?"V–J call pairs":"Sample composition"}</h2><p>Frequencies are calculated per input record. Population and ambiguous-call handling can be changed on this page.</p></div><span className="aggregate-badge">{snapshot.records.toLocaleString()} records in view</span></header>
 
-        {panel!=="controls"&&<div className="repertoire-control-summary"><span>{population}</span><span>{locus||"all loci"}</span><span>{ambiguity==="fractional"?"fractional ties":"first calls"}</span><button type="button" onClick={()=>setPanel("controls")}>Edit settings</button></div>}
-        {panel==="controls"&&<div className="figure-controls" aria-label="Repertoire figure controls">
+        <details className="repertoire-global-settings"><summary><span><b>Population and figure settings</b><small>{population} · {locus||"all loci"} · {ambiguity==="fractional"?"fractional ties":"first calls"} · {resolution} labels · {metric}</small></span></summary><div className="figure-controls" aria-label="Repertoire figure controls">
           <label><span>Population</span><select value={productiveOnly ? "productive" : "all"} onChange={(event) => setProductiveOnly(event.target.value === "productive")}><option value="all">All records</option><option value="productive">Productive only</option></select></label>
           <label><span>Locus</span><select value={locus} onChange={(event) => setLocus(event.target.value)}><option value="">All loci</option>{loci.map((item) => <option key={item.value} value={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label>
           <label><span>Ambiguous calls</span><select value={ambiguity} onChange={(event) => setAmbiguity(event.target.value as "top" | "fractional")}><option value="fractional">Fractional ties</option><option value="top">First call only</option></select></label>
           <label><span>Labels</span><select value={resolution} onChange={(event) => setResolution(event.target.value as "allele" | "gene")}><option value="allele">Alleles</option><option value="gene">Collapse to genes</option></select></label>
           <label><span>Y measure</span><select value={metric} onChange={(event) => setMetric(event.target.value as Metric)}><option value="percent">Percent of records</option><option value="count">Record count</option></select></label>
           <label><span>Palette</span><select value={palette} onChange={(event) => setPalette(event.target.value as Palette)}><option value="teal">Teal</option><option value="coral">Coral</option><option value="indigo">Indigo</option></select></label>
-        </div>}
+        </div></details>
 
         {panel==="usage"&&<div className="figure-grid single-panel"><div className="figure-config"><label><span>Ranked series</span><select value={series} onChange={(event) => setSeries(event.target.value as CallSeries)}>{Object.entries(SERIES_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>Show</span><select value={topN} onChange={(event) => setTopN(Number(event.target.value))}><option value="10">Top 10</option><option value="20">Top 20</option><option value="40">Top 40</option></select></label></div><FrequencyChart data={ranked} total={snapshot.records} metric={metric} palette={palette} title={SERIES_LABELS[series]} subtitle={`${population}; ${series === "isotypes" ? "constant calls with ≥30 aligned nt and ≥65% identity" : callDetail}.`} filename={`${fileStem}-${series}.svg`} /></div>}
         {panel==="distribution"&&<div className="figure-grid single-panel"><div className="figure-config single"><label><span>Distribution</span><select value={distribution} onChange={(event) => setDistribution(event.target.value as "cdr3Lengths" | "vIdentityBins")}><option value="cdr3Lengths">CDR3 AA length</option><option value="vIdentityBins">V identity</option></select></label></div><DistributionChart snapshot={snapshot} series={distribution} metric={metric} palette={palette} filename={`${fileStem}-${distribution}.svg`} /></div>}

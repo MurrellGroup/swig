@@ -11,6 +11,7 @@ import {
   databaseOptionsFor,
   databasesForCell,
   DEFAULT_DATABASE_ID,
+  preferredDatabaseIdFor,
   REFERENCE_DATABASES,
 } from "../src/reference-catalog.ts";
 
@@ -98,12 +99,17 @@ test("the KI catalog exposes human IGH/TCR and macaque IGH collections by matchi
   assert.deepEqual(collectionsFor("Mus musculus_C57BL/6", "IGH"), []);
 });
 
-test("database choices always default to IMGT and never expose a mismatched KI collection", () => {
+test("database choices prefer the compatible KI collection and retain IMGT as fallback", () => {
   const cat = databaseOptionsFor("Felis catus_Abyssinian", "202632-7");
   assert.deepEqual(cat.map((option) => option.id), [DEFAULT_DATABASE_ID]);
   assert.match(cat[0].label, /^IMGT\/GENE-DB 202632-7/);
-  assert.deepEqual(databaseOptionsFor("Homo sapiens", "202632-7").map((option) => option.id), [DEFAULT_DATABASE_ID, "kiarva-human-igh", "ki-human-tcr"]);
-  assert.deepEqual(databaseOptionsFor("Macaca mulatta_AG07107", "202632-7").map((option) => option.id), [DEFAULT_DATABASE_ID, "kimdb-macaca_mulatta"]);
+  assert.deepEqual(databaseOptionsFor("Homo sapiens", "202632-7", "BCR").map((option) => option.id), ["kiarva-human-igh", DEFAULT_DATABASE_ID, "ki-human-tcr"]);
+  assert.deepEqual(databaseOptionsFor("Homo sapiens", "202632-7", "TCR").map((option) => option.id), ["ki-human-tcr", DEFAULT_DATABASE_ID, "kiarva-human-igh"]);
+  assert.deepEqual(databaseOptionsFor("Macaca mulatta_AG07107", "202632-7", "BCR").map((option) => option.id), ["kimdb-macaca_mulatta", DEFAULT_DATABASE_ID]);
+  assert.equal(preferredDatabaseIdFor("Homo sapiens","BCR"),"kiarva-human-igh");
+  assert.equal(preferredDatabaseIdFor("Homo sapiens","TCR"),"ki-human-tcr");
+  assert.equal(preferredDatabaseIdFor("Macaca fascicularis_Cynomolgus","IGH"),"kimdb-macaca_fascicularis");
+  assert.equal(preferredDatabaseIdFor("Felis catus_Abyssinian","BCR"),DEFAULT_DATABASE_ID);
 });
 
 test("published databases compose by receptor, locus, and segment", () => {

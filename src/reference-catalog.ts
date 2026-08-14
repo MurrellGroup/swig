@@ -47,6 +47,19 @@ const KIARVA_HEADERS = { "X-api-key": "kiarvafrontend" };
 
 export const DEFAULT_DATABASE_ID = "imgt";
 
+export function preferredDatabaseIdFor(species: string, scope: ScopeKey): string {
+  const normalizedSpecies = species.replace(/_.*/, "");
+  if (normalizedSpecies === "Homo sapiens") {
+    if (scope === "BCR" || scope === "IGH") return "kiarva-human-igh";
+    if (scope === "TCR" || scope.startsWith("TR")) return "ki-human-tcr";
+  }
+  if ((normalizedSpecies === "Macaca mulatta" || normalizedSpecies === "Macaca fascicularis")
+    && (scope === "BCR" || scope === "IGH")) {
+    return `kimdb-${normalizedSpecies.replace(" ", "_").toLowerCase()}`;
+  }
+  return DEFAULT_DATABASE_ID;
+}
+
 function kiTcrCollection(locus: LocusKey, segments: SegmentKey[]): ReferenceCollection {
   return {
     id: `ki-human-${locus.toLowerCase()}`,
@@ -164,19 +177,24 @@ export function collectionsFor(species: string, locus: LocusKey | null): Referen
 export function databaseOptionsFor(
   species: string,
   imgtRelease: string,
+  scope: ScopeKey = "BCR",
 ): ReferenceDatabaseOption[] {
-  return [
-    {
-      id: DEFAULT_DATABASE_ID,
-      label: `IMGT/GENE-DB ${imgtRelease || "reference pack"} · default`,
-      database: null,
-    },
-    ...REFERENCE_DATABASES.filter((database) => database.speciesPrefixes.some((prefix) => species === prefix || species.startsWith(`${prefix}_`))).map((database) => ({
+  const preferredId = preferredDatabaseIdFor(species, scope);
+  const published = REFERENCE_DATABASES
+    .filter((database) => database.speciesPrefixes.some((prefix) => species === prefix || species.startsWith(`${prefix}_`)))
+    .map((database) => ({
       id: database.id,
-      label: database.name,
+      label: `${database.name}${database.id === preferredId ? " · recommended default" : ""}`,
       database,
-    })),
-  ];
+    }));
+  const imgt: ReferenceDatabaseOption = {
+    id: DEFAULT_DATABASE_ID,
+    label: `IMGT/GENE-DB ${imgtRelease || "reference pack"}${preferredId === DEFAULT_DATABASE_ID ? " · default" : " · fallback"}`,
+    database: null,
+  };
+  return preferredId === DEFAULT_DATABASE_ID
+    ? [imgt, ...published]
+    : [...published.filter((option) => option.id === preferredId), imgt, ...published.filter((option) => option.id !== preferredId)];
 }
 
 export function collectionsForDatabase(
