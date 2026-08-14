@@ -14,10 +14,14 @@ export interface RepertoireSelectionOptions {
   compartment: string;
   locus: string;
   vCall: string;
+  vCallIncludeAmbiguous: boolean;
   d1Call: string;
+  d1CallIncludeAmbiguous: boolean;
   d2Call: string;
   jCall: string;
+  jCallIncludeAmbiguous: boolean;
   cCall: string;
+  cCallIncludeAmbiguous: boolean;
   isotype: string;
   cdr3Nt: string;
   cdr3Aa: string;
@@ -43,7 +47,7 @@ export interface RepertoireSelectionOptions {
 }
 
 export const DEFAULT_REPERTOIRE_SELECTION: RepertoireSelectionOptions = {
-  sequenceId: "", datasetId: "", sampleId: "", subjectId: "", cohort: "", timepoint: "", compartment: "", locus: "", vCall: "", d1Call: "", d2Call: "", jCall: "", cCall: "", isotype: "",
+  sequenceId: "", datasetId: "", sampleId: "", subjectId: "", cohort: "", timepoint: "", compartment: "", locus: "", vCall: "", vCallIncludeAmbiguous: false, d1Call: "", d1CallIncludeAmbiguous: false, d2Call: "", jCall: "", jCallIncludeAmbiguous: false, cCall: "", cCallIncludeAmbiguous: false, isotype: "",
   cdr3Nt: "", cdr3Aa: "", motif: "", motifTarget: "cdr3_aa", motifSyntax: "substring", motifMode: "any",
   productive: "any", completeVdj: "any", vjInFrame: "any", stopCodon: "any", hasD: "any", hasCdr3: "any",
   doubleD: "any", minCdr3NtLength: 0, maxCdr3NtLength: 0, minCdr3AaLength: 0, maxCdr3AaLength: 0,
@@ -67,11 +71,19 @@ function tokens(value: string): string[] {
   return value.split(/[\n,;]+/).map((item) => item.trim()).filter(Boolean);
 }
 
-function callMatches(value: string, query: string): boolean {
+function callMatches(value: string, query: string, includeAmbiguous: boolean): boolean {
+  const wanted = tokens(query).map((item) => item.toUpperCase());
+  if (!wanted.length) return true;
+  const assignments = value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean);
+  if (!includeAmbiguous && assignments.length > 1) return false;
+  return wanted.some((item) => assignments.some((assignment) => assignment === item || assignment.replace(/\*.*$/, "") === item || assignment.includes(item)));
+}
+
+function facetMatches(value: string, query: string): boolean {
   const wanted = tokens(query).map((item) => item.toUpperCase());
   if (!wanted.length) return true;
   const observed = value.toUpperCase();
-  return wanted.some((item) => observed.includes(item));
+  return wanted.some((item) => observed === item || observed.includes(item));
 }
 
 function boolValue(value: string): boolean {
@@ -116,13 +128,13 @@ export function repertoireRowMatches(
 ): boolean {
   const text = (name: string) => row[name] ?? "";
   if (options.sequenceId && !text("sequence_id").toLowerCase().includes(options.sequenceId.trim().toLowerCase())) return false;
-  if (!callMatches(text("swig_dataset_id"), options.datasetId) || !callMatches(text("sample_id"), options.sampleId) ||
-    !callMatches(text("subject_id"), options.subjectId) || !callMatches(text("swig_cohort"), options.cohort) ||
-    !callMatches(text("swig_timepoint"), options.timepoint) || !callMatches(text("swig_compartment"), options.compartment)) return false;
-  if (options.locus && !callMatches(text("locus"), options.locus)) return false;
-  if (!callMatches(text("v_call"), options.vCall) || !callMatches(doubleD?.values.d_call || text("d_call"), options.d1Call) ||
-    !callMatches(doubleD?.values.d2_call || text("d2_call"), options.d2Call) || !callMatches(text("j_call"), options.jCall) ||
-    !callMatches(text("c_call"), options.cCall) || !callMatches(text("isotype"), options.isotype)) return false;
+  if (!facetMatches(text("swig_dataset_id"), options.datasetId) || !facetMatches(text("sample_id"), options.sampleId) ||
+    !facetMatches(text("subject_id"), options.subjectId) || !facetMatches(text("swig_cohort"), options.cohort) ||
+    !facetMatches(text("swig_timepoint"), options.timepoint) || !facetMatches(text("swig_compartment"), options.compartment)) return false;
+  if (options.locus && !facetMatches(text("locus"), options.locus)) return false;
+  if (!callMatches(text("v_call"), options.vCall, options.vCallIncludeAmbiguous) || !callMatches(doubleD?.values.d_call || text("d_call"), options.d1Call, options.d1CallIncludeAmbiguous) ||
+    !facetMatches(doubleD?.values.d2_call || text("d2_call"), options.d2Call) || !callMatches(text("j_call"), options.jCall, options.jCallIncludeAmbiguous) ||
+    !callMatches(text("c_call"), options.cCall, options.cCallIncludeAmbiguous) || !facetMatches(text("isotype"), options.isotype)) return false;
   const cdr3Nt = (text("cdr3") || text("junction")).toUpperCase();
   const cdr3Aa = (text("cdr3_aa") || text("junction_aa")).toUpperCase();
   if (options.cdr3Nt && !cdr3Nt.includes(options.cdr3Nt.replace(/\s/g, "").toUpperCase())) return false;

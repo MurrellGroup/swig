@@ -22,6 +22,8 @@ import { inspectAlignment, validateCorrectedAlignment } from "./alignment-proven
 import { chimeraVisiblePositions, classifyChimeraQuerySite } from "./chimera-view-model";
 import { CommitNumberInput } from "./commit-number-input";
 import { CommitTextInput, CommitTextarea } from "./commit-text-input";
+import { FacetPicker, uniqueFacetItems } from "./facet-picker";
+import { callFacetItems } from "./call-facets";
 import {
   runChmmairra,
   runChmmairraDetail,
@@ -76,7 +78,7 @@ import {
 } from "./post-analysis-runtime";
 import { inferQueryAssignments, type InferredQueryAssignment } from "./query-inference-runtime";
 import type { CompiledReferences, ScopeKey } from "./reference-pack";
-import type { AirrDetailRow, AirrIndexRecord, AirrResultStore, FacetValue } from "./result-store";
+import type { AirrDetailRow, AirrIndexRecord, AirrResultStore, FacetValue, ResultFacets } from "./result-store";
 import { ColoredSequence, sequenceColor } from "./sequence-colors";
 import { MissingAlleleResultsPanel, ShmResultsPanel } from "./post-analysis-extensions";
 import { DEFAULT_REPERTOIRE_SELECTION, selectRepertoire, validateRepertoireSelection, type RepertoireSelectionOptions, type RepertoireSelectionResult } from "./repertoire-selection";
@@ -90,6 +92,7 @@ interface Props {
   references: CompiledReferences;
   scope: ScopeKey;
   loci: FacetValue[];
+  resultFacets: ResultFacets;
   inputName: string;
   workers: number;
   callingProfile: CallingProfile;
@@ -395,7 +398,7 @@ function parseQueries(text: string): string[] {
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).map((line) => line.replace(/\s/g, ""));
 }
 
-export function PostAnalysisWorkbench({ store, references, scope, loci, inputName, workers, callingProfile, assignerStrategy, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", doubleDCount = 0, autoPipeline, onInspect, onSessionChange, sessionHandleRef, initialSession }: Props) {
+export function PostAnalysisWorkbench({ store, references, scope, loci, resultFacets, inputName, workers, callingProfile, assignerStrategy, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", doubleDCount = 0, autoPipeline, onInspect, onSessionChange, sessionHandleRef, initialSession }: Props) {
   const runtime = useMemo(() => new PostAnalysisRuntime(store), [store]);
   const postLockAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => {
@@ -434,6 +437,20 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [selectionPreview, setSelectionPreview] = useState<RepertoireSelectionResult | null>(null);
   const [selectionBaseMask, setSelectionBaseMask] = useState<Uint8Array | null>(null);
   const [selectionApplied, setSelectionApplied] = useState(false);
+  const selectionFacets=useMemo(()=>({
+    datasets:uniqueFacetItems(datasets.map((dataset)=>dataset.datasetId)),
+    samples:uniqueFacetItems(datasets.map((dataset)=>dataset.sampleId)),
+    subjects:uniqueFacetItems(datasets.map((dataset)=>dataset.subjectId)),
+    cohorts:uniqueFacetItems(datasets.map((dataset)=>dataset.cohort)),
+    timepoints:uniqueFacetItems(datasets.map((dataset)=>dataset.timepoint)),
+    compartments:uniqueFacetItems(datasets.map((dataset)=>dataset.compartment??"")),
+    loci:loci.map((item)=>({value:item.value,count:item.count})),
+    vCalls:callFacetItems(resultFacets.vCalls),
+    dCalls:callFacetItems(resultFacets.dCalls),
+    jCalls:callFacetItems(resultFacets.jCalls),
+    cCalls:callFacetItems(resultFacets.cCalls),
+    isotypes:resultFacets.isotypes,
+  }),[datasets,loci,resultFacets.cCalls,resultFacets.dCalls,resultFacets.isotypes,resultFacets.jCalls,resultFacets.vCalls]);
   const [exportFormat, setExportFormat] = useState<TableExportFormat>("tsv");
   const [alignmentExportFormat, setAlignmentExportFormat] = useState<AlignmentExportFormat>("fasta");
 
@@ -777,7 +794,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
               compartment: autoPipeline.selection.compartment,
               locus: autoPipeline.selection.locus,
               vCall: autoPipeline.selection.vCall,
+              vCallIncludeAmbiguous: autoPipeline.selection.vCallIncludeAmbiguous,
               jCall: autoPipeline.selection.jCall,
+              jCallIncludeAmbiguous: autoPipeline.selection.jCallIncludeAmbiguous,
               cdr3Nt: autoPipeline.selection.cdr3Nt,
               cdr3Aa: autoPipeline.selection.cdr3Aa,
               productive: autoPipeline.selection.productive,
@@ -2042,28 +2061,28 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
 
     <section className={moduleClass("selection","post-module selection-module")}>
       <header><div className="module-number dark">03</div><div><span className="section-kicker">Composable repertoire population</span><h3>Select the records used downstream</h3><p>Combine assignment, CDR3, motif, quality, SHM, and double-D evidence filters. Preview is read-only; nothing changes until the retained count is explicitly committed.</p></div><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("selection")} onClick={()=>toggleModule("selection")}>{openModules.has("selection")?"Collapse ↑":"Expand ↓"}</button></header>
-      <div className="selection-quick-row"><span>Double-D evidence</span><div className="mode-toggle"><button type="button" className={selectionDraft.doubleD==="any"?"active":""} onClick={()=>{setSelectionDraft(value=>({...value,doubleD:"any"}));setSelectionPreview(null);}}>Any</button><button type="button" className={selectionDraft.doubleD==="positive"?"active":""} onClick={()=>{setSelectionDraft(value=>({...value,doubleD:"positive"}));setSelectionPreview(null);}}>Only double-D positive</button><button type="button" className={selectionDraft.doubleD==="negative"?"active":""} onClick={()=>{setSelectionDraft(value=>({...value,doubleD:"negative"}));setSelectionPreview(null);}}>Exclude double-D calls</button></div><small>Positive mode uses the sparse double-D index and does not scan unrelated records.</small></div>
       <div className="control-grid four selection-call-grid selection-common-grid">
         <label><span>Sequence ID contains</span><CommitTextInput value={selectionDraft.sequenceId} onCommit={(sequenceId)=>{setSelectionDraft(value=>({...value,sequenceId}));setSelectionPreview(null);}} placeholder="one or more IDs" /></label>
-        <label><span>Sample ID</span><CommitTextInput value={selectionDraft.sampleId} onCommit={(sampleId)=>{setSelectionDraft(value=>({...value,sampleId}));setSelectionPreview(null);}} placeholder="one or more samples" /></label>
-        <label><span>Locus</span><CommitTextInput value={selectionDraft.locus} onCommit={(locus)=>{setSelectionDraft(value=>({...value,locus}));setSelectionPreview(null);}} placeholder="e.g. IGH, TRB" /></label>
-        <label><span>V call contains</span><CommitTextInput value={selectionDraft.vCall} onCommit={(vCall)=>{setSelectionDraft(value=>({...value,vCall}));setSelectionPreview(null);}} placeholder="one or more, comma-separated" /></label>
-        <label><span>J call contains</span><CommitTextInput value={selectionDraft.jCall} onCommit={(jCall)=>{setSelectionDraft(value=>({...value,jCall}));setSelectionPreview(null);}} placeholder="one or more" /></label>
+        {selectionFacets.samples.length>0&&<FacetPicker label="Sample" value={selectionDraft.sampleId} items={selectionFacets.samples} multiple placeholder="Any sample" onChange={(sampleId)=>{setSelectionDraft(value=>({...value,sampleId}));setSelectionPreview(null);}}/>}
+        <FacetPicker label="Locus" value={selectionDraft.locus} items={selectionFacets.loci} multiple placeholder="Any locus" onChange={(locus)=>{setSelectionDraft(value=>({...value,locus}));setSelectionPreview(null);}}/>
+        <div className="call-filter selection-call-picker"><FacetPicker label="V gene or allele" value={selectionDraft.vCall} items={selectionFacets.vCalls} multiple allowCustom placeholder="Any V call" help="Choose one or more observed V genes or alleles, or type a value. Selected values are combined with OR." onChange={(vCall)=>{setSelectionDraft(value=>({...value,vCall}));setSelectionPreview(null);}}/><label className="check-filter compact"><input type="checkbox" checked={selectionDraft.vCallIncludeAmbiguous} onChange={(event)=>{setSelectionDraft(value=>({...value,vCallIncludeAmbiguous:event.target.checked}));setSelectionPreview(null);}}/><span>Include multi-call assignments containing a selected V</span></label></div>
+        <div className="call-filter selection-call-picker"><FacetPicker label="J gene or allele" value={selectionDraft.jCall} items={selectionFacets.jCalls} multiple allowCustom placeholder="Any J call" help="Choose one or more observed J genes or alleles, or type a value. Selected values are combined with OR." onChange={(jCall)=>{setSelectionDraft(value=>({...value,jCall}));setSelectionPreview(null);}}/><label className="check-filter compact"><input type="checkbox" checked={selectionDraft.jCallIncludeAmbiguous} onChange={(event)=>{setSelectionDraft(value=>({...value,jCallIncludeAmbiguous:event.target.checked}));setSelectionPreview(null);}}/><span>Include multi-call assignments containing a selected J</span></label></div>
         <label><span>CDR3 nucleotide contains</span><CommitTextInput value={selectionDraft.cdr3Nt} onCommit={(cdr3Nt)=>{setSelectionDraft(value=>({...value,cdr3Nt}));setSelectionPreview(null);}} placeholder="literal substring" /></label>
         <label><span>CDR3 amino acid contains</span><CommitTextInput value={selectionDraft.cdr3Aa} onCommit={(cdr3Aa)=>{setSelectionDraft(value=>({...value,cdr3Aa}));setSelectionPreview(null);}} placeholder="literal substring" /></label>
       </div>
       <details className="post-advanced"><summary>Study metadata filters</summary><div className="control-grid four">
-        <label><span>Dataset ID</span><CommitTextInput value={selectionDraft.datasetId} onCommit={(datasetId)=>{setSelectionDraft(value=>({...value,datasetId}));setSelectionPreview(null);}} placeholder="dataset_1" /></label>
-        <label><span>Donor / subject ID</span><CommitTextInput value={selectionDraft.subjectId} onCommit={(subjectId)=>{setSelectionDraft(value=>({...value,subjectId}));setSelectionPreview(null);}} placeholder="one or more donors" /></label>
-        <label><span>Cohort</span><CommitTextInput value={selectionDraft.cohort} onCommit={(cohort)=>{setSelectionDraft(value=>({...value,cohort}));setSelectionPreview(null);}} placeholder="one or more cohorts" /></label>
-        <label><span>Timepoint</span><CommitTextInput value={selectionDraft.timepoint} onCommit={(timepoint)=>{setSelectionDraft(value=>({...value,timepoint}));setSelectionPreview(null);}} placeholder="day_0, week_4…" /></label>
-        <label><span>Compartment / tissue</span><CommitTextInput value={selectionDraft.compartment} onCommit={(compartment)=>{setSelectionDraft(value=>({...value,compartment}));setSelectionPreview(null);}} placeholder="blood, lymph node…" /></label>
+        <FacetPicker label="Dataset" value={selectionDraft.datasetId} items={selectionFacets.datasets} multiple placeholder="Any dataset" onChange={(datasetId)=>{setSelectionDraft(value=>({...value,datasetId}));setSelectionPreview(null);}}/>
+        <FacetPicker label="Donor / subject" value={selectionDraft.subjectId} items={selectionFacets.subjects} multiple placeholder="Any donor" onChange={(subjectId)=>{setSelectionDraft(value=>({...value,subjectId}));setSelectionPreview(null);}}/>
+        <FacetPicker label="Cohort" value={selectionDraft.cohort} items={selectionFacets.cohorts} multiple placeholder="Any cohort" onChange={(cohort)=>{setSelectionDraft(value=>({...value,cohort}));setSelectionPreview(null);}}/>
+        <FacetPicker label="Timepoint" value={selectionDraft.timepoint} items={selectionFacets.timepoints} multiple placeholder="Any timepoint" onChange={(timepoint)=>{setSelectionDraft(value=>({...value,timepoint}));setSelectionPreview(null);}}/>
+        <FacetPicker label="Compartment / tissue" value={selectionDraft.compartment} items={selectionFacets.compartments} multiple placeholder="Any compartment" onChange={(compartment)=>{setSelectionDraft(value=>({...value,compartment}));setSelectionPreview(null);}}/>
       </div></details>
-      <details className="post-advanced"><summary>Additional D, constant-gene, and isotype filters</summary><div className="control-grid four">
-        <label><span>D1 call contains</span><CommitTextInput value={selectionDraft.d1Call} onCommit={(d1Call)=>{setSelectionDraft(value=>({...value,d1Call}));setSelectionPreview(null);}} placeholder="optional" /></label>
+      <details className="post-advanced"><summary>Additional D, constant-gene, isotype, and rare-event filters</summary><div className="control-grid four">
+        <div className="call-filter selection-call-picker"><FacetPicker label="D1 gene or allele" value={selectionDraft.d1Call} items={selectionFacets.dCalls} multiple allowCustom placeholder="Any D1 call" onChange={(d1Call)=>{setSelectionDraft(value=>({...value,d1Call}));setSelectionPreview(null);}}/><label className="check-filter compact"><input type="checkbox" checked={selectionDraft.d1CallIncludeAmbiguous} onChange={(event)=>{setSelectionDraft(value=>({...value,d1CallIncludeAmbiguous:event.target.checked}));setSelectionPreview(null);}}/><span>Include multi-call assignments containing a selected D1</span></label></div>
         <label><span>D2 call contains</span><CommitTextInput value={selectionDraft.d2Call} onCommit={(d2Call)=>{setSelectionDraft(value=>({...value,d2Call}));setSelectionPreview(null);}} placeholder="double-D only" /></label>
-        <label><span>Constant call contains</span><CommitTextInput value={selectionDraft.cCall} onCommit={(cCall)=>{setSelectionDraft(value=>({...value,cCall}));setSelectionPreview(null);}} placeholder="IGHG, TRBC…" /></label>
-        <label><span>Isotype contains</span><CommitTextInput value={selectionDraft.isotype} onCommit={(isotype)=>{setSelectionDraft(value=>({...value,isotype}));setSelectionPreview(null);}} placeholder="IgG, IgA…" /></label>
+        <div className="call-filter selection-call-picker"><FacetPicker label="Constant gene or allele" value={selectionDraft.cCall} items={selectionFacets.cCalls} multiple allowCustom placeholder="Any constant call" onChange={(cCall)=>{setSelectionDraft(value=>({...value,cCall}));setSelectionPreview(null);}}/><label className="check-filter compact"><input type="checkbox" checked={selectionDraft.cCallIncludeAmbiguous} onChange={(event)=>{setSelectionDraft(value=>({...value,cCallIncludeAmbiguous:event.target.checked}));setSelectionPreview(null);}}/><span>Include multi-call assignments containing a selected C</span></label></div>
+        <FacetPicker label="Isotype / constant class" value={selectionDraft.isotype} items={selectionFacets.isotypes} multiple allowCustom placeholder="Any isotype" onChange={(isotype)=>{setSelectionDraft(value=>({...value,isotype}));setSelectionPreview(null);}}/>
+        {doubleDCount>0&&<label><span>Double-D evidence</span><select value={selectionDraft.doubleD} onChange={(event)=>{setSelectionDraft(value=>({...value,doubleD:event.target.value as RepertoireSelectionOptions["doubleD"]}));setSelectionPreview(null);}}><option value="any">Any record</option><option value="positive">Supported Double-D only</option><option value="negative">Exclude supported Double-D</option></select></label>}
       </div></details>
       <details className="post-advanced motif-filter"><summary>Sequence motif filter</summary><div><label><span>Motif(s)</span><CommitTextarea value={selectionDraft.motif} onCommit={(motif)=>{setSelectionDraft(value=>({...value,motif}));setSelectionPreview(null);}} placeholder="one motif per line; leave blank to disable" /></label><div className="control-grid three"><label><span>Target</span><select value={selectionDraft.motifTarget} onChange={(event)=>{setSelectionDraft(value=>({...value,motifTarget:event.target.value as RepertoireSelectionOptions["motifTarget"]}));setSelectionPreview(null);}}><option value="sequence">Full sequence / alignment</option><option value="cdr3_nt">CDR3 nucleotide</option><option value="cdr3_aa">CDR3 amino acid</option><option value="junction_aa">Junction amino acid</option></select></label><label><span>Syntax</span><select value={selectionDraft.motifSyntax} onChange={(event)=>{setSelectionDraft(value=>({...value,motifSyntax:event.target.value as RepertoireSelectionOptions["motifSyntax"]}));setSelectionPreview(null);}}><option value="substring">Literal substring</option><option value="iupac">IUPAC nucleotide</option><option value="regex">Regular expression</option></select></label><label><span>Multiple motifs</span><select value={selectionDraft.motifMode} onChange={(event)=>{setSelectionDraft(value=>({...value,motifMode:event.target.value as "any"|"all"}));setSelectionPreview(null);}}><option value="any">Match any</option><option value="all">Match all</option></select></label></div></div></details>
       <details className="post-advanced"><summary>Quality, length, identity, and mutation filters</summary><div className="control-grid four">

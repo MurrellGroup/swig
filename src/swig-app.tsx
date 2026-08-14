@@ -11,6 +11,8 @@ import {
 import { AlignmentViewer } from "./alignment-view";
 import { CommitNumberInput } from "./commit-number-input";
 import { CommitTextInput } from "./commit-text-input";
+import { FacetPicker, uniqueFacetItems } from "./facet-picker";
+import { callFacetItems } from "./call-facets";
 import { annotationCoverage, type GermlinePreprocessReport, type MetadataAllele } from "./germline-preprocess";
 import { preprocessGermlinesInWorker } from "./germline-preprocess-client";
 import { RepertoireDashboard } from "./repertoire-charts";
@@ -178,7 +180,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.22.0";
+const APP_VERSION = "0.22.1";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -673,7 +675,7 @@ function LandingPage({ references, onStart, onDemo }: {
   );
 }
 
-function ReferenceCellControl({ speciesName, locus, segment, builtInFasta, reference, excluded, busy, onSelect, onFile, onEditAlleles }: {
+function ReferenceCellControl({ speciesName, locus, segment, builtInFasta, reference, excluded, busy, pendingSourceId, onSelect, onFile, onEditAlleles }: {
   speciesName: string;
   locus: LocusKey;
   segment: SegmentKey;
@@ -681,25 +683,26 @@ function ReferenceCellControl({ speciesName, locus, segment, builtInFasta, refer
   reference?: ReferenceOverride;
   excluded: string[];
   busy: boolean;
+  pendingSourceId?: string;
   onSelect: (locus: LocusKey, segment: SegmentKey, sourceId: string) => void;
   onFile: (locus: LocusKey, segment: SegmentKey, file: File) => void;
   onEditAlleles: (locus: LocusKey, segment: SegmentKey) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const databases = databasesForCell(speciesName, locus, segment);
-  const value = reference?.sourceKind === "upload" ? "upload" : reference?.sourceDatabaseId ?? DEFAULT_DATABASE_ID;
+  const value = pendingSourceId ?? (reference?.sourceKind === "upload" ? "upload" : reference?.sourceDatabaseId ?? DEFAULT_DATABASE_ID);
   const sourceFasta = reference?.text ?? builtInFasta;
   const filtered = useMemo(() => filterReferenceFasta(sourceFasta, excluded), [excluded, sourceFasta]);
   const coverage = useMemo(() => segment === "V" || segment === "J" ? annotationCoverage(filtered.fasta, segment) : undefined, [filtered.fasta, segment]);
   return (
     <div className={`composition-cell ${reference?.sourceKind ?? "imgt"} ${excluded.length ? "has-exclusions" : ""} ${busy ? "busy" : ""}`}>
-      <select aria-label={`${locus} ${segment} reference source`} value={value} disabled={busy} onChange={(event) => onSelect(locus, segment, event.target.value)}>
+      <select aria-label={`${locus} ${segment} reference source`} aria-busy={busy} value={value} onChange={(event) => onSelect(locus, segment, event.target.value)}>
         <option value={DEFAULT_DATABASE_ID}>IMGT/GENE-DB{filtered.total || reference ? "" : " · no records"}</option>
         {databases.map((database) => <option value={database.id} key={database.id}>{database.name}</option>)}
         {reference?.sourceKind === "upload" && <option value="upload">Loaded file · {reference.name}</option>}
       </select>
       <div className="composition-cell-meta">
-        <b>{busy ? "Validating…" : `${filtered.retained.toLocaleString()} active allele${filtered.retained === 1 ? "" : "s"}`}</b>
+        <b>{busy ? `Preparing ${value === DEFAULT_DATABASE_ID ? "IMGT" : databases.find((database) => database.id === value)?.name ?? "reference"}…` : `${filtered.retained.toLocaleString()} active allele${filtered.retained === 1 ? "" : "s"}`}</b>
         {(segment === "V" || segment === "J") && coverage && <em className={coverage.annotated === coverage.total ? "complete" : coverage.annotated ? "partial" : "missing"} title={reference?.report.warnings.join("\n")}>{coverage.annotated.toLocaleString()}/{coverage.total.toLocaleString()} {segment === "V" ? "regions" : "anchors"}</em>}
       </div>
       <input ref={input} className="visually-hidden" type="file" accept=".fa,.fasta,.fna,.fas,.txt,.gz" onChange={(event) => {
@@ -718,6 +721,7 @@ function ReferenceCompositionMatrix({
   references,
   exclusions,
   busyCells,
+  pendingSources,
   onSelect,
   onFile,
   onEditAlleles,
@@ -727,6 +731,7 @@ function ReferenceCompositionMatrix({
   references: ReferenceCellMap;
   exclusions: ReferenceAlleleExclusionMap;
   busyCells: Set<string>;
+  pendingSources: Record<string,string>;
   onSelect: (locus: LocusKey, segment: SegmentKey, sourceId: string) => void;
   onFile: (locus: LocusKey, segment: SegmentKey, file: File) => void;
   onEditAlleles: (locus: LocusKey, segment: SegmentKey) => void;
@@ -741,7 +746,7 @@ function ReferenceCompositionMatrix({
           if (!segmentAppliesToLocus(locus, segment)) return <div className="composition-na" role="cell" key={segment}><span>Not used</span></div>;
           const alleles = species.loci[locus]?.[segment] ?? [];
           const key = referenceCellKey(locus, segment);
-          return <div role="cell" key={segment}><ReferenceCellControl speciesName={species.name} locus={locus} segment={segment} builtInFasta={allelesToFasta(alleles)} reference={references[key]} excluded={exclusions[key] ?? []} busy={busyCells.has(key)} onSelect={onSelect} onFile={onFile} onEditAlleles={onEditAlleles} /></div>;
+          return <div role="cell" key={segment}><ReferenceCellControl speciesName={species.name} locus={locus} segment={segment} builtInFasta={allelesToFasta(alleles)} reference={references[key]} excluded={exclusions[key] ?? []} busy={busyCells.has(key)} pendingSourceId={pendingSources[key]} onSelect={onSelect} onFile={onFile} onEditAlleles={onEditAlleles} /></div>;
         })}
       </div>)}
     </div>
@@ -893,24 +898,6 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
   );
 }
 
-function callFilterSuggestions(values: Array<{value:string;count:number}>): Array<{value:string;count:number}> {
-  const counts = new Map<string,number>();
-  for (const facet of values) {
-    for (const rawCall of facet.value.split(",")) {
-      const allele = rawCall.trim();
-      if (!allele) continue;
-      counts.set(allele,(counts.get(allele)??0)+facet.count);
-      const gene = allele.replace(/\*.*$/,"");
-      if (gene && gene !== allele) counts.set(gene,(counts.get(gene)??0)+facet.count);
-    }
-  }
-  return [...counts.entries()].map(([value,count])=>({value,count})).sort((a,b)=>a.value.localeCompare(b.value));
-}
-
-function FacetSearchFilter({label,value,items,listId,placeholder="Type or select",onCommit}:{label:string;value:string;items:Array<{value:string;count:number}>;listId:string;placeholder?:string;onCommit:(value:string)=>void}){
-  return <label className="filter-field"><span>{label}</span><CommitTextInput type="search" list={listId} value={value} placeholder={placeholder} onCommit={onCommit}/><datalist id={listId}>{items.map((item)=><option value={item.value} label={`${item.count.toLocaleString()} records`} key={item.value}/>)}</datalist></label>;
-}
-
 function DoubleDExplorer({session,onInspect}:{session:ResultSession;onInspect:(ordinal:number)=>void}){
   const [records,setRecords]=useState<DoubleDEvidenceRecord[]>([]);const [loading,setLoading]=useState(true);const [d1,setD1]=useState("");const [d2,setD2]=useState("");const [sequenceId,setSequenceId]=useState("");const [cdr3,setCdr3]=useState("");const [minimumGain,setMinimumGain]=useState(0);const [minimumSpan,setMinimumSpan]=useState(0);const [selected,setSelected]=useState<AirrRow|null>(null);const [selectedOrdinal,setSelectedOrdinal]=useState<number|null>(null);const [mode,setMode]=useState<"nt"|"aa">("nt");const detailRef=useRef<HTMLElement>(null);
   useEffect(()=>{let cancelled=false;setLoading(true);void(async()=>{const evidence=await session.store.doubleDRecords();const indexed=await session.store.indexRecords(evidence.map((record)=>record.ordinal));const byOrdinal=new Map(indexed.map((record)=>[record.ordinal,record]));const hydrated=evidence.map((record)=>{const index=byOrdinal.get(record.ordinal);return {...record,values:{...record.values,cdr3:record.values.cdr3||index?.cdr3||"",cdr3_aa:record.values.cdr3_aa||index?.cdr3Aa||""}};});if(!cancelled){setRecords(hydrated);setLoading(false);}})().catch(()=>{if(!cancelled){setRecords([]);setLoading(false);}});return()=>{cancelled=true;};},[session]);
@@ -942,7 +929,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const [scanCount, setScanCount] = useState(0);
   const [selected, setSelected] = useState<AirrIndexRecord | null>(null);
   const [detail, setDetail] = useState<AirrRow | null>(null);
-  const [sequenceWorkspace,setSequenceWorkspace]=useState<"filters"|"records"|"detail"|"double-d">(session.total<=3?"detail":"records");
+  const [sequenceWorkspace,setSequenceWorkspace]=useState<"records"|"detail"|"double-d">(session.total<=3?"detail":"records");
   const [downloading, setDownloading] = useState(false);
   const [doubleDDownloading, setDoubleDDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
@@ -1224,8 +1211,8 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   }
 
   const callSuggestions=useMemo(()=>({
-    vCall:callFilterSuggestions(facets.vCalls),dCall:callFilterSuggestions(facets.dCalls),
-    jCall:callFilterSuggestions(facets.jCalls),cCall:callFilterSuggestions(facets.cCalls),
+    vCall:callFacetItems(facets.vCalls),dCall:callFacetItems(facets.dCalls),
+    jCall:callFacetItems(facets.jCalls),cCall:callFacetItems(facets.cCalls),
   }),[facets.cCalls,facets.dCalls,facets.jCalls,facets.vCalls]);
   const filtered = Object.entries(filters).some(([key, value]) => key.endsWith("IncludeAmbiguous") ? false : key.startsWith("min") ? Number(value) > 0 : Boolean(value));
   const pageStart = page * PAGE_SIZE + (results.rows.length ? 1 : 0);
@@ -1258,27 +1245,29 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
       <div className="sequence-context-workspace contextual-workspace">
         <nav className="context-rail" aria-label="Sequence result panels">
           <div className="context-rail-heading"><span>Sequences</span><small>{session.total.toLocaleString()} AIRR records</small></div>
-          <button type="button" className={sequenceWorkspace==="filters"?"active":""} onClick={()=>setSequenceWorkspace("filters")}><b>01</b><span>Filters<small>{filtered?"Constraints active":"All records"}</small></span></button>
-          <button type="button" className={sequenceWorkspace==="records"?"active":""} onClick={()=>setSequenceWorkspace("records")}><b>02</b><span>Records<small>{results.totalMatches===null?`${pageEnd.toLocaleString()}+ matches`:`${results.totalMatches.toLocaleString()} matches`}</small></span></button>
-          <button type="button" disabled={!selected} className={sequenceWorkspace==="detail"?"active":""} onClick={()=>setSequenceWorkspace("detail")}><b>03</b><span>Record detail<small>{selected?.sequenceId||"Select a record"}</small></span></button>
-          {session.doubleDCount>0&&<button type="button" className={sequenceWorkspace==="double-d"?"active":""} onClick={()=>setSequenceWorkspace("double-d")}><b>04</b><span>Double-D evidence<small>{session.doubleDCount.toLocaleString()} VDDJ calls</small></span></button>}
+          <button type="button" className={sequenceWorkspace==="records"?"active":""} onClick={()=>setSequenceWorkspace("records")}><b>01</b><span>Records + filters<small>{results.totalMatches===null?`${pageEnd.toLocaleString()}+ matches`:`${results.totalMatches.toLocaleString()} matches`}{filtered?" · filtered":""}</small></span></button>
+          <button type="button" disabled={!selected} className={sequenceWorkspace==="detail"?"active":""} onClick={()=>setSequenceWorkspace("detail")}><b>02</b><span>Record detail<small>{selected?.sequenceId||"Select a record"}</small></span></button>
+          {session.doubleDCount>0&&<button type="button" className={`context-rail-secondary ${sequenceWorkspace==="double-d"?"active":""}`} onClick={()=>setSequenceWorkspace("double-d")}><span>Double-D explorer<small>{session.doubleDCount.toLocaleString()} supported calls</small></span></button>}
         </nav>
         <div className="context-main sequence-context-main">
 
       <section className={`explorer-shell sequence-workspace-${sequenceWorkspace}`}>
-        <aside className="filter-panel" hidden={sequenceWorkspace!=="filters"}>
-          <div className="filter-heading"><div><span className="section-kicker">Local query</span><h2>Filter results</h2></div>{filtered && <button type="button" onClick={() => { setFilters({ ...EMPTY_FILTERS }); setPage(0); }}>Clear</button>}</div>
-          {session.doubleDCount>0?<button type="button" className={`double-d-quick-filter ${filters.hasDoubleD?"active":""}`} onClick={()=>updateFilter("hasDoubleD",!filters.hasDoubleD)}><span>{filters.hasDoubleD?"✓":"DD"}</span><strong>{filters.hasDoubleD?"Showing only double-D positive":"Only double-D positive"}</strong><small>{session.doubleDCount.toLocaleString()} sparse indexed calls</small></button>:null}
-          {datasets.length>1&&<div className="study-filter-grid"><FacetSearchFilter label="Dataset" value={filters.datasetId} items={facets.datasets} listId="sequence-dataset-suggestions" placeholder="Any dataset" onCommit={(value)=>updateFilter("datasetId",value)}/><FacetSearchFilter label="Sample" value={filters.sampleId} items={facets.samples} listId="sequence-sample-suggestions" placeholder="Any sample" onCommit={(value)=>updateFilter("sampleId",value)}/><FacetSearchFilter label="Donor / subject" value={filters.subjectId} items={facets.subjects} listId="sequence-subject-suggestions" placeholder="Any donor" onCommit={(value)=>updateFilter("subjectId",value)}/><FacetSearchFilter label="Cohort" value={filters.cohort} items={facets.cohorts} listId="sequence-cohort-suggestions" placeholder="Any cohort" onCommit={(value)=>updateFilter("cohort",value)}/><FacetSearchFilter label="Timepoint" value={filters.timepoint} items={facets.timepoints} listId="sequence-timepoint-suggestions" placeholder="Any timepoint" onCommit={(value)=>updateFilter("timepoint",value)}/><FacetSearchFilter label="Compartment / tissue" value={filters.compartment} items={facets.compartments} listId="sequence-compartment-suggestions" placeholder="Any compartment" onCommit={(value)=>updateFilter("compartment",value)}/></div>}
-          <label className="filter-field"><span>Sequence ID contains</span><CommitTextInput type="search" value={filters.sequenceId} placeholder="e.g. clonotype_104" onCommit={(value) => updateFilter("sequenceId", value)} /></label>
-          <label className="filter-field"><span>CDR3 substring <small>nt or AA</small></span><CommitTextInput className="monospace" type="search" value={filters.cdr3} placeholder="CARDR / TGTGCC…" onCommit={(value) => updateFilter("cdr3", value)} /></label>
-          <div className="filter-row">
+        <div className="sequence-records-stack" hidden={sequenceWorkspace!=="records"}>
+        <aside className="filter-panel compact-filter-panel">
+          <div className="filter-heading"><div><span className="section-kicker">Local query</span><h2>Filter records</h2><p>Filters update the table below.</p></div>{filtered && <button type="button" onClick={() => { setFilters({ ...EMPTY_FILTERS }); setPage(0); }}>Clear all</button>}</div>
+          <div className="sequence-filter-primary-grid">
+            <label className="filter-field"><span>Sequence ID contains</span><CommitTextInput type="search" value={filters.sequenceId} placeholder="e.g. clonotype_104" onCommit={(value) => updateFilter("sequenceId", value)} /></label>
+            <label className="filter-field"><span>CDR3 substring <small>nt or AA</small></span><CommitTextInput className="monospace" type="search" value={filters.cdr3} placeholder="CARDR / TGTGCC…" onCommit={(value) => updateFilter("cdr3", value)} /></label>
+            {datasets.length>1&&<FacetPicker label="Sample" value={filters.sampleId} items={facets.samples} placeholder="Any sample" onChange={(value)=>updateFilter("sampleId",value)}/>}
             <label className="filter-field"><span>Locus</span><select value={filters.locus} onChange={(event) => updateFilter("locus", event.target.value)}><option value="">Any locus</option>{facets.loci.map((item) => <option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label>
+            {(["vCall","jCall"] as const).map((key)=>{const segment=key[0].toUpperCase();const ambiguityKey=`${key}IncludeAmbiguous` as const;return <div className="call-filter" key={key}><FacetPicker label={`${segment} gene or allele`} value={filters[key]} items={callSuggestions[key]} allowCustom placeholder={`Any ${segment} call`} help={`Choose an observed ${segment} gene or allele, or type a value. Search narrows this menu without scanning the dataset.`} onChange={(value)=>updateFilter(key,value)}/><label className="check-filter compact"><input type="checkbox" checked={filters[ambiguityKey]} onChange={(event)=>updateFilter(ambiguityKey,event.target.checked)}/><span>Include multi-call assignments containing this {segment}</span></label></div>})}
             <label className="filter-field"><span>Productivity</span><select value={filters.productive} onChange={(event) => updateFilter("productive", event.target.value)}><option value="">Either</option><option value="T">Productive</option><option value="F">Non-productive</option></select></label>
+            <label className="filter-field"><span>Isotype / constant class</span><select value={filters.isotype} onChange={(event)=>updateFilter("isotype",event.target.value)}><option value="">Any isotype</option>{facets.isotypes.map((item)=><option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label>
           </div>
-          {(["vCall","dCall","jCall","cCall"] as const).map((key)=>{const segment=key[0].toUpperCase();const ambiguityKey=`${key}IncludeAmbiguous` as const;return <div className="call-filter" key={key}><label className="filter-field"><span>{segment} gene or allele</span><CommitTextInput type="search" list={`sequence-${key}-suggestions`} value={filters[key]} placeholder={`Type or select ${segment} gene / allele`} onCommit={(value)=>updateFilter(key,value)}/><datalist id={`sequence-${key}-suggestions`}>{callSuggestions[key].map((item)=><option value={item.value} label={`${item.count.toLocaleString()} records`} key={item.value}/>)}</datalist></label><label className="check-filter compact"><input type="checkbox" checked={filters[ambiguityKey]} onChange={(event)=>updateFilter(ambiguityKey,event.target.checked)}/><span>Include ambiguous multi-hit calls containing this {segment}</span></label></div>})}
-          <label className="filter-field"><span>Isotype / constant class</span><select value={filters.isotype} onChange={(event)=>updateFilter("isotype",event.target.value)}><option value="">Any isotype</option>{facets.isotypes.map((item)=><option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label>
-          <details className="filter-advanced"><summary>Identity, junction + QC</summary><div>
+          <details className="filter-advanced inline-filter-more"><summary>More filters</summary><div>
+            {datasets.length>1&&<section className="filter-section"><h3>Study metadata</h3><div className="study-filter-grid"><FacetPicker label="Dataset" value={filters.datasetId} items={facets.datasets} placeholder="Any dataset" onChange={(value)=>updateFilter("datasetId",value)}/><FacetPicker label="Donor / subject" value={filters.subjectId} items={facets.subjects} placeholder="Any donor" onChange={(value)=>updateFilter("subjectId",value)}/><FacetPicker label="Cohort" value={filters.cohort} items={facets.cohorts} placeholder="Any cohort" onChange={(value)=>updateFilter("cohort",value)}/><FacetPicker label="Timepoint" value={filters.timepoint} items={facets.timepoints} placeholder="Any timepoint" onChange={(value)=>updateFilter("timepoint",value)}/><FacetPicker label="Compartment / tissue" value={filters.compartment} items={facets.compartments} placeholder="Any compartment" onChange={(value)=>updateFilter("compartment",value)}/></div></section>}
+            <section className="filter-section"><h3>Additional germline calls</h3><div className="sequence-filter-secondary-grid">{(["dCall","cCall"] as const).map((key)=>{const segment=key[0].toUpperCase();const ambiguityKey=`${key}IncludeAmbiguous` as const;return <div className="call-filter" key={key}><FacetPicker label={`${segment} gene or allele`} value={filters[key]} items={callSuggestions[key]} allowCustom placeholder={`Any ${segment} call`} help={`Choose an observed ${segment} gene or allele, or type a value. Search narrows this menu without scanning the dataset.`} onChange={(value)=>updateFilter(key,value)}/><label className="check-filter compact"><input type="checkbox" checked={filters[ambiguityKey]} onChange={(event)=>updateFilter(ambiguityKey,event.target.checked)}/><span>Include multi-call assignments containing this {segment}</span></label></div>})}</div></section>
+            <section className="filter-section identity-qc-section"><h3>Identity, junction and QC</h3>
             <label className="identity-filter"><span>Minimum V identity <b>{Math.round(filters.minVIdentity * 100)}%</b></span><input type="range" min="0" max="1" step="0.01" value={filters.minVIdentity} onChange={(event) => updateFilter("minVIdentity", Number(event.target.value))} /></label>
             <label className="identity-filter"><span>Minimum D identity <b>{Math.round(filters.minDIdentity * 100)}%</b></span><input type="range" min="0" max="1" step="0.01" value={filters.minDIdentity} onChange={(event) => updateFilter("minDIdentity", Number(event.target.value))} /></label>
             <label className="identity-filter"><span>Minimum J identity <b>{Math.round(filters.minJIdentity * 100)}%</b></span><input type="range" min="0" max="1" step="0.01" value={filters.minJIdentity} onChange={(event) => updateFilter("minJIdentity", Number(event.target.value))} /></label>
@@ -1294,16 +1283,18 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
               <label><span>Orientation</span><select value={filters.revComp} onChange={(event) => updateFilter("revComp", event.target.value)}><option value="">Either</option><option value="F">Forward</option><option value="T">Reverse-comp.</option></select></label>
             </div>
             <label className="check-filter"><input type="checkbox" checked={filters.hasD} onChange={(event) => updateFilter("hasD", event.target.checked)} /><span>Require a D assignment</span></label>
-            {session.doubleD.mode !== "off" && <label className="check-filter"><input type="checkbox" checked={filters.hasDoubleD} onChange={(event) => updateFilter("hasDoubleD", event.target.checked)} /><span>Require supported double-D evidence</span></label>}
             <label className="check-filter"><input type="checkbox" checked={filters.hasCdr3} onChange={(event) => updateFilter("hasCdr3", event.target.checked)} /><span>Require a CDR3 call</span></label>
+            </section>
+            {session.doubleDCount>0&&<section className="filter-section niche-filter-section"><h3>Rare VDDJ evidence</h3><label className="check-filter"><input type="checkbox" checked={filters.hasDoubleD} onChange={(event) => updateFilter("hasDoubleD", event.target.checked)} /><span>Only supported Double-D calls</span></label><button type="button" onClick={()=>setSequenceWorkspace("double-d")}>Open Double-D evidence explorer ({session.doubleDCount.toLocaleString()})</button></section>}
+            <p className="index-note"><span>i</span> Gene and allele filters use browser-local token indexes. A complete comma-separated call set matches that exact ambiguous assignment; sequence substrings scan indexed candidates on demand.</p>
           </div></details>
-          <p className="index-note"><span>i</span> Gene and allele filters use browser-local token indexes. Paste a complete comma-separated call set to match that exact ambiguous assignment; substring sequence filters scan indexed candidates on demand.</p>
         </aside>
 
-        <div className="result-browser" hidden={sequenceWorkspace!=="records"}>
+        <div className="result-browser">
           <header className="browser-heading"><div><span className="section-kicker">AIRR records</span><h2>{searching ? "Searching local index…" : results.totalMatches !== null ? `${results.totalMatches.toLocaleString()} matching records` : `${(pageEnd + (results.hasMore ? 1 : 0)).toLocaleString()}+ matching records`}</h2><p>{searching && scanCount ? `${scanCount.toLocaleString()} candidates scanned` : results.rows.length ? `Showing ${pageStart.toLocaleString()}–${pageEnd.toLocaleString()}` : "Adjust filters to broaden the query."}</p></div><span className="scale-mode">{session.total <= 3 ? "detail mode" : session.total >= 100000 ? "large-run index" : "paged index"}</span></header>
           <div className={`results-table-wrap ${searching ? "loading" : ""}`}>
             <table className="results-table">
+              <colgroup><col className="column-sequence"/>{datasets.length>1&&<col className="column-sample"/>}<col className="column-locus"/><col className="column-v"/><col className="column-d"/><col className="column-j"/><col className="column-isotype"/><col className="column-cdr3"/><col className="column-productive"/><col className="column-open"/></colgroup>
               <thead><tr><th>Sequence</th>{datasets.length>1&&<th>Sample</th>}<th>Locus</th><th>V call</th><th>D call</th><th>J call</th><th>Isotype</th><th>CDR3</th><th>Productive</th><th /></tr></thead>
               <tbody>{results.rows.map((row) => <tr className={selected?.ordinal === row.ordinal ? "selected" : ""} key={row.ordinal} tabIndex={0} onClick={() => openRecord(row)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openRecord(row); } }}>
                 <td><strong title={row.sequenceId}>{row.sequenceId}</strong><small>#{(row.ordinal + 1).toLocaleString()}</small></td>
@@ -1319,6 +1310,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
           </div>
           <footer className="table-pagination"><button type="button" disabled={!page || searching} onClick={() => setPage((value) => Math.max(0, value - 1))}>← Previous</button><span>Page {(page + 1).toLocaleString()}</span><button type="button" disabled={!results.hasMore || searching} onClick={() => setPage((value) => value + 1)}>Next →</button></footer>
         </div>
+        </div>
       </section>
 
       {sequenceWorkspace==="detail"&&selected?<section ref={detailRef} className="detail-shell" tabIndex={-1} aria-label={`Details for ${selected.sequenceId}`}>{detail ? <ResultDetail row={detail} onClose={() => {setSelected(null);setSequenceWorkspace("records");}} /> : <div className="detail-loading">Loading selected AIRR record…</div>}</section>:sequenceWorkspace==="detail"?<div className="method-placeholder"><span>↳</span><h3>Select an AIRR record</h3><p>Open a row from Records to inspect its calls and V(D)J alignment.</p><button type="button" onClick={()=>setSequenceWorkspace("records")}>Browse records</button></div>:null}
@@ -1326,7 +1318,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         </div>
       </div>
       </div>}
-      {openedViews.has("post") && <div id="results-panel-post" role="tabpanel" aria-labelledby="results-tab-post" className="results-view-panel" hidden={view !== "post"}><PostAnalysisWorkbench key={metadataRevision} store={session.store} references={session.references} scope={session.scope} loci={facets.loci} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} assignerStrategy={session.assignerStrategy} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={datasets} sampleColors={sampleColors} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} doubleDCount={session.doubleDCount} autoPipeline={metadataRevision===0&&session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} onInspect={(ordinal) => void inspectOrdinal(ordinal)} onSessionChange={(reason)=>scheduleProjectSave(reason)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} /></div>}
+      {openedViews.has("post") && <div id="results-panel-post" role="tabpanel" aria-labelledby="results-tab-post" className="results-view-panel" hidden={view !== "post"}><PostAnalysisWorkbench key={metadataRevision} store={session.store} references={session.references} scope={session.scope} loci={facets.loci} resultFacets={facets} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} assignerStrategy={session.assignerStrategy} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={datasets} sampleColors={sampleColors} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} doubleDCount={session.doubleDCount} autoPipeline={metadataRevision===0&&session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} onInspect={(ordinal) => void inspectOrdinal(ordinal)} onSessionChange={(reason)=>scheduleProjectSave(reason)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} /></div>}
     </main>
   );
 }
@@ -1336,7 +1328,6 @@ export default function SwigApp() {
   const [pack, setPack] = useState<ReferencePack | null>(null);
   const [packError, setPackError] = useState("");
   const [speciesName, setSpeciesName] = useState("Homo sapiens");
-  const [speciesDraft,setSpeciesDraft]=useState("Homo sapiens");
   const [scope, setScope] = useState<ScopeKey>("BCR");
   const [inputSource, setInputSource] = useState<InputSource>("upload");
   const [fileInputs, setFileInputs] = useState<DirectoryDatasetInput[]>([]);
@@ -1351,7 +1342,9 @@ export default function SwigApp() {
   const [alleleExclusions, setAlleleExclusions] = useState<ReferenceAlleleExclusionMap>({});
   const [editingReferenceCell, setEditingReferenceCell] = useState<{ locus: LocusKey; segment: SegmentKey } | null>(null);
   const [busyCells, setBusyCells] = useState<Set<string>>(new Set());
+  const [pendingCellSources,setPendingCellSources]=useState<Record<string,string>>({});
   const [databaseBusy, setDatabaseBusy] = useState(false);
+  const [pendingDatabaseId,setPendingDatabaseId]=useState<string|null>(null);
   const [minimumIdentity, setMinimumIdentity] = useState(0.6);
   const [callingProfile, setCallingProfile] = useState<CallingProfile>("truth_optimized");
   const [assignerStrategy, setAssignerStrategy] = useState<AssignerStrategy>("aer");
@@ -1467,6 +1460,12 @@ export default function SwigApp() {
     const activeKeys=new Set(activeReferenceEntries.map(([key])=>key));
     return targetKeys.size===activeKeys.size&&[...targetKeys].every((key)=>activeKeys.has(key))?sourceId||"mixed":"mixed";
   }, [activeReferenceEntries,activeScope,databaseOptions]);
+  const pendingDatabaseForScope = pendingDatabaseId && databaseOptions.some((option)=>option.id===pendingDatabaseId) ? pendingDatabaseId : null;
+  const displayedDatabaseId = pendingDatabaseForScope ?? compositionMode;
+  const pendingDatabase = pendingDatabaseForScope && pendingDatabaseForScope !== DEFAULT_DATABASE_ID
+    ? databaseOptions.find((option) => option.id === pendingDatabaseForScope)?.database
+    : undefined;
+  const summaryDatabases = pendingDatabase ? [pendingDatabase] : usedDatabases;
   const databaseLabel = `${activeReferenceEntries.length ? ["IMGT", ...usedDatabases.map((database) => database.name), ...(hasUploadedReferences ? ["local FASTA"] : [])].join(" + ") : `IMGT/GENE-DB ${pack?.release ?? "reference pack"}`}${activeAlleleExclusionCount ? ` · ${activeAlleleExclusionCount.toLocaleString()} allele${activeAlleleExclusionCount === 1 ? "" : "s"} excluded` : ""}`;
   const editingReferenceKey = editingReferenceCell ? referenceCellKey(editingReferenceCell.locus, editingReferenceCell.segment) : "";
   const editingReferenceOverride = editingReferenceKey ? cellReferences[editingReferenceKey] : undefined;
@@ -1487,6 +1486,15 @@ export default function SwigApp() {
     return pasteInput ? [{ ...pasteInput, ...pasteMetadata, inputName: pasteInput.name, records: pasteInput.count }] : [];
   }, [fileInputs, inputSource, pasteInput, pasteMetadata]);
   const activeInput = activeDatasets[0] ?? null;
+  const pipelineSelectionFacets=useMemo(()=>({
+    datasets:activeDatasets.map((dataset)=>({value:dataset.datasetId,count:dataset.records??undefined})),
+    samples:uniqueFacetItems(activeDatasets.map((dataset)=>dataset.sampleId)),
+    subjects:uniqueFacetItems(activeDatasets.map((dataset)=>dataset.subjectId)),
+    cohorts:uniqueFacetItems(activeDatasets.map((dataset)=>dataset.cohort)),
+    timepoints:uniqueFacetItems(activeDatasets.map((dataset)=>dataset.timepoint)),
+    compartments:uniqueFacetItems(activeDatasets.map((dataset)=>dataset.compartment??"")),
+    loci:(compiled?.loci??[]).map((value)=>({value})),
+  }),[activeDatasets,compiled?.loci]);
   const activeInputName = activeDatasets.length > 1 ? (studyName.trim() || "swig-study") : activeInput?.name ?? "swig";
   const knownInputCount = activeDatasets.every((input) => input.count !== null)
     ? activeDatasets.reduce((sum, input) => sum + (input.count ?? 0), 0)
@@ -1494,13 +1502,35 @@ export default function SwigApp() {
   const fastqDatasetCount = activeDatasets.filter((input) => input.formatCode === 2).length;
   const nonFastqDatasetCount = activeDatasets.length - fastqDatasetCount;
 
-  function commitSpeciesDraft(){
-    const normalized=speciesDraft.trim().toLowerCase();
-    const next=speciesList.find((item)=>item.name.toLowerCase()===normalized||friendlySpecies(item.name).toLowerCase()===normalized);
-    if(!next){setSpeciesDraft(species?.name??"");setRunError("Select a species or strain from the searchable reference list.");return;}
-    setRunError("");setSpeciesDraft(next.name);setSpeciesName(next.name);
-    const nextScopes=availableScopes(next);if(!nextScopes.includes(activeScope))setScope(nextScopes[0]??"BCR");
+  function selectSpecies(nextName:string){
+    const next=speciesList.find((item)=>item.name===nextName);
+    if(!next||next.name===species?.name)return;
+    const nextScopes=availableScopes(next);
+    const nextScope=nextScopes.includes(activeScope)?activeScope:nextScopes[0]??"BCR";
+    const preferred=preferredDatabaseIdFor(next.name,nextScope);
+    databaseRequestRef.current+=1;
+    cellRequestRef.current={};
+    preferredDatabaseContextRef.current="";
+    setRunError("");
+    setSpeciesName(next.name);
+    setScope(nextScope);
+    setCellReferences({});
+    setAlleleExclusions({});
+    setEditingReferenceCell(null);
+    setBusyCells(new Set());
+    setPendingCellSources({});
+    setDatabaseBusy(false);
+    setPendingDatabaseId(preferred===DEFAULT_DATABASE_ID?null:preferred);
+    referenceCacheRef.current.clear();
+  }
+
+  function selectReceptor(next:"BCR"|"TCR"){
+    if(next===receptor)return;
+    const preferred=preferredDatabaseIdFor(species?.name??"",next);
     resetReferenceContext();
+    preferredDatabaseContextRef.current="";
+    setPendingDatabaseId(preferred===DEFAULT_DATABASE_ID?null:preferred);
+    setScope(next);
   }
 
   useEffect(() => {
@@ -1510,7 +1540,10 @@ export default function SwigApp() {
     if (preferredDatabaseContextRef.current === context) return;
     preferredDatabaseContextRef.current = context;
     const preferred = preferredDatabaseIdFor(species.name, receptorScope);
-    if (preferred !== DEFAULT_DATABASE_ID) void applyReferenceDatabase(preferred);
+    if (preferred !== DEFAULT_DATABASE_ID) {
+      setPendingDatabaseId(preferred);
+      void applyReferenceDatabase(preferred);
+    } else setPendingDatabaseId(null);
   }, [activeScope, pack, species]);
 
   function navigate(next: AppPage) {
@@ -1727,7 +1760,10 @@ export default function SwigApp() {
       if (databaseRequestRef.current !== contextRequest || cellRequestRef.current[key] !== cellRequest) return;
       setRunError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (databaseRequestRef.current === contextRequest && cellRequestRef.current[key] === cellRequest) markCellsBusy([key], false);
+      if (databaseRequestRef.current === contextRequest && cellRequestRef.current[key] === cellRequest) {
+        markCellsBusy([key], false);
+        setPendingCellSources((current)=>{const next={...current};delete next[key];return next;});
+      }
     }
   }
 
@@ -1736,6 +1772,7 @@ export default function SwigApp() {
     const cellRequest = (cellRequestRef.current[key] ?? 0) + 1;
     cellRequestRef.current[key] = cellRequest;
     if (sourceId === "upload") return;
+    setPendingCellSources((current)=>({...current,[key]:sourceId}));
     setRunError("");
     if (sourceId === DEFAULT_DATABASE_ID) {
       setCellReferences((current) => {
@@ -1750,10 +1787,12 @@ export default function SwigApp() {
         return next;
       });
       markCellsBusy([key], false);
+      setPendingCellSources((current)=>{const next={...current};delete next[key];return next;});
       return;
     }
     const database = databaseOptions.find((option) => option.id === sourceId)?.database;
     if (!database) {
+      setPendingCellSources((current)=>{const next={...current};delete next[key];return next;});
       setRunError("That database is not available for the selected species.");
       return;
     }
@@ -1773,7 +1812,10 @@ export default function SwigApp() {
       if (databaseRequestRef.current !== contextRequest || cellRequestRef.current[key] !== cellRequest) return;
       setRunError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (databaseRequestRef.current === contextRequest && cellRequestRef.current[key] === cellRequest) markCellsBusy([key], false);
+      if (databaseRequestRef.current === contextRequest && cellRequestRef.current[key] === cellRequest) {
+        markCellsBusy([key], false);
+        setPendingCellSources((current)=>{const next={...current};delete next[key];return next;});
+      }
     }
   }
 
@@ -1782,16 +1824,20 @@ export default function SwigApp() {
     const requestId = ++databaseRequestRef.current;
     cellRequestRef.current = {};
     setRunError("");
+    setPendingDatabaseId(nextId);
     if (nextId === DEFAULT_DATABASE_ID) {
       setCellReferences({});
       setAlleleExclusions({});
       setEditingReferenceCell(null);
       setBusyCells(new Set());
+      setPendingCellSources({});
       setDatabaseBusy(false);
+      setPendingDatabaseId(null);
       return;
     }
     const database = databaseOptions.find((option) => option.id === nextId)?.database;
     if (!database) {
+      setPendingDatabaseId(null);
       setRunError("That database is not available for the selected species.");
       return;
     }
@@ -1802,6 +1848,7 @@ export default function SwigApp() {
       collections = collectionsForDatabase(database, targetScope);
     }
     if (!collections.length || !scopes.includes(targetScope)) {
+      setPendingDatabaseId(null);
       setRunError(`${database.name} has no records compatible with this species and search space.`);
       return;
     }
@@ -1812,6 +1859,7 @@ export default function SwigApp() {
     const targets = collections.flatMap((collection) => SEGMENTS.flatMap((segment) => collection.segments[segment] ? [{ locus: collection.locus, segment }] : []));
     const keys = targets.map(({ locus, segment }) => referenceCellKey(locus, segment));
     setDatabaseBusy(true);
+    setPendingCellSources(Object.fromEntries(keys.map((key)=>[key,nextId])));
     markCellsBusy(keys, true);
     try {
       const preparedEntries = await Promise.all(targets.map(async ({ locus, segment }) => ({
@@ -1834,6 +1882,8 @@ export default function SwigApp() {
       if (databaseRequestRef.current === requestId) {
         setDatabaseBusy(false);
         markCellsBusy(keys, false);
+        setPendingCellSources({});
+        setPendingDatabaseId(null);
       }
     }
   }
@@ -1845,11 +1895,16 @@ export default function SwigApp() {
     setAlleleExclusions({});
     setEditingReferenceCell(null);
     setBusyCells(new Set());
+    setPendingCellSources({});
     setDatabaseBusy(false);
+    setPendingDatabaseId(null);
     referenceCacheRef.current.clear();
     if (restorePreferred && species) {
       const preferred = preferredDatabaseIdFor(species.name, activeScope);
-      if (preferred !== DEFAULT_DATABASE_ID) void applyReferenceDatabase(preferred);
+      if (preferred !== DEFAULT_DATABASE_ID) {
+        setPendingDatabaseId(preferred);
+        void applyReferenceDatabase(preferred);
+      }
     }
   }
 
@@ -2207,16 +2262,16 @@ export default function SwigApp() {
                 <section className="analysis-card reference-card">
                   <header><span className="card-number">02</span><div><h2>Biological search space</h2><p>Choose species, receptor, locus, and reference database. Customize individual segments only when needed.</p></div>{(Object.keys(cellReferences).length > 0 || Object.keys(alleleExclusions).length > 0) && <button className="reset-button" type="button" onClick={() => resetReferenceContext(true)}>Restore recommended sources</button>}</header>
                   <div className="reference-selectors">
-                    <label><span>Species / strain</span><input type="search" list="swig-species-options" value={speciesDraft} disabled={!pack} placeholder={pack?"Type species or strain":"Loading reference catalog…"} onChange={(event)=>setSpeciesDraft(event.target.value)} onBlur={commitSpeciesDraft} onKeyDown={(event)=>{if(event.key==="Enter"){event.preventDefault();event.currentTarget.blur();}else if(event.key==="Escape"){setSpeciesDraft(species?.name??"");event.currentTarget.blur();}}}/><datalist id="swig-species-options">{speciesList.map((item)=><option value={item.name} label={friendlySpecies(item.name)} key={item.name}/>)}</datalist></label>
-                    <label><span>Database</span><select value={compositionMode} disabled={!pack || databaseBusy || Boolean(busyCells.size)} onChange={(event) => void applyReferenceDatabase(event.target.value)}>{databaseOptions.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}{compositionMode === "mixed" && <option value="mixed" disabled>Mixed sources · configured below</option>}</select></label>
-                    <div className="receptor-selector"><span>Receptor</span><div><button className={receptor === "BCR" ? "active" : ""} type="button" disabled={!hasBcr} onClick={() => { if (receptor !== "BCR") resetReferenceContext(); setScope("BCR"); }}>BCR <small>IG</small></button><button className={receptor === "TCR" ? "active" : ""} type="button" disabled={!hasTcr} onClick={() => { if (receptor !== "TCR") resetReferenceContext(); setScope("TCR"); }}>TCR <small>TR</small></button></div></div>
-                    <label><span>Chain / locus</span><select value={activeScope} disabled={databaseBusy || Boolean(busyCells.size)} onChange={(event) => setScope(event.target.value as ScopeKey)}>{receptorScopes.map((value) => <option value={value} key={value}>{LOCUS_LABELS[value]}</option>)}</select></label>
+                    <label><span>Species / strain</span><select value={species?.name??""} disabled={!pack} onChange={(event)=>selectSpecies(event.target.value)}>{speciesList.map((item)=><option value={item.name} key={item.name}>{friendlySpecies(item.name)}</option>)}</select></label>
+                    <label className={databaseBusy?"database-selector preparing":"database-selector"}><span>Database</span><select value={displayedDatabaseId} disabled={!pack} onChange={(event) => void applyReferenceDatabase(event.target.value)}>{databaseOptions.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}{displayedDatabaseId === "mixed" && <option value="mixed" disabled>Mixed sources · configured below</option>}</select><small>{databaseBusy?"Selection applied; preparing reference metadata…":displayedDatabaseId==="mixed"?"Mixed by locus or segment":"Ready"}</small></label>
+                    <div className="receptor-selector"><span>Receptor</span><div><button className={receptor === "BCR" ? "active" : ""} type="button" disabled={!hasBcr} onClick={() => selectReceptor("BCR")}>BCR <small>IG</small></button><button className={receptor === "TCR" ? "active" : ""} type="button" disabled={!hasTcr} onClick={() => selectReceptor("TCR")}>TCR <small>TR</small></button></div></div>
+                    <label><span>Chain / locus</span><select value={activeScope} onChange={(event) => setScope(event.target.value as ScopeKey)}>{receptorScopes.map((value) => <option value={value} key={value}>{LOCUS_LABELS[value]}</option>)}</select></label>
                   </div>
                   {packError && <p className="inline-error" role="alert">{packError}</p>}
-                  <CompositionSummary databases={usedDatabases} hasUploads={hasUploadedReferences} excludedAlleles={activeAlleleExclusionCount} busy={databaseBusy || Boolean(busyCells.size)} release={pack?.release ?? ""} />
+                  <CompositionSummary databases={summaryDatabases} hasUploads={hasUploadedReferences} excludedAlleles={activeAlleleExclusionCount} busy={databaseBusy || Boolean(busyCells.size)} release={pack?.release ?? ""} />
                   <details className="reference-composition-details">
                     <summary><span><b>Customize individual loci, V/D/J/C sources, or allele inclusion</b><small>Replace any segment with another published collection or a local FASTA; exclude individual alleles before assignment.</small></span></summary>
-                    {species && <ReferenceCompositionMatrix species={species} scope={activeScope} references={cellReferences} exclusions={alleleExclusions} busyCells={busyCells} onSelect={(locus, segment, sourceId) => void selectCellSource(locus, segment, sourceId)} onFile={(locus, segment, file) => void acceptReferenceFile(locus, segment, file)} onEditAlleles={(locus,segment)=>setEditingReferenceCell({locus,segment})} />}
+                    {species && <ReferenceCompositionMatrix species={species} scope={activeScope} references={cellReferences} exclusions={alleleExclusions} busyCells={busyCells} pendingSources={pendingCellSources} onSelect={(locus, segment, sourceId) => void selectCellSource(locus, segment, sourceId)} onFile={(locus, segment, file) => void acceptReferenceFile(locus, segment, file)} onEditAlleles={(locus,segment)=>setEditingReferenceCell({locus,segment})} />}
                     <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · {databaseLabel}. The database selector applies a preset only where compatible; every matrix cell remains independently selectable, replaceable from a local file, and filterable by exact allele identifier. Exclusions are applied to the composed FASTA before SwiftIG builds its indexes; the source database/file is not modified. Replacing a cell's source clears that cell's exclusions. In-browser preprocessing assigns V FWR/CDR boundaries and J frame/junction-anchor metadata by transfer from validated, locus-matched IMGT relatives; metadata are retained only when mapped intervals and conserved anchors validate. D and C records are validated and indexed but do not have FWR/CDR boundaries.</p>
                   </details>
                 </section>
@@ -2266,7 +2321,7 @@ export default function SwigApp() {
                   </details>
                   <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records {activeDatasets.length > 1 ? "from each dataset" : ""} in memory and output.{fastqFilter.enabled ? " Sampling is from reads retained by FASTQ QC; non-FASTQ records pass through that step." : ""}</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>{activeDatasets.length > 1 ? "Records per dataset" : "Records to analyze"}</span><CommitNumberInput min="1" step="1000" value={subsampleSize} onCommit={setSubsampleSize} /></label><label><span>Base random seed</span><CommitNumberInput step="1" value={subsampleSeed} onCommit={setSubsampleSeed} /></label></div>}</div>
                   <details className="advanced-settings progressive-settings">
-                    <summary><span><b>Advanced assignment and compute settings</b><small>Assigner, calling profile, strand, workers, output storage, and identity floor.</small></span></summary>
+                    <summary title="Assigner, calling profile, strand, workers, output storage, and identity floor"><span><b>Advanced options</b><small>Assigner, calling profile, strand, workers, output storage, and identity floor.</small></span></summary>
                     <div className="advanced-settings-grid">
                     <label><span>Assignment strategy</span><select value={assignerStrategy} onChange={(event) => setAssignerStrategy(event.target.value as AssignerStrategy)}><option value="aer">AER · adaptive exact V refinement · default</option><option value="riat_mp">RIAT-MP · root-indexed V allele tree</option><option value="standard">Standard SwiftIG · fixed V depth</option></select></label>
                     <label><span>Calling profile</span><select value={callingProfile} onChange={(event) => setCallingProfile(event.target.value as CallingProfile)}><option value="truth_optimized">Truth-optimized · default</option><option value="igblast_balanced">IgBLAST-balanced · agreement + truth constraint</option><option value="igblast_compatible">IgBLAST-agreement · agreement only</option></select></label>
@@ -2280,7 +2335,7 @@ export default function SwigApp() {
                   </details>
                   <div className="double-d-mode-control"><label><span>Double-D / VDDJ screening</span><select value={doubleDMode} onChange={(event) => setDoubleDMode(event.target.value as DoubleDScreenMode)}><option value="off">Off · standard V(D)J only</option><option value="long_span">Long inter-V/J spans only</option><option value="all">All eligible D-bearing junctions</option></select></label></div>
                   {doubleDMode !== "off" && <details className="double-d-parameters">
-                      <summary><span><b>Advanced double-D evidence parameters</b><small>Conservative evidence thresholds for the opt-in VDDJ screen.</small></span></summary>
+                      <summary title="Conservative evidence thresholds for the opt-in VDDJ screen"><span><b>Evidence options</b><small>Conservative evidence thresholds for the opt-in VDDJ screen.</small></span></summary>
                       <div><span className="section-kicker">Rare rearrangement screen</span><h3>Two ordered D segments</h3><p>This evidence screen runs after the ordinary V(D)J call. It does not rewrite the main AIRR TSV; supported D1/D2 calls are retained in a separate evidence table and merged into the interactive detail viewer.</p></div>
                       <div className="double-d-fields">
                         {doubleDMode === "long_span" && <label><span>Minimum inter-V/J span</span><CommitNumberInput min="0" max="10000" step="1" value={doubleDMinimumSpan} onCommit={setDoubleDMinimumSpan} /><small>nt between the baseline V end and J start</small></label>}
@@ -2303,8 +2358,24 @@ export default function SwigApp() {
                       </article>
                       <article className={pipeline.selection.enabled?"enabled":""}>
                         <label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.selection.enabled} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,enabled:event.target.checked}}))}/><span><b>3 · Repertoire selection</b><small>Commit study, call, CDR3, and QC filters before lineage assignment.</small></span></label>
-                        <div className="pipeline-fields pipeline-selection-fields"><label><span>Dataset / library</span><select value={pipeline.selection.datasetId} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,datasetId:event.target.value}}))}><option value="">Any dataset</option>{activeDatasets.map((dataset)=><option value={dataset.datasetId} key={dataset.datasetId}>{dataset.inputName} · {dataset.datasetId}</option>)}</select></label><label><span>Sample ID</span><input value={pipeline.selection.sampleId} placeholder="any" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,sampleId:event.target.value}}))}/></label><label><span>Donor / subject</span><input value={pipeline.selection.subjectId} placeholder="any" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,subjectId:event.target.value}}))}/></label><label><span>Cohort</span><input value={pipeline.selection.cohort} placeholder="any" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,cohort:event.target.value}}))}/></label><label><span>Timepoint</span><input value={pipeline.selection.timepoint} placeholder="any" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,timepoint:event.target.value}}))}/></label><label><span>Locus</span><input value={pipeline.selection.locus} placeholder="IGH, TRB…" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,locus:event.target.value}}))}/></label><label><span>V call</span><input value={pipeline.selection.vCall} placeholder="contains…" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,vCall:event.target.value}}))}/></label><label><span>J call</span><input value={pipeline.selection.jCall} placeholder="contains…" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,jCall:event.target.value}}))}/></label><label><span>CDR3 nt</span><input value={pipeline.selection.cdr3Nt} placeholder="substring" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,cdr3Nt:event.target.value}}))}/></label><label><span>CDR3 aa</span><input value={pipeline.selection.cdr3Aa} placeholder="substring" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,cdr3Aa:event.target.value}}))}/></label><label><span>Productive</span><select value={pipeline.selection.productive} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,productive:event.target.value as "any"|"yes"|"no"}}))}><option value="any">Either</option><option value="yes">Productive</option><option value="no">Non-productive</option></select></label><label><span>CDR3 assigned</span><select value={pipeline.selection.hasCdr3} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,hasCdr3:event.target.value as "any"|"yes"|"no"}}))}><option value="any">Either</option><option value="yes">Required</option><option value="no">Absent</option></select></label><label><span>Double-D</span><select value={pipeline.selection.doubleD} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,doubleD:event.target.value as "any"|"positive"|"negative"}}))}><option value="any">Either</option><option value="positive">Positive only</option><option value="negative">Exclude positive</option></select></label></div>
-                        <div className="pipeline-fields pipeline-selection-secondary"><label><span>Compartment / tissue</span><input value={pipeline.selection.compartment} placeholder="any" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,compartment:event.target.value}}))}/></label></div>
+                        <div className="pipeline-fields pipeline-selection-fields">
+                          <FacetPicker label="Dataset / library" value={pipeline.selection.datasetId} items={pipelineSelectionFacets.datasets} multiple placeholder="Any dataset" onChange={(datasetId)=>setPipeline((current)=>({...current,selection:{...current.selection,datasetId}}))}/>
+                          <FacetPicker label="Sample" value={pipeline.selection.sampleId} items={pipelineSelectionFacets.samples} multiple placeholder="Any sample" onChange={(sampleId)=>setPipeline((current)=>({...current,selection:{...current.selection,sampleId}}))}/>
+                          <FacetPicker label="Donor / subject" value={pipeline.selection.subjectId} items={pipelineSelectionFacets.subjects} multiple placeholder="Any donor" onChange={(subjectId)=>setPipeline((current)=>({...current,selection:{...current.selection,subjectId}}))}/>
+                          <FacetPicker label="Cohort" value={pipeline.selection.cohort} items={pipelineSelectionFacets.cohorts} multiple placeholder="Any cohort" onChange={(cohort)=>setPipeline((current)=>({...current,selection:{...current.selection,cohort}}))}/>
+                          <FacetPicker label="Timepoint" value={pipeline.selection.timepoint} items={pipelineSelectionFacets.timepoints} multiple placeholder="Any timepoint" onChange={(timepoint)=>setPipeline((current)=>({...current,selection:{...current.selection,timepoint}}))}/>
+                          <FacetPicker label="Compartment / tissue" value={pipeline.selection.compartment} items={pipelineSelectionFacets.compartments} multiple placeholder="Any compartment" onChange={(compartment)=>setPipeline((current)=>({...current,selection:{...current.selection,compartment}}))}/>
+                          <FacetPicker label="Locus" value={pipeline.selection.locus} items={pipelineSelectionFacets.loci} multiple placeholder="Any locus" onChange={(locus)=>setPipeline((current)=>({...current,selection:{...current.selection,locus}}))}/>
+                          <label><span>V call</span><input value={pipeline.selection.vCall} placeholder="gene or allele" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,vCall:event.target.value}}))}/></label>
+                          <label className="check-line"><input type="checkbox" checked={pipeline.selection.vCallIncludeAmbiguous} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,vCallIncludeAmbiguous:event.target.checked}}))}/><span>Include ambiguous V calls</span></label>
+                          <label><span>J call</span><input value={pipeline.selection.jCall} placeholder="gene or allele" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,jCall:event.target.value}}))}/></label>
+                          <label className="check-line"><input type="checkbox" checked={pipeline.selection.jCallIncludeAmbiguous} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,jCallIncludeAmbiguous:event.target.checked}}))}/><span>Include ambiguous J calls</span></label>
+                          <label><span>CDR3 nt</span><input value={pipeline.selection.cdr3Nt} placeholder="substring" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,cdr3Nt:event.target.value}}))}/></label>
+                          <label><span>CDR3 aa</span><input value={pipeline.selection.cdr3Aa} placeholder="substring" onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,cdr3Aa:event.target.value}}))}/></label>
+                          <label><span>Productive</span><select value={pipeline.selection.productive} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,productive:event.target.value as "any"|"yes"|"no"}}))}><option value="any">Either</option><option value="yes">Productive</option><option value="no">Non-productive</option></select></label>
+                          <label><span>CDR3 assigned</span><select value={pipeline.selection.hasCdr3} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,hasCdr3:event.target.value as "any"|"yes"|"no"}}))}><option value="any">Either</option><option value="yes">Required</option><option value="no">Absent</option></select></label>
+                          <label><span>Double-D</span><select value={pipeline.selection.doubleD} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,doubleD:event.target.value as "any"|"positive"|"negative"}}))}><option value="any">Either</option><option value="positive">Positive only</option><option value="negative">Exclude positive</option></select></label>
+                        </div>
                       </article>
                       <article className={pipeline.lineage.enabled?"enabled":""}><label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.lineage.enabled} onChange={(event)=>setPipeline((current)=>({...current,lineage:{...current.lineage,enabled:event.target.checked}}))}/><span><b>4 · Lineage assignment</b><small>May span samples only within the selected boundary.</small></span></label><div className="pipeline-fields"><label><span>Boundary</span><select value={pipeline.lineage.scope} onChange={(event)=>setPipeline((current)=>({...current,lineage:{...current.lineage,scope:event.target.value as DatasetScope}}))}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><label><span>CDR3 nt identity</span><CommitNumberInput min="0.7" max="1" step="0.01" value={pipeline.lineage.identity} onCommit={(identity)=>setPipeline((current)=>({...current,lineage:{...current.lineage,identity}}))}/></label><label><span>V/J level</span><select value={pipeline.lineage.resolution} onChange={(event)=>setPipeline((current)=>({...current,lineage:{...current.lineage,resolution:event.target.value as "gene"|"allele"}}))}><option value="gene">Gene</option><option value="allele">Allele</option></select></label><label><span>Multiple-call policy</span><select value={pipeline.lineage.ambiguity} onChange={(event)=>setPipeline((current)=>({...current,lineage:{...current.lineage,ambiguity:event.target.value as PipelinePlan["lineage"]["ambiguity"]}}))}><option value="overlap">Any V/J overlap</option><option value="top">Top call only</option><option value="strict">Identical call sets</option></select></label><label className="check-line"><input type="checkbox" checked={pipeline.lineage.productiveOnly} onChange={(event)=>setPipeline((current)=>({...current,lineage:{...current.lineage,productiveOnly:event.target.checked}}))}/><span>Productive only</span></label></div></article>
                       <article className={pipeline.shm.enabled||pipeline.missingAlleles.enabled?"enabled":""}><div className="pipeline-diagnostic-switches"><label><input type="checkbox" checked={pipeline.shm.enabled} onChange={(event)=>setPipeline((current)=>({...current,shm:{...current.shm,enabled:event.target.checked}}))}/><span><b>5 · SHM summary</b><small>On the final working set.</small></span></label><label><input type="checkbox" checked={pipeline.missingAlleles.enabled} onChange={(event)=>setPipeline((current)=>({...current,missingAlleles:{enabled:event.target.checked},lineage:event.target.checked?{...current.lineage,enabled:true}:current.lineage}))}/><span><b>6 · Missing-allele hints</b><small>Enabling this also enables lineage assignment.</small></span></label></div>{pipeline.shm.enabled&&<div className="pipeline-fields"><label><span>SHM metric</span><select value={pipeline.shm.metric} onChange={(event)=>setPipeline((current)=>({...current,shm:{...current.shm,metric:event.target.value as PipelinePlan["shm"]["metric"]}}))}><option value="vNtRate">V nucleotide mutation rate</option><option value="vNtMutations">V nucleotide mutation count</option><option value="vAaRate">V amino-acid replacement rate</option><option value="vAaReplacements">V amino-acid replacement count</option><option value="synonymous">V synonymous mutation count</option><option value="cdrNtRate">CDR nucleotide mutation rate</option><option value="frameworkNtRate">Framework nucleotide mutation rate</option></select></label></div>}</article>

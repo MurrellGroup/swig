@@ -101,6 +101,21 @@ test("double-D positive repertoire selection uses sparse evidence and composes c
   await store.clear();
 });
 
+test("repertoire call filters expose an explicit ambiguous-assignment policy", async () => {
+  const store=new AirrResultStore();
+  const header=["sequence_id","sequence","locus","v_call","j_call","productive","cdr3"].join("\t");
+  const body=[
+    "single\tACGT\tIGH\tIGHV1-2*01\tIGHJ4*01\tT\tTGTAAA",
+    "ambiguous\tACGT\tIGH\tIGHV3-23*01,IGHV1-2*02\tIGHJ4*01\tT\tTGTCCC",
+  ].join("\n")+"\n";
+  await store.appendBatch(header,body);await store.finalize();
+  const strict=await selectRepertoire(store,{...DEFAULT_REPERTOIRE_SELECTION,vCall:"IGHV1-2"});
+  assert.equal(strict.retainedRecords,1);assert.equal(strict.mask[0],1);assert.equal(strict.mask[1],0);
+  const inclusive=await selectRepertoire(store,{...DEFAULT_REPERTOIRE_SELECTION,vCall:"IGHV1-2",vCallIncludeAmbiguous:true});
+  assert.equal(inclusive.retainedRecords,2);assert.equal(inclusive.mask[1],1);
+  await store.clear();
+});
+
 test("AIRR session fingerprint is invariant to batch boundaries and changes with content", async()=>{
   const header="sequence_id\tsequence\tv_call\tj_call";const rows=["a\tACGT\tV1\tJ1\n","b\tTGCA\tV2\tJ2\n"];
   const first=new AirrResultStore();await first.appendBatch(header,rows.join(""));await first.finalize();

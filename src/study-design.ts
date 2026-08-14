@@ -49,7 +49,9 @@ export interface PipelinePlan {
     compartment: string;
     locus: string;
     vCall: string;
+    vCallIncludeAmbiguous: boolean;
     jCall: string;
+    jCallIncludeAmbiguous: boolean;
     cdr3Nt: string;
     cdr3Aa: string;
     productive: "any" | "yes" | "no";
@@ -103,7 +105,9 @@ export const DEFAULT_PIPELINE_PLAN: PipelinePlan = {
     compartment: "",
     locus: "",
     vCall: "",
+    vCallIncludeAmbiguous: false,
     jCall: "",
+    jCallIncludeAmbiguous: false,
     cdr3Nt: "",
     cdr3Aa: "",
     productive: "any",
