@@ -50,6 +50,14 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(app, /context-rail-secondary/);
   assert.match(app, /<span>Double-D explorer<small>/);
   assert.doesNotMatch(app, /results-tab-double-d|results-panel-double-d/);
+  assert.match(app, /results-hero" hidden aria-hidden="true"/);
+  assert.match(app, /className="results-rail-tools"/);
+  assert.match(app, /sidebarTools=\{resultsSidebarTools\(\)\}/);
+  assert.match(app, /overview=\{repertoireOverview\}/);
+  assert.match(app, /className="results-tool-drawer"/);
+  assert.match(app, /<strong>Study design<\/strong>/);
+  assert.match(app, /<strong>Sample colors<\/strong>/);
+  assert.match(app, /<b>01<\/b><span>Repertoire/);
   assert.match(app, /FacetPicker label=\{`\$\{segment\} gene or allele`\}/);
   assert.match(app, /Include multi-call assignments containing this/);
   assert.match(app, /addFieldHelp\(root\)/);
@@ -62,6 +70,8 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(repertoire, /panel==="usage"/);
   assert.doesNotMatch(repertoire, /panel==="controls"|setPanel\("controls"\)/);
   assert.match(repertoire, /repertoire-global-settings/);
+  assert.match(repertoire, /\{sidebarTools\}/);
+  assert.match(repertoire, /\{overview\}/);
 
   assert.match(post, /type PostWorkspaceId = "overview" \| PostModuleId/);
   assert.match(post, /aria-label="Post-analysis sections"/);
@@ -74,9 +84,13 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(post, /FacetPicker label="Sample"/);
   assert.match(post, /FacetPicker label="V gene or allele"/);
   assert.match(post, /vCallIncludeAmbiguous/);
+  assert.match(post, /\{sidebarTools\}/);
   assert.match(css, /\.post-context-main > \.post-module\.is-collapsed \{ display: none !important; \}/);
   assert.match(css, /\.pipeline-stage-grid article:not\(\.enabled\) \.pipeline-fields/);
   assert.match(css, /\.post-module > label\.constant-collapse-policy/);
   assert.match(css, /\.results-table col\.column-cdr3/);
   assert.match(css, /\.sequence-context-main \.detail-shell[\s\S]*overflow-x: auto/);
+  assert.match(css, /results are an application workspace, not a report masthead/);
+  assert.match(css, /\.results-application-page \.results-view-tabs[\s\S]*background: var\(--ink\)/);
+  assert.match(css, /\.post-analysis-heading \{ display: none !important; \}/);
 });

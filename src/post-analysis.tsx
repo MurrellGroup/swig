@@ -105,6 +105,7 @@ interface Props {
   defaultLineageScope?: DatasetScope;
   doubleDCount?: number;
   autoPipeline?: PipelinePlan | null;
+  sidebarTools?: ReactNode;
   onInspect: (ordinal: number) => void;
   /** Signals a committed or user-visible state change for optional project checkpoints. */
   onSessionChange?: (reason: string) => void;
@@ -398,7 +399,7 @@ function parseQueries(text: string): string[] {
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).map((line) => line.replace(/\s/g, ""));
 }
 
-export function PostAnalysisWorkbench({ store, references, scope, loci, resultFacets, inputName, workers, callingProfile, assignerStrategy, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", doubleDCount = 0, autoPipeline, onInspect, onSessionChange, sessionHandleRef, initialSession }: Props) {
+export function PostAnalysisWorkbench({ store, references, scope, loci, resultFacets, inputName, workers, callingProfile, assignerStrategy, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", doubleDCount = 0, autoPipeline, sidebarTools, onInspect, onSessionChange, sessionHandleRef, initialSession }: Props) {
   const runtime = useMemo(() => new PostAnalysisRuntime(store), [store]);
   const postLockAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => {
@@ -1963,10 +1964,12 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         <button type="button" className={activeWorkspace==="diagnostics"?"active":""} onClick={()=>setActiveWorkspace("diagnostics")}><b>05</b><span>Diagnostics<small>SHM + allele hints</small></span></button>
         <button type="button" disabled={!selectedLineage} className={activeWorkspace==="workbench"?"active":""} onClick={()=>setActiveWorkspace("workbench")}><b>06</b><span>Workbench<small>{selectedLineage?`Lineage ${selectedLineage.id}`:"Select a lineage"}</small></span></button>
         <button type="button" className={activeWorkspace==="query"?"active":""} onClick={()=>setActiveWorkspace("query")}><b>07</b><span>Query<small>Search + expand</small></span></button>
+        {sidebarTools}
       </nav>
 
       <div className="context-main post-context-main">
     {activeWorkspace==="overview"&&<section className="post-overview-panel">
+    <div className="post-overview-intro"><strong>Post-analysis workspace</strong><span>Each stage consumes the retained set from the preceding stage. Computation and intermediate state remain in this browser.</span></div>
 
     {autoPipeline?.enabled&&<section className={`pipeline-run-banner ${busy?"running":"complete"}`}><div><span className="section-kicker">Pipeline execution</span><h3>{busy?busy:"Selected repertoire-scale stages complete"}</h3><p>{pipelineReport.length?pipelineReport.join(" "):"The configured stages are running in order; each stage receives the retained set from the previous stage."}</p></div><strong>{busy?"RUNNING":"COMPLETE"}</strong></section>}
 

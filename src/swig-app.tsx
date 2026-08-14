@@ -180,7 +180,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.22.1";
+const APP_VERSION = "0.22.2";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -914,6 +914,7 @@ function DoubleDExplorer({session,onInspect}:{session:ResultSession;onInspect:(o
 }
 
 type ResultsView = "repertoire" | "sequences" | "post";
+type ResultsUtilityPanel = "study" | "palette" | null;
 
 function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNewAnalysis: () => void }) {
   const initialView: ResultsView = session.pipeline.enabled ? "post" : session.total <= 3 ? "sequences" : "repertoire";
@@ -944,6 +945,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const [metadataProgress,setMetadataProgress]=useState({processed:0,total:session.total});
   const [metadataStatus,setMetadataStatus]=useState("");
   const [sampleColors,setSampleColors]=useState<SampleColorMap>(()=>createSampleColorMap(session.datasets,session.sampleColors));
+  const [utilityPanel,setUtilityPanel]=useState<ResultsUtilityPanel>(null);
   const postSessionRef=useRef<PostAnalysisSessionHandle|null>(null);
   const autoOpened = useRef(false);
   const detailRef = useRef<HTMLElement>(null);
@@ -978,6 +980,13 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     const first=window.requestAnimationFrame(()=>{second=window.requestAnimationFrame(()=>window.scrollTo({top:target,left:0,behavior:"auto"}));});
     return()=>{window.cancelAnimationFrame(first);if(second)window.cancelAnimationFrame(second);};
   },[view]);
+
+  useEffect(()=>{
+    if(!utilityPanel)return;
+    const close=(event:KeyboardEvent)=>{if(event.key==="Escape")setUtilityPanel(null);};
+    document.addEventListener("keydown",close);
+    return()=>document.removeEventListener("keydown",close);
+  },[utilityPanel]);
 
   async function persistProjectState(reason:string){
     if(!session.project)return;
@@ -1218,9 +1227,48 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const pageStart = page * PAGE_SIZE + (results.rows.length ? 1 : 0);
   const pageEnd = page * PAGE_SIZE + results.rows.length;
 
+  function resultsSidebarTools(){
+    return <div className="results-rail-tools">
+      <div className="results-rail-summary">
+        <span>Current analysis</span>
+        <strong>{session.total.toLocaleString()} records</strong>
+        <small>{friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]}</small>
+      </div>
+      <div className="results-rail-section">
+        <span className="results-rail-section-label">Study</span>
+        <button type="button" className={utilityPanel==="study"?"active":""} onClick={()=>setUtilityPanel("study")}><strong>Study design</strong><small>Samples, donors and timepoints</small></button>
+        <button type="button" className={utilityPanel==="palette"?"active":""} onClick={()=>setUtilityPanel("palette")}><strong>Sample colors</strong><small>Shared figure palette</small></button>
+      </div>
+      <div className="results-rail-section results-rail-export">
+        <span className="results-rail-section-label">Files</span>
+        <label><span>Table format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label>
+        <button className="primary" type="button" onClick={()=>void downloadAll()} disabled={downloading}>{downloading?"Writing results…":`Download ${downloadFormat.toUpperCase()}`}</button>
+        {session.doubleDCount>0&&<button type="button" onClick={()=>void downloadDoubleD()} disabled={doubleDDownloading}>{doubleDDownloading?"Writing evidence…":`Double-D evidence · ${session.doubleDCount.toLocaleString()}`}</button>}
+        <button type="button" onClick={()=>void saveAnalysisSession()} disabled={savingSession}>{savingSession?"Saving session…":"Save portable session"}</button>
+        {session.project&&<button type="button" onClick={()=>saveProjectNow("manual_checkpoint")}>Save project checkpoint</button>}
+      </div>
+      {session.project&&<small className="results-rail-project">{projectSaveStatus}</small>}
+      {downloadError&&<small className="results-rail-error" role="alert">{downloadError}</small>}
+      <button className="results-new-analysis" type="button" onClick={onNewAnalysis}>New analysis</button>
+    </div>;
+  }
+
+  const repertoireOverview=<section className="repertoire-run-summary" aria-label="Run summary">
+    <header><div><span className="section-kicker">Run summary</span><h2>{session.total.toLocaleString()} rearrangements</h2><p>{session.restored?"Saved state restored":`Completed in ${session.seconds.toFixed(2)} s · ${Math.round(session.total/Math.max(session.seconds,0.001)).toLocaleString()} reads/s`}</p></div><strong className="run-state">Complete</strong></header>
+    <div className="result-summary app-result-summary">
+      <article><span>V + J assigned</span><strong>{session.summary.assigned.toLocaleString()}</strong><small>{percentage(session.summary.assigned,session.total)} of input</small></article>
+      <article><span>Productive</span><strong>{session.summary.productive.toLocaleString()}</strong><small>{percentage(session.summary.productive,session.total)} of input</small></article>
+      <article><span>CDR3 called</span><strong>{session.summary.withCdr3.toLocaleString()}</strong><small>{percentage(session.summary.withCdr3,session.total)} of input</small></article>
+      <article><span>Loci observed</span><strong>{facets.loci.length}</strong><small>{facets.loci.map((item)=>item.value).join(" · ")||"none"}</small></article>
+      {session.doubleD.mode!=="off"&&<article><span>Supported Double-D</span><strong>{session.doubleDCount.toLocaleString()}</strong><small>opt-in evidence screen</small></article>}
+    </div>
+    <details className="run-technical-details"><summary>Run settings</summary><div><span>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"}</span><span>{assignerStrategyLabel(session.assignerStrategy)}</span><span>{callingProfileLabel(session.callingProfile)} calling</span><span>{session.workers} WASM worker{session.workers===1?"":"s"}</span><span>{bytes(session.outputBytes)} AIRR</span>{session.subsampleSize&&<span>subsampled from {session.inputTotal.toLocaleString()} input records · seed {session.subsampleSeed}</span>}{fastqQualityResultText(session)&&<span>{fastqQualityResultText(session).replace(/^ · /,"")}</span>}{session.doubleD.mode!=="off"&&<span>Double-D: {session.doubleD.mode==="all"?"all eligible junctions":`V–J span ≥ ${session.doubleD.minimumVjSpan} nt`}</span>}</div></details>
+    {session.project&&<div className="repertoire-project-status"><strong>{session.project.root.name}</strong><span>{projectSaveStatus}</span></div>}
+  </section>;
+
   return (
-    <main className="results-page">
-      <section className="results-hero">
+    <main className="results-page results-application-page">
+      <section className="results-hero" hidden aria-hidden="true">
         <WorkflowStepper active={3} />
         <div className="results-title"><div><p className="eyebrow"><span>{session.restored?"Saved state restored":`Analysis complete · ${session.seconds.toFixed(2)} s · ${Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s`}</span></p><h1>{session.total.toLocaleString()} analyzed<br /><em>rearrangements.</em></h1><p>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"} · {friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {assignerStrategyLabel(session.assignerStrategy)} · {callingProfileLabel(session.callingProfile)} calling · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize ? ` · exact random sample per dataset from ${session.inputTotal.toLocaleString()} input records (base seed ${session.subsampleSeed})` : ""}{fastqQualityResultText(session)}{session.doubleD.mode !== "off" ? ` · double-D screen ${session.doubleD.mode === "all" ? "all eligible junctions" : `V–J spans ≥ ${session.doubleD.minimumVjSpan} nt`}` : ""}</p>{session.project&&<span className="project-state-line"><b>Project directory · {session.project.root.name}</b><small>{projectSaveStatus}</small></span>}</div><div className="results-actions"><label className="compact-export-format"><span>Table format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing results…" : `Download ${downloadFormat.toUpperCase()}`}<span>↓</span></button>{session.doubleDCount > 0 && <button type="button" onClick={() => void downloadDoubleD()} disabled={doubleDDownloading}>{doubleDDownloading ? "Writing double-D evidence…" : `Double-D evidence (${session.doubleDCount.toLocaleString()})`}</button>}{session.project&&<button type="button" onClick={()=>saveProjectNow("manual_checkpoint")}>Save project checkpoint</button>}<button type="button" onClick={()=>void saveAnalysisSession()} disabled={savingSession}>{savingSession?"Saving session…":"Save portable session"}</button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
         <div className="result-summary">
@@ -1235,12 +1283,12 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
       </section>
 
       <nav ref={resultsTabsRef} className="results-view-tabs" aria-label="Results view" role="tablist">
-        <button id="results-tab-repertoire" role="tab" aria-selected={view === "repertoire"} aria-controls="results-panel-repertoire" className={view === "repertoire" ? "active" : ""} type="button" onClick={() => activateView("repertoire")}><span>Repertoire</span><small>Figures + composition</small></button>
-        <button id="results-tab-sequences" role="tab" aria-selected={view === "sequences"} aria-controls="results-panel-sequences" className={view === "sequences" ? "active" : ""} type="button" onClick={() => activateView("sequences")}><span>Sequences</span><small>Filter + inspect calls</small></button>
-        <button id="results-tab-post" role="tab" aria-selected={view === "post"} aria-controls="results-panel-post" className={view === "post" ? "active" : ""} type="button" onClick={() => activateView("post")}><span>Post-analysis</span><small>Filter + lineages + SHM + trees</small></button>
+        <button id="results-tab-repertoire" role="tab" aria-selected={view === "repertoire"} aria-controls="results-panel-repertoire" className={view === "repertoire" ? "active" : ""} type="button" onClick={() => activateView("repertoire")}><b>01</b><span>Repertoire<small>Composition and figures</small></span></button>
+        <button id="results-tab-sequences" role="tab" aria-selected={view === "sequences"} aria-controls="results-panel-sequences" className={view === "sequences" ? "active" : ""} type="button" onClick={() => activateView("sequences")}><b>02</b><span>Sequences<small>Filter and inspect calls</small></span></button>
+        <button id="results-tab-post" role="tab" aria-selected={view === "post"} aria-controls="results-panel-post" className={view === "post" ? "active" : ""} type="button" onClick={() => activateView("post")}><b>03</b><span>Post-analysis<small>Lineages, SHM and trees</small></span></button>
       </nav>
 
-      {openedViews.has("repertoire") && <div id="results-panel-repertoire" role="tabpanel" aria-labelledby="results-tab-repertoire" className="results-view-panel" hidden={view !== "repertoire"}><RepertoireDashboard key={metadataRevision} store={session.store} loci={facets.loci} inputName={session.inputName} samples={facets.samples} sampleColors={sampleColors} /></div>}
+      {openedViews.has("repertoire") && <div id="results-panel-repertoire" role="tabpanel" aria-labelledby="results-tab-repertoire" className="results-view-panel" hidden={view !== "repertoire"}><RepertoireDashboard key={metadataRevision} store={session.store} loci={facets.loci} inputName={session.inputName} samples={facets.samples} sampleColors={sampleColors} sidebarTools={resultsSidebarTools()} overview={repertoireOverview} /></div>}
       {openedViews.has("sequences") && <div id="results-panel-sequences" role="tabpanel" aria-labelledby="results-tab-sequences" className="results-view-panel" hidden={view !== "sequences"}>
       <div className="sequence-context-workspace contextual-workspace">
         <nav className="context-rail" aria-label="Sequence result panels">
@@ -1248,6 +1296,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
           <button type="button" className={sequenceWorkspace==="records"?"active":""} onClick={()=>setSequenceWorkspace("records")}><b>01</b><span>Records + filters<small>{results.totalMatches===null?`${pageEnd.toLocaleString()}+ matches`:`${results.totalMatches.toLocaleString()} matches`}{filtered?" · filtered":""}</small></span></button>
           <button type="button" disabled={!selected} className={sequenceWorkspace==="detail"?"active":""} onClick={()=>setSequenceWorkspace("detail")}><b>02</b><span>Record detail<small>{selected?.sequenceId||"Select a record"}</small></span></button>
           {session.doubleDCount>0&&<button type="button" className={`context-rail-secondary ${sequenceWorkspace==="double-d"?"active":""}`} onClick={()=>setSequenceWorkspace("double-d")}><span>Double-D explorer<small>{session.doubleDCount.toLocaleString()} supported calls</small></span></button>}
+          {resultsSidebarTools()}
         </nav>
         <div className="context-main sequence-context-main">
 
@@ -1318,7 +1367,11 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         </div>
       </div>
       </div>}
-      {openedViews.has("post") && <div id="results-panel-post" role="tabpanel" aria-labelledby="results-tab-post" className="results-view-panel" hidden={view !== "post"}><PostAnalysisWorkbench key={metadataRevision} store={session.store} references={session.references} scope={session.scope} loci={facets.loci} resultFacets={facets} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} assignerStrategy={session.assignerStrategy} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={datasets} sampleColors={sampleColors} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} doubleDCount={session.doubleDCount} autoPipeline={metadataRevision===0&&session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} onInspect={(ordinal) => void inspectOrdinal(ordinal)} onSessionChange={(reason)=>scheduleProjectSave(reason)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} /></div>}
+      {openedViews.has("post") && <div id="results-panel-post" role="tabpanel" aria-labelledby="results-tab-post" className="results-view-panel" hidden={view !== "post"}><PostAnalysisWorkbench key={metadataRevision} store={session.store} references={session.references} scope={session.scope} loci={facets.loci} resultFacets={facets} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} assignerStrategy={session.assignerStrategy} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={datasets} sampleColors={sampleColors} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} doubleDCount={session.doubleDCount} autoPipeline={metadataRevision===0&&session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} sidebarTools={resultsSidebarTools()} onInspect={(ordinal) => void inspectOrdinal(ordinal)} onSessionChange={(reason)=>scheduleProjectSave(reason)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} /></div>}
+      {utilityPanel&&<div className="results-tool-drawer-backdrop" role="presentation" onMouseDown={(event)=>{if(event.target===event.currentTarget)setUtilityPanel(null);}}><section className="results-tool-drawer" role="dialog" aria-modal="true" aria-labelledby="results-tool-drawer-title">
+        <header><div><span className="section-kicker">Analysis settings</span><h2 id="results-tool-drawer-title">{utilityPanel==="study"?"Study design":"Sample colors"}</h2><p>{utilityPanel==="study"?"Edit grouping metadata. Applying changes re-indexes downstream grouping without rerunning V(D)J assignment.":"The same sample-to-color association is used throughout figures and lineage trees."}</p></div><button type="button" onClick={()=>setUtilityPanel(null)} aria-label="Close analysis settings">×</button></header>
+        {utilityPanel==="study"?<div className="results-drawer-study"><div className="study-metadata-table"><div className="study-metadata-head"><span>Dataset</span><span>Sample</span><span>Donor / subject</span><span>Cohort</span><span>Timepoint</span><span>Compartment / tissue</span></div>{metadataDraft.map((dataset)=><div className="study-metadata-row" key={dataset.datasetId}><span><strong>{dataset.inputName}</strong><small>{dataset.datasetId}</small></span><input aria-label={`${dataset.inputName} sample ID`} value={dataset.sampleId} onChange={(event)=>updateMetadataDraft(dataset.datasetId,"sampleId",event.target.value)}/><input aria-label={`${dataset.inputName} subject ID`} value={dataset.subjectId} onChange={(event)=>updateMetadataDraft(dataset.datasetId,"subjectId",event.target.value)}/><input aria-label={`${dataset.inputName} cohort`} value={dataset.cohort} onChange={(event)=>updateMetadataDraft(dataset.datasetId,"cohort",event.target.value)}/><input aria-label={`${dataset.inputName} timepoint`} value={dataset.timepoint} onChange={(event)=>updateMetadataDraft(dataset.datasetId,"timepoint",event.target.value)}/><input aria-label={`${dataset.inputName} compartment`} value={dataset.compartment??""} onChange={(event)=>updateMetadataDraft(dataset.datasetId,"compartment",event.target.value)}/></div>)}</div><div className="study-metadata-actions"><button className="post-primary" type="button" disabled={metadataBusy} onClick={()=>void applyStudyMetadata()}>{metadataBusy?"Re-indexing metadata…":"Apply metadata + clear downstream state"}</button><button type="button" disabled={metadataBusy} onClick={()=>{setMetadataDraft(datasets.map((dataset)=>({...dataset})));setMetadataStatus("");}}>Discard edits</button>{metadataBusy&&<span>{metadataProgress.processed.toLocaleString()} / {metadataProgress.total.toLocaleString()}</span>}</div>{metadataStatus&&<p className="scientific-note"><span>i</span>{metadataStatus}</p>}</div>:<div className="results-drawer-palette"><div>{sampleIds(datasets).map((sample)=><label key={sample}><input type="color" value={sampleColor(sample,sampleColors)} onChange={(event)=>setSampleColors((current)=>({...current,[sample]:event.target.value}))}/><span><i style={{background:sampleColor(sample,sampleColors)}}/>{sample}</span></label>)}</div><button type="button" onClick={()=>setSampleColors(createSampleColorMap(datasets))}>Reset palette</button></div>}
+      </section></div>}
     </main>
   );
 }

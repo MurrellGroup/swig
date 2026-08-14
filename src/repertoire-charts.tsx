@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 
 import type {
   AirrResultStore,
@@ -248,12 +248,14 @@ const SERIES_LABELS: Record<CallSeries, string> = {
   isotypes: "Isotype / constant class",
 };
 
-export function RepertoireDashboard({ store, loci, inputName, samples, sampleColors }: {
+export function RepertoireDashboard({ store, loci, inputName, samples, sampleColors, sidebarTools, overview }: {
   store: AirrResultStore;
   loci: FacetValue[];
   inputName: string;
   samples: FacetValue[];
   sampleColors: SampleColorMap;
+  sidebarTools?: ReactNode;
+  overview?: ReactNode;
 }) {
   const [locus, setLocus] = useState("");
   const [productiveOnly, setProductiveOnly] = useState(false);
@@ -285,8 +287,10 @@ export function RepertoireDashboard({ store, loci, inputName, samples, sampleCol
         <button type="button" className={panel==="distribution"?"active":""} onClick={()=>setPanel("distribution")}><b>02</b><span>Distribution<small>{distribution==="cdr3Lengths"?"CDR3 length":"V identity"}</small></span></button>
         <button type="button" className={panel==="pairing"?"active":""} onClick={()=>setPanel("pairing")}><b>03</b><span>V–J pairs<small>{resolution} labels</small></span></button>
         {samples.length>1&&<button type="button" className={panel==="samples"?"active":""} onClick={()=>setPanel("samples")}><b>04</b><span>Samples<small>{samples.length} observed</small></span></button>}
+        {sidebarTools}
       </nav>
       <div className="context-main repertoire-dashboard">
+        {overview}
         <header className="repertoire-heading"><div><span className="section-kicker">Repertoire analysis</span><h2>{panel==="usage"?SERIES_LABELS[series]:panel==="distribution"?distribution==="cdr3Lengths"?"CDR3 amino-acid length":"V-region identity":panel==="pairing"?"V–J call pairs":"Sample composition"}</h2><p>Frequencies are calculated per input record. Population and ambiguous-call handling can be changed on this page.</p></div><span className="aggregate-badge">{snapshot.records.toLocaleString()} records in view</span></header>
 
         <details className="repertoire-global-settings"><summary><span><b>Population and figure settings</b><small>{population} · {locus||"all loci"} · {ambiguity==="fractional"?"fractional ties":"first calls"} · {resolution} labels · {metric}</small></span></summary><div className="figure-controls" aria-label="Repertoire figure controls">
