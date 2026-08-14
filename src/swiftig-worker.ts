@@ -1,6 +1,13 @@
 /// <reference lib="webworker" />
 
-import { streamSequenceBatches, type SequenceBatch, type SequenceFormat } from "./sequence-stream";
+import {
+  emptyFastqQualityFilterStats,
+  streamSequenceBatches,
+  type FastqQualityFilterOptions,
+  type FastqQualityFilterStats,
+  type SequenceBatch,
+  type SequenceFormat,
+} from "./sequence-stream";
 import type { AssignerStrategy, CallingProfile, DoubleDScreenOptions } from "./swiftig-runtime";
 
 interface StartRequest {
@@ -16,6 +23,7 @@ interface StartRequest {
   workers: number;
   countHint: number | null;
   subsample?: { size: number; seed: number };
+  fastqFilter?: FastqQualityFilterOptions;
   doubleD?: DoubleDScreenOptions;
 }
 
@@ -180,6 +188,11 @@ async function handleRequest(request: StartRequest) {
     let bytesRead = 0;
     let totalBytes = typeof request.query === "string" ? request.query.length : request.query.size;
     let inputRecords = 0;
+    let eligibleRecords = 0;
+    let fastqFilterStats: FastqQualityFilterStats = emptyFastqQualityFilterStats(
+      Boolean(request.fastqFilter?.enabled),
+      Boolean(request.fastqFilter?.enabled && request.format === 2),
+    );
 
     const fail = (error: Error) => {
       if (fatalError) return;
@@ -194,7 +207,7 @@ async function handleRequest(request: StartRequest) {
       const inputFraction = totalBytes ? Math.min(1, bytesRead / totalBytes) : 0;
       let completion: number;
       if (request.subsample) {
-        const selected = Math.max(1, Math.min(inputRecords || request.subsample.size, request.subsample.size));
+        const selected = Math.max(1, Math.min(eligibleRecords || request.subsample.size, request.subsample.size));
         completion = parsed === 0
           ? inputFraction * 0.48
           : 0.48 + Math.min(1, committed / selected) * 0.52;
@@ -278,14 +291,22 @@ async function handleRequest(request: StartRequest) {
         ? Math.min(request.countHint ?? request.subsample.size, request.subsample.size)
         : request.countHint),
       subsample: request.subsample,
+      fastqFilter: request.fastqFilter,
       onProgress: (state) => {
         bytesRead = state.bytesRead;
         totalBytes = state.totalBytes;
         inputRecords = state.recordsRead;
+        eligibleRecords = state.recordsEligible;
+        fastqFilterStats = state.fastqFilter;
         if (state.recordsRead && state.recordsRead % 1000 === 0) {
-          report(request.subsample
-            ? `Random subsample · ${state.recordsRead.toLocaleString()} scanned · retaining ${state.recordsSelected.toLocaleString()}`
-            : `Streaming input · ${state.recordsRead.toLocaleString()} sequences parsed`);
+          if (state.fastqFilter.applicable) {
+            const rejected = state.fastqFilter.recordsRejectedExpectedErrors + state.fastqFilter.recordsRejectedMinimumLength;
+            report(`FASTQ quality filter · ${state.recordsRead.toLocaleString()} scanned · ${state.recordsEligible.toLocaleString()} retained · ${rejected.toLocaleString()} rejected${request.subsample ? ` · sampling ${state.recordsSelected.toLocaleString()}` : ""}`);
+          } else {
+            report(request.subsample
+              ? `Random subsample · ${state.recordsRead.toLocaleString()} scanned · retaining ${state.recordsSelected.toLocaleString()}`
+              : `Streaming input · ${state.recordsRead.toLocaleString()} sequences parsed`);
+          }
         }
       },
     })) {
@@ -300,7 +321,14 @@ async function handleRequest(request: StartRequest) {
     }
     inputDone = true;
     bytesRead = totalBytes;
-    report(`Input complete · finishing ${parsed.toLocaleString()} sequences`);
+    if (fastqFilterStats.applicable) {
+      const rejected = fastqFilterStats.recordsRejectedExpectedErrors + fastqFilterStats.recordsRejectedMinimumLength;
+      report(`FASTQ filter complete · ${inputRecords.toLocaleString()} scanned · ${fastqFilterStats.recordsRetained.toLocaleString()} retained · ${rejected.toLocaleString()} rejected · finishing ${parsed.toLocaleString()} sequences`);
+    } else if (request.fastqFilter?.enabled) {
+      report(`FASTQ filter bypassed for non-FASTQ input · finishing ${parsed.toLocaleString()} sequences`);
+    } else {
+      report(`Input complete · finishing ${parsed.toLocaleString()} sequences`);
+    }
     maybeFinish();
     await finished;
     if (fatalError) throw fatalError;
@@ -312,6 +340,7 @@ async function handleRequest(request: StartRequest) {
       total: parsed,
       inputRecords,
       workers: workerCount,
+      fastqFilter: fastqFilterStats,
     });
   } catch (error) {
     self.postMessage({

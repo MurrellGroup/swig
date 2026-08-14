@@ -1926,11 +1926,16 @@ function setMode(m) {
     state.mode = m;
     if(m === 'NT') {
         dom.btnNt.classList.add('active'); dom.btnAa.classList.remove('active');
-        dom.grpFrame.style.opacity = '0.4'; dom.grpFrame.style.pointerEvents = 'none';
     } else {
         dom.btnAa.classList.add('active'); dom.btnNt.classList.remove('active');
-        dom.grpFrame.style.opacity = '1'; dom.grpFrame.style.pointerEvents = 'auto';
     }
+    // Frame is metadata for translating this nucleotide alignment. It must be
+    // correctable while inspecting NTs as well as while viewing amino acids.
+    dom.grpFrame.style.opacity = '1';
+    dom.grpFrame.style.pointerEvents = 'auto';
+    dom.grpFrame.title = m === 'NT'
+        ? 'Amino-acid reading frame; applies when AA view is selected and is returned to Swig.'
+        : 'Amino-acid reading frame returned to Swig.';
     state.selection = null;
     recalc();
 }

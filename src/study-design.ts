@@ -38,8 +38,6 @@ export interface PipelinePlan {
     msaSource: "selected" | "upload";
     uploadedMsa: string;
     uploadedMsaName: string;
-    /** Exact FASTA identifiers omitted before MSA validation or construction. */
-    excludedAlleles: string[];
   };
   selection: {
     enabled: boolean;
@@ -94,7 +92,6 @@ export const DEFAULT_PIPELINE_PLAN: PipelinePlan = {
     msaSource: "selected",
     uploadedMsa: "",
     uploadedMsaName: "",
-    excludedAlleles: [],
   },
   selection: {
     enabled: false,

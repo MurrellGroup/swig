@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { inferLineageGermline, quickAirrAlignment } from "../src/lineage-alignment.ts";
+import { alignedSequenceFrameOffset, inferLineageGermline, lineageInputFasta, quickAirrAlignment } from "../src/lineage-alignment.ts";
 import { inferredGermlineIdentity } from "../src/lineage-neighbours.ts";
 import { assignLineages, findLineageNeighbours, sequenceFingerprint, type PostAnalysisRecord } from "../src/post-analysis-core.ts";
 import type { AirrDetailRow } from "../src/result-store.ts";
@@ -96,6 +96,18 @@ test("reference quick view anchors rows on the V germline coordinate", () => {
   assert.match(fasta, />read_0__1\nACGT/);
   assert.match(fasta, />read_1__2\n-CGT/);
   assert.match(fasta, />__germline_N_masked__\nACGT/);
+});
+
+test("reference quick view carries the AIRR biological phase after V-reference padding", () => {
+  const row = detail(0, "A---ATGGCC", "A---ATGGCC", 3);
+  // One query base precedes the first complete codon, while the AIRR reference
+  // anchor contributes two left columns: (1 + 2) mod 3 = column 1/frame 1.
+  row.values.v_sequence_start = "1";
+  row.values.sequence_frame = "2";
+  const input = lineageInputFasta([row]);
+  assert.equal(input.frameAnchorUngappedOffset, 1);
+  assert.equal(input.alignmentFrameOffset, 0);
+  assert.equal(alignedSequenceFrameOffset("A---ATGGCC", 1, 2), 0);
 });
 
 test("Double-D lineage roots replace the baseline D with explicit D1 and D2", () => {

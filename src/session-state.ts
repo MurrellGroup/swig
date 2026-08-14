@@ -7,6 +7,7 @@ import type { DatasetManifestEntry, PipelinePlan, StudyDesign } from "./study-de
 import type { SampleColorMap } from "./sample-colors";
 import type { LineageGermlineMethod } from "./lineage-alignment";
 import type { AlignmentFrameOffset } from "./lineage-phylogeny";
+import type { FastqQualityFilterOptions, FastqQualityFilterStats } from "./sequence-stream";
 
 export const SWIG_SESSION_SCHEMA = 1 as const;
 
@@ -87,7 +88,11 @@ export interface SwigSession {
     assignerStrategy?: AssignerStrategy;
     minimumIdentity: number;
     strand: 0 | 1 | 2;
+    fastqFilter?: FastqQualityFilterOptions;
+    fastqFilterStats?: FastqQualityFilterStats;
     references: CompiledReferences;
+    /** Exact per-locus/segment FASTA identifiers removed before assignment. */
+    referenceExclusions?: Record<string, string[]>;
     doubleD?: Record<string, string | number | boolean>;
     datasets?: DatasetManifestEntry[];
     studyDesign?: StudyDesign;

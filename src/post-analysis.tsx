@@ -34,7 +34,7 @@ import {
 } from "./chmmairra-runtime";
 import { alignmentExtension, alignmentText, tableExtension, tableHeader, tableRow, treeNexus, type AlignmentExportFormat, type TableExportFormat } from "./export-formats";
 import { MissingAlleleAccumulator, DEFAULT_MISSING_ALLELE_OPTIONS, type MissingAlleleDashboard, type MissingAlleleOptions } from "./germline-evidence";
-import { GERMLINE_OUTGROUP, inferLineageGermline, lineageInputFasta, quickAirrAlignment, type LineageGermlineMethod } from "./lineage-alignment";
+import { GERMLINE_OUTGROUP, alignedSequenceFrameOffset, inferLineageGermline, lineageInputFasta, type LineageGermlineMethod } from "./lineage-alignment";
 import {
   buildLineageGermlineSketchIndex,
   scoreGermlineCandidate,
@@ -79,8 +79,6 @@ import type { CompiledReferences, ScopeKey } from "./reference-pack";
 import type { AirrDetailRow, AirrIndexRecord, AirrResultStore, FacetValue } from "./result-store";
 import { ColoredSequence, sequenceColor } from "./sequence-colors";
 import { MissingAlleleResultsPanel, ShmResultsPanel } from "./post-analysis-extensions";
-import { ReferenceAlleleExclusionEditor } from "./reference-allele-exclusion";
-import { filterReferenceFasta } from "./reference-fasta";
 import { DEFAULT_REPERTOIRE_SELECTION, selectRepertoire, validateRepertoireSelection, type RepertoireSelectionOptions, type RepertoireSelectionResult } from "./repertoire-selection";
 import { ShmAccumulator, type ShmDashboard, type ShmMetricKey } from "./shm-analysis";
 import { packSessionVector, unpackSessionVector, type PostAnalysisSessionSnapshot } from "./session-state";
@@ -144,6 +142,7 @@ interface TreeSnapshot extends FastTreeRun {
 
 type TreeViewMode = "stable" | "rooted" | "raw";
 type PostModuleId = "dedup" | "chimera" | "selection" | "lineage" | "diagnostics" | "workbench" | "query";
+type PostWorkspaceId = "overview" | PostModuleId;
 
 interface EditedAlignmentState {
   key: string;
@@ -407,7 +406,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [postLockState, setPostLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
   const [progress, setProgress] = useState<{ processed: number; total: number; unit?: string }>({ processed: 0, total: store.count });
   const [error, setError] = useState("");
-  const [openModules,setOpenModules]=useState<Set<PostModuleId>>(()=>new Set(["dedup"]));
+  const [activeWorkspace,setActiveWorkspace]=useState<PostWorkspaceId>("dedup");
+  const openModules=useMemo(()=>new Set<PostModuleId>(activeWorkspace === "overview" ? [] : [activeWorkspace]),[activeWorkspace]);
 
   const [dedupKey, setDedupKey] = useState<DedupKey>("trimmed");
   const [collapseMode, setCollapseMode] = useState<CollapseMode>("exact");
@@ -565,7 +565,6 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [chmmSegment, setChmmSegment] = useState<ChmmSegment>("V");
   const [chmmMethod, setChmmMethod] = useState<"BW" | "DB">(isTcr ? "DB" : "BW");
   const [chmmSource, setChmmSource] = useState<"selected" | "upload">("selected");
-  const [chmmExcludedBySegment, setChmmExcludedBySegment] = useState<Record<ChmmSegment, string[]>>({ V: [], J: [] });
   const [uploadedMsa, setUploadedMsa] = useState("");
   const [uploadedMsaName, setUploadedMsaName] = useState("");
   const [preparedMsa, setPreparedMsa] = useState("");
@@ -575,12 +574,23 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   const [chmmDetailed, setChmmDetailed] = useState(false);
   const [mutationRates, setMutationRates] = useState(isTcr ? "0.005" : "0,0.0179,0.0357,0.0536,0.0714,0.0893,0.1071,0.125,0.1429,0.1607,0.1786,0.1964,0.2143,0.2321,0.25");
   const [chmm, setChmm] = useState<ChmmDashboard | null>(null);
+  const [chmmTopIndex, setChmmTopIndex] = useState<Map<number, AirrIndexRecord>>(new Map());
   const [chmmRun, setChmmRun] = useState<{ msa: string; options: ChmmRunOptions; inputMask: Uint8Array | null } | null>(null);
   const [chmmFilterThreshold, setChmmFilterThreshold] = useState(0.95);
+  useEffect(() => {
+    let cancelled = false;
+    if (!chmm?.top.length) {
+      setChmmTopIndex(new Map());
+      return () => { cancelled = true; };
+    }
+    void store.indexRecords(chmm.top.slice(0, 12).map((record) => record.ordinal)).then((records) => {
+      if (!cancelled) setChmmTopIndex(new Map(records.map((record) => [record.ordinal, record])));
+    });
+    return () => { cancelled = true; };
+  }, [chmm, store]);
   const [retainUnevaluated, setRetainUnevaluated] = useState(true);
   const [chimeraDetail, setChimeraDetail] = useState<ChmmDetail | null>(null);
   const chimeraDetailRef = useRef<HTMLDivElement>(null);
-  const chmmExcludedAlleles = chmmExcludedBySegment[chmmSegment] ?? [];
 
   const [queryText, setQueryText] = useState("");
   const [queryTarget, setQueryTarget] = useState<QueryTarget>("cdr3_nt");
@@ -636,9 +646,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setLineageSelectedSamples((current)=>new Set([...current].filter((sample)=>currentSamples.includes(sample))));
   },[datasets]);
 
-  const toggleModule=(module:PostModuleId)=>setOpenModules((current)=>{const next=new Set(current);if(next.has(module))next.delete(module);else next.add(module);return next;});
-  const advanceModule=(from:PostModuleId,to:PostModuleId)=>setOpenModules((current)=>{const next=new Set(current);next.delete(from);next.add(to);return next;});
-  const openModule=(module:PostModuleId)=>setOpenModules((current)=>{const next=new Set(current);next.add(module);return next;});
+  const toggleModule=(module:PostModuleId)=>setActiveWorkspace(module);
+  const advanceModule=(_from:PostModuleId,to:PostModuleId)=>setActiveWorkspace(to);
+  const openModule=(module:PostModuleId)=>setActiveWorkspace(module);
   const moduleClass=(module:PostModuleId,base:string)=>`${base}${openModules.has(module)?" is-open":" is-collapsed"}`;
   const lineageGermline = useMemo(() => {
     if (!lineageRows.length) return null;
@@ -711,12 +721,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
             setChmmSegment(segment);
             setBusy(autoPipeline.chimera.msaSource === "upload" ? `Pipeline · validating loaded ${segment} reference MSA` : `Pipeline · building ${segment} reference MSA`);
             const referenceSource = autoPipeline.chimera.msaSource === "upload" ? autoPipeline.chimera.uploadedMsa : references[segment];
-            const filteredReference = filterReferenceFasta(referenceSource, autoPipeline.chimera.excludedAlleles ?? []);
-            if (filteredReference.retained < 2) throw new Error(`CHMMAIRRa requires at least two retained ${segment} reference records after exclusions; ${filteredReference.retained} remain.`);
-            const msa = autoPipeline.chimera.msaSource === "upload" ? filteredReference.fasta : await runKalign(filteredReference.fasta);
+            const msa = autoPipeline.chimera.msaSource === "upload" ? referenceSource : await runKalign(referenceSource);
             prepareReferenceMsa(msa);
             setPreparedMsa(msa);
-            setChmmExcludedBySegment((current) => ({ ...current, [segment]: [...(autoPipeline.chimera.excludedAlleles ?? [])] }));
             const tcr = scope === "TCR" || String(scope).startsWith("TR");
             const method = autoPipeline.chimera.model === "auto" ? (tcr ? "DB" : "BW") : autoPipeline.chimera.model;
             const options: ChmmRunOptions = {
@@ -858,7 +865,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       const activeMask=await runtime.activeMask();
       const collapse=dedup?await (async()=>{const state=await runtime.dedupState();return {mode:dedup.mode,options:{dedupKey,collapseMode,collapseScope,respectConstantCall,denoiseErrorRate,denoiseAlpha,denoiseResolution,denoiseAmbiguity,minimumParentCount,denoiseAmbiguousPolicy,denoiseUnresolvedPolicy,fadNeighborThreshold,fadMethod,expectedZeroErrorFraction,maximumDenoiseDistance,maximumEditDistance,minimumIndelParentRatio,denoiseCandidateCap},counts:packSessionVector(state.counts),representatives:packSessionVector(state.representatives),dashboard:{...dedup}};})():undefined;
       const lineage=lineages?{options:{identity,resolution,ambiguity,productiveOnly,candidateCap,lineageScope},assignments:packSessionVector(await runtime.lineageAssignments()),dashboard:{...lineages}}:undefined;
-      const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated,excludedReferenceAlleles:JSON.stringify(chmmExcludedBySegment[chmmRun.options.segment]??[])},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
+      const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
       return {workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
         alignmentFrameOffset,
         query:{queryText,queryTarget,queryMetric,queryIdentity,queryLimit,queryLocus,queryV,queryJ,queryConstraintMode,queryResultMode,queryInference,queryHits,queryLineageHits,expanded},
@@ -878,7 +885,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     const reason=treeRun?"phylogeny_changed":editedAlignments.size?"edited_alignment_changed":alignment?"lineage_alignment_changed":missingAlleles?"missing_allele_screen_changed":shmDashboard?"shm_changed":lineages?"lineages_changed":chmm?"chimera_state_changed":dedup?"collapse_state_changed":selectionApplied||selectionPreview?"repertoire_selection_changed":"post_analysis_state_changed";
     sessionChangeCallbackRef.current?.(reason);
   },[
-    alignment,alignmentFrameOffset,chmm,chmmExcludedBySegment,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
+    alignment,alignmentFrameOffset,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
     missingAlleleOptions,missingAlleles,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
     queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,
     selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,workingStages,
@@ -907,7 +914,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         for(const entry of initialSession.editedAlignments??[]){const key=lineageGroupKey(entry.lineageIds);if(key)restoredEdited.set(key,{...entry,key,lineageIds:[...new Set(entry.lineageIds)].sort((a,b)=>a-b),frameOffset:validAlignmentFrameOffset(entry.frameOffset)});}
         if(initialSession.alignment&&/(corrected|manual|alivibe|edited)/i.test(initialSession.alignment.source)){const lineageIds=initialSession.alignment.selectedLineageId?[initialSession.alignment.selectedLineageId]:[];const key=lineageGroupKey(lineageIds);if(key&&!restoredEdited.has(key))restoredEdited.set(key,{key,lineageIds,fasta:initialSession.alignment.fasta,source:initialSession.alignment.source,frameOffset:validAlignmentFrameOffset(initialSession.alignment.frameOffset),savedAt:new Date().toISOString()});}
         setEditedAlignments(restoredEdited);
-        const chimera=initialSession.chimera;if(chimera?.dashboard&&chimera.probabilities&&chimera.dfr&&chimera.msa){const dashboard={...chimera.dashboard,probabilities:unpackSessionVector(chimera.probabilities) as Float32Array,dfr:unpackSessionVector(chimera.dfr) as Uint16Array} as unknown as ChmmDashboard;const rawOptions=chimera.options;const options=rawOptions as unknown as ChmmRunOptions;const inputMask=chimera.retainedMask?unpackSessionVector(chimera.retainedMask) as Uint8Array:null;setChmm(dashboard);setChmmRun({msa:chimera.msa,options,inputMask});setPreparedMsa(chimera.msa);setChmmFilterThreshold(chimera.filterThreshold);setChmmSegment(options.segment);if(rawOptions.chmmSource==="selected"||rawOptions.chmmSource==="upload")setChmmSource(rawOptions.chmmSource);if(typeof rawOptions.uploadedMsaName==="string")setUploadedMsaName(rawOptions.uploadedMsaName);if(rawOptions.chmmSource==="upload")setUploadedMsa(chimera.msa);if(typeof rawOptions.excludedReferenceAlleles==="string"){try{const parsed=JSON.parse(rawOptions.excludedReferenceAlleles);if(Array.isArray(parsed))setChmmExcludedBySegment((current)=>({...current,[options.segment]:parsed.filter((value):value is string=>typeof value==="string")}));}catch{/* Older sessions have no exclusion list. */}}}
+        const chimera=initialSession.chimera;if(chimera?.dashboard&&chimera.probabilities&&chimera.dfr&&chimera.msa){const dashboard={...chimera.dashboard,probabilities:unpackSessionVector(chimera.probabilities) as Float32Array,dfr:unpackSessionVector(chimera.dfr) as Uint16Array} as unknown as ChmmDashboard;const rawOptions=chimera.options;const options=rawOptions as unknown as ChmmRunOptions;const inputMask=chimera.retainedMask?unpackSessionVector(chimera.retainedMask) as Uint8Array:null;setChmm(dashboard);setChmmRun({msa:chimera.msa,options,inputMask});setPreparedMsa(chimera.msa);setChmmFilterThreshold(chimera.filterThreshold);setChmmSegment(options.segment);if(rawOptions.chmmSource==="selected"||rawOptions.chmmSource==="upload")setChmmSource(rawOptions.chmmSource);if(typeof rawOptions.uploadedMsaName==="string")setUploadedMsaName(rawOptions.uploadedMsaName);if(rawOptions.chmmSource==="upload")setUploadedMsa(chimera.msa);}
         if(initialSession.shm){setShmMetric(initialSession.shm.metric);setShmDashboard(initialSession.shm.dashboard);if(initialSession.shm.sampleOrder?.length)setShmSampleOrder([...initialSession.shm.sampleOrder]);}if(initialSession.missingAlleles){setMissingAlleleOptions({...DEFAULT_MISSING_ALLELE_OPTIONS,...initialSession.missingAlleles.options,unit:"lineage"});setMissingAlleles(initialSession.missingAlleles.dashboard?.validationPasses===2?initialSession.missingAlleles.dashboard:null);setSelectedMissingAlleleIds(new Set(initialSession.missingAlleles.selectedCandidateIds??[]));}
         const q=initialSession.query??{};if(typeof q.queryText==="string")setQueryText(q.queryText);if(q.queryResultMode==="lineages"||q.queryResultMode==="sequences")setQueryResultMode(q.queryResultMode);
         if(Array.isArray(q.queryLineageHits))setQueryLineageHits(q.queryLineageHits as QueryLineageHit[]);
@@ -1037,7 +1044,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     setChmmRun(null);
     setChimeraDetail(null);
     invalidatePopulationAnalyses();
-    setOpenModules(new Set(["dedup"]));
+    setActiveWorkspace("dedup");
   }
 
   function invalidatePopulationAnalyses() {
@@ -1416,11 +1423,24 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     try {
       const next = await runInActiveLock(async () => {
         const rows = stratifiedLineageRows(lineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
-        if (alignmentMethod === "quick") return quickAirrAlignment(rows, lineageGermlineMethod);
         const input = lineageInputFasta(rows, lineageGermlineMethod);
-        return alignmentMethod === "codon" ? runCodonAwareKalign(input.fasta, input.frames) : runKalign(input.fasta);
+        if (alignmentMethod === "quick") {
+          const records = parseFasta(input.fasta, true);
+          const maximum = Math.max(...records.map((record) => record.sequence.length));
+          const fasta = records.map((record) => `>${record.name}\n${record.sequence.padEnd(maximum, "-")}`).join("\n") + "\n";
+          return { fasta, frameOffset: input.alignmentFrameOffset };
+        }
+        if (alignmentMethod === "codon") {
+          return { fasta: await runCodonAwareKalign(input.fasta, input.frames), frameOffset: 0 as AlignmentFrameOffset };
+        }
+        const fasta = await runKalign(input.fasta);
+        const anchor = parseFasta(fasta, true).find((record) => record.name === input.frameAnchorName);
+        const derivedFrame = anchor
+          ? alignedSequenceFrameOffset(anchor.sequence, input.frameAnchorUngappedOffset)
+          : input.alignmentFrameOffset;
+        return { fasta, frameOffset: derivedFrame };
       });
-      installAlignment(next, alignmentMethod === "quick" ? "AIRR-anchored reference quick view" : alignmentMethod === "codon" ? "Codon-aware Kalign 3.3.1" : "Nucleotide Kalign 3.3.1", false, selectedLineageIds);
+      installAlignment(next.fasta, alignmentMethod === "quick" ? "AIRR-anchored reference quick view" : alignmentMethod === "codon" ? "Codon-aware Kalign 3.3.1" : "Nucleotide Kalign 3.3.1", false, selectedLineageIds, next.frameOffset);
       setAlignmentEditorStatus("");
       setAlignmentEditorError("");
     } catch (operationError) {
@@ -1475,7 +1495,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     if (options.requireExactSerialization && inspected.fasta !== text) {
       throw new Error("Swig would have to normalize the nucleotide FASTA returned by Alivibe. The return was refused instead of silently changing it.");
     }
-    const frameOffset = transferredFrameOffset ?? inferAlignedReadingFrame(inspected.records.map((record) => record.sequence), alignmentFrameOffset).offset;
+    // A corrected alignment is derived from the current MSA. Preserve its
+    // explicit biological phase unless the versioned Alivibe bridge returns a
+    // user-selected replacement. Gap placement is evidence about alignment
+    // quality, not permission to redefine the coding frame.
+    const frameOffset = transferredFrameOffset ?? alignmentFrameOffset;
     installAlignment(inspected.fasta, source, true, lineageIds, frameOffset);
     setAlignmentEditorError("");
     setAlignmentEditorStatus(`Accepted corrected nucleotide alignment: ${inspected.rows.toLocaleString()} rows × ${inspected.columns.toLocaleString()} columns${inspected.removedRows.length?` · ${inspected.removedRows.length.toLocaleString()} biological row${inspected.removedRows.length===1?"":"s"} deleted`:""}${inspected.removedNucleotides?` · ${inspected.removedNucleotides.toLocaleString()} nucleotide character${inspected.removedNucleotides===1?"":"s"} deleted`:""} · AA reading frame starts at nucleotide column ${frameOffset + 1} · fingerprint ${inspected.fingerprint}. FastTree will use these exact retained rows and columns.`);
@@ -1625,10 +1649,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     try {
       await runInActiveLock(async () => {
         const referenceSource = chmmSource === "upload" ? uploadedMsa : references[chmmSegment];
-        const filteredReference = filterReferenceFasta(referenceSource, chmmExcludedAlleles);
-        if (filteredReference.retained < 2) throw new Error(`CHMMAIRRa requires at least two retained ${chmmSegment} reference records after exclusions; ${filteredReference.retained} remain.`);
-        let msa = chmmSource === "upload" ? filteredReference.fasta : preparedMsa;
-        if (!msa) msa = await runKalign(filteredReference.fasta);
+        let msa = chmmSource === "upload" ? referenceSource : preparedMsa;
+        if (!msa) msa = await runKalign(referenceSource);
         prepareReferenceMsa(msa);
         setPreparedMsa(msa);
         setBusy(`Running CHMMAIRRa ${chmmSegment} model with ${Math.min(workers, 16)} workers`);
@@ -1838,7 +1860,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     : "complete";
   const guidedClass=(action:string,base="post-primary")=>`${base}${guidedAction===action?" guided-next":""}`;
   useEffect(()=>{
-    const module:PostModuleId|undefined=guidedAction==="run-dedup"||guidedAction==="apply-dedup"?"dedup":guidedAction==="run-chimera"||guidedAction==="apply-chimera"?"chimera":guidedAction==="preview-selection"||guidedAction==="apply-selection"?"selection":guidedAction==="run-lineages"?"lineage":guidedAction==="run-shm"?"diagnostics":undefined;
+    const module:PostModuleId|undefined=guidedAction==="run-dedup"||guidedAction==="apply-dedup"?"dedup":guidedAction==="run-chimera"||guidedAction==="apply-chimera"?"chimera":guidedAction==="preview-selection"||guidedAction==="apply-selection"?"selection":guidedAction==="run-lineages"?"lineage":undefined;
     if(module)openModule(module);
   },[guidedAction]);
   const chmmFilterThresholdValid = Number.isFinite(chmmFilterThreshold) && chmmFilterThreshold >= 0 && chmmFilterThreshold <= 1;
@@ -1904,6 +1926,22 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
   return <section className="post-analysis-shell">
     <header className="post-analysis-heading"><div><span className="section-kicker">Post-assignment analyses</span><h2>Repertoire structure and lineage analysis</h2><p>Exact collapse or denoising and chimera exclusion modify an explicit cumulative working set. CHMMAIRRa, lineage assignment, repertoire querying, and expansion consume that set; alignment and tree inference consume the selected lineage.</p></div><div className="local-method-note"><span>Data handling</span><strong>Browser-local</strong><small>Input, germlines, and results are not submitted to an analysis server.</small></div></header>
 
+    <div className="post-context-workspace contextual-workspace">
+      <nav className="context-rail post-context-rail" aria-label="Post-analysis sections">
+        <div className="context-rail-heading"><span>Post-analysis</span><small>{workingCount.toLocaleString()} active records</small></div>
+        <button type="button" className={activeWorkspace==="overview"?"active":""} onClick={()=>setActiveWorkspace("overview")}><b>00</b><span>Overview<small>Working set + exports</small></span></button>
+        <button type="button" className={activeWorkspace==="dedup"?"active":""} onClick={()=>setActiveWorkspace("dedup")}><b>01</b><span>Collapse<small>{dedup?`${dedup.uniqueRecords.toLocaleString()} representatives`:"Not run"}</small></span></button>
+        <button type="button" className={activeWorkspace==="chimera"?"active":""} onClick={()=>setActiveWorkspace("chimera")}><b>02</b><span>Chimera<small>{chmm?`${chmm.evaluated.toLocaleString()} evaluated`:"Optional"}</small></span></button>
+        <button type="button" className={activeWorkspace==="selection"?"active":""} onClick={()=>setActiveWorkspace("selection")}><b>03</b><span>Selection<small>{selectionApplied?"Committed":selectionPreview?"Preview ready":"Configure filters"}</small></span></button>
+        <button type="button" className={activeWorkspace==="lineage"?"active":""} onClick={()=>setActiveWorkspace("lineage")}><b>04</b><span>Lineages<small>{lineages?`${lineages.summaries.length.toLocaleString()} assigned`:"Not run"}</small></span></button>
+        <button type="button" className={activeWorkspace==="diagnostics"?"active":""} onClick={()=>setActiveWorkspace("diagnostics")}><b>05</b><span>Diagnostics<small>SHM + allele hints</small></span></button>
+        <button type="button" disabled={!selectedLineage} className={activeWorkspace==="workbench"?"active":""} onClick={()=>setActiveWorkspace("workbench")}><b>06</b><span>Workbench<small>{selectedLineage?`Lineage ${selectedLineage.id}`:"Select a lineage"}</small></span></button>
+        <button type="button" className={activeWorkspace==="query"?"active":""} onClick={()=>setActiveWorkspace("query")}><b>07</b><span>Query<small>Search + expand</small></span></button>
+      </nav>
+
+      <div className="context-main post-context-main">
+    {activeWorkspace==="overview"&&<section className="post-overview-panel">
+
     {autoPipeline?.enabled&&<section className={`pipeline-run-banner ${busy?"running":"complete"}`}><div><span className="section-kicker">Pipeline execution</span><h3>{busy?busy:"Selected repertoire-scale stages complete"}</h3><p>{pipelineReport.length?pipelineReport.join(" "):"The configured stages are running in order; each stage receives the retained set from the previous stage."}</p></div><strong>{busy?"RUNNING":"COMPLETE"}</strong></section>}
 
     <div className="post-method-map"><article><b>01</b><span>Collapse</span><strong>Exact deduplication or denoising</strong></article><article><b>02</b><span>QC</span><strong>Optional CHMMAIRRa</strong></article><article><b>03</b><span>Select</span><strong>Commit a repertoire population</strong></article><article><b>04</b><span>Repertoire</span><strong>Assign lineages</strong></article><article><b>05</b><span>Diagnostics</span><strong>SHM + allele hints</strong></article><article><b>06</b><span>On demand</span><strong>Align + infer tree</strong></article><article><b>07</b><span>Targeted</span><strong>Query + expand</strong></article></div>
@@ -1916,6 +1954,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     </section>
 
     <section className="post-export-center"><div><span className="section-kicker">Export center</span><h3>Machine-readable analysis outputs</h3><p>The selected table is streamed from browser storage. CSV and JSONL do not require building the complete output in memory.</p></div><label><span>Tabular format</span><select value={exportFormat} onChange={(event)=>setExportFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button type="button" disabled={Boolean(busy)} onClick={()=>void downloadActivePopulation()}>Download current population</button></section>
+    </section>}
 
     {busy && <div className="post-progress" role="status"><div><span>{busy}</span><strong>{progress.total ? `${Math.min(100, progress.processed / progress.total * 100).toFixed(1)}%` : "working"}</strong></div><progress max={Math.max(1, progress.total)} value={progress.processed} /><small>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()} {progress.unit ?? "AIRR records indexed or scanned"} · {postLockState === "held" ? "background-run lock held" : postLockState === "waiting" ? "waiting for another Swig tab" : "Web Locks unavailable"}</small></div>}
     {error && <div className="post-error" role="alert"><strong>Post-analysis stopped</strong><span>{error}</span><button type="button" onClick={() => setError("")}>Dismiss</button></div>}
@@ -1969,18 +2008,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
       <div className="chmm-grid">
         <div className="chmm-config">
           <div className="control-grid three"><label><span>Segment</span><select value={chmmSegment} onChange={(event) => { setChmmSegment(event.target.value as ChmmSegment); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }}><option value="V">V (recommended)</option><option value="J">J (optional)</option></select></label><label><span>Model</span><select value={chmmMethod} onChange={(event) => setChmmMethod(event.target.value as "BW" | "DB")}><option value="BW">Baum–Welch · IG default</option><option value="DB">Discretized Bayesian · TCR default</option></select></label><label><span>Posterior threshold</span><CommitNumberInput min="0" max="1" step="0.01" value={chmmThreshold} onCommit={setChmmThreshold} /></label></div>
-          <fieldset className="msa-source"><legend>Reference multiple-sequence alignment</legend><label className={chmmSource === "selected" ? "selected" : ""}><input type="radio" checked={chmmSource === "selected"} onChange={() => { setChmmSource("selected"); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }} /><span><strong>Build from this run’s {chmmSegment} references</strong><small>Kalign 3.3.1 WASM; preserves selected IMGT/KI/local-file composition.</small></span></label><label className={chmmSource === "upload" ? "selected" : ""}><input type="radio" checked={chmmSource === "upload"} onChange={() => { setChmmSource("upload"); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }} /><span><strong>Use an aligned FASTA MSA from file</strong><small>{uploadedMsaName || "Every record must have equal aligned length and names matching AIRR calls."}</small></span><input className="file-inline" type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptMsa(event)} /></label></fieldset>
-          <ReferenceAlleleExclusionEditor
-            fasta={chmmSource === "upload" ? uploadedMsa : references[chmmSegment]}
-            excluded={chmmExcludedAlleles}
-            onChange={(excluded) => {
-              setChmmExcludedBySegment((current) => ({ ...current, [chmmSegment]: excluded }));
-              setPreparedMsa("");
-              setChmm(null);
-              setChmmRun(null);
-              setChimeraDetail(null);
-            }}
-          />
+          <fieldset className="msa-source"><legend>Reference multiple-sequence alignment</legend><label className={chmmSource === "selected" ? "selected" : ""}><input type="radio" checked={chmmSource === "selected"} onChange={() => { setChmmSource("selected"); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }} /><span><strong>Build from this run’s assignment {chmmSegment} references</strong><small>Kalign 3.3.1 WASM; uses the exact IMGT/KI/local-file composition and allele exclusions already applied before V(D)J assignment.</small></span></label><label className={chmmSource === "upload" ? "selected" : ""}><input type="radio" checked={chmmSource === "upload"} onChange={() => { setChmmSource("upload"); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }} /><span><strong>Use an aligned FASTA MSA from file</strong><small>{uploadedMsaName || "Every record must have equal aligned length and names matching AIRR calls."}</small></span><input className="file-inline" type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptMsa(event)} /></label></fieldset>
           <details className="post-advanced"><summary>Model parameters</summary><div className="control-grid three"><label><span>Chimera prior</span><CommitNumberInput min="0.00001" max="0.5" step="0.01" value={chmmPrior} onCommit={setChmmPrior} /></label><label><span>Minimum DFR</span><CommitNumberInput min="0" max="100" step="1" value={chmmMinDfr} onCommit={setChmmMinDfr} /></label><label><span>DB mutation rates</span><CommitTextInput value={mutationRates} onCommit={setMutationRates} /></label><label className="check-line"><input type="checkbox" checked={chmmDetailed} onChange={(event) => setChmmDetailed(event.target.checked)} /><span>Precompute breakpoint labels during the repertoire scan (the full path remains on-demand)</span></label></div></details>
           <div className="scientific-note warning"><span>!</span><p>Reference completeness matters: an absent true V/J allele can produce a false switch signal. Loaded MSAs are never silently supplemented. Low-DFR records are reported as unevaluated rather than forced through the model.</p></div>
           <div className="result-actions"><button className={guidedClass("run-chimera","post-primary amber")} type="button" disabled={Boolean(busy) || (chmmSource === "upload" && !uploadedMsa)} onClick={() => void runChmmAnalysis()}>Run CHMMAIRRa on {workingCount.toLocaleString()}</button>{preparedMsa && <button type="button" onClick={() => downloadText(preparedMsa, `${baseName(inputName)}.${chmmSegment.toLowerCase()}-reference-msa.fasta`)}>Download reference MSA</button>}</div>
@@ -1996,7 +2024,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
               <button className={guidedClass("apply-chimera","post-primary amber")} type="button" disabled={Boolean(busy) || !chmmFilterThresholdValid} onClick={() => void applyChimeraFilter()}>Apply chimera filter downstream</button>
             </div>
             <BarChart title={`${chmm.segment} chimera posterior`} subtitle="Evaluated rearrangements by posterior interval" data={chmm.histogram.map((item) => ({ label: item.label, value: item.count }))} color="#d49a19" name={`${baseName(inputName)}.chmmairra-posterior.svg`} />
-            {chmm.top.length > 0 && <div className="chmm-top-list"><header><strong>Highest posteriors</strong><span>Click to run the detailed Viterbi parent view</span></header>{chmm.top.slice(0, 12).map((record) => <button type="button" key={record.ordinal} onClick={() => void openChimera(record.ordinal)}><b>#{(record.ordinal + 1).toLocaleString()}</b><span>{(record.probability * 100).toFixed(2)}%</span><small>DFR {record.dfr}{record.recombinations.length ? ` · ${record.recombinations.map((event) => `${event.left}→${event.right}@${event.position}`).join("; ")}` : " · Viterbi path on click"}</small></button>)}</div>}
+            {chmm.top.length > 0 && <div className="chmm-top-list"><header><strong>Highest posteriors</strong><span>Click to run the detailed Viterbi parent view</span></header>{chmm.top.slice(0, 12).map((record) => {const indexed=chmmTopIndex.get(record.ordinal);return <button type="button" key={record.ordinal} onClick={() => void openChimera(record.ordinal)}><b>#{(record.ordinal + 1).toLocaleString()}</b><span>{(record.probability * 100).toFixed(2)}%</span><strong title={indexed?.sequenceId}>{indexed?.sequenceId||"sequence loading…"}</strong><code title={indexed?.cdr3Aa||indexed?.cdr3}>{indexed?.cdr3Aa||indexed?.cdr3||"CDR3 —"}</code><small>DFR {record.dfr}{record.recombinations.length ? ` · ${record.recombinations.map((event) => `${event.left}→${event.right}@${event.position}`).join("; ")}` : " · Viterbi path on click"}</small></button>;})}</div>}
             <button type="button" onClick={() => void downloadChmm()}>Download CHMMAIRRa TSV</button>
           </> : <div className="method-placeholder"><span>HMM</span><h4>No CHMMAIRRa run</h4><p>{isTcr ? "TCR mode defaults to a fixed 0.005 mutation-rate state (DB)." : "IG mode defaults to per-reference Baum–Welch mutation estimates."}</p></div>}
         </div>
@@ -2173,8 +2201,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
     </section>
 
     {selectedLineage && <section ref={workbenchRef} className={moduleClass("workbench","post-module lineage-workbench")} tabIndex={-1}>
-      <header><div className="module-number dark">06</div><div><span className="section-kicker">{selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>Lineage neighbours, alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · {selectedLineage.locus} · original assignments {selectedLineageIds.map((id) => `L${id}`).join(", ")}</p></div><button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></header>
-      <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `${lineageRows.length} stratified members loaded from ${lineageTotal.toLocaleString()}; analysis remains bounded` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => {const sample=row.values.sample_id||row.record.sampleId||"";const original=originalLineageByOrdinal.get(row.record.ordinal);return <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)} title={`${sample||"sample unassigned"}${original?` · original lineage ${original}`:""}`}><i style={{background:sampleColor(sample,sampleColors)}}/>{row.record.sequenceId}</button>;})}</div></div>
+      <header><div className="module-number dark">06</div><div><span className="section-kicker">{selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>Lineage neighbours, alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · {selectedLineage.locus} · original assignments {selectedLineageIds.map((id) => `L${id}`).join(", ")}</p></div><button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></header>
+      <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `${lineageRows.length} stratified members loaded from ${lineageTotal.toLocaleString()}; analysis remains bounded` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => {const sample=row.values.sample_id||row.record.sampleId||"";const original=originalLineageByOrdinal.get(row.record.ordinal);const cdr3=row.values.cdr3_aa||row.values.cdr3||"CDR3 —";return <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)} title={`${sample||"sample unassigned"}${original?` · original lineage ${original}`:""} · ${cdr3}`}><i style={{background:sampleColor(sample,sampleColors)}}/><span><b>{row.record.sequenceId}</b><small>{cdr3}</small></span></button>;})}</div></div>
       <div className="lineage-neighbour-explorer">
         <header><div><span className="section-kicker">Exploratory boundary review</span><h4>Lineage neighbours</h4><p>Find separate assigned lineages with CDR3 links below the clustering cutoff, similar inferred lineage germlines, or either criterion. Search is read-only until you explicitly merge.</p></div><span className="neighbour-source-chip">Source {selectedLineageIds.map((id)=>`L${id}`).join(" + ")}</span></header>
         <div className="control-grid five">
@@ -2238,5 +2266,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, inputNam
         </div>
       </>}
     </section>}
+      </div>
+    </div>
   </section>;
 }

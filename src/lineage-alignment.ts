@@ -1,10 +1,43 @@
 import { parseFasta } from "./post-analysis-core.ts";
 import { biologicalFrameOffset } from "./alignment-model.ts";
+import type { AlignmentFrameOffset } from "./lineage-phylogeny.ts";
 import type { AirrDetailRow } from "./result-store.ts";
 
 export const GERMLINE_OUTGROUP = "__germline_N_masked__";
 
 export type LineageGermlineMethod = "closest" | "consensus";
+
+function frameOffset(value: number): AlignmentFrameOffset {
+  const normalized = ((Math.trunc(value) % 3) + 3) % 3;
+  return normalized as AlignmentFrameOffset;
+}
+
+/**
+ * Locate a coding phase in alignment-column coordinates. `ungappedFrameOffset`
+ * is the number of biological query bases before the first complete codon;
+ * gap columns remain columns, so an indel can still create a mixed codon/X in
+ * the viewer rather than being silently skipped.
+ */
+export function alignedSequenceFrameOffset(
+  alignedSequence: string,
+  ungappedFrameOffset: number,
+  leftPaddingColumns = 0,
+): AlignmentFrameOffset {
+  const basesToSkip = frameOffset(ungappedFrameOffset);
+  let observed = 0;
+  let column = 0;
+  if (basesToSkip > 0) {
+    for (; column < alignedSequence.length; column += 1) {
+      if (alignedSequence[column] === "-" || alignedSequence[column] === ".") continue;
+      observed += 1;
+      if (observed === basesToSkip) {
+        column += 1;
+        break;
+      }
+    }
+  }
+  return frameOffset(leftPaddingColumns + column);
+}
 
 function safeName(value: string, fallback: string): string {
   return (value || fallback).replace(/[^A-Za-z0-9_.|*+\-]/g, "_");
@@ -19,7 +52,10 @@ export interface AnchoredLineageRow {
   name: string;
   sequence: string;
   germline: string;
+  /** Biological offset in the ungapped query supplied to a codon aligner. */
   frame: number;
+  /** The same phase after AIRR V-reference left padding is materialized. */
+  alignmentFrameOffset: AlignmentFrameOffset;
   /** A sparse Double-D call was present on the AIRR detail row. */
   doubleDPositive: boolean;
   /** Both D alignments were safely projected into the combined AIRR columns. */
@@ -203,12 +239,14 @@ export function referenceAnchoredLineageRows(rows: AirrDetailRow[]): AnchoredLin
     const localColumns = Math.max(rawSequence.length, doubleD.germline.length);
     const reportedStart = Math.floor(Number(row.values.v_germline_start));
     const left = Number.isFinite(reportedStart) && reportedStart >= 1 && reportedStart <= 10_000 ? reportedStart - 1 : 0;
+    const frame = biologicalFrameOffset(Number(row.values.v_sequence_start) || 1, Number(row.values.sequence_frame) || 1);
     return {
       row,
       name: `${safeName(row.values.sequence_id, `sequence_${index + 1}`)}__${row.record.ordinal + 1}`,
       sequence: "-".repeat(left) + rawSequence.padEnd(localColumns, "-"),
       germline: "-".repeat(left) + doubleD.germline.padEnd(localColumns, "-"),
-      frame: biologicalFrameOffset(Number(row.values.v_sequence_start) || 1, Number(row.values.sequence_frame) || 1),
+      frame,
+      alignmentFrameOffset: alignedSequenceFrameOffset(rawSequence, frame, left),
       doubleDPositive: doubleD.positive,
       doubleDGermlineApplied: doubleD.applied,
       dCall: doubleD.dCall,
@@ -460,21 +498,39 @@ export function inferLineageGermline(
 export function lineageInputFasta(
   rows: AirrDetailRow[],
   method: LineageGermlineMethod = "closest",
-): { fasta: string; frames: number[]; germline: string; inferred: InferredLineageGermline } {
+): {
+  fasta: string;
+  frames: number[];
+  germline: string;
+  inferred: InferredLineageGermline;
+  frameAnchorName: string;
+  frameAnchorUngappedOffset: number;
+  alignmentFrameOffset: AlignmentFrameOffset;
+} {
   const anchored = referenceAnchoredLineageRows(rows);
   const inferred = inferLineageGermline(rows, method);
+  const selectedAnchor = inferred.selectedOrdinal === undefined
+    ? undefined
+    : anchored.find((record) => record.row.record.ordinal === inferred.selectedOrdinal);
+  const phaseCounts = new Map<AlignmentFrameOffset, number>();
+  for (const record of anchored) phaseCounts.set(record.alignmentFrameOffset, (phaseCounts.get(record.alignmentFrameOffset) ?? 0) + 1);
+  const modalPhase = [...phaseCounts.entries()].sort((left, right) => right[1] - left[1] || left[0] - right[0])[0]?.[0] ?? 0;
+  const anchor = selectedAnchor ?? anchored.find((record) => record.alignmentFrameOffset === modalPhase) ?? anchored[0];
   const germline = inferred.template.padEnd(anchored[0].sequence.length, "-");
   const records = anchored.map((record) => ({
     name: record.name,
     sequence: record.sequence,
     frame: record.frame,
   }));
-  records.push({ name: GERMLINE_OUTGROUP, sequence: germline, frame: records[0]?.frame ?? 0 });
+  records.push({ name: GERMLINE_OUTGROUP, sequence: germline, frame: anchor.frame });
   return {
     fasta: records.map((record) => `>${record.name}\n${record.sequence}`).join("\n") + "\n",
     frames: records.map((record) => record.frame),
     germline,
     inferred,
+    frameAnchorName: anchor.name,
+    frameAnchorUngappedOffset: anchor.frame,
+    alignmentFrameOffset: anchor.alignmentFrameOffset,
   };
 }
 

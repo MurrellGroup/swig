@@ -3,7 +3,9 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 
 import {
+  DEFAULT_FASTQ_QUALITY_FILTER,
   streamSequenceBatches,
+  type FastqQualityFilterOptions,
   type SequenceStreamProgress,
 } from "../src/sequence-stream.ts";
 
@@ -34,6 +36,36 @@ async function sampledIds(source: string, size: number, seed: number) {
   return { ids, progress: progress as SequenceStreamProgress | null };
 }
 
+function qualityFilter(overrides: Partial<FastqQualityFilterOptions> = {}): FastqQualityFilterOptions {
+  return {
+    ...DEFAULT_FASTQ_QUALITY_FILTER,
+    enabled: true,
+    ...overrides,
+    trim3Prime: {
+      ...DEFAULT_FASTQ_QUALITY_FILTER.trim3Prime,
+      ...overrides.trim3Prime,
+    },
+  };
+}
+
+async function filteredFastq(
+  source: string | File,
+  filter: FastqQualityFilterOptions,
+  subsample?: { size: number; seed: number },
+) {
+  const batches = [];
+  let progress: SequenceStreamProgress | null = null;
+  for await (const batch of streamSequenceBatches({
+    source,
+    format: 2,
+    batchSize: 1000,
+    fastqFilter: filter,
+    subsample,
+    onProgress: (next) => { progress = next; },
+  })) batches.push(batch);
+  return { batches, progress: progress as SequenceStreamProgress | null };
+}
+
 test("incremental FASTA parser normalizes wrapped records into bounded batches", async () => {
   const result = await collect(">one notes\nAC GT\nTG\n>two\nAAAA\n>three\nCCCC\n", 1);
   assert.deepEqual(result.batches.map((batch) => batch.count), [2, 1]);
@@ -49,6 +81,83 @@ test("incremental FASTQ parser supports wrapped sequence and quality lines", asy
   );
   assert.equal(result.batches[0].count, 2);
   assert.equal(result.batches[0].text, "@one notes\nACGTTG\n+one\nIIIIII\n@two\nAAAA\n+\n@@@@\n");
+});
+
+test("FASTQ expected-error threshold is inclusive and rejects the next lower quality", async () => {
+  const sequence = "A".repeat(100);
+  const result = await filteredFastq(
+    `@q40\n${sequence}\n+\n${"I".repeat(100)}\n@q39\n${sequence}\n+\n${"H".repeat(100)}\n`,
+    qualityFilter({ maximumExpectedErrors: 0.01 }),
+  );
+  assert.equal(result.batches.length, 1);
+  assert.match(result.batches[0].text, /^@q40$/m);
+  assert.doesNotMatch(result.batches[0].text, /^@q39$/m);
+  assert.equal(result.progress?.recordsRead, 2);
+  assert.equal(result.progress?.recordsEligible, 1);
+  assert.equal(result.progress?.fastqFilter.recordsEvaluated, 2);
+  assert.equal(result.progress?.fastqFilter.recordsRejectedExpectedErrors, 1);
+});
+
+test("3-prime trimming happens before expected-error filtering", async () => {
+  const source = "@tail\nACGTACGTACGT\n+\nIIIIIIII!!!!\n";
+  const withoutTrim = await assert.rejects(
+    async () => filteredFastq(source, qualityFilter({ maximumExpectedErrors: 0.001 })),
+    /rejected all 1 input reads/,
+  );
+  assert.equal(withoutTrim, undefined);
+
+  const trimmed = await filteredFastq(source, qualityFilter({
+    maximumExpectedErrors: 0.001,
+    trim3Prime: { enabled: true, windowSize: 4, minimumMeanPhred: 40, minimumLength: 8 },
+  }));
+  assert.equal(trimmed.batches[0].text, "@tail\nACGTACGT\n+\nIIIIIIII\n");
+  assert.equal(trimmed.progress?.fastqFilter.recordsTrimmed, 1);
+  assert.equal(trimmed.progress?.fastqFilter.basesTrimmed, 4);
+  assert.equal(trimmed.progress?.fastqFilter.recordsRejectedExpectedErrors, 0);
+});
+
+test("3-prime trimming rejects reads shorter than the configured retained length", async () => {
+  await assert.rejects(
+    async () => filteredFastq(
+      "@short_after_trim\nACGTACGTACGT\n+\nIIIIIIII!!!!\n",
+      qualityFilter({
+        maximumExpectedErrors: 10,
+        trim3Prime: { enabled: true, windowSize: 4, minimumMeanPhred: 20, minimumLength: 11 },
+      }),
+    ),
+    /rejected all 1 input reads/,
+  );
+});
+
+test("enabled FASTQ filtering passes FASTA through unchanged and reports the bypass", async () => {
+  const batches = [];
+  let progress: SequenceStreamProgress | null = null;
+  for await (const batch of streamSequenceBatches({
+    source: ">one\nACGT\n>two\nTGCA\n",
+    format: 1,
+    batchSize: 10,
+    fastqFilter: qualityFilter(),
+    onProgress: (next) => { progress = next; },
+  })) batches.push(batch);
+  assert.equal(batches[0].text, ">one\nACGT\n>two\nTGCA\n");
+  assert.equal(progress?.fastqFilter.applicable, false);
+  assert.equal(progress?.fastqFilter.recordsEvaluated, 0);
+  assert.equal(progress?.fastqFilter.recordsPassedThrough, 2);
+  assert.equal(progress?.fastqFilter.recordsRetained, 2);
+});
+
+test("reservoir subsampling draws only from FASTQ reads that pass quality filtering", async () => {
+  const source = Array.from({ length: 20 }, (_, index) => {
+    const quality = index % 2 === 0 ? "IIII" : "!!!!";
+    return `@read_${index}\nACGT\n+\n${quality}\n`;
+  }).join("");
+  const result = await filteredFastq(source, qualityFilter({ maximumExpectedErrors: 0.1 }), { size: 5, seed: 19 });
+  const ids = result.batches.flatMap((batch) => [...batch.text.matchAll(/^@read_(\d+)$/gm)].map((match) => Number(match[1])));
+  assert.equal(ids.length, 5);
+  assert.ok(ids.every((id) => id % 2 === 0));
+  assert.equal(result.progress?.recordsRead, 20);
+  assert.equal(result.progress?.recordsEligible, 10);
+  assert.equal(result.progress?.recordsSelected, 5);
 });
 
 test("gzip FASTQ is decompressed and parsed without whole-file text conversion", async () => {
@@ -143,4 +252,21 @@ test("50k gzip FASTA stress path and 10k reservoir sample remain batch-bounded",
   assert.equal(sampledProgress?.recordsRead, 50_000);
   assert.equal(sampledProgress?.recordsSelected, 10_000);
   assert.ok((sampledProgress?.maxBatchCharacters ?? Infinity) < 400_000);
+});
+
+test("50k-read FASTQ expected-error filtering remains linear and batch-bounded", async () => {
+  const sequence = "ACGT".repeat(30);
+  const highQuality = "I".repeat(sequence.length);
+  const lowQuality = "!".repeat(sequence.length);
+  const source = Array.from({ length: 50_000 }, (_, index) => `@q_${index}\n${sequence}\n+\n${index % 10 ? highQuality : lowQuality}\n`).join("");
+  const started = performance.now();
+  const result = await filteredFastq(source, qualityFilter({ maximumExpectedErrors: 0.02 }));
+  const elapsed = performance.now() - started;
+  assert.equal(result.progress?.recordsRead, 50_000);
+  assert.equal(result.progress?.recordsEligible, 45_000);
+  assert.equal(result.progress?.fastqFilter.recordsRejectedExpectedErrors, 5_000);
+  assert.equal(result.batches.length, 45);
+  assert.ok(result.batches.every((batch) => batch.count <= 1000));
+  assert.ok((result.progress?.maxBatchCharacters ?? Infinity) < 300_000);
+  assert.ok(elapsed < 8_000, `FASTQ filter took ${elapsed.toFixed(0)} ms`);
 });

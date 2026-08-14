@@ -11,9 +11,11 @@ export interface SequenceStreamProgress {
   bytesRead: number;
   totalBytes: number;
   recordsRead: number;
+  recordsEligible: number;
   recordsSelected: number;
   maxBatchCharacters: number;
   maxCarryCharacters: number;
+  fastqFilter: FastqQualityFilterStats;
 }
 
 export interface SequenceSubsample {
@@ -21,11 +23,84 @@ export interface SequenceSubsample {
   seed: number;
 }
 
+export interface FastqEndTrimOptions {
+  enabled: boolean;
+  windowSize: number;
+  minimumMeanPhred: number;
+  minimumLength: number;
+}
+
+export interface FastqQualityFilterOptions {
+  enabled: boolean;
+  maximumExpectedErrors: number;
+  phredOffset: 33 | 64;
+  trim3Prime: FastqEndTrimOptions;
+}
+
+export interface FastqQualityFilterStats {
+  enabled: boolean;
+  applicable: boolean;
+  recordsEvaluated: number;
+  recordsRetained: number;
+  recordsPassedThrough: number;
+  recordsRejectedExpectedErrors: number;
+  recordsRejectedMinimumLength: number;
+  recordsTrimmed: number;
+  basesTrimmed: number;
+}
+
+export const DEFAULT_FASTQ_QUALITY_FILTER: FastqQualityFilterOptions = {
+  enabled: false,
+  maximumExpectedErrors: 0.01,
+  phredOffset: 33,
+  trim3Prime: {
+    enabled: false,
+    windowSize: 4,
+    minimumMeanPhred: 20,
+    minimumLength: 50,
+  },
+};
+
+export function emptyFastqQualityFilterStats(
+  enabled = false,
+  applicable = false,
+): FastqQualityFilterStats {
+  return {
+    enabled,
+    applicable,
+    recordsEvaluated: 0,
+    recordsRetained: 0,
+    recordsPassedThrough: 0,
+    recordsRejectedExpectedErrors: 0,
+    recordsRejectedMinimumLength: 0,
+    recordsTrimmed: 0,
+    basesTrimmed: 0,
+  };
+}
+
+export function addFastqQualityFilterStats(
+  target: FastqQualityFilterStats,
+  source: FastqQualityFilterStats,
+): FastqQualityFilterStats {
+  return {
+    enabled: target.enabled || source.enabled,
+    applicable: target.applicable || source.applicable,
+    recordsEvaluated: target.recordsEvaluated + source.recordsEvaluated,
+    recordsRetained: target.recordsRetained + source.recordsRetained,
+    recordsPassedThrough: target.recordsPassedThrough + source.recordsPassedThrough,
+    recordsRejectedExpectedErrors: target.recordsRejectedExpectedErrors + source.recordsRejectedExpectedErrors,
+    recordsRejectedMinimumLength: target.recordsRejectedMinimumLength + source.recordsRejectedMinimumLength,
+    recordsTrimmed: target.recordsTrimmed + source.recordsTrimmed,
+    basesTrimmed: target.basesTrimmed + source.basesTrimmed,
+  };
+}
+
 export interface SequenceStreamOptions {
   source: string | File;
   format: SequenceFormat;
   batchSize?: number;
   subsample?: SequenceSubsample;
+  fastqFilter?: FastqQualityFilterOptions;
   signal?: AbortSignal;
   onProgress?: (progress: SequenceStreamProgress) => void;
 }
@@ -137,7 +212,14 @@ async function* fastaRecords(source: AsyncIterable<string>): AsyncGenerator<stri
   }
 }
 
-async function* fastqRecords(source: AsyncIterable<string>): AsyncGenerator<string> {
+interface FastqRecord {
+  header: string;
+  sequence: string;
+  plus: string;
+  quality: string;
+}
+
+async function* fastqRecords(source: AsyncIterable<string>): AsyncGenerator<FastqRecord> {
   let header = "";
   let plus = "";
   let sequence: string[] = [];
@@ -178,7 +260,7 @@ async function* fastqRecords(source: AsyncIterable<string>): AsyncGenerator<stri
       throw new Error(`FASTQ sequence/quality length mismatch: ${header.slice(1).trim() || "unnamed sequence"}.`);
     }
     if (qualityLength === sequenceLength) {
-      yield `${header}\n${sequence.join("")}\n${plus}\n${quality.join("")}\n`;
+      yield { header, sequence: sequence.join(""), plus, quality: quality.join("") };
       state = "header";
     }
   }
@@ -212,6 +294,91 @@ interface StreamRecord {
   header?: string;
 }
 
+function expectedErrorTable(offset: 33 | 64): Float64Array {
+  const table = new Float64Array(127);
+  for (let code = offset; code < table.length; code += 1) {
+    table[code] = 10 ** (-(code - offset) / 10);
+  }
+  return table;
+}
+
+const PHRED33_EXPECTED_ERRORS = expectedErrorTable(33);
+const PHRED64_EXPECTED_ERRORS = expectedErrorTable(64);
+
+function canonicalFastq(record: FastqRecord, end = record.sequence.length): string {
+  if (end === record.sequence.length) {
+    return `${record.header}\n${record.sequence}\n${record.plus}\n${record.quality}\n`;
+  }
+  return `${record.header}\n${record.sequence.slice(0, end)}\n${record.plus}\n${record.quality.slice(0, end)}\n`;
+}
+
+/**
+ * Apply the FASTQ filter without constructing an output record for rejected
+ * reads. The full-read expected-error sum is accumulated once; when 3' trim
+ * removes a base, its contribution is subtracted before the threshold test.
+ */
+function filterFastqRecord(
+  record: FastqRecord,
+  options: FastqQualityFilterOptions,
+  stats: FastqQualityFilterStats,
+): string | null {
+  stats.recordsEvaluated += 1;
+  const offset = options.phredOffset;
+  const errorTable = offset === 64 ? PHRED64_EXPECTED_ERRORS : PHRED33_EXPECTED_ERRORS;
+  const quality = record.quality;
+  const trim = options.trim3Prime;
+  const windowSize = Math.max(1, Math.floor(trim.windowSize));
+  let end = quality.length;
+  const initialWindowStart = Math.max(0, end - windowSize);
+  let windowStart = initialWindowStart;
+  let windowPhredSum = 0;
+  let expectedErrors = 0;
+
+  for (let index = 0; index < quality.length; index += 1) {
+    const code = quality.charCodeAt(index);
+    if (code < offset || code >= errorTable.length) {
+      const name = record.header.slice(1).trim() || "unnamed sequence";
+      throw new Error(`FASTQ quality character outside Phred+${offset} range in ${name} at base ${index + 1}.`);
+    }
+    expectedErrors += errorTable[code];
+    if (trim.enabled && index >= initialWindowStart) windowPhredSum += code - offset;
+  }
+
+  if (trim.enabled) {
+    while (
+      end > 0
+      && windowPhredSum < trim.minimumMeanPhred * (end - windowStart)
+    ) {
+      const removedCode = quality.charCodeAt(end - 1);
+      expectedErrors -= errorTable[removedCode];
+      windowPhredSum -= removedCode - offset;
+      end -= 1;
+      const nextWindowStart = Math.max(0, end - windowSize);
+      if (nextWindowStart < windowStart) {
+        const addedCode = quality.charCodeAt(nextWindowStart);
+        windowPhredSum += addedCode - offset;
+      }
+      windowStart = nextWindowStart;
+    }
+    if (end < Math.max(1, Math.floor(trim.minimumLength))) {
+      stats.recordsRejectedMinimumLength += 1;
+      return null;
+    }
+  }
+
+  if (Math.max(0, expectedErrors) > options.maximumExpectedErrors) {
+    stats.recordsRejectedExpectedErrors += 1;
+    return null;
+  }
+  const trimmedBases = quality.length - end;
+  if (trimmedBases) {
+    stats.recordsTrimmed += 1;
+    stats.basesTrimmed += trimmedBases;
+  }
+  stats.recordsRetained += 1;
+  return canonicalFastq(record, end);
+}
+
 function seededRandom(seed: number): () => number {
   let value = Math.trunc(seed) >>> 0;
   return () => {
@@ -231,16 +398,39 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
   let bytesRead = 0;
   let totalBytes = typeof options.source === "string" ? options.source.length : options.source.size;
   let recordsRead = 0;
+  let recordsEligible = 0;
   let recordsSelected = 0;
   let maxBatchCharacters = 0;
   let maxCarryCharacters = 0;
+  const filterOptions = options.fastqFilter ?? DEFAULT_FASTQ_QUALITY_FILTER;
+  if (filterOptions.enabled) {
+    if (!Number.isFinite(filterOptions.maximumExpectedErrors) || filterOptions.maximumExpectedErrors < 0) {
+      throw new Error("Maximum FASTQ expected errors must be a non-negative number.");
+    }
+    if (filterOptions.phredOffset !== 33 && filterOptions.phredOffset !== 64) {
+      throw new Error("FASTQ quality encoding must be Phred+33 or Phred+64.");
+    }
+    if (filterOptions.trim3Prime.enabled && (
+      !Number.isFinite(filterOptions.trim3Prime.windowSize) || filterOptions.trim3Prime.windowSize < 1
+      || !Number.isFinite(filterOptions.trim3Prime.minimumMeanPhred) || filterOptions.trim3Prime.minimumMeanPhred < 0
+      || !Number.isFinite(filterOptions.trim3Prime.minimumLength) || filterOptions.trim3Prime.minimumLength < 1
+    )) {
+      throw new Error("FASTQ 3' trimming requires a positive window and retained length, and a non-negative mean Phred threshold.");
+    }
+  }
+  const fastqFilter = emptyFastqQualityFilterStats(
+    filterOptions.enabled,
+    filterOptions.enabled && options.format === 2,
+  );
   const report = () => options.onProgress?.({
     bytesRead,
     totalBytes,
     recordsRead,
+    recordsEligible,
     recordsSelected,
     maxBatchCharacters,
     maxCarryCharacters,
+    fastqFilter: { ...fastqFilter },
   });
   const inputLines = lines(
     options.source,
@@ -260,17 +450,42 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
       for await (const record of airrRecords(inputLines)) {
         abortIfNeeded(options.signal);
         recordsRead += 1;
+        recordsEligible += 1;
+        if (filterOptions.enabled) {
+          fastqFilter.recordsRetained += 1;
+          fastqFilter.recordsPassedThrough += 1;
+        }
+        recordsSelected = subsampleSize ? Math.min(recordsEligible, subsampleSize) : recordsEligible;
         if (recordsRead % 1000 === 0) report();
         yield { ordinal: recordsRead - 1, text: `${record.row}\n`, header: record.header };
       }
       return;
     }
-    const recordSource = options.format === 1 ? fastaRecords(inputLines) : fastqRecords(inputLines);
-    for await (const record of recordSource) {
+    if (options.format === 1) {
+      for await (const record of fastaRecords(inputLines)) {
+        abortIfNeeded(options.signal);
+        recordsRead += 1;
+        recordsEligible += 1;
+        if (filterOptions.enabled) {
+          fastqFilter.recordsRetained += 1;
+          fastqFilter.recordsPassedThrough += 1;
+        }
+        recordsSelected = subsampleSize ? Math.min(recordsEligible, subsampleSize) : recordsEligible;
+        if (recordsRead % 1000 === 0) report();
+        yield { ordinal: recordsRead - 1, text: record };
+      }
+      return;
+    }
+    for await (const record of fastqRecords(inputLines)) {
       abortIfNeeded(options.signal);
       recordsRead += 1;
+      const text = filterOptions.enabled
+        ? filterFastqRecord(record, filterOptions, fastqFilter)
+        : canonicalFastq(record);
+      if (text !== null) recordsEligible += 1;
+      recordsSelected = subsampleSize ? Math.min(recordsEligible, subsampleSize) : recordsEligible;
       if (recordsRead % 1000 === 0) report();
-      yield { ordinal: recordsRead - 1, text: record };
+      if (text !== null) yield { ordinal: recordsRead - 1, text };
     }
   };
 
@@ -282,10 +497,10 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
       if (reservoir.length < subsampleSize) {
         reservoir.push(record);
       } else {
-        const replacement = Math.floor(random() * recordsRead);
+        const replacement = Math.floor(random() * recordsEligible);
         if (replacement < subsampleSize) reservoir[replacement] = record;
       }
-      recordsSelected = Math.min(recordsRead, subsampleSize);
+      recordsSelected = Math.min(recordsEligible, subsampleSize);
     }
     reservoir.sort((a, b) => a.ordinal - b.ordinal);
     selected = (async function* () { yield* reservoir; })();
@@ -308,13 +523,16 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
   for await (const record of selected) {
     abortIfNeeded(options.signal);
     records.push(record);
-    recordsSelected = subsampleSize ? Math.min(recordsRead, subsampleSize) : recordsRead;
+    recordsSelected = subsampleSize ? Math.min(recordsEligible, subsampleSize) : recordsEligible;
     if (records.length === batchSize) yield emit();
   }
   if (records.length) yield emit();
 
   bytesRead = totalBytes;
-  recordsSelected = subsampleSize ? Math.min(recordsRead, subsampleSize) : recordsRead;
+  recordsSelected = subsampleSize ? Math.min(recordsEligible, subsampleSize) : recordsEligible;
   report();
   if (!recordsRead) throw new Error("No sequence records were found in the input.");
+  if (!recordsEligible && fastqFilter.applicable) {
+    throw new Error(`The FASTQ quality filter rejected all ${recordsRead.toLocaleString()} input reads.`);
+  }
 }

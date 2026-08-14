@@ -7,11 +7,20 @@ interface Props {
   excluded: string[];
   onChange: (excluded: string[]) => void;
   label?: string;
+  description?: string;
+  variant?: "details" | "panel";
 }
 
 const DISPLAY_LIMIT = 300;
 
-export function ReferenceAlleleExclusionEditor({ fasta, excluded, onChange, label = "Advanced reference-alignment options" }: Props) {
+export function ReferenceAlleleExclusionEditor({
+  fasta,
+  excluded,
+  onChange,
+  label = "Advanced assignment-reference options",
+  description = "Exclusions use exact FASTA identifiers and are applied while composing the germline FASTA before initial V(D)J assignment. Removed records are not considered as primary or alternative hits.",
+  variant = "details",
+}: Props) {
   const [search, setSearch] = useState("");
   const names = useMemo(() => referenceFastaNames(fasta), [fasta]);
   const excludedSet = useMemo(() => new Set(excluded), [excluded]);
@@ -32,10 +41,8 @@ export function ReferenceAlleleExclusionEditor({ fasta, excluded, onChange, labe
     commit(next);
   };
 
-  return <details className="post-advanced reference-exclusion-editor">
-    <summary>{label}{activeCount ? ` · ${activeCount.toLocaleString()} excluded` : ""}</summary>
-    <div>
-      <p>Exclusions use exact FASTA identifiers and are applied before CHMMAIRRa validates or builds the MSA. An assigned allele removed here will be reported as a missing reference rather than silently replaced.</p>
+  const body = <div>
+      <p>{description}</p>
       <div className="reference-exclusion-toolbar">
         <label><span>Find allele</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="IGHV1-2*01…" /></label>
         <div className="result-actions"><button type="button" disabled={!matches.length} onClick={() => setMatches(true)}>Exclude {normalizedSearch ? "matches" : "all"}</button><button type="button" disabled={!matches.some((name) => excludedSet.has(name))} onClick={() => setMatches(false)}>Include {normalizedSearch ? "matches" : "all"}</button></div>
@@ -43,6 +50,7 @@ export function ReferenceAlleleExclusionEditor({ fasta, excluded, onChange, labe
       <div className="reference-exclusion-summary"><strong>{activeCount.toLocaleString()} excluded</strong><span>{Math.max(0, names.length - activeCount).toLocaleString()} of {names.length.toLocaleString()} reference records retained</span></div>
       {visible.length ? <div className="reference-exclusion-list">{visible.map((name) => <label key={name}><input type="checkbox" checked={excludedSet.has(name)} onChange={(event) => toggle(name, event.target.checked)} /><code>{name}</code><span>{excludedSet.has(name) ? "excluded" : "included"}</span></label>)}</div> : <div className="method-placeholder small"><span>∅</span><h4>{names.length ? "No allele matches this search" : "No reference FASTA is available"}</h4></div>}
       {matches.length > DISPLAY_LIMIT && <small>{DISPLAY_LIMIT.toLocaleString()} of {matches.length.toLocaleString()} matching identifiers are shown. Bulk include/exclude applies to every match.</small>}
-    </div>
-  </details>;
+    </div>;
+  if (variant === "panel") return <section className="reference-exclusion-editor reference-exclusion-panel"><header><span>Allele inclusion</span><strong>{label}{activeCount ? ` · ${activeCount.toLocaleString()} excluded` : ""}</strong></header>{body}</section>;
+  return <details className="post-advanced reference-exclusion-editor"><summary>{label}{activeCount ? ` · ${activeCount.toLocaleString()} excluded` : ""}</summary>{body}</details>;
 }

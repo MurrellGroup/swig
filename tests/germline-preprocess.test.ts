@@ -134,6 +134,28 @@ test("a locus-specific replacement retains IMGT records from the other combined-
   assert.equal(segmentAppliesToLocus("IGH", "D"), true);
 });
 
+test("per-cell allele exclusions alter the initial composed assignment FASTA only in that locus and segment", () => {
+  const excludedIghV = human.loci.IGH.V[0][0];
+  const retainedIghV = human.loci.IGH.V[1][0];
+  const representativeIgkV = human.loci.IGK.V[0][0];
+  const representativeIghJ = human.loci.IGH.J[0][0];
+  const composed = composeReferenceOverrides(
+    ["IGH", "IGK", "IGL"],
+    {},
+    (locus, segment) => (human.loci[locus]?.[segment] ?? []).map((allele: MetadataAllele) => `>${allele[0]}\n${allele[1]}\n`).join(""),
+    { [referenceCellKey("IGH", "V")]: [excludedIghV] },
+  );
+  assert.ok(composed.V);
+  assert.doesNotMatch(composed.V!, new RegExp(`^>${excludedIghV.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`, "m"));
+  assert.match(composed.V!, new RegExp(`^>${retainedIghV.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`, "m"));
+  assert.match(composed.V!, new RegExp(`^>${representativeIgkV.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`, "m"));
+  assert.equal(composed.J, undefined);
+  const baselineVCount = human.loci.IGH.V.length + human.loci.IGK.V.length + human.loci.IGL.V.length;
+  assert.equal((composed.V!.match(/^>/gm) ?? []).length, baselineVCount - 1);
+  const baselineJ = (human.loci.IGH.J ?? []).map((allele: MetadataAllele) => `>${allele[0]}\n${allele[1]}\n`).join("");
+  assert.match(baselineJ, new RegExp(`^>${representativeIghJ.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`, "m"));
+});
+
 test("bundled KIMDB files are intact FASTA exports", () => {
   for (const species of ["Macaca_mulatta", "Macaca_fascicularis"]) {
     for (const segment of ["V", "D", "J"]) {

@@ -11,7 +11,7 @@ import {
 import { AlignmentViewer } from "./alignment-view";
 import { CommitNumberInput } from "./commit-number-input";
 import { CommitTextInput } from "./commit-text-input";
-import type { GermlinePreprocessReport, MetadataAllele } from "./germline-preprocess";
+import { annotationCoverage, type GermlinePreprocessReport, type MetadataAllele } from "./germline-preprocess";
 import { preprocessGermlinesInWorker } from "./germline-preprocess-client";
 import { RepertoireDashboard } from "./repertoire-charts";
 import { PostAnalysisWorkbench, type PostAnalysisSessionHandle } from "./post-analysis";
@@ -65,7 +65,14 @@ import {
   type AssignerStrategy,
   type CallingProfile,
 } from "./swiftig-runtime";
-import { streamSequenceBatches } from "./sequence-stream";
+import {
+  addFastqQualityFilterStats,
+  DEFAULT_FASTQ_QUALITY_FILTER,
+  emptyFastqQualityFilterStats,
+  streamSequenceBatches,
+  type FastqQualityFilterOptions,
+  type FastqQualityFilterStats,
+} from "./sequence-stream";
 import { prepareReferenceMsa } from "./post-analysis-core";
 import { ReferenceAlleleExclusionEditor } from "./reference-allele-exclusion";
 import { filterReferenceFasta } from "./reference-fasta";
@@ -105,6 +112,7 @@ import {
 } from "./study-design";
 
 type AppPage = "home" | "analyze" | "results";
+type AnalysisWorkspace = "data" | "references" | "assignment" | "pipeline" | "run";
 type InputFormat = "FASTA" | "FASTQ" | "AIRR TSV";
 type InputSource = "upload" | "paste";
 type OutputStorageMode = "auto" | "browser" | "disk";
@@ -132,6 +140,7 @@ interface ReferenceOverride {
 }
 
 type ReferenceCellMap = Record<string, ReferenceOverride>;
+type ReferenceAlleleExclusionMap = Record<string, string[]>;
 
 interface ResultSession {
   id: number;
@@ -152,7 +161,10 @@ interface ResultSession {
   inputTotal: number;
   subsampleSize: number | null;
   subsampleSeed: number | null;
+  fastqFilter: FastqQualityFilterOptions;
+  fastqFilterStats: FastqQualityFilterStats;
   references: CompiledReferences;
+  referenceExclusions: ReferenceAlleleExclusionMap;
   callingProfile: CallingProfile;
   assignerStrategy: AssignerStrategy;
   minimumIdentity: number;
@@ -166,7 +178,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.20.1";
+const APP_VERSION = "0.21.0";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -410,16 +422,40 @@ interface DirectoryDatasetInput extends DatasetInput {
 
 function copyPipeline(value?: PipelinePlan): PipelinePlan {
   const source = value ?? DEFAULT_PIPELINE_PLAN;
+  const legacyChimera = source.chimera as PipelinePlan["chimera"] & { excludedAlleles?: unknown };
+  const { excludedAlleles: _discardedLegacyChimeraExclusions, ...chimera } = legacyChimera;
   return {
     ...DEFAULT_PIPELINE_PLAN,
     ...source,
     collapse: { ...DEFAULT_PIPELINE_PLAN.collapse, ...source.collapse },
-    chimera: { ...DEFAULT_PIPELINE_PLAN.chimera, ...source.chimera, excludedAlleles: [...(source.chimera?.excludedAlleles ?? [])] },
+    chimera: { ...DEFAULT_PIPELINE_PLAN.chimera, ...chimera },
     selection: { ...DEFAULT_PIPELINE_PLAN.selection, ...source.selection },
     lineage: { ...DEFAULT_PIPELINE_PLAN.lineage, ...source.lineage },
     shm: { ...DEFAULT_PIPELINE_PLAN.shm, ...source.shm },
     missingAlleles: { ...DEFAULT_PIPELINE_PLAN.missingAlleles, ...source.missingAlleles },
   };
+}
+
+function copyFastqQualityFilter(value?: FastqQualityFilterOptions): FastqQualityFilterOptions {
+  const source = value ?? DEFAULT_FASTQ_QUALITY_FILTER;
+  return {
+    ...DEFAULT_FASTQ_QUALITY_FILTER,
+    ...source,
+    trim3Prime: { ...DEFAULT_FASTQ_QUALITY_FILTER.trim3Prime, ...source.trim3Prime },
+  };
+}
+
+function fastqQualityResultText(session: ResultSession): string {
+  if (!session.fastqFilter.enabled) return "";
+  const stats = session.fastqFilterStats;
+  const fastqRetained = Math.max(0, stats.recordsRetained - stats.recordsPassedThrough);
+  const rejected = stats.recordsRejectedExpectedErrors + stats.recordsRejectedMinimumLength;
+  const applied = stats.recordsEvaluated
+    ? `FASTQ QC ${stats.recordsEvaluated.toLocaleString()} → ${fastqRetained.toLocaleString()} (${rejected.toLocaleString()} rejected${stats.recordsTrimmed ? `; ${stats.recordsTrimmed.toLocaleString()} end-trimmed` : ""})`
+    : "FASTQ QC enabled; no FASTQ records present";
+  return stats.recordsPassedThrough
+    ? ` · ${applied} · ${stats.recordsPassedThrough.toLocaleString()} non-FASTQ records passed through`
+    : ` · ${applied}`;
 }
 
 async function readUploadedText(file: File): Promise<string> {
@@ -468,7 +504,10 @@ async function sessionArtifact(
       assignerStrategy: session.assignerStrategy,
       minimumIdentity: session.minimumIdentity,
       strand: session.strand,
+      fastqFilter: copyFastqQualityFilter(session.fastqFilter),
+      fastqFilterStats: { ...session.fastqFilterStats },
       references: session.references,
+      referenceExclusions: Object.fromEntries(Object.entries(session.referenceExclusions).map(([key, names]) => [key, [...names]])),
       doubleD: { ...session.doubleD },
       datasets,
       studyDesign: session.studyDesign,
@@ -578,33 +617,33 @@ function LandingPage({ references, onStart, onDemo }: {
   );
 }
 
-function ReferenceCellControl({ speciesName, locus, segment, builtInCount, builtInCoverage, reference, busy, onSelect, onFile }: {
+function ReferenceCellControl({ speciesName, locus, segment, builtInFasta, reference, excluded, busy, onSelect, onFile, onEditAlleles }: {
   speciesName: string;
   locus: LocusKey;
   segment: SegmentKey;
-  builtInCount: number;
-  builtInCoverage?: { annotated: number; total: number };
+  builtInFasta: string;
   reference?: ReferenceOverride;
+  excluded: string[];
   busy: boolean;
   onSelect: (locus: LocusKey, segment: SegmentKey, sourceId: string) => void;
   onFile: (locus: LocusKey, segment: SegmentKey, file: File) => void;
+  onEditAlleles: (locus: LocusKey, segment: SegmentKey) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const databases = databasesForCell(speciesName, locus, segment);
   const value = reference?.sourceKind === "upload" ? "upload" : reference?.sourceDatabaseId ?? DEFAULT_DATABASE_ID;
-  const count = reference?.count ?? builtInCount;
-  const coverage = reference && (segment === "V" || segment === "J")
-    ? { annotated: reference.report.annotated, total: reference.report.count }
-    : builtInCoverage;
+  const sourceFasta = reference?.text ?? builtInFasta;
+  const filtered = useMemo(() => filterReferenceFasta(sourceFasta, excluded), [excluded, sourceFasta]);
+  const coverage = useMemo(() => segment === "V" || segment === "J" ? annotationCoverage(filtered.fasta, segment) : undefined, [filtered.fasta, segment]);
   return (
-    <div className={`composition-cell ${reference?.sourceKind ?? "imgt"} ${busy ? "busy" : ""}`}>
+    <div className={`composition-cell ${reference?.sourceKind ?? "imgt"} ${excluded.length ? "has-exclusions" : ""} ${busy ? "busy" : ""}`}>
       <select aria-label={`${locus} ${segment} reference source`} value={value} disabled={busy} onChange={(event) => onSelect(locus, segment, event.target.value)}>
-        <option value={DEFAULT_DATABASE_ID}>IMGT/GENE-DB{builtInCount ? "" : " · no records"}</option>
+        <option value={DEFAULT_DATABASE_ID}>IMGT/GENE-DB{filtered.total || reference ? "" : " · no records"}</option>
         {databases.map((database) => <option value={database.id} key={database.id}>{database.name}</option>)}
         {reference?.sourceKind === "upload" && <option value="upload">Loaded file · {reference.name}</option>}
       </select>
       <div className="composition-cell-meta">
-        <b>{busy ? "Validating…" : `${count.toLocaleString()} allele${count === 1 ? "" : "s"}`}</b>
+        <b>{busy ? "Validating…" : `${filtered.retained.toLocaleString()} active allele${filtered.retained === 1 ? "" : "s"}`}</b>
         {(segment === "V" || segment === "J") && coverage && <em className={coverage.annotated === coverage.total ? "complete" : coverage.annotated ? "partial" : "missing"} title={reference?.report.warnings.join("\n")}>{coverage.annotated.toLocaleString()}/{coverage.total.toLocaleString()} {segment === "V" ? "regions" : "anchors"}</em>}
       </div>
       <input ref={input} className="visually-hidden" type="file" accept=".fa,.fasta,.fna,.fas,.txt,.gz" onChange={(event) => {
@@ -612,7 +651,7 @@ function ReferenceCellControl({ speciesName, locus, segment, builtInCount, built
         if (file) onFile(locus, segment, file);
         event.target.value = "";
       }} />
-      <button className="cell-upload" type="button" disabled={busy} onClick={() => input.current?.click()}>{reference?.sourceKind === "upload" ? "Replace FASTA" : "Load FASTA"}</button>
+      <div className="composition-cell-actions"><button className="cell-alleles" type="button" title={`Include or exclude individual ${locus} ${segment} alleles before assignment`} disabled={busy || !filtered.total} onClick={() => onEditAlleles(locus, segment)}>{excluded.length ? `${excluded.length} excluded` : "Exclude alleles…"}</button><button className="cell-upload" type="button" disabled={busy} onClick={() => input.current?.click()}>{reference?.sourceKind === "upload" ? "Replace FASTA" : "Load FASTA"}</button></div>
     </div>
   );
 }
@@ -621,16 +660,20 @@ function ReferenceCompositionMatrix({
   species,
   scope,
   references,
+  exclusions,
   busyCells,
   onSelect,
   onFile,
+  onEditAlleles,
 }: {
   species: ReferenceSpecies;
   scope: ScopeKey;
   references: ReferenceCellMap;
+  exclusions: ReferenceAlleleExclusionMap;
   busyCells: Set<string>;
   onSelect: (locus: LocusKey, segment: SegmentKey, sourceId: string) => void;
   onFile: (locus: LocusKey, segment: SegmentKey, file: File) => void;
+  onEditAlleles: (locus: LocusKey, segment: SegmentKey) => void;
 }) {
   const loci = lociForScope(species, scope);
   return (
@@ -641,13 +684,8 @@ function ReferenceCompositionMatrix({
         {SEGMENTS.map((segment) => {
           if (!segmentAppliesToLocus(locus, segment)) return <div className="composition-na" role="cell" key={segment}><span>Not used</span></div>;
           const alleles = species.loci[locus]?.[segment] ?? [];
-          const builtInCoverage = segment === "V"
-            ? { annotated: alleles.filter((allele) => allele[2]?.slice(2, 12).every((value) => value >= 0)).length, total: alleles.length }
-            : segment === "J"
-              ? { annotated: alleles.filter((allele) => Boolean(allele[2] && allele[2]![0] >= 0 && allele[2]![1] >= 0)).length, total: alleles.length }
-              : undefined;
           const key = referenceCellKey(locus, segment);
-          return <div role="cell" key={segment}><ReferenceCellControl speciesName={species.name} locus={locus} segment={segment} builtInCount={alleles.length} builtInCoverage={builtInCoverage} reference={references[key]} busy={busyCells.has(key)} onSelect={onSelect} onFile={onFile} /></div>;
+          return <div role="cell" key={segment}><ReferenceCellControl speciesName={species.name} locus={locus} segment={segment} builtInFasta={allelesToFasta(alleles)} reference={references[key]} excluded={exclusions[key] ?? []} busy={busyCells.has(key)} onSelect={onSelect} onFile={onFile} onEditAlleles={onEditAlleles} /></div>;
         })}
       </div>)}
     </div>
@@ -657,21 +695,23 @@ function ReferenceCompositionMatrix({
 function CompositionSummary({
   databases,
   hasUploads,
+  excludedAlleles,
   busy,
   release,
 }: {
   databases: ReferenceDatabase[];
   hasUploads: boolean;
+  excludedAlleles: number;
   busy: boolean;
   release: string;
 }) {
   const sources = [`IMGT/GENE-DB ${release || "reference pack"}`, ...databases.map((database) => database.name), ...(hasUploads ? ["local FASTA"] : [])];
   return (
-    <section className={`database-summary ${databases.length || hasUploads ? "alternative" : ""}`} aria-label="Reference composition summary">
+    <section className={`database-summary ${databases.length || hasUploads || excludedAlleles ? "alternative" : ""}`} aria-label="Reference composition summary">
       <div>
         <span>Reference composition</span>
         <strong>{sources.join(" + ")}</strong>
-        <p>{busy ? "Downloading and validating published germline FASTA in this browser…" : "Apply a database above, then refine any locus/segment independently in the matrix. Unchanged cells retain IMGT."}</p>
+        <p>{busy ? "Downloading and validating published germline FASTA in this browser…" : `Apply a database above, then refine any locus/segment independently in the matrix. Unchanged cells retain IMGT.${excludedAlleles ? ` ${excludedAlleles.toLocaleString()} exact allele${excludedAlleles === 1 ? " is" : "s are"} currently removed from the FASTA used for initial assignment.` : ""}`}</p>
       </div>
       {databases.length > 0 && <div className="database-links">{databases.flatMap((database) => [<a href={database.sourceUrl} target="_blank" rel="noreferrer" key={`${database.id}:source`}>{database.name} source ↗</a>, <a href={database.citationUrl} target="_blank" rel="noreferrer" key={`${database.id}:citation`}>Citation ↗</a>, ...(database.terms ? [<a href={database.terms.url} target="_blank" rel="noreferrer" key={`${database.id}:terms`}>{database.terms.label} ↗</a>] : [])])}</div>}
     </section>
@@ -798,16 +838,26 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
 }
 
 function DoubleDExplorer({session,onInspect}:{session:ResultSession;onInspect:(ordinal:number)=>void}){
-  const [records,setRecords]=useState<DoubleDEvidenceRecord[]>([]);const [loading,setLoading]=useState(true);const [d1,setD1]=useState("");const [d2,setD2]=useState("");const [sequenceId,setSequenceId]=useState("");const [minimumGain,setMinimumGain]=useState(0);const [minimumSpan,setMinimumSpan]=useState(0);const [selected,setSelected]=useState<AirrRow|null>(null);const [selectedOrdinal,setSelectedOrdinal]=useState<number|null>(null);const [mode,setMode]=useState<"nt"|"aa">("nt");const detailRef=useRef<HTMLElement>(null);
-  useEffect(()=>{let cancelled=false;setLoading(true);session.store.doubleDRecords().then(value=>{if(!cancelled){setRecords(value);setLoading(false);}});return()=>{cancelled=true;};},[session]);
-  const filtered=useMemo(()=>records.filter(record=>{const values=record.values;return(!d1||String(values.d_call||"").toUpperCase().includes(d1.toUpperCase()))&&(!d2||String(values.d2_call||"").toUpperCase().includes(d2.toUpperCase()))&&(!sequenceId||String(values.sequence_id||"").toLowerCase().includes(sequenceId.toLowerCase()))&&Number(values.swig_double_d_score_gain||0)>=minimumGain&&Number(values.swig_double_d_vj_span||0)>=minimumSpan;}),[records,d1,d2,sequenceId,minimumGain,minimumSpan]);
-  async function open(record:DoubleDEvidenceRecord){setSelectedOrdinal(record.ordinal);const [detail]=await session.store.detailMany([record.ordinal]);if(!detail)return;setSelected(detail.values);window.requestAnimationFrame(()=>detailRef.current?.scrollIntoView({behavior:window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"start"}));}
+  const [records,setRecords]=useState<DoubleDEvidenceRecord[]>([]);const [loading,setLoading]=useState(true);const [d1,setD1]=useState("");const [d2,setD2]=useState("");const [sequenceId,setSequenceId]=useState("");const [cdr3,setCdr3]=useState("");const [minimumGain,setMinimumGain]=useState(0);const [minimumSpan,setMinimumSpan]=useState(0);const [selected,setSelected]=useState<AirrRow|null>(null);const [selectedOrdinal,setSelectedOrdinal]=useState<number|null>(null);const [mode,setMode]=useState<"nt"|"aa">("nt");const [workspace,setWorkspace]=useState<"calls"|"alignment">("calls");const detailRef=useRef<HTMLElement>(null);
+  useEffect(()=>{let cancelled=false;setLoading(true);void(async()=>{const evidence=await session.store.doubleDRecords();const indexed=await session.store.indexRecords(evidence.map((record)=>record.ordinal));const byOrdinal=new Map(indexed.map((record)=>[record.ordinal,record]));const hydrated=evidence.map((record)=>{const index=byOrdinal.get(record.ordinal);return {...record,values:{...record.values,cdr3:record.values.cdr3||index?.cdr3||"",cdr3_aa:record.values.cdr3_aa||index?.cdr3Aa||""}};});if(!cancelled){setRecords(hydrated);setLoading(false);}})().catch(()=>{if(!cancelled){setRecords([]);setLoading(false);}});return()=>{cancelled=true;};},[session]);
+  const filtered=useMemo(()=>records.filter(record=>{const values=record.values;const normalizedCdr3=cdr3.toUpperCase();return(!d1||String(values.d_call||"").toUpperCase().includes(d1.toUpperCase()))&&(!d2||String(values.d2_call||"").toUpperCase().includes(d2.toUpperCase()))&&(!sequenceId||String(values.sequence_id||"").toLowerCase().includes(sequenceId.toLowerCase()))&&(!normalizedCdr3||(values.cdr3||"").toUpperCase().includes(normalizedCdr3)||(values.cdr3_aa||"").toUpperCase().includes(normalizedCdr3))&&Number(values.swig_double_d_score_gain||0)>=minimumGain&&Number(values.swig_double_d_vj_span||0)>=minimumSpan;}),[records,d1,d2,sequenceId,cdr3,minimumGain,minimumSpan]);
+  async function open(record:DoubleDEvidenceRecord){setSelectedOrdinal(record.ordinal);const [detail]=await session.store.detailMany([record.ordinal]);if(!detail)return;setSelected(detail.values);setWorkspace("alignment");window.requestAnimationFrame(()=>detailRef.current?.focus({preventScroll:true}));}
   const pairCounts=useMemo(()=>{const map=new Map<string,number>();for(const record of filtered){const key=`${record.values.d_call||"D1 —"} → ${record.values.d2_call||"D2 —"}`;map.set(key,(map.get(key)??0)+1);}return [...map.entries()].sort((a,b)=>b[1]-a[1]).slice(0,12);},[filtered]);
-  return <section className="double-d-explorer"><header className="repertoire-heading"><div><span className="section-kicker">Opt-in VDDJ evidence</span><h2>Double-D call explorer</h2><p>Inspect ordered D1/D2 evidence and the full V–D1–D2–J alignment. These calls are separate from the standard AIRR annotation path.</p></div><span className="aggregate-badge">{filtered.length.toLocaleString()} / {records.length.toLocaleString()} supported calls</span></header>
-    <div className="double-d-filter-grid"><label><span>Sequence ID</span><CommitTextInput value={sequenceId} onCommit={setSequenceId} placeholder="contains…"/></label><label><span>D1 call</span><CommitTextInput value={d1} onCommit={setD1} placeholder="IGHD…"/></label><label><span>D2 call</span><CommitTextInput value={d2} onCommit={setD2} placeholder="IGHD…"/></label><label><span>Minimum score gain</span><CommitNumberInput min="0" value={minimumGain} onCommit={setMinimumGain}/></label><label><span>Minimum V–J span</span><CommitNumberInput min="0" value={minimumSpan} onCommit={setMinimumSpan}/></label></div>
-    {pairCounts.length?<div className="double-d-pair-summary">{pairCounts.map(([pair,count])=><article key={pair}><code>{pair}</code><strong>{count.toLocaleString()}</strong></article>)}</div>:null}
-    <div className="lineage-table-wrap"><table><thead><tr><th>Sequence</th><th>Locus</th><th>D1</th><th>D2</th><th>Score gain</th><th>V–J span</th><th>NP2</th><th/></tr></thead><tbody>{filtered.slice(0,1000).map(record=><tr key={record.ordinal} className={selectedOrdinal===record.ordinal?"selected":""} onClick={()=>void open(record)}><td><strong>{record.values.sequence_id||`#${record.ordinal+1}`}</strong></td><td>{record.values.locus||"—"}</td><td><code>{record.values.d_call||"—"}</code></td><td><code>{record.values.d2_call||"—"}</code></td><td>{record.values.swig_double_d_score_gain||"—"}</td><td>{record.values.swig_double_d_vj_span||"—"}</td><td><code>{record.values.np2||"—"}</code></td><td><button type="button">Open alignment →</button></td></tr>)}</tbody></table>{loading?<div className="detail-loading">Loading sparse double-D evidence…</div>:!filtered.length?<div className="empty-results"><span>∅</span><h3>No supported call matches these filters.</h3></div>:null}</div>
-    {selected?<section ref={detailRef} className="double-d-alignment-detail" tabIndex={-1}><header><div><span className="section-kicker">Selected VDDJ record</span><h3>{selected.sequence_id}</h3><p>{selected.v_call} → {selected.d_call} → {selected.d2_call} → {selected.j_call}</p></div><div className="result-actions"><button type="button" onClick={()=>onInspect(selectedOrdinal??0)}>Open complete AIRR record</button><button type="button" onClick={()=>setSelected(null)}>Close</button></div></header><div className="post-stat-grid compact"><article><span>Two-D score gain</span><strong>{selected.swig_double_d_score_gain||"—"}</strong></article><article><span>V–J search span</span><strong>{selected.swig_double_d_vj_span||"—"} nt</strong></article><article><span>D1→D2 insertion</span><strong>{selected.np2_length||0} nt</strong></article><article><span>D2→J insertion</span><strong>{selected.np3_length||0} nt</strong></article></div><AlignmentViewer row={selected} mode={mode} onMode={setMode}/></section>:null}
+  return <section className="double-d-explorer contextual-workspace">
+    <nav className="context-rail" aria-label="Double-D panels">
+      <div className="context-rail-heading"><span>Double-D</span><small>{records.length.toLocaleString()} supported calls</small></div>
+      <button type="button" className={workspace==="calls"?"active":""} onClick={()=>setWorkspace("calls")}><b>01</b><span>Calls<small>{filtered.length.toLocaleString()} match filters</small></span></button>
+      <button type="button" disabled={!selected} className={workspace==="alignment"?"active":""} onClick={()=>setWorkspace("alignment")}><b>02</b><span>Alignment<small>{selected?.sequence_id||"Select a record"}</small></span></button>
+    </nav>
+    <div className="context-main double-d-context-main">
+      {workspace==="calls"&&<>
+        <header className="repertoire-heading"><div><span className="section-kicker">Opt-in VDDJ evidence</span><h2>Double-D call explorer</h2><p>Inspect ordered D1/D2 evidence. Calls remain separate from the standard AIRR annotation path.</p></div><span className="aggregate-badge">{filtered.length.toLocaleString()} / {records.length.toLocaleString()} supported calls</span></header>
+        <div className="double-d-filter-grid"><label><span>Sequence ID</span><CommitTextInput value={sequenceId} onCommit={setSequenceId} placeholder="contains…"/></label><label><span>CDR3 nt or AA</span><CommitTextInput value={cdr3} onCommit={setCdr3} placeholder="CARDR / TGTGCC…"/></label><label><span>D1 call</span><CommitTextInput value={d1} onCommit={setD1} placeholder="IGHD…"/></label><label><span>D2 call</span><CommitTextInput value={d2} onCommit={setD2} placeholder="IGHD…"/></label><label><span>Minimum score gain</span><CommitNumberInput min="0" value={minimumGain} onCommit={setMinimumGain}/></label><label><span>Minimum V–J span</span><CommitNumberInput min="0" value={minimumSpan} onCommit={setMinimumSpan}/></label></div>
+        {pairCounts.length?<div className="double-d-pair-summary">{pairCounts.map(([pair,count])=><article key={pair}><code>{pair}</code><strong>{count.toLocaleString()}</strong></article>)}</div>:null}
+        <div className="lineage-table-wrap"><table><thead><tr><th>Sequence</th><th>Locus</th><th>CDR3</th><th>D1</th><th>D2</th><th>Score gain</th><th>V–J span</th><th>NP2</th><th/></tr></thead><tbody>{filtered.slice(0,1000).map(record=><tr key={record.ordinal} className={selectedOrdinal===record.ordinal?"selected":""} onClick={()=>void open(record)}><td><strong>{record.values.sequence_id||`#${record.ordinal+1}`}</strong></td><td>{record.values.locus||"—"}</td><td className="cdr3-table-cell"><code title={record.values.cdr3_aa||record.values.cdr3}>{record.values.cdr3_aa||record.values.cdr3||"—"}</code>{record.values.cdr3_aa&&record.values.cdr3?<small title={record.values.cdr3}>{record.values.cdr3}</small>:null}</td><td><code>{record.values.d_call||"—"}</code></td><td><code>{record.values.d2_call||"—"}</code></td><td>{record.values.swig_double_d_score_gain||"—"}</td><td>{record.values.swig_double_d_vj_span||"—"}</td><td><code>{record.values.np2||"—"}</code></td><td><button type="button">Open alignment →</button></td></tr>)}</tbody></table>{loading?<div className="detail-loading">Loading sparse double-D evidence…</div>:!filtered.length?<div className="empty-results"><span>∅</span><h3>No supported call matches these filters.</h3></div>:null}</div>
+      </>}
+      {workspace==="alignment"&&selected?<section ref={detailRef} className="double-d-alignment-detail" tabIndex={-1}><header><div><span className="section-kicker">Selected VDDJ record</span><h3>{selected.sequence_id}</h3><p>{selected.v_call} → {selected.d_call} → {selected.d2_call} → {selected.j_call}</p><code className="selected-cdr3">CDR3 {selected.cdr3_aa||selected.cdr3||"—"}{selected.cdr3_aa&&selected.cdr3?` · ${selected.cdr3}`:""}</code></div><div className="result-actions"><button type="button" onClick={()=>onInspect(selectedOrdinal??0)}>Open complete AIRR record</button><button type="button" onClick={()=>setWorkspace("calls")}>Back to calls</button></div></header><div className="post-stat-grid compact"><article><span>Two-D score gain</span><strong>{selected.swig_double_d_score_gain||"—"}</strong></article><article><span>V–J search span</span><strong>{selected.swig_double_d_vj_span||"—"} nt</strong></article><article><span>D1→D2 insertion</span><strong>{selected.np2_length||0} nt</strong></article><article><span>D2→J insertion</span><strong>{selected.np3_length||0} nt</strong></article></div><AlignmentViewer row={selected} mode={mode} onMode={setMode}/></section>:null}
+    </div>
   </section>;
 }
 
@@ -827,6 +877,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const [scanCount, setScanCount] = useState(0);
   const [selected, setSelected] = useState<AirrIndexRecord | null>(null);
   const [detail, setDetail] = useState<AirrRow | null>(null);
+  const [sequenceWorkspace,setSequenceWorkspace]=useState<"filters"|"records"|"detail">(session.total<=3?"detail":"records");
   const [downloading, setDownloading] = useState(false);
   const [doubleDDownloading, setDoubleDDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
@@ -966,6 +1017,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   }, [selected]);
 
   function openRecord(row: AirrIndexRecord) {
+    setSequenceWorkspace("detail");
     if (selected?.ordinal === row.ordinal) {
       window.requestAnimationFrame(() => detailRef.current?.scrollIntoView({
         behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
@@ -982,6 +1034,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     const [record] = await session.store.indexRecords([ordinal]);
     if (!record) return;
     activateView("sequences",false);
+    setSequenceWorkspace("detail");
     if(selected?.ordinal===record.ordinal){
       window.requestAnimationFrame(()=>detailRef.current?.scrollIntoView({behavior:window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"start"}));
       return;
@@ -1113,7 +1166,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     <main className="results-page">
       <section className="results-hero">
         <WorkflowStepper active={3} />
-        <div className="results-title"><div><p className="eyebrow"><span>{session.restored?"Saved state restored":`Analysis complete · ${session.seconds.toFixed(2)} s · ${Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s`}</span></p><h1>{session.total.toLocaleString()} analyzed<br /><em>rearrangements.</em></h1><p>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"} · {friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {assignerStrategyLabel(session.assignerStrategy)} · {callingProfileLabel(session.callingProfile)} calling · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize ? ` · exact random sample per dataset from ${session.inputTotal.toLocaleString()} input records (base seed ${session.subsampleSeed})` : ""}{session.doubleD.mode !== "off" ? ` · double-D screen ${session.doubleD.mode === "all" ? "all eligible junctions" : `V–J spans ≥ ${session.doubleD.minimumVjSpan} nt`}` : ""}</p>{session.project&&<span className="project-state-line"><b>Project directory · {session.project.root.name}</b><small>{projectSaveStatus}</small></span>}</div><div className="results-actions"><label className="compact-export-format"><span>Table format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing results…" : `Download ${downloadFormat.toUpperCase()}`}<span>↓</span></button>{session.doubleDCount > 0 && <button type="button" onClick={() => void downloadDoubleD()} disabled={doubleDDownloading}>{doubleDDownloading ? "Writing double-D evidence…" : `Double-D evidence (${session.doubleDCount.toLocaleString()})`}</button>}{session.project&&<button type="button" onClick={()=>saveProjectNow("manual_checkpoint")}>Save project checkpoint</button>}<button type="button" onClick={()=>void saveAnalysisSession()} disabled={savingSession}>{savingSession?"Saving session…":"Save portable session"}</button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
+        <div className="results-title"><div><p className="eyebrow"><span>{session.restored?"Saved state restored":`Analysis complete · ${session.seconds.toFixed(2)} s · ${Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s`}</span></p><h1>{session.total.toLocaleString()} analyzed<br /><em>rearrangements.</em></h1><p>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"} · {friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {assignerStrategyLabel(session.assignerStrategy)} · {callingProfileLabel(session.callingProfile)} calling · {session.workers} WASM worker{session.workers === 1 ? "" : "s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize ? ` · exact random sample per dataset from ${session.inputTotal.toLocaleString()} input records (base seed ${session.subsampleSeed})` : ""}{fastqQualityResultText(session)}{session.doubleD.mode !== "off" ? ` · double-D screen ${session.doubleD.mode === "all" ? "all eligible junctions" : `V–J spans ≥ ${session.doubleD.minimumVjSpan} nt`}` : ""}</p>{session.project&&<span className="project-state-line"><b>Project directory · {session.project.root.name}</b><small>{projectSaveStatus}</small></span>}</div><div className="results-actions"><label className="compact-export-format"><span>Table format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button className="download-primary" type="button" onClick={() => void downloadAll()} disabled={downloading}>{downloading ? "Writing results…" : `Download ${downloadFormat.toUpperCase()}`}<span>↓</span></button>{session.doubleDCount > 0 && <button type="button" onClick={() => void downloadDoubleD()} disabled={doubleDDownloading}>{doubleDDownloading ? "Writing double-D evidence…" : `Double-D evidence (${session.doubleDCount.toLocaleString()})`}</button>}{session.project&&<button type="button" onClick={()=>saveProjectNow("manual_checkpoint")}>Save project checkpoint</button>}<button type="button" onClick={()=>void saveAnalysisSession()} disabled={savingSession}>{savingSession?"Saving session…":"Save portable session"}</button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError && <small role="alert">{downloadError}</small>}</div></div>
         <div className="result-summary">
           <article><span>V + J assigned</span><strong>{session.summary.assigned.toLocaleString()}</strong><small>{percentage(session.summary.assigned, session.total)} of input</small></article>
           <article><span>Productive</span><strong>{session.summary.productive.toLocaleString()}</strong><small>{percentage(session.summary.productive, session.total)} of input</small></article>
@@ -1134,9 +1187,17 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
 
       {openedViews.has("repertoire") && <div id="results-panel-repertoire" role="tabpanel" aria-labelledby="results-tab-repertoire" className="results-view-panel" hidden={view !== "repertoire"}><RepertoireDashboard key={metadataRevision} store={session.store} loci={facets.loci} inputName={session.inputName} samples={facets.samples} sampleColors={sampleColors} /></div>}
       {openedViews.has("sequences") && <div id="results-panel-sequences" role="tabpanel" aria-labelledby="results-tab-sequences" className="results-view-panel" hidden={view !== "sequences"}>
+      <div className="sequence-context-workspace contextual-workspace">
+        <nav className="context-rail" aria-label="Sequence result panels">
+          <div className="context-rail-heading"><span>Sequences</span><small>{session.total.toLocaleString()} AIRR records</small></div>
+          <button type="button" className={sequenceWorkspace==="filters"?"active":""} onClick={()=>setSequenceWorkspace("filters")}><b>01</b><span>Filters<small>{filtered?"Constraints active":"All records"}</small></span></button>
+          <button type="button" className={sequenceWorkspace==="records"?"active":""} onClick={()=>setSequenceWorkspace("records")}><b>02</b><span>Records<small>{results.totalMatches===null?`${pageEnd.toLocaleString()}+ matches`:`${results.totalMatches.toLocaleString()} matches`}</small></span></button>
+          <button type="button" disabled={!selected} className={sequenceWorkspace==="detail"?"active":""} onClick={()=>setSequenceWorkspace("detail")}><b>03</b><span>Record detail<small>{selected?.sequenceId||"Select a record"}</small></span></button>
+        </nav>
+        <div className="context-main sequence-context-main">
 
-      <section className="explorer-shell">
-        <aside className="filter-panel">
+      <section className={`explorer-shell sequence-workspace-${sequenceWorkspace}`}>
+        <aside className="filter-panel" hidden={sequenceWorkspace!=="filters"}>
           <div className="filter-heading"><div><span className="section-kicker">Local query</span><h2>Filter results</h2></div>{filtered && <button type="button" onClick={() => { setFilters({ ...EMPTY_FILTERS }); setPage(0); }}>Clear</button>}</div>
           {session.doubleDCount>0?<button type="button" className={`double-d-quick-filter ${filters.hasDoubleD?"active":""}`} onClick={()=>updateFilter("hasDoubleD",!filters.hasDoubleD)}><span>{filters.hasDoubleD?"✓":"DD"}</span><strong>{filters.hasDoubleD?"Showing only double-D positive":"Only double-D positive"}</strong><small>{session.doubleDCount.toLocaleString()} sparse indexed calls</small></button>:null}
           {datasets.length>1&&<div className="study-filter-grid"><label className="filter-field"><span>Dataset</span><select value={filters.datasetId} onChange={(event)=>updateFilter("datasetId",event.target.value)}><option value="">Any dataset</option>{datasets.map((item)=><option value={item.datasetId} key={item.datasetId}>{item.inputName}</option>)}</select></label><label className="filter-field"><span>Sample</span><select value={filters.sampleId} onChange={(event)=>updateFilter("sampleId",event.target.value)}><option value="">Any sample</option>{facets.samples.map((item)=><option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label><label className="filter-field"><span>Donor / subject</span><select value={filters.subjectId} onChange={(event)=>updateFilter("subjectId",event.target.value)}><option value="">Any donor</option>{facets.subjects.map((item)=><option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label><label className="filter-field"><span>Cohort</span><select value={filters.cohort} onChange={(event)=>updateFilter("cohort",event.target.value)}><option value="">Any cohort</option>{facets.cohorts.map((item)=><option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label><label className="filter-field"><span>Timepoint</span><select value={filters.timepoint} onChange={(event)=>updateFilter("timepoint",event.target.value)}><option value="">Any timepoint</option>{facets.timepoints.map((item)=><option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label><label className="filter-field"><span>Compartment / tissue</span><select value={filters.compartment} onChange={(event)=>updateFilter("compartment",event.target.value)}><option value="">Any compartment</option>{facets.compartments.map((item)=><option value={item.value} key={item.value}>{item.value} ({item.count.toLocaleString()})</option>)}</select></label></div>}
@@ -1169,17 +1230,17 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
           <p className="index-note"><span>i</span> Exact gene and locus filters use browser-local indexes. Substring filters scan candidate records on demand within the browser.</p>
         </aside>
 
-        <div className="result-browser">
+        <div className="result-browser" hidden={sequenceWorkspace!=="records"}>
           <header className="browser-heading"><div><span className="section-kicker">AIRR records</span><h2>{searching ? "Searching local index…" : results.totalMatches !== null ? `${results.totalMatches.toLocaleString()} matching records` : `${(pageEnd + (results.hasMore ? 1 : 0)).toLocaleString()}+ matching records`}</h2><p>{searching && scanCount ? `${scanCount.toLocaleString()} candidates scanned` : results.rows.length ? `Showing ${pageStart.toLocaleString()}–${pageEnd.toLocaleString()}` : "Adjust filters to broaden the query."}</p></div><span className="scale-mode">{session.total <= 3 ? "detail mode" : session.total >= 100000 ? "large-run index" : "paged index"}</span></header>
           <div className={`results-table-wrap ${searching ? "loading" : ""}`}>
             <table className="results-table">
-              <thead><tr><th>Sequence</th>{datasets.length>1&&<th>Sample</th>}<th>Locus</th><th>V call</th><th>D call</th><th>J call</th><th>Isotype</th><th>CDR3 AA</th><th>Productive</th><th /></tr></thead>
+              <thead><tr><th>Sequence</th>{datasets.length>1&&<th>Sample</th>}<th>Locus</th><th>V call</th><th>D call</th><th>J call</th><th>Isotype</th><th>CDR3</th><th>Productive</th><th /></tr></thead>
               <tbody>{results.rows.map((row) => <tr className={selected?.ordinal === row.ordinal ? "selected" : ""} key={row.ordinal} tabIndex={0} onClick={() => openRecord(row)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openRecord(row); } }}>
                 <td><strong title={row.sequenceId}>{row.sequenceId}</strong><small>#{(row.ordinal + 1).toLocaleString()}</small></td>
                 {datasets.length>1&&<td><strong className="sample-colored-label"><i style={{background:sampleColor(row.sampleId,sampleColors)}}/>{row.sampleId||"—"}</strong><small>{row.timepoint||row.subjectId||""}</small></td>}
                 <td><span className="locus-pill">{row.locus || "—"}</span></td>
                 <td title={row.vCall}>{row.vCall || <i>—</i>}</td><td title={[row.dCall, row.d2Call].filter(Boolean).join(" → ")}>{row.dCall || <i>—</i>}{row.d2Call && <small className="d2-table-call">→ {row.d2Call}</small>}</td><td title={row.jCall}>{row.jCall || <i>—</i>}</td><td>{row.isotype || <i>—</i>}</td>
-                <td><code title={row.cdr3Aa}>{row.cdr3Aa || "—"}</code></td>
+                <td className="cdr3-table-cell"><code title={row.cdr3Aa || row.cdr3}>{row.cdr3Aa || row.cdr3 || "—"}</code>{row.cdr3Aa && row.cdr3 ? <small title={row.cdr3}>{row.cdr3}</small> : null}</td>
                 <td><span className={`productive-dot ${row.productive === "T" ? "yes" : "no"}`} />{row.productive === "T" ? "Yes" : row.productive === "F" ? "No" : "—"}</td>
                 <td><button type="button" aria-label={`Open ${row.sequenceId}`}>→</button></td>
               </tr>)}</tbody>
@@ -1190,7 +1251,9 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         </div>
       </section>
 
-      {selected && <section ref={detailRef} className="detail-shell" tabIndex={-1} aria-label={`Details for ${selected.sequenceId}`}>{detail ? <ResultDetail row={detail} onClose={() => setSelected(null)} /> : <div className="detail-loading">Loading selected AIRR record…</div>}</section>}
+      {sequenceWorkspace==="detail"&&selected?<section ref={detailRef} className="detail-shell" tabIndex={-1} aria-label={`Details for ${selected.sequenceId}`}>{detail ? <ResultDetail row={detail} onClose={() => {setSelected(null);setSequenceWorkspace("records");}} /> : <div className="detail-loading">Loading selected AIRR record…</div>}</section>:sequenceWorkspace==="detail"?<div className="method-placeholder"><span>↳</span><h3>Select an AIRR record</h3><p>Open a row from Records to inspect its calls and V(D)J alignment.</p><button type="button" onClick={()=>setSequenceWorkspace("records")}>Browse records</button></div>:null}
+        </div>
+      </div>
       </div>}
       {openedViews.has("double-d") && <div id="results-panel-double-d" role="tabpanel" aria-labelledby="results-tab-double-d" className="results-view-panel" hidden={view !== "double-d"}><DoubleDExplorer key={metadataRevision} session={session} onInspect={(ordinal)=>void inspectOrdinal(ordinal)}/></div>}
       {openedViews.has("post") && <div id="results-panel-post" role="tabpanel" aria-labelledby="results-tab-post" className="results-view-panel" hidden={view !== "post"}><PostAnalysisWorkbench key={metadataRevision} store={session.store} references={session.references} scope={session.scope} loci={facets.loci} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} assignerStrategy={session.assignerStrategy} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={datasets} sampleColors={sampleColors} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} doubleDCount={session.doubleDCount} autoPipeline={metadataRevision===0&&session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} onInspect={(ordinal) => void inspectOrdinal(ordinal)} onSessionChange={(reason)=>scheduleProjectSave(reason)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} /></div>}
@@ -1200,6 +1263,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
 
 export default function SwigApp() {
   const [page, setPage] = useState<AppPage>("home");
+  const [analysisWorkspace, setAnalysisWorkspace] = useState<AnalysisWorkspace>("data");
   const [pack, setPack] = useState<ReferencePack | null>(null);
   const [packError, setPackError] = useState("");
   const [speciesName, setSpeciesName] = useState("Homo sapiens");
@@ -1214,6 +1278,8 @@ export default function SwigApp() {
   const [pipeline, setPipeline] = useState<PipelinePlan>(() => copyPipeline());
   const [inputError, setInputError] = useState("");
   const [cellReferences, setCellReferences] = useState<ReferenceCellMap>({});
+  const [alleleExclusions, setAlleleExclusions] = useState<ReferenceAlleleExclusionMap>({});
+  const [editingReferenceCell, setEditingReferenceCell] = useState<{ locus: LocusKey; segment: SegmentKey } | null>(null);
   const [busyCells, setBusyCells] = useState<Set<string>>(new Set());
   const [databaseBusy, setDatabaseBusy] = useState(false);
   const [minimumIdentity, setMinimumIdentity] = useState(0.6);
@@ -1225,6 +1291,7 @@ export default function SwigApp() {
   const [subsampleEnabled, setSubsampleEnabled] = useState(false);
   const [subsampleSize, setSubsampleSize] = useState(10_000);
   const [subsampleSeed, setSubsampleSeed] = useState(1);
+  const [fastqFilter, setFastqFilter] = useState<FastqQualityFilterOptions>(() => copyFastqQualityFilter());
   const [doubleDMode, setDoubleDMode] = useState<DoubleDScreenMode>("off");
   const [doubleDMinimumSpan, setDoubleDMinimumSpan] = useState(40);
   const [doubleDSeedLength, setDoubleDSeedLength] = useState(11);
@@ -1292,7 +1359,8 @@ export default function SwigApp() {
     lociForScope(species, activeScope),
     cellReferences,
     (locus, segment) => allelesToFasta(species.loci[locus]?.[segment] ?? []),
-  ) : {}, [activeScope, cellReferences, species]);
+    alleleExclusions,
+  ) : {}, [activeScope, alleleExclusions, cellReferences, species]);
   const compiled = useMemo(() => species ? compileReferences(species, activeScope, referenceOverrides) : null, [activeScope, referenceOverrides, species]);
   const databaseOptions = useMemo(() => databaseOptionsFor(species?.name ?? "", pack?.release ?? ""), [pack?.release, species?.name]);
   const activeReferenceEntries = useMemo(() => {
@@ -1300,11 +1368,25 @@ export default function SwigApp() {
     const activeLoci = new Set(lociForScope(species, activeScope));
     return Object.entries(cellReferences).filter(([key]) => activeLoci.has(key.split(":", 1)[0] as LocusKey));
   }, [activeScope, cellReferences, species]);
+  const activeAlleleExclusions = useMemo(() => {
+    if (!species) return {} as ReferenceAlleleExclusionMap;
+    const activeLoci = new Set(lociForScope(species, activeScope));
+    return Object.fromEntries(Object.entries(alleleExclusions).filter(([key, names]) => names.length && activeLoci.has(key.split(":", 1)[0] as LocusKey)));
+  }, [activeScope, alleleExclusions, species]);
+  const activeAlleleExclusionCount = useMemo(() => Object.values(activeAlleleExclusions).reduce((total, names) => total + names.length, 0), [activeAlleleExclusions]);
   const usedDatabaseIds = useMemo(() => new Set(activeReferenceEntries.flatMap(([, reference]) => reference.sourceDatabaseId ? [reference.sourceDatabaseId] : [])), [activeReferenceEntries]);
   const usedDatabases = useMemo(() => databaseOptions.flatMap((option) => option.database && usedDatabaseIds.has(option.database.id) ? [option.database] : []), [databaseOptions, usedDatabaseIds]);
   const hasUploadedReferences = activeReferenceEntries.some(([, reference]) => reference.sourceKind === "upload");
   const compositionMode = activeReferenceEntries.length ? "mixed" : DEFAULT_DATABASE_ID;
-  const databaseLabel = activeReferenceEntries.length ? ["IMGT", ...usedDatabases.map((database) => database.name), ...(hasUploadedReferences ? ["local FASTA"] : [])].join(" + ") : `IMGT/GENE-DB ${pack?.release ?? "reference pack"}`;
+  const databaseLabel = `${activeReferenceEntries.length ? ["IMGT", ...usedDatabases.map((database) => database.name), ...(hasUploadedReferences ? ["local FASTA"] : [])].join(" + ") : `IMGT/GENE-DB ${pack?.release ?? "reference pack"}`}${activeAlleleExclusionCount ? ` · ${activeAlleleExclusionCount.toLocaleString()} allele${activeAlleleExclusionCount === 1 ? "" : "s"} excluded` : ""}`;
+  const editingReferenceKey = editingReferenceCell ? referenceCellKey(editingReferenceCell.locus, editingReferenceCell.segment) : "";
+  const editingReferenceOverride = editingReferenceKey ? cellReferences[editingReferenceKey] : undefined;
+  const editingReferenceFasta = editingReferenceCell && species
+    ? editingReferenceOverride?.text ?? allelesToFasta(species.loci[editingReferenceCell.locus]?.[editingReferenceCell.segment] ?? [])
+    : "";
+  const editingReferenceSource = editingReferenceCell
+    ? editingReferenceOverride?.name ?? `IMGT/GENE-DB ${pack?.release ?? "reference pack"}`
+    : "";
   const receptor = activeScope.startsWith("IG") || activeScope === "BCR" ? "BCR" : "TCR";
   const receptorScopes = scopes.filter((value) => receptor === "BCR" ? value === "BCR" || value.startsWith("IG") : value === "TCR" || value.startsWith("TR"));
   const pasteInput = useMemo(() => {
@@ -1320,6 +1402,8 @@ export default function SwigApp() {
   const knownInputCount = activeDatasets.every((input) => input.count !== null)
     ? activeDatasets.reduce((sum, input) => sum + (input.count ?? 0), 0)
     : null;
+  const fastqDatasetCount = activeDatasets.filter((input) => input.formatCode === 2).length;
+  const nonFastqDatasetCount = activeDatasets.length - fastqDatasetCount;
 
   function navigate(next: AppPage) {
     if (next === "results" && !session) next = "analyze";
@@ -1351,7 +1435,7 @@ export default function SwigApp() {
       const restoredDatasets=(saved.analysis.datasets?.length?saved.analysis.datasets:[{datasetId:"legacy",inputName:saved.analysis.inputName,sampleId:"sample_1",subjectId:"subject_1",cohort:"",timepoint:"",compartment:"",records:store.count}]).map((dataset)=>({...dataset,compartment:dataset.compartment??""}));
       setSessionLoadProgress({records:0,total:store.count,stage:"Applying saved study metadata to local indexes"});
       await store.updateStudyMetadata(restoredDatasets,(processed,total)=>setSessionLoadProgress({records:processed,total,stage:"Applying saved study metadata to local indexes"}));
-      setSession({id:Date.now(),store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:null,subsampleSeed:null,references:saved.analysis.references,callingProfile:saved.analysis.callingProfile??"truth_optimized",assignerStrategy:saved.analysis.assignerStrategy??"standard",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true,project:restoredProject});
+      setSession({id:Date.now(),store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:null,subsampleSeed:null,fastqFilter:copyFastqQualityFilter(saved.analysis.fastqFilter),fastqFilterStats:saved.analysis.fastqFilterStats??emptyFastqQualityFilterStats(Boolean(saved.analysis.fastqFilter?.enabled),false),references:saved.analysis.references,referenceExclusions:Object.fromEntries(Object.entries(saved.analysis.referenceExclusions??{}).map(([key,names])=>[key,[...names]])),callingProfile:saved.analysis.callingProfile??"truth_optimized",assignerStrategy:saved.analysis.assignerStrategy??"standard",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true,project:restoredProject});
       if(restoredProject){setProjectWorkspace(restoredProject);const run=activeProjectRun(restoredProject);if(run)await appendProjectLog(restoredProject,run,"project_opened",{records:store.count});setProjectStatus(`Restored ${run?.id??"active run"}`);}
       setPendingLoadedSession(null);setSessionLoadProgress({records:store.count,total:store.count,stage:"Session restored"});setPage("results");window.scrollTo({top:0});
     }catch(error){if(store)await store.clear();setSessionLoadError(error instanceof Error?error.message:String(error));}finally{setLoadingSession(false);}
@@ -1525,6 +1609,12 @@ export default function SwigApp() {
       const override = await prepareReferenceOverride(segment, text, file.name, "upload", locus);
       if (databaseRequestRef.current !== contextRequest || cellRequestRef.current[key] !== cellRequest) return;
       setCellReferences((current) => ({ ...current, [key]: override }));
+      setAlleleExclusions((current) => {
+        if (!current[key]) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
     } catch (error) {
       if (databaseRequestRef.current !== contextRequest || cellRequestRef.current[key] !== cellRequest) return;
       setRunError(error instanceof Error ? error.message : String(error));
@@ -1545,6 +1635,12 @@ export default function SwigApp() {
         delete next[key];
         return next;
       });
+      setAlleleExclusions((current) => {
+        if (!current[key]) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
       markCellsBusy([key], false);
       return;
     }
@@ -1559,6 +1655,12 @@ export default function SwigApp() {
       const reference = await databaseCellReference(database, locus, segment);
       if (databaseRequestRef.current !== contextRequest || cellRequestRef.current[key] !== cellRequest) return;
       setCellReferences((current) => ({ ...current, [key]: reference }));
+      setAlleleExclusions((current) => {
+        if (!current[key]) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
     } catch (error) {
       if (databaseRequestRef.current !== contextRequest || cellRequestRef.current[key] !== cellRequest) return;
       setRunError(error instanceof Error ? error.message : String(error));
@@ -1574,6 +1676,8 @@ export default function SwigApp() {
     setRunError("");
     if (nextId === DEFAULT_DATABASE_ID) {
       setCellReferences({});
+      setAlleleExclusions({});
+      setEditingReferenceCell(null);
       setBusyCells(new Set());
       setDatabaseBusy(false);
       return;
@@ -1608,6 +1712,13 @@ export default function SwigApp() {
       })));
       if (databaseRequestRef.current !== requestId) return;
       setCellReferences((current) => ({ ...(replaceComposition ? {} : current), ...Object.fromEntries(preparedEntries.map((entry) => [entry.key, entry.reference])) }));
+      setAlleleExclusions((current) => {
+        if (replaceComposition) return {};
+        const next = { ...current };
+        for (const key of keys) delete next[key];
+        return next;
+      });
+      setEditingReferenceCell(null);
     } catch (error) {
       if (databaseRequestRef.current !== requestId) return;
       setRunError(error instanceof Error ? error.message : String(error));
@@ -1623,6 +1734,8 @@ export default function SwigApp() {
     databaseRequestRef.current += 1;
     cellRequestRef.current = {};
     setCellReferences({});
+    setAlleleExclusions({});
+    setEditingReferenceCell(null);
     setBusyCells(new Set());
     setDatabaseBusy(false);
     referenceCacheRef.current.clear();
@@ -1664,17 +1777,9 @@ export default function SwigApp() {
       setRunError("Choose an aligned FASTA reference MSA for the pipeline CHMMAIRRa stage, or build it from the selected references.");
       return;
     }
-    if (pipeline.enabled && pipeline.chimera.enabled) {
-      const source = pipeline.chimera.msaSource === "upload" ? pipeline.chimera.uploadedMsa : compiled[pipeline.chimera.segment];
-      const filtered = filterReferenceFasta(source, pipeline.chimera.excludedAlleles ?? []);
-      if (filtered.retained < 2) {
-        setRunError(`CHMMAIRRa requires at least two retained ${pipeline.chimera.segment} reference records after exclusions; ${filtered.retained} remain.`);
-        return;
-      }
-      if (pipeline.chimera.msaSource === "upload") {
-        try { prepareReferenceMsa(filtered.fasta); }
-        catch (error) { setRunError(error instanceof Error ? error.message : String(error)); return; }
-      }
+    if (pipeline.enabled && pipeline.chimera.enabled && pipeline.chimera.msaSource === "upload") {
+      try { prepareReferenceMsa(pipeline.chimera.uploadedMsa); }
+      catch (error) { setRunError(error instanceof Error ? error.message : String(error)); return; }
     }
     if (databaseBusy || busyCells.size) {
       setRunError("Wait for reference validation to finish.");
@@ -1695,6 +1800,21 @@ export default function SwigApp() {
     if (subsampleEnabled && (!Number.isFinite(subsampleSize) || subsampleSize < 1)) {
       setRunError("Random subsample size must be at least one record.");
       return;
+    }
+    if (fastqFilter.enabled) {
+      if (!Number.isFinite(fastqFilter.maximumExpectedErrors) || fastqFilter.maximumExpectedErrors < 0) {
+        setRunError("Maximum FASTQ expected errors must be a non-negative number.");
+        return;
+      }
+      const trim = fastqFilter.trim3Prime;
+      if (trim.enabled && (
+        !Number.isFinite(trim.windowSize) || trim.windowSize < 1
+        || !Number.isFinite(trim.minimumMeanPhred) || trim.minimumMeanPhred < 0
+        || !Number.isFinite(trim.minimumLength) || trim.minimumLength < 1
+      )) {
+        setRunError("FASTQ 3′ trimming requires a positive window and retained length, and a non-negative mean Phred threshold.");
+        return;
+      }
     }
     if (doubleDMode !== "off") {
       if (!compiled.counts.D) {
@@ -1726,6 +1846,7 @@ export default function SwigApp() {
     setOutputPrompt(false);
     const datasetSnapshot = activeDatasets.map((input) => ({ ...input }));
     const runName = activeInputName;
+    const fastqFilterSnapshot = copyFastqQualityFilter(fastqFilter);
 
     let directOutput: DirectAirrOutput | undefined;
     let preparedProject:PreparedProjectRun|undefined;
@@ -1785,6 +1906,7 @@ export default function SwigApp() {
         let count = 0;
         let inputRecords = 0;
         let workers = 1;
+        let fastqFilterStats = emptyFastqQualityFilterStats(fastqFilterSnapshot.enabled, false);
         const weights = datasetSnapshot.map((input) => input.count ?? 1);
         const totalWeight = weights.reduce((sum, value) => sum + value, 0) || datasetSnapshot.length;
         let completedWeight = 0;
@@ -1812,6 +1934,7 @@ export default function SwigApp() {
             workers: workerCount,
             countHint: input.count,
             subsample: subsampleEnabled ? { size: Math.floor(subsampleSize), seed: stableDatasetSeed(subsampleSeed, datasetIndex) } : undefined,
+            fastqFilter: fastqFilterSnapshot,
             doubleD,
             signal: controller.signal,
             onProgress: (stage, value) => setProgress({
@@ -1833,10 +1956,11 @@ export default function SwigApp() {
           count += completed.count;
           inputRecords += completed.inputRecords;
           workers = Math.max(workers, completed.workers);
+          fastqFilterStats = addFastqQualityFilterStats(fastqFilterStats, completed.fastqFilter);
           completedWeight += weight;
         }
         await store.finalize();
-        return { count, inputRecords, workers };
+        return { count, inputRecords, workers, fastqFilterStats };
       });
       setProgress({ stage: "Results ready", value: 1 });
       const resultSession:ResultSession={
@@ -1858,7 +1982,10 @@ export default function SwigApp() {
         inputTotal: result.inputRecords,
         subsampleSize: subsampleEnabled ? result.count : null,
         subsampleSeed: subsampleEnabled ? Math.trunc(subsampleSeed) : null,
+        fastqFilter: fastqFilterSnapshot,
+        fastqFilterStats: result.fastqFilterStats,
         references: compiled,
+        referenceExclusions: Object.fromEntries(Object.entries(activeAlleleExclusions).map(([key, names]) => [key, [...names]])),
         callingProfile,
         assignerStrategy,
         minimumIdentity,
@@ -1870,7 +1997,7 @@ export default function SwigApp() {
       };
       if(preparedProject){
         try{
-          await appendProjectLog(preparedProject.workspace,preparedProject.run,"annotation_complete",{records:result.count,inputRecords:result.inputRecords,workers:result.workers,seconds:resultSession.seconds,outputBytes:store.outputBytes});
+          await appendProjectLog(preparedProject.workspace,preparedProject.run,"annotation_complete",{records:result.count,inputRecords:result.inputRecords,workers:result.workers,seconds:resultSession.seconds,outputBytes:store.outputBytes,fastqFilter:fastqFilterSnapshot,fastqFilterStats:result.fastqFilterStats});
           const artifact=await sessionArtifact(resultSession,resultSession.datasets,resultSession.sampleColors,{workingStages:[]});
           await saveProjectCheckpoint(preparedProject.workspace,artifact,await encodeSession(artifact),"annotation_complete");
           resultSession.projectStatus=`Project checkpoint ${preparedProject.run.checkpointCount} written`;
@@ -1912,9 +2039,18 @@ export default function SwigApp() {
           <section className="analysis-intro"><WorkflowStepper active={running ? 2 : 1} /><div><p className="eyebrow"><span>Analysis configuration</span></p><h1>{running ? "Calling rearrangements…" : "Configure an annotation run."}</h1><p>{running ? "SwiftIG is processing bounded batches and writing AIRR records into a browser-local index." : "Provide sequences, select the biological search space, and specify any germline replacements."}</p></div></section>
 
           {running ? <AnalysisProgress stage={progress.stage} value={progress.value} onCancel={() => abortRef.current?.abort()} lockState={analysisLockState} hidden={pageHidden} /> : (
-            <div className="analysis-layout">
-              <div className="analysis-forms">
-                <section className="analysis-card input-card">
+            <div className="analysis-layout contextual-workspace">
+              <nav className="context-rail analysis-context-rail" aria-label="Analysis setup sections">
+                <div className="context-rail-heading"><span>Setup</span><small>One section at a time</small></div>
+                <button type="button" className={analysisWorkspace==="data"?"active":""} aria-current={analysisWorkspace==="data"?"page":undefined} onClick={()=>setAnalysisWorkspace("data")}><b>01</b><span>Data<small>{activeDatasets.length?`${activeDatasets.length} dataset${activeDatasets.length===1?"":"s"}`:"Required"}</small></span></button>
+                <button type="button" className={analysisWorkspace==="references"?"active":""} aria-current={analysisWorkspace==="references"?"page":undefined} onClick={()=>setAnalysisWorkspace("references")}><b>02</b><span>References<small>{compiled?`${compiled.counts.V}/${compiled.counts.D}/${compiled.counts.J}/${compiled.counts.C}`:"Loading"}</small></span></button>
+                <button type="button" className={analysisWorkspace==="assignment"?"active":""} aria-current={analysisWorkspace==="assignment"?"page":undefined} onClick={()=>setAnalysisWorkspace("assignment")}><b>03</b><span>Assignment<small>{assignerStrategyLabel(assignerStrategy)}</small></span></button>
+                <button type="button" className={analysisWorkspace==="pipeline"?"active":""} aria-current={analysisWorkspace==="pipeline"?"page":undefined} onClick={()=>setAnalysisWorkspace("pipeline")}><b>04</b><span>Pipeline<small>{pipeline.enabled?"Configured":"Interactive"}</small></span></button>
+                <button type="button" className={`${analysisWorkspace==="run"?"active":""} ${activeInput&&compiled?"ready":""}`} aria-current={analysisWorkspace==="run"?"page":undefined} onClick={()=>setAnalysisWorkspace("run")}><b>05</b><span>Run<small>{activeInput&&compiled?"Ready to review":"Incomplete"}</small></span></button>
+                <p><i/>Sequence data remain in this browser.</p>
+              </nav>
+              <div className="analysis-forms" hidden={analysisWorkspace==="run"}>
+                <section className="analysis-card input-card" hidden={analysisWorkspace!=="data"}>
                   <header><span className="card-number">01</span><div><h2>Datasets and study structure</h2><p>Load one or more datasets, a directory tree, or paste one dataset directly.</p></div>{activeInput && <span className="ready-tag">{activeDatasets.length} dataset{activeDatasets.length===1?"":"s"}</span>}</header>
                   <div className="project-directory-panel"><div><span>Optional project directory</span><strong>{projectWorkspace?projectWorkspace.root.name:"No project directory selected"}</strong><small>{projectWorkspace?projectStatus||"AIRR output, state checkpoints, and an event log will be written here.":projectDirectoriesSupported()?"Select a directory to write numbered runs, intermediate state, and logs automatically. Selecting an existing Swig project restores its active run.":"Unavailable in this browser; portable session files remain available."}</small></div><button type="button" disabled={projectBusy||!projectDirectoriesSupported()} onClick={()=>void chooseProjectDirectory()}>{projectBusy?"Reading directory…":projectWorkspace?"Change / load project":"Select / load project"}</button>{projectWorkspace&&<button type="button" onClick={()=>{setProjectWorkspace(null);setProjectStatus("");}}>Use browser storage only</button>}</div>
                   <div className="source-tabs" role="tablist"><button className={inputSource === "upload" ? "active" : ""} type="button" onClick={() => setInputSource("upload")}>Load dataset(s)</button><button className={inputSource === "paste" ? "active" : ""} type="button" onClick={() => setInputSource("paste")}>Paste one dataset</button></div>
@@ -1965,8 +2101,8 @@ export default function SwigApp() {
                   {inputError && <p className="inline-error" role="alert">{inputError}</p>}
                 </section>
 
-                <section className="analysis-card reference-card">
-                  <header><span className="card-number">02</span><div><h2>Biological search space</h2><p>Compose germline sources by locus and segment.</p></div>{Object.keys(cellReferences).length > 0 && <button className="reset-button" type="button" onClick={resetReferenceContext}>Reset all to IMGT</button>}</header>
+                <section className="analysis-card reference-card" hidden={analysisWorkspace!=="references"}>
+                  <header><span className="card-number">02</span><div><h2>Biological search space</h2><p>Compose germline sources and allele inclusion by locus and segment.</p></div>{(Object.keys(cellReferences).length > 0 || Object.keys(alleleExclusions).length > 0) && <button className="reset-button" type="button" onClick={resetReferenceContext}>Reset sources + alleles</button>}</header>
                   <div className="reference-selectors">
                     <label><span>Species / strain</span><select value={species?.name ?? ""} disabled={!pack} onChange={(event) => {
                       setSpeciesName(event.target.value);
@@ -1980,15 +2116,56 @@ export default function SwigApp() {
                     <label><span>Chain / locus</span><select value={activeScope} disabled={databaseBusy || Boolean(busyCells.size)} onChange={(event) => setScope(event.target.value as ScopeKey)}>{receptorScopes.map((value) => <option value={value} key={value}>{LOCUS_LABELS[value]}</option>)}</select></label>
                   </div>
                   {packError && <p className="inline-error" role="alert">{packError}</p>}
-                  <CompositionSummary databases={usedDatabases} hasUploads={hasUploadedReferences} busy={databaseBusy || Boolean(busyCells.size)} release={pack?.release ?? ""} />
-                  {species && <ReferenceCompositionMatrix species={species} scope={activeScope} references={cellReferences} busyCells={busyCells} onSelect={(locus, segment, sourceId) => void selectCellSource(locus, segment, sourceId)} onFile={(locus, segment, file) => void acceptReferenceFile(locus, segment, file)} />}
-                  <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · {databaseLabel}. The database selector applies a preset only where compatible; every matrix cell remains independently selectable or replaceable from a local file. In-browser preprocessing assigns V FWR/CDR boundaries and J frame/junction-anchor metadata by transfer from validated, locus-matched IMGT relatives; metadata are retained only when mapped intervals and conserved anchors validate. D and C records are validated and indexed but do not have FWR/CDR boundaries.</p>
+                  <CompositionSummary databases={usedDatabases} hasUploads={hasUploadedReferences} excludedAlleles={activeAlleleExclusionCount} busy={databaseBusy || Boolean(busyCells.size)} release={pack?.release ?? ""} />
+                  {species && <ReferenceCompositionMatrix species={species} scope={activeScope} references={cellReferences} exclusions={alleleExclusions} busyCells={busyCells} onSelect={(locus, segment, sourceId) => void selectCellSource(locus, segment, sourceId)} onFile={(locus, segment, file) => void acceptReferenceFile(locus, segment, file)} onEditAlleles={(locus,segment)=>setEditingReferenceCell({locus,segment})} />}
+                  <p className="reference-footnote"><span>i</span><b>{compiled?.loci.join(" + ") || "No locus"}</b> · {databaseLabel}. The database selector applies a preset only where compatible; every matrix cell remains independently selectable, replaceable from a local file, and filterable by exact allele identifier. Exclusions are applied to the composed FASTA before SwiftIG builds its indexes; the source database/file is not modified. Replacing a cell's source clears that cell's exclusions. In-browser preprocessing assigns V FWR/CDR boundaries and J frame/junction-anchor metadata by transfer from validated, locus-matched IMGT relatives; metadata are retained only when mapped intervals and conserved anchors validate. D and C records are validated and indexed but do not have FWR/CDR boundaries.</p>
                 </section>
 
-                <section className="analysis-card settings-card">
+                {editingReferenceCell && <div className="output-modal-backdrop reference-allele-modal-backdrop" role="presentation"><section className="output-modal reference-allele-modal" role="dialog" aria-modal="true" aria-labelledby="reference-allele-modal-title">
+                  <button className="output-modal-close" type="button" onClick={()=>setEditingReferenceCell(null)} aria-label="Close allele editor">×</button>
+                  <span className="output-direction">ASSIGNMENT DATABASE · {editingReferenceCell.locus} {editingReferenceCell.segment}</span>
+                  <h2 id="reference-allele-modal-title">Include or exclude individual alleles</h2>
+                  <p><b>{editingReferenceSource}</b>. Checked records are excluded from the exact {editingReferenceCell.locus} {editingReferenceCell.segment} FASTA passed to V(D)J assignment. Other loci and segments are unchanged.</p>
+                  <ReferenceAlleleExclusionEditor
+                    key={editingReferenceKey}
+                    fasta={editingReferenceFasta}
+                    excluded={alleleExclusions[editingReferenceKey] ?? []}
+                    onChange={(excluded) => setAlleleExclusions((current) => {
+                      const next = { ...current };
+                      if (excluded.length) next[editingReferenceKey] = excluded;
+                      else delete next[editingReferenceKey];
+                      return next;
+                    })}
+                    label={`${editingReferenceCell.locus} ${editingReferenceCell.segment}`}
+                    description="Search by exact FASTA identifier or a substring, then exclude individual matches or the complete filtered result. Exclusions affect assignment, alternative-hit reporting, alignments, CDR/junction calls, and downstream analyses that use this run's references. The original source is retained unchanged."
+                    variant="panel"
+                  />
+                  <div className="reference-allele-modal-actions"><small>{(alleleExclusions[editingReferenceKey] ?? []).length.toLocaleString()} excluded · {filterReferenceFasta(editingReferenceFasta, alleleExclusions[editingReferenceKey] ?? []).retained.toLocaleString()} retained</small><button className="output-save-primary" type="button" onClick={()=>setEditingReferenceCell(null)}>Apply to assignment setup</button></div>
+                </section></div>}
+
+                <section className="analysis-card settings-card" hidden={analysisWorkspace!=="assignment"}>
                   <header><span className="card-number">03</span><div><h2>Analysis parameters</h2><p>Review sampling, strand, identity, worker, and output settings.</p></div><button className="reset-button" type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} controls</button></header>
-                  <div className="settings-strip"><span><b>Assigner</b> {assignerStrategyLabel(assignerStrategy)}</span><span><b>Profile</b> {callingProfileLabel(callingProfile)}</span><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {projectWorkspace?"project directory":outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "automatic"}</span><span><b>Input</b> {subsampleEnabled ? `random ${Math.floor(subsampleSize || 0).toLocaleString()}` : "all records"}</span><span><b>Double-D</b> {doubleDMode === "off" ? "off" : doubleDMode === "all" ? "screen all" : `span ≥ ${Math.round(doubleDMinimumSpan)} nt`}</span></div>
-                  <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records {activeDatasets.length > 1 ? "from each dataset" : ""} in memory and output.</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>{activeDatasets.length > 1 ? "Records per dataset" : "Records to analyze"}</span><CommitNumberInput min="1" step="1000" value={subsampleSize} onCommit={setSubsampleSize} /></label><label><span>Base random seed</span><CommitNumberInput step="1" value={subsampleSeed} onCommit={setSubsampleSeed} /></label></div>}</div>
+                  <div className="settings-strip"><span><b>Assigner</b> {assignerStrategyLabel(assignerStrategy)}</span><span><b>Profile</b> {callingProfileLabel(callingProfile)}</span><span><b>Strand</b> {strand === 0 ? "both" : strand === 1 ? "plus" : "minus"}</span><span><b>Identity floor</b> {Math.round(minimumIdentity * 100)}%</span><span><b>Output</b> {projectWorkspace?"project directory":outputStorage === "disk" ? "stream to disk" : outputStorage === "browser" ? "compressed browser index" : "automatic"}</span><span><b>FASTQ QC</b> {fastqFilter.enabled ? `EE ≤ ${fastqFilter.maximumExpectedErrors}${fastqFilter.trim3Prime.enabled ? " · 3′ trim" : ""}` : "off"}</span><span><b>Input</b> {subsampleEnabled ? `random ${Math.floor(subsampleSize || 0).toLocaleString()}` : "all records"}</span><span><b>Double-D</b> {doubleDMode === "off" ? "off" : doubleDMode === "all" ? "screen all" : `span ≥ ${Math.round(doubleDMinimumSpan)} nt`}</span></div>
+                  <details className={`fastq-quality-control ${fastqFilter.enabled ? "active" : ""}`}>
+                    <summary><span><b>FASTQ quality filter</b><small>Expected errors and optional 3′ quality trimming before V(D)J assignment.</small></span><i>{fastqFilter.enabled ? `Enabled · EE ≤ ${fastqFilter.maximumExpectedErrors}` : "Off"}</i></summary>
+                    <div className="fastq-quality-body">
+                      <label className="fastq-quality-switch"><input type="checkbox" checked={fastqFilter.enabled} onChange={(event)=>setFastqFilter((current)=>({...current,enabled:event.target.checked}))}/><span><b>Enable FASTQ filtering</b><small>Each retained read must have Σ 10<sup>−Q/10</sup> ≤ the maximum expected errors. Processing is streaming and linear in the number of quality scores.</small></span></label>
+                      {fastqFilter.enabled && <>
+                        <div className="fastq-quality-fields">
+                          <label><span>Maximum expected errors</span><CommitNumberInput min="0" step="0.001" value={fastqFilter.maximumExpectedErrors} onCommit={(maximumExpectedErrors)=>setFastqFilter((current)=>({...current,maximumExpectedErrors}))}/><small>Keep when EE ≤ threshold</small></label>
+                          <label><span>Quality encoding</span><select value={fastqFilter.phredOffset} onChange={(event)=>setFastqFilter((current)=>({...current,phredOffset:Number(event.target.value) as 33|64}))}><option value={33}>Phred+33 · standard</option><option value={64}>Phred+64 · legacy</option></select><small>Invalid characters stop the run</small></label>
+                        </div>
+                        <label className="fastq-trim-switch"><input type="checkbox" checked={fastqFilter.trim3Prime.enabled} onChange={(event)=>setFastqFilter((current)=>({...current,trim3Prime:{...current.trim3Prime,enabled:event.target.checked}}))}/><span><b>Trim low-quality 3′ ends first</b><small>Remove trailing bases until the terminal window reaches the selected mean Phred score. EE is then tested only on the retained bases.</small></span></label>
+                        {fastqFilter.trim3Prime.enabled && <div className="fastq-quality-fields trim">
+                          <label><span>Window bases</span><CommitNumberInput min="1" max="100" step="1" value={fastqFilter.trim3Prime.windowSize} onCommit={(windowSize)=>setFastqFilter((current)=>({...current,trim3Prime:{...current.trim3Prime,windowSize}}))}/><small>Terminal running window</small></label>
+                          <label><span>Minimum mean Phred</span><CommitNumberInput min="0" max="93" step="1" value={fastqFilter.trim3Prime.minimumMeanPhred} onCommit={(minimumMeanPhred)=>setFastqFilter((current)=>({...current,trim3Prime:{...current.trim3Prime,minimumMeanPhred}}))}/><small>Stop trimming when met</small></label>
+                          <label><span>Minimum retained length</span><CommitNumberInput min="1" step="1" value={fastqFilter.trim3Prime.minimumLength} onCommit={(minimumLength)=>setFastqFilter((current)=>({...current,trim3Prime:{...current.trim3Prime,minimumLength}}))}/><small>Shorter trimmed reads are discarded</small></label>
+                        </div>}
+                        {fastqDatasetCount === 0 ? <p className="fastq-format-warning" role="status"><span>!</span>No selected input is FASTQ. FASTA and AIRR records will pass through this step unchanged because they contain no Phred scores.</p> : nonFastqDatasetCount > 0 ? <p className="fastq-format-warning" role="status"><span>i</span>{fastqDatasetCount} FASTQ dataset{fastqDatasetCount===1?"":"s"} will be filtered; {nonFastqDatasetCount} FASTA/AIRR dataset{nonFastqDatasetCount===1?"":"s"} will pass through unchanged.</p> : <p className="fastq-order-note"><span>Order</span>3′ trim → minimum retained length → expected-error filter → optional random subsample → V(D)J assignment.</p>}
+                      </>}
+                    </div>
+                  </details>
+                  <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records {activeDatasets.length > 1 ? "from each dataset" : ""} in memory and output.{fastqFilter.enabled ? " Sampling is from reads retained by FASTQ QC; non-FASTQ records pass through that step." : ""}</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>{activeDatasets.length > 1 ? "Records per dataset" : "Records to analyze"}</span><CommitNumberInput min="1" step="1000" value={subsampleSize} onCommit={setSubsampleSize} /></label><label><span>Base random seed</span><CommitNumberInput step="1" value={subsampleSeed} onCommit={setSubsampleSeed} /></label></div>}</div>
                   {showAdvanced && <div className="advanced-settings">
                     <label><span>Assignment strategy</span><select value={assignerStrategy} onChange={(event) => setAssignerStrategy(event.target.value as AssignerStrategy)}><option value="aer">AER · adaptive exact V refinement · default</option><option value="riat_mp">RIAT-MP · root-indexed V allele tree</option><option value="standard">Standard SwiftIG · fixed V depth</option></select></label>
                     <label><span>Calling profile</span><select value={callingProfile} onChange={(event) => setCallingProfile(event.target.value as CallingProfile)}><option value="truth_optimized">Truth-optimized · default</option><option value="igblast_balanced">IgBLAST-balanced · agreement + truth constraint</option><option value="igblast_compatible">IgBLAST-agreement · agreement only</option></select></label>
@@ -2012,15 +2189,14 @@ export default function SwigApp() {
                   </div>}
                 </section>
 
-                <section className={`analysis-card pipeline-card ${pipeline.enabled ? "active" : ""}`}>
+                <section className={`analysis-card pipeline-card ${pipeline.enabled ? "active" : ""}`} hidden={analysisWorkspace!=="pipeline"}>
                   <header><span className="card-number">04</span><div><h2>Execution mode</h2><p>Stop after annotation, or run the selected post-analysis stages sequentially.</p></div><div className="mode-toggle"><button className={!pipeline.enabled ? "active" : ""} type="button" onClick={()=>setPipeline((current)=>({...current,enabled:false}))}>Interactive</button><button className={pipeline.enabled ? "active" : ""} type="button" onClick={()=>setPipeline((current)=>({...current,enabled:true}))}>Pipeline</button></div></header>
                   {!pipeline.enabled ? <div className="pipeline-interactive-note"><span>Manual post-analysis</span><strong>Annotation finishes at Results.</strong><p>Collapse, chimera filtering, selection, lineage assignment, SHM, missing-allele diagnostics, queries, alignments, and trees remain available as explicit steps.</p></div> : <>
                     <div className="pipeline-stage-grid">
                       <article className={pipeline.collapse.enabled?"enabled":""}><label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.collapse.enabled} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,enabled:event.target.checked}}))}/><span><b>1 · Collapse / denoise</b><small>Never crosses the selected boundary.</small></span></label><div className="pipeline-fields"><label><span>Method</span><select value={pipeline.collapse.mode} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,mode:event.target.value as PipelinePlan["collapse"]["mode"]}}))}><option value="exact">Exact deduplication</option><option value="fad">FAD-compatible denoising</option><option value="conservative">Conservative indexed model</option><option value="indel">Indel-aware method D</option></select></label>{pipeline.collapse.mode==="exact"&&<label><span>Exact key</span><select value={pipeline.collapse.key} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,key:event.target.value as PipelinePlan["collapse"]["key"]}}))}><option value="sequence">Full input sequence</option><option value="trimmed">V–J-trimmed sequence</option><option value="cdr3">CDR3 nucleotide</option><option value="rearrangement">V/J calls + CDR3</option></select></label>}<label><span>Boundary</span><select value={pipeline.collapse.scope} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,scope:event.target.value as DatasetScope}}))}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><label><span>Unusable V/J or trim</span><select value={pipeline.collapse.unresolvedPolicy} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,unresolvedPolicy:event.target.value as "discard"|"retain"}}))}><option value="discard">Discard · default</option><option value="retain">Retain unchanged</option></select></label><label className="check-line"><input type="checkbox" checked={pipeline.collapse.respectConstantCall??true} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,respectConstantCall:event.target.checked}}))}/><span>Separate C-gene/isotype calls</span></label></div></article>
                       <article className={pipeline.chimera.enabled?"enabled":""}>
                         <label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.chimera.enabled} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,enabled:event.target.checked}}))}/><span><b>2 · CHMMAIRRa filter</b><small>Consumes the collapsed working set.</small></span></label>
-                        <div className="pipeline-fields"><label><span>Segment</span><select value={pipeline.chimera.segment} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,segment:event.target.value as "V"|"J",excludedAlleles:[]}}))}><option value="V">V</option><option value="J">J</option></select></label><label><span>Model</span><select value={pipeline.chimera.model} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,model:event.target.value as "auto"|"BW"|"DB"}}))}><option value="auto">Auto · IG BW / TR DB</option><option value="BW">Baum–Welch</option><option value="DB">Discretized Bayesian</option></select></label><label><span>Exclude posterior ≥</span><CommitNumberInput min="0" max="1" step="0.01" value={pipeline.chimera.posteriorThreshold} onCommit={(posteriorThreshold)=>setPipeline((current)=>({...current,chimera:{...current.chimera,posteriorThreshold}}))}/></label><label className="check-line"><input type="checkbox" checked={pipeline.chimera.retainUnevaluated} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,retainUnevaluated:event.target.checked}}))}/><span>Retain unevaluated</span></label><label><span>Reference MSA</span><select value={pipeline.chimera.msaSource} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,msaSource:event.target.value as "selected"|"upload",excludedAlleles:[]}}))}><option value="selected">Build from selected references</option><option value="upload">Use aligned FASTA from file</option></select></label>{pipeline.chimera.msaSource==="upload"&&<label className="pipeline-file-field"><span>Aligned FASTA</span><input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(!file)return;void file.text().then((text)=>{prepareReferenceMsa(text);setPipeline((current)=>({...current,chimera:{...current.chimera,uploadedMsa:text,uploadedMsaName:file.name,excludedAlleles:[]}}));setRunError("");}).catch((error)=>setRunError(error instanceof Error?error.message:String(error)));}}/><small>{pipeline.chimera.uploadedMsaName||"No MSA selected"}</small></label>}</div>
-                        <ReferenceAlleleExclusionEditor fasta={pipeline.chimera.msaSource==="upload"?pipeline.chimera.uploadedMsa:(compiled?.[pipeline.chimera.segment]??"")} excluded={pipeline.chimera.excludedAlleles??[]} onChange={(excludedAlleles)=>setPipeline((current)=>({...current,chimera:{...current.chimera,excludedAlleles}}))} label="Advanced · exclude reference alleles"/>
+                        <div className="pipeline-fields"><label><span>Segment</span><select value={pipeline.chimera.segment} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,segment:event.target.value as "V"|"J"}}))}><option value="V">V</option><option value="J">J</option></select></label><label><span>Model</span><select value={pipeline.chimera.model} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,model:event.target.value as "auto"|"BW"|"DB"}}))}><option value="auto">Auto · IG BW / TR DB</option><option value="BW">Baum–Welch</option><option value="DB">Discretized Bayesian</option></select></label><label><span>Exclude posterior ≥</span><CommitNumberInput min="0" max="1" step="0.01" value={pipeline.chimera.posteriorThreshold} onCommit={(posteriorThreshold)=>setPipeline((current)=>({...current,chimera:{...current.chimera,posteriorThreshold}}))}/></label><label className="check-line"><input type="checkbox" checked={pipeline.chimera.retainUnevaluated} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,retainUnevaluated:event.target.checked}}))}/><span>Retain unevaluated</span></label><label><span>Reference MSA</span><select value={pipeline.chimera.msaSource} onChange={(event)=>setPipeline((current)=>({...current,chimera:{...current.chimera,msaSource:event.target.value as "selected"|"upload"}}))}><option value="selected">Build from assignment references</option><option value="upload">Use aligned FASTA from file</option></select></label>{pipeline.chimera.msaSource==="upload"&&<label className="pipeline-file-field"><span>Aligned FASTA</span><input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(!file)return;void file.text().then((text)=>{prepareReferenceMsa(text);setPipeline((current)=>({...current,chimera:{...current.chimera,uploadedMsa:text,uploadedMsaName:file.name}}));setRunError("");}).catch((error)=>setRunError(error instanceof Error?error.message:String(error)));}}/><small>{pipeline.chimera.uploadedMsaName||"No MSA selected"}</small></label>}</div>
                       </article>
                       <article className={pipeline.selection.enabled?"enabled":""}>
                         <label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.selection.enabled} onChange={(event)=>setPipeline((current)=>({...current,selection:{...current.selection,enabled:event.target.checked}}))}/><span><b>3 · Repertoire selection</b><small>Commit study, call, CDR3, and QC filters before lineage assignment.</small></span></label>
@@ -2035,9 +2211,9 @@ export default function SwigApp() {
                 </section>
               </div>
 
-              <aside className="run-summary">
+              <aside className="run-summary" hidden={analysisWorkspace!=="run"}>
                 <span className="section-kicker">Run manifest</span><h2>{activeInput ? `${activeDatasets.length.toLocaleString()} dataset${activeDatasets.length === 1 ? "" : "s"}` : "Awaiting data"}</h2><p>{activeInput ? activeInputName : "Add an input to configure the run."}</p>
-                <dl><div><dt>Records</dt><dd>{subsampleEnabled ? `${Math.floor(subsampleSize).toLocaleString()} per dataset` : knownInputCount === null ? "Count during streaming" : knownInputCount.toLocaleString()}</dd></div><div><dt>Study</dt><dd>{studyDesign.replace(/^./,(value)=>value.toUpperCase())}</dd></div><div><dt>Species</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Sources</dt><dd>{databaseLabel}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>Assigner</dt><dd>{assignerStrategyLabel(assignerStrategy)}</dd></div><div><dt>Calling profile</dt><dd>{callingProfileLabel(callingProfile)}</dd></div><div><dt>V / D / J / C</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J} / ${compiled.counts.C}` : "—"}</dd></div><div><dt>Non-IMGT cells</dt><dd>{activeReferenceEntries.length ? activeReferenceEntries.map(([key]) => key.replace(":", " ")).join(" · ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · datasets sequential</dd></div><div><dt>Post-analysis</dt><dd>{pipeline.enabled ? [pipeline.collapse.enabled&&"collapse",pipeline.chimera.enabled&&"chimera",pipeline.selection.enabled&&"selection",pipeline.lineage.enabled&&"lineages",pipeline.shm.enabled&&"SHM",pipeline.missingAlleles.enabled&&"allele hints"].filter(Boolean).join(" → ")||"No stages selected" : "Interactive"}</dd></div><div><dt>Double-D</dt><dd>{doubleDMode === "off" ? "Off · standard path" : doubleDMode === "all" ? "Screen all eligible junctions" : `Screen inter-V/J spans ≥ ${Math.round(doubleDMinimumSpan)} nt`}</dd></div><div><dt>Storage</dt><dd>{projectWorkspace?`Project · ${projectWorkspace.root.name}`:outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
+                <dl><div><dt>Records</dt><dd>{subsampleEnabled ? `${Math.floor(subsampleSize).toLocaleString()} per dataset` : knownInputCount === null ? "Count during streaming" : knownInputCount.toLocaleString()}</dd></div><div><dt>FASTQ QC</dt><dd>{fastqFilter.enabled ? fastqDatasetCount ? `EE ≤ ${fastqFilter.maximumExpectedErrors}${fastqFilter.trim3Prime.enabled ? ` · 3′ window Q${fastqFilter.trim3Prime.minimumMeanPhred}` : ""}${nonFastqDatasetCount ? ` · ${nonFastqDatasetCount} dataset passthrough` : ""}` : "Enabled · no FASTQ input; passthrough" : "Off"}</dd></div><div><dt>Study</dt><dd>{studyDesign.replace(/^./,(value)=>value.toUpperCase())}</dd></div><div><dt>Species</dt><dd>{species ? friendlySpecies(species.name) : "Loading…"}</dd></div><div><dt>Sources</dt><dd>{databaseLabel}</dd></div><div><dt>Search</dt><dd>{LOCUS_LABELS[activeScope]}</dd></div><div><dt>Assigner</dt><dd>{assignerStrategyLabel(assignerStrategy)}</dd></div><div><dt>Calling profile</dt><dd>{callingProfileLabel(callingProfile)}</dd></div><div><dt>V / D / J / C</dt><dd>{compiled ? `${compiled.counts.V} / ${compiled.counts.D} / ${compiled.counts.J} / ${compiled.counts.C}` : "—"}</dd></div><div><dt>Non-IMGT cells</dt><dd>{activeReferenceEntries.length ? activeReferenceEntries.map(([key]) => key.replace(":", " ")).join(" · ") : "None"}</dd></div><div><dt>Compute</dt><dd>{workerCount} workers · datasets sequential</dd></div><div><dt>Post-analysis</dt><dd>{pipeline.enabled ? [pipeline.collapse.enabled&&"collapse",pipeline.chimera.enabled&&"chimera",pipeline.selection.enabled&&"selection",pipeline.lineage.enabled&&"lineages",pipeline.shm.enabled&&"SHM",pipeline.missingAlleles.enabled&&"allele hints"].filter(Boolean).join(" → ")||"No stages selected" : "Interactive"}</dd></div><div><dt>Double-D</dt><dd>{doubleDMode === "off" ? "Off · standard path" : doubleDMode === "all" ? "Screen all eligible junctions" : `Screen inter-V/J spans ≥ ${Math.round(doubleDMinimumSpan)} nt`}</dd></div><div><dt>Storage</dt><dd>{projectWorkspace?`Project · ${projectWorkspace.root.name}`:outputStorage === "auto" ? "Adaptive streaming" : outputStorage === "disk" ? "Direct AIRR file" : "Compressed local index"}</dd></div></dl>
                 {runError && <p className="run-error" role="alert">{runError}</p>}
                 <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError) || databaseBusy || Boolean(busyCells.size)} onClick={requestRun}><span>{databaseBusy || busyCells.size ? "Validating references…" : pipeline.enabled ? "Run annotation + pipeline" : "Analyze with SwiftIG"}</span><b>→</b></button>
                 <p className="privacy-copy"><span>i</span> Query sequences, locally loaded germlines, and AIRR results are processed in this browser; Swig does not transmit them. A remotely hosted alternative database is requested from its named provider only when selected.</p>

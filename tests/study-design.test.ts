@@ -96,5 +96,5 @@ test("longitudinal/compartmental defaults keep collapse within sample and lineag
   assert.equal(DEFAULT_PIPELINE_PLAN.collapse.key,"trimmed");
   assert.equal(DEFAULT_PIPELINE_PLAN.collapse.respectConstantCall,true);
   assert.equal(DEFAULT_PIPELINE_PLAN.lineage.scope,"subject");
-  assert.deepEqual(DEFAULT_PIPELINE_PLAN.chimera.excludedAlleles,[]);
+  assert.equal("excludedAlleles" in DEFAULT_PIPELINE_PLAN.chimera,false);
 });

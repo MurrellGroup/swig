@@ -106,4 +106,7 @@ test("the bundled Alivibe bridge snapshots the same NT state used by its viewer/
   assert.match(source, /while\(entry\.seq\.length < width\)[\s\S]*entry\.seq\.push\('-'\)/);
   assert.match(source, /buildFastaContent\(rows, 0, null\)/);
   assert.ok(source.indexOf("dom.file.addEventListener") < source.indexOf("new Aioli"));
+  const modeFunction = source.match(/function setMode\(m\) \{[\s\S]*?\n\}\n\nfunction recalc/)?.[0] ?? "";
+  assert.match(modeFunction, /grpFrame\.style\.pointerEvents = 'auto'/);
+  assert.doesNotMatch(modeFunction, /grpFrame\.style\.pointerEvents = 'none'/);
 });

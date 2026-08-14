@@ -1,4 +1,5 @@
 import type { CompiledReferences } from "./reference-pack";
+import type { FastqQualityFilterOptions, FastqQualityFilterStats } from "./sequence-stream";
 
 export interface ResultBatch {
   header: string;
@@ -36,6 +37,7 @@ export interface RunOptions {
   workers: number;
   countHint?: number | null;
   subsample?: { size: number; seed: number };
+  fastqFilter?: FastqQualityFilterOptions;
   doubleD?: DoubleDScreenOptions;
   onProgress?: (stage: string, value: number) => void;
   onBatch?: (batch: ResultBatch) => void | Promise<void>;
@@ -47,6 +49,7 @@ export interface RunResult {
   total: number;
   inputRecords: number;
   workers: number;
+  fastqFilter: FastqQualityFilterStats;
 }
 
 let requestId = 0;
@@ -114,6 +117,7 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
         total?: number | null;
         workers?: number;
         inputRecords?: number;
+        fastqFilter?: FastqQualityFilterStats;
         message?: string;
         doubleDHeader?: string;
         doubleDBody?: ArrayBuffer;
@@ -151,6 +155,17 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
         total: message.total ?? 0,
         inputRecords: message.inputRecords ?? message.total ?? 0,
         workers: message.workers ?? 1,
+        fastqFilter: message.fastqFilter ?? {
+          enabled: false,
+          applicable: false,
+          recordsEvaluated: 0,
+          recordsRetained: 0,
+          recordsPassedThrough: 0,
+          recordsRejectedExpectedErrors: 0,
+          recordsRejectedMinimumLength: 0,
+          recordsTrimmed: 0,
+          basesTrimmed: 0,
+        },
       });
     };
     worker.onerror = (event) => fail(new Error(event.message || "The SwiftIG worker stopped unexpectedly."));
@@ -172,6 +187,7 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
       workers: options.workers,
       countHint: options.countHint ?? null,
       subsample: options.subsample,
+      fastqFilter: options.fastqFilter,
       doubleD: options.doubleD,
     });
   });
