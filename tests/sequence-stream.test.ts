@@ -6,10 +6,17 @@ import {
   DEFAULT_FASTQ_QUALITY_FILTER,
   streamSequenceBatches,
   type FastqQualityFilterOptions,
+  type SequenceSource,
   type SequenceStreamProgress,
 } from "../src/sequence-stream.ts";
+import {
+  gzipMemberFile,
+  gzipMemberSource,
+  inspectGzipMembers,
+  suggestedGzipMemberName,
+} from "../src/gzip-members.ts";
 
-async function collect(source: string | File, format: 1 | 2 | 3, batchSize = 2) {
+async function collect(source: SequenceSource, format: 1 | 2 | 3, batchSize = 2) {
   const batches = [];
   let progress: SequenceStreamProgress | null = null;
   for await (const batch of streamSequenceBatches({
@@ -167,6 +174,47 @@ test("gzip FASTQ is decompressed and parsed without whole-file text conversion",
   assert.deepEqual(result.batches.map((batch) => batch.count), [1, 1]);
   assert.equal(result.progress?.bytesRead, file.size);
   assert.ok(result.batches[1].text.startsWith("@gzip_two\n"));
+});
+
+test("concatenated gzip datasets are detected, named, split, or decoded as one bounded source", async () => {
+  const first = ">SRR2126754.1 1 length=4\nACGT\n>SRR2126754.2 2 length=4\nTGCA\n";
+  const second = ">SRR2126755.1 1 length=4\nAAAA\n>SRR2126755.2 2 length=4\nCCCC\n";
+  const firstGzip = gzipSync(first);
+  const secondGzip = gzipSync(second);
+  const file = new File([firstGzip, secondGzip], "SRR2126754.fasta.gz", { type: "application/gzip" });
+
+  const members = await inspectGzipMembers(file, 1);
+  assert.equal(members.length, 2);
+  assert.deepEqual(members.map((member) => member.start), [0, firstGzip.byteLength]);
+  assert.deepEqual(members.map((member) => member.end), [firstGzip.byteLength, file.size]);
+  assert.deepEqual(members.map((member) => member.firstRecordId), ["SRR2126754.1", "SRR2126755.1"]);
+  assert.ok(members.every((member) => member.startsAtRecordBoundary));
+  assert.deepEqual(members.map((member, index) => suggestedGzipMemberName(file.name, member, index)), [
+    "SRR2126754.fasta.gz",
+    "SRR2126755.fasta.gz",
+  ]);
+
+  const merged = await collect(gzipMemberSource(file, members), 1, 3);
+  assert.deepEqual(merged.batches.map((batch) => batch.count), [3, 1]);
+  assert.equal(merged.progress?.bytesRead, file.size);
+  assert.match(merged.batches.map((batch) => batch.text).join(""), /^>SRR2126754\.1/m);
+  assert.match(merged.batches.map((batch) => batch.text).join(""), /^>SRR2126755\.2/m);
+
+  const secondFile = gzipMemberFile(file, members[1], "SRR2126755.fasta.gz");
+  const separate = await collect(secondFile, 1, 10);
+  assert.equal(separate.batches[0].count, 2);
+  assert.ok(separate.batches[0].text.startsWith(">SRR2126755.1 1 length=4\n"));
+});
+
+test("block gzip members that continue a record are merged without being presented as separate datasets", async () => {
+  const first = gzipSync(">one\nAC");
+  const second = gzipSync("GT\n>two\nTTAA\n");
+  const file = new File([first, second], "blocked.fasta.gz", { type: "application/gzip" });
+  const members = await inspectGzipMembers(file, 1);
+  assert.equal(members.length, 2);
+  assert.deepEqual(members.map((member) => member.startsAtRecordBoundary), [true, false]);
+  const merged = await collect(gzipMemberSource(file, members), 1, 10);
+  assert.equal(merged.batches[0].text, ">one\nACGT\n>two\nTTAA\n");
 });
 
 test("AIRR input retains its header in every compute batch", async () => {

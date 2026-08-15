@@ -1,5 +1,33 @@
 export type SequenceFormat = 1 | 2 | 3;
 
+export interface GzipMemberRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * A gzip file whose independently compressed members must be decoded in
+ * sequence. Browsers currently reject bytes after the first gzip member, so
+ * the upload inspector records the validated member boundaries explicitly.
+ */
+export interface GzipMemberSource {
+  kind: "gzip-members";
+  file: File;
+  members: GzipMemberRange[];
+}
+
+export type SequenceSource = string | File | GzipMemberSource;
+
+export function isGzipMemberSource(source: SequenceSource): source is GzipMemberSource {
+  return typeof source !== "string" && !(source instanceof File) && source.kind === "gzip-members";
+}
+
+export function sequenceSourceSize(source: SequenceSource): number {
+  if (typeof source === "string") return source.length;
+  if (source instanceof File) return source.size;
+  return source.members.reduce((total, member) => total + Math.max(0, member.end - member.start), 0);
+}
+
 export interface SequenceBatch {
   index: number;
   text: string;
@@ -96,7 +124,7 @@ export function addFastqQualityFilterStats(
 }
 
 export interface SequenceStreamOptions {
-  source: string | File;
+  source: SequenceSource;
   format: SequenceFormat;
   batchSize?: number;
   subsample?: SequenceSubsample;
@@ -112,7 +140,7 @@ function abortIfNeeded(signal?: AbortSignal) {
 }
 
 async function* decodedChunks(
-  source: string | File,
+  source: SequenceSource,
   signal: AbortSignal | undefined,
   onBytes: (bytesRead: number, totalBytes: number) => void,
 ): AsyncGenerator<string> {
@@ -128,34 +156,54 @@ async function* decodedChunks(
     return;
   }
 
-  const total = source.size;
-  let bytesRead = 0;
-  const measured = source.stream().pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      abortIfNeeded(signal);
-      bytesRead += chunk.byteLength;
-      onBytes(bytesRead, total);
-      controller.enqueue(chunk);
-    },
-  }));
-  const bytes = source.name.toLowerCase().endsWith(".gz")
-    ? measured.pipeThrough(makeGzipDecoder())
-    : measured;
-  const reader = bytes.getReader();
-  const decoder = new TextDecoder();
-  try {
-    while (true) {
-      abortIfNeeded(signal);
-      const { done, value } = await reader.read();
-      if (done) break;
-      const text = decoder.decode(value, { stream: true });
-      if (text) yield text;
-    }
-    const tail = decoder.decode();
-    if (tail) yield tail;
-  } finally {
-    reader.releaseLock();
+  const concatenatedGzip = isGzipMemberSource(source);
+  const gzipMembers = concatenatedGzip ? source.members : null;
+  const file = concatenatedGzip ? source.file : source;
+  const ranges = gzipMembers ?? [{ start: 0, end: file.size }];
+  if (!ranges.length) throw new Error("The concatenated gzip source has no members.");
+  let previousEnd = -1;
+  for (const range of ranges) {
+    if (
+      !Number.isSafeInteger(range.start)
+      || !Number.isSafeInteger(range.end)
+      || range.start < 0
+      || range.end <= range.start
+      || range.end > file.size
+      || range.start < previousEnd
+    ) throw new Error("The concatenated gzip source has invalid member boundaries.");
+    previousEnd = range.end;
   }
+
+  const total = ranges.reduce((sum, range) => sum + range.end - range.start, 0);
+  let bytesRead = 0;
+  const decoder = new TextDecoder();
+  for (const range of ranges) {
+    const measured = file.slice(range.start, range.end).stream().pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        abortIfNeeded(signal);
+        bytesRead += chunk.byteLength;
+        onBytes(bytesRead, total);
+        controller.enqueue(chunk);
+      },
+    }));
+    const bytes = gzipMembers || file.name.toLowerCase().endsWith(".gz")
+      ? measured.pipeThrough(makeGzipDecoder())
+      : measured;
+    const reader = bytes.getReader();
+    try {
+      while (true) {
+        abortIfNeeded(signal);
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        if (text) yield text;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  const tail = decoder.decode();
+  if (tail) yield tail;
 }
 
 function makeGzipDecoder(): TransformStream<Uint8Array, Uint8Array> {
@@ -166,7 +214,7 @@ function makeGzipDecoder(): TransformStream<Uint8Array, Uint8Array> {
 }
 
 async function* lines(
-  source: string | File,
+  source: SequenceSource,
   signal: AbortSignal | undefined,
   onBytes: (bytesRead: number, totalBytes: number) => void,
   onCarry: (characters: number) => void,
@@ -396,7 +444,7 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
     ? Math.max(1, Math.floor(options.subsample.size))
     : 0;
   let bytesRead = 0;
-  let totalBytes = typeof options.source === "string" ? options.source.length : options.source.size;
+  let totalBytes = sequenceSourceSize(options.source);
   let recordsRead = 0;
   let recordsEligible = 0;
   let recordsSelected = 0;

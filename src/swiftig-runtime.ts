@@ -1,5 +1,5 @@
 import type { CompiledReferences } from "./reference-pack";
-import type { FastqQualityFilterOptions, FastqQualityFilterStats } from "./sequence-stream";
+import type { FastqQualityFilterOptions, FastqQualityFilterStats, SequenceSource } from "./sequence-stream";
 
 export interface ResultBatch {
   header: string;
@@ -27,7 +27,7 @@ export interface DoubleDScreenOptions {
 }
 
 export interface RunOptions {
-  query: string | File;
+  query: SequenceSource;
   format: 1 | 2 | 3;
   references: CompiledReferences;
   callingProfile: CallingProfile;

@@ -75,7 +75,15 @@ import {
   streamSequenceBatches,
   type FastqQualityFilterOptions,
   type FastqQualityFilterStats,
+  type SequenceSource,
 } from "./sequence-stream";
+import {
+  gzipMemberFile,
+  gzipMemberSource,
+  inspectGzipMembers,
+  suggestedGzipMemberName,
+  type GzipMemberInspection,
+} from "./gzip-members";
 import { prepareReferenceMsa } from "./post-analysis-core";
 import { ReferenceAlleleExclusionEditor } from "./reference-allele-exclusion";
 import { filterReferenceFasta } from "./reference-fasta";
@@ -123,11 +131,13 @@ type AirrRow = Record<string, string>;
 
 interface InputData {
   name: string;
-  source: string | File;
+  source: SequenceSource;
   count: number | null;
   format: InputFormat;
   formatCode: 1 | 2 | 3;
   size: number;
+  gzipMemberCount?: number;
+  gzipMembersMerged?: boolean;
 }
 
 interface DatasetInput extends InputData, DatasetManifestEntry {}
@@ -181,7 +191,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.24.8";
+const APP_VERSION = "0.24.9";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -477,6 +487,15 @@ function datasetInput(input: InputData, ordinal: number): DatasetInput {
 interface DirectoryDatasetInput extends DatasetInput {
   directoryRoot?: string;
   nestedDirectoryDonor?: string;
+}
+
+type GzipImportChoice = "separate" | "merge" | "cancel";
+
+interface PendingGzipImport {
+  inputName: string;
+  format: InputFormat;
+  members: GzipMemberInspection[];
+  suggestedNames: string[];
 }
 
 function copyPipeline(value?: PipelinePlan): PipelinePlan {
@@ -1387,6 +1406,8 @@ export default function SwigApp() {
   const [inputSource, setInputSource] = useState<InputSource>("upload");
   const [fileInputs, setFileInputs] = useState<DirectoryDatasetInput[]>([]);
   const [pendingDirectoryInputs,setPendingDirectoryInputs]=useState<{inputs:DirectoryDatasetInput[];flatRoots:string[]}|null>(null);
+  const [pendingGzipImport,setPendingGzipImport]=useState<PendingGzipImport|null>(null);
+  const [inputInspecting,setInputInspecting]=useState(false);
   const [pasteText, setPasteText] = useState("");
   const [pasteMetadata, setPasteMetadata] = useState<DatasetManifestEntry>({ datasetId: "dataset_paste", inputName: "pasted-sequences.txt", sampleId: "sample_1", subjectId: "subject_1", cohort: "cohort_1", timepoint: "", compartment: "", records: null });
   const [studyName, setStudyName] = useState("swig-study");
@@ -1440,6 +1461,8 @@ export default function SwigApp() {
   const referenceCacheRef = useRef<Map<string, ReferenceOverride>>(new Map());
   const preferredDatabaseContextRef = useRef("");
   const nextDatasetIdRef = useRef(1);
+  const gzipChoiceResolverRef=useRef<((choice:GzipImportChoice)=>void)|null>(null);
+  const inputImportBusyRef=useRef(false);
 
   useEffect(() => {
     loadReferencePack().then(setPack).catch((error) => setPackError(error instanceof Error ? error.message : String(error)));
@@ -1664,8 +1687,25 @@ export default function SwigApp() {
     }finally{setProjectBusy(false);}
   }
 
+  function requestGzipImportChoice(pending:PendingGzipImport):Promise<GzipImportChoice>{
+    return new Promise((resolve)=>{
+      gzipChoiceResolverRef.current=resolve;
+      setPendingGzipImport(pending);
+    });
+  }
+
+  function resolveGzipImportChoice(choice:GzipImportChoice){
+    const resolve=gzipChoiceResolverRef.current;
+    gzipChoiceResolverRef.current=null;
+    setPendingGzipImport(null);
+    resolve?.(choice);
+  }
+
   async function acceptInputCandidates(candidates: InputFileCandidate[]) {
     if (!candidates.length) return;
+    if(inputImportBusyRef.current){setInputError("Finish the current gzip-member choice before adding more files.");return;}
+    inputImportBusyRef.current=true;
+    setInputInspecting(true);
     setInputError("");
     setRunError("");
     const donorPlan=inferDirectoryDonors(candidates);
@@ -1673,25 +1713,65 @@ export default function SwigApp() {
     const accepted: DirectoryDatasetInput[] = [];
     const failures: string[] = [];
     let ignored=0;
-    for (const candidate of candidates) {
-      if(candidate.fromDirectory&&(!/\.(fa|fasta|fna|fas|fq|fastq|tsv|csv|txt)(\.gz)?$/i.test(candidate.file.name)||candidate.file.name.startsWith("."))){ignored+=1;continue;}
-      try {
-        const ordinal = nextDatasetIdRef.current++;
-        const inspected=await inspectFile(candidate.file);
-        if(candidate.fromDirectory)inspected.name=candidate.relativePath;
-        const input:DirectoryDatasetInput={...datasetInput(inspected,ordinal),directoryRoot:candidate.fromDirectory?candidate.rootName:undefined,nestedDirectoryDonor:donorByPath.get(candidate.relativePath)??undefined};
-        if(input.nestedDirectoryDonor)input.subjectId=input.nestedDirectoryDonor;
-        accepted.push(input);
-      } catch (error) {
-        failures.push(`${candidate.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
+    try{
+      for (const candidate of candidates) {
+        if(candidate.fromDirectory&&(!/\.(fa|fasta|fna|fas|fq|fastq|tsv|csv|txt)(\.gz)?$/i.test(candidate.file.name)||candidate.file.name.startsWith("."))){ignored+=1;continue;}
+        try {
+          let inspectedInputs:InputData[]=[];
+          const namedFormat=formatFromName(candidate.file.name);
+          if(candidate.file.name.toLowerCase().endsWith(".gz")){
+            if(!namedFormat)throw new Error("Name gzip inputs with .fasta.gz, .fastq.gz, or .tsv.gz.");
+            const members=await inspectGzipMembers(candidate.file,namedFormat.formatCode);
+            if(members.length>1){
+              const source=gzipMemberSource(candidate.file,members);
+              const merged:InputData={name:candidate.file.name,source,count:null,size:candidate.file.size,...namedFormat,gzipMemberCount:members.length,gzipMembersMerged:true};
+              if(members.every((member)=>member.startsAtRecordBoundary)){
+                const seen=new Set<string>();
+                const suggestedNames=members.map((member,index)=>{
+                  let name=suggestedGzipMemberName(candidate.file.name,member,index);
+                  if(seen.has(name.toLowerCase())){
+                    const gzip=name.match(/\.gz$/i)?.[0]??"";
+                    const base=gzip?name.slice(0,-gzip.length):name;
+                    name=`${base}.member-${index+1}${gzip}`;
+                  }
+                  seen.add(name.toLowerCase());
+                  return name;
+                });
+                const choice=await requestGzipImportChoice({inputName:candidate.relativePath,format:namedFormat.format,members,suggestedNames});
+                if(choice==="cancel")continue;
+                inspectedInputs=choice==="separate"
+                  ? members.map((member,index)=>{
+                    const memberFile=gzipMemberFile(candidate.file,member,suggestedNames[index]);
+                    return {name:memberFile.name,source:memberFile,count:null,size:memberFile.size,...namedFormat,gzipMemberCount:1,gzipMembersMerged:false};
+                  })
+                  : [merged];
+              }else inspectedInputs=[merged];
+            }else inspectedInputs=[await inspectFile(candidate.file)];
+          }else inspectedInputs=[await inspectFile(candidate.file)];
+
+          const slash=candidate.relativePath.lastIndexOf("/");
+          const directoryPrefix=candidate.fromDirectory&&slash>=0?candidate.relativePath.slice(0,slash+1):"";
+          for(const inspected of inspectedInputs){
+            if(candidate.fromDirectory)inspected.name=`${directoryPrefix}${inspected.name}`;
+            const ordinal = nextDatasetIdRef.current++;
+            const input:DirectoryDatasetInput={...datasetInput(inspected,ordinal),directoryRoot:candidate.fromDirectory?candidate.rootName:undefined,nestedDirectoryDonor:donorByPath.get(candidate.relativePath)??undefined};
+            if(input.nestedDirectoryDonor)input.subjectId=input.nestedDirectoryDonor;
+            accepted.push(input);
+          }
+        } catch (error) {
+          failures.push(`${candidate.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
+      const acceptedFlatRoots=donorPlan.flatRoots.filter((root)=>accepted.some((input)=>input.directoryRoot===root&&!input.nestedDirectoryDonor));
+      if(accepted.length){
+        if(acceptedFlatRoots.length)setPendingDirectoryInputs({inputs:accepted,flatRoots:acceptedFlatRoots});
+        else setFileInputs((current)=>[...current,...accepted]);
+      }
+      if(failures.length||(!accepted.length&&ignored))setInputError(`${failures.slice(0,8).join(" ")}${failures.length>8?` ${failures.length-8} additional file(s) could not be read.`:""}${ignored?` ${ignored.toLocaleString()} non-dataset file(s) were ignored.`:""}`.trim());
+    }finally{
+      inputImportBusyRef.current=false;
+      setInputInspecting(false);
     }
-    const acceptedFlatRoots=donorPlan.flatRoots.filter((root)=>accepted.some((input)=>input.directoryRoot===root&&!input.nestedDirectoryDonor));
-    if(accepted.length){
-      if(acceptedFlatRoots.length)setPendingDirectoryInputs({inputs:accepted,flatRoots:acceptedFlatRoots});
-      else setFileInputs((current)=>[...current,...accepted]);
-    }
-    if(failures.length||(!accepted.length&&ignored))setInputError(`${failures.slice(0,8).join(" ")}${failures.length>8?` ${failures.length-8} additional file(s) could not be read.`:""}${ignored?` ${ignored.toLocaleString()} non-dataset file(s) were ignored.`:""}`.trim());
   }
 
   async function acceptInputFiles(files: File[]) {
@@ -2293,11 +2373,11 @@ export default function SwigApp() {
                   <input ref={directoryInputRef} className="visually-hidden" type="file" multiple {...{webkitdirectory:"",directory:""}} onChange={(event:ChangeEvent<HTMLInputElement>)=>{const files=[...(event.target.files??[])];event.target.value="";if(files.length)void acceptInputCandidates(candidatesFromDirectoryPicker(files));}}/>
                   {inputSource === "upload" ? fileInputs.length ? (
                     <div className="dataset-import-stack" onDragOver={(event:DragEvent)=>event.preventDefault()} onDrop={(event:DragEvent)=>{event.preventDefault();void collectDroppedInput(event.dataTransfer).then((candidates)=>acceptInputCandidates(candidates)).catch((error)=>setInputError(error instanceof Error?error.message:String(error)));}}>
-                      <div className="dataset-import-heading"><div><strong>{fileInputs.length.toLocaleString()} dataset{fileInputs.length === 1 ? "" : "s"}</strong><span>{knownInputCount === null ? "Record totals will be counted during analysis" : `${knownInputCount.toLocaleString()} total records`}</span></div><div><button type="button" onClick={() => inputRef.current?.click()}>＋ Add files</button><button type="button" onClick={()=>directoryInputRef.current?.click()}>＋ Add directory</button></div></div>
+                      <div className="dataset-import-heading"><div><strong>{fileInputs.length.toLocaleString()} dataset{fileInputs.length === 1 ? "" : "s"}</strong><span>{inputInspecting?"Inspecting gzip member boundaries…":knownInputCount === null ? "Record totals will be counted during analysis" : `${knownInputCount.toLocaleString()} total records`}</span></div><div><button type="button" disabled={inputInspecting} onClick={() => inputRef.current?.click()}>＋ Add files</button><button type="button" disabled={inputInspecting} onClick={()=>directoryInputRef.current?.click()}>＋ Add directory</button></div></div>
                       <div className="dataset-manifest-table" role="table" aria-label="Dataset metadata">
                         <div className="dataset-manifest-head" role="row"><span>Input</span><span>Sample ID</span><span>Donor / subject</span><span>Cohort</span><span>Timepoint</span><span>Compartment / tissue</span><span /></div>
                         {fileInputs.map((input) => <div className="dataset-manifest-row" role="row" key={input.datasetId}>
-                          <div><strong title={input.name}>{input.name}</strong><small>{input.datasetId} · {input.count === null ? "stream counted" : `${input.count.toLocaleString()} records`} · {input.format} · {bytes(input.size)}</small></div>
+                          <div><strong title={input.name}>{input.name}</strong><small>{input.datasetId} · {input.count === null ? "stream counted" : `${input.count.toLocaleString()} records`} · {input.format} · {bytes(input.size)}{input.gzipMembersMerged&&input.gzipMemberCount&&input.gzipMemberCount>1?` · ${input.gzipMemberCount} gzip members merged`:""}</small></div>
                           <label><span className="visually-hidden">Sample ID for {input.name}</span><input value={input.sampleId} onChange={(event) => updateDataset(input.datasetId, { sampleId: event.target.value })} /></label>
                           <label><span className="visually-hidden">Donor or subject for {input.name}</span><input value={input.subjectId} onChange={(event) => updateDataset(input.datasetId, { subjectId: event.target.value })} /></label>
                           <label><span className="visually-hidden">Cohort for {input.name}</span><input value={input.cohort} onChange={(event) => updateDataset(input.datasetId, { cohort: event.target.value })} /></label>
@@ -2309,10 +2389,11 @@ export default function SwigApp() {
                       <div className="dataset-add-dropzone">Drop additional files or a directory anywhere in this dataset panel.</div>
                     </div>
                   ) : (
-                    <div className="input-dropzone" role="button" tabIndex={0} onKeyDown={(event)=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();inputRef.current?.click();}}} onClick={() => inputRef.current?.click()} onDragOver={(event: DragEvent) => event.preventDefault()} onDrop={(event: DragEvent) => {
+                    <div className="input-dropzone" role="button" aria-disabled={inputInspecting} tabIndex={0} onKeyDown={(event)=>{if(!inputInspecting&&(event.key==="Enter"||event.key===" ")){event.preventDefault();inputRef.current?.click();}}} onClick={() => {if(!inputInspecting)inputRef.current?.click();}} onDragOver={(event: DragEvent) => event.preventDefault()} onDrop={(event: DragEvent) => {
                       event.preventDefault();
+                      if(inputInspecting)return;
                       void collectDroppedInput(event.dataTransfer).then((candidates)=>acceptInputCandidates(candidates)).catch((error)=>setInputError(error instanceof Error?error.message:String(error)));
-                    }}><span>＋</span><strong>Drop files or an entire directory here</strong><small>.fasta(.gz) · .fastq(.gz) · AIRR .tsv(.gz)</small><i>Choose files</i><button type="button" onClick={(event)=>{event.stopPropagation();directoryInputRef.current?.click();}}>Choose directory</button></div>
+                    }}><span>＋</span><strong>{inputInspecting?"Inspecting gzip member boundaries…":"Drop files or an entire directory here"}</strong><small>.fasta(.gz) · .fastq(.gz) · AIRR .tsv(.gz)</small><i>{inputInspecting?"Please wait":"Choose files"}</i><button type="button" disabled={inputInspecting} onClick={(event)=>{event.stopPropagation();directoryInputRef.current?.click();}}>Choose directory</button></div>
                   ) : (
                     <div className="paste-input"><textarea spellCheck={false} value={pasteText} onChange={(event) => setPasteText(event.target.value)} placeholder={">sequence_1\nCAGGTGCAGCTGGTG...\n\n—or—\n\nsequence_id\tsequence\nread_1\tCAGGTGCAGCTGGTG..."} /><footer><span>{pasteInput ? `${pasteInput.count?.toLocaleString()} ${pasteInput.format} records detected` : pasteText.trim() ? "Waiting for valid FASTA, FASTQ, or AIRR…" : "Nothing pasted yet"}</span><button type="button" onClick={chooseDemo}>Insert demo</button></footer>{pasteInput && <div className="paste-metadata"><label><span>Sample ID</span><input value={pasteMetadata.sampleId} onChange={(event)=>setPasteMetadata((current)=>({...current,sampleId:event.target.value}))}/></label><label><span>Donor / subject</span><input value={pasteMetadata.subjectId} onChange={(event)=>setPasteMetadata((current)=>({...current,subjectId:event.target.value}))}/></label><label><span>Cohort</span><input value={pasteMetadata.cohort} onChange={(event)=>setPasteMetadata((current)=>({...current,cohort:event.target.value}))}/></label><label><span>Timepoint</span><input value={pasteMetadata.timepoint} onChange={(event)=>setPasteMetadata((current)=>({...current,timepoint:event.target.value}))}/></label><label><span>Compartment / tissue</span><input value={pasteMetadata.compartment} onChange={(event)=>setPasteMetadata((current)=>({...current,compartment:event.target.value}))}/></label></div>}</div>
                   )}
@@ -2462,7 +2543,7 @@ export default function SwigApp() {
               <section className="run-summary launch-panel">
                 <span className="section-kicker">Start analysis</span><h2>{activeInput ? `${activeDatasets.length.toLocaleString()} dataset${activeDatasets.length === 1 ? "" : "s"} ready` : "Data required"}</h2><p>{activeInput ? `${activeInputName} · ${friendlySpecies(species?.name ?? "")} · ${LOCUS_LABELS[activeScope]}${compiled ? ` · ${compiled.counts.V}/${compiled.counts.D}/${compiled.counts.J}/${compiled.counts.C} V/D/J/C references` : ""}` : "Load or paste sequence data above before starting."}</p>
                 {runError && <p className="run-error" role="alert">{runError}</p>}
-                <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError) || databaseBusy || Boolean(busyCells.size)} onClick={requestRun}><span>{databaseBusy || busyCells.size ? "Validating references…" : pipeline.enabled ? "Run annotation + pipeline" : "Analyze with SwiftIG"}</span><b>→</b></button>
+                <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError) || databaseBusy || Boolean(busyCells.size) || inputInspecting} onClick={requestRun}><span>{inputInspecting?"Inspecting input…":databaseBusy || busyCells.size ? "Validating references…" : pipeline.enabled ? "Run annotation + pipeline" : "Analyze with SwiftIG"}</span><b>→</b></button>
                 <p className="privacy-copy"><span>i</span> Query sequences, locally loaded germlines, and AIRR results are processed in this browser; Swig does not transmit them. A remotely hosted alternative database is requested from its named provider only when selected.</p>
               </section>
             </div>
@@ -2471,6 +2552,15 @@ export default function SwigApp() {
       )}
 
       {page === "results" && session && <ResultsPage session={session} onNewAnalysis={() => navigate("analyze")} />}
+      {pendingGzipImport&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal gzip-member-modal" role="dialog" aria-modal="true" aria-labelledby="gzip-member-title">
+        <button className="output-modal-close" type="button" onClick={()=>resolveGzipImportChoice("cancel")} aria-label="Cancel this gzip import">×</button>
+        <span className="output-direction">CONCATENATED GZIP · SAMPLE STRUCTURE</span>
+        <h2 id="gzip-member-title"><em>{pendingGzipImport.inputName}</em> contains {pendingGzipImport.members.length.toLocaleString()} independently readable {pendingGzipImport.format} files.</h2>
+        <p>Each gzip member begins at a complete {pendingGzipImport.format} record boundary. Choose whether those members represent one biological sample or separate samples.</p>
+        <div className="gzip-member-summary">{pendingGzipImport.members.map((member,index)=><span key={`${member.start}-${member.end}`}><b>{index+1} · {pendingGzipImport.suggestedNames[index]}</b><small>{bytes(member.compressedBytes)} compressed{member.uncompressedBytes===null?"":` · ${bytes(member.uncompressedBytes)} decoded`}</small><code title={member.firstLine}>{member.firstRecordId||member.firstLine||"empty member"}</code></span>)}</div>
+        <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={()=>resolveGzipImportChoice("separate")}><span>Import as {pendingGzipImport.members.length} separate samples</span><small>Independent sample, donor, cohort, timepoint, and tissue fields</small><b>Separate →</b></button><button type="button" onClick={()=>resolveGzipImportChoice("merge")}><span>Merge into one sample</span><small>Decode every member in order as one continuous dataset</small></button></div>
+        <p className="output-safety"><span>i</span>All metadata remain editable in the dataset table. Neither choice drops records or changes sequence content.</p>
+      </section></div>}
       {pendingDirectoryInputs&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal directory-donor-modal" role="dialog" aria-modal="true" aria-labelledby="directory-donor-title"><button className="output-modal-close" type="button" onClick={()=>setPendingDirectoryInputs(null)} aria-label="Cancel directory loading">×</button><span className="output-direction">DIRECTORY · DONOR METADATA</span><h2 id="directory-donor-title">Do files directly inside {pendingDirectoryInputs.flatRoots.length===1?<em>{pendingDirectoryInputs.flatRoots[0]}</em>:"these directories"} come from the same donor?</h2><p>{pendingDirectoryInputs.inputs.length.toLocaleString()} compatible dataset file{pendingDirectoryInputs.inputs.length===1?" was":"s were"} found. This choice only initializes <b>Donor / subject</b>; every value remains editable in the dataset table.</p><div className="directory-donor-summary">{pendingDirectoryInputs.flatRoots.map((root)=><span key={root}><b>{root}</b><small>{pendingDirectoryInputs.inputs.filter((input)=>input.directoryRoot===root&&!input.nestedDirectoryDonor).length} direct file(s)</small></span>)}</div><div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={()=>commitDirectoryInputs(true)}><span>Same donor within each directory</span><b>Group →</b></button><button type="button" onClick={()=>commitDirectoryInputs(false)}><span>Different donor for each file</span><small>Keep separate initial donor IDs</small></button></div><p className="output-safety"><span>i</span>Nested directories are assigned automatically from the first folder beneath the selected root.</p></section></div>}
       {(pendingLoadedSession||sessionLoadError||loadingSession)&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal session-load-modal" role="dialog" aria-modal="true" aria-labelledby="session-load-title"><button className="output-modal-close" type="button" disabled={loadingSession} onClick={()=>{setPendingLoadedSession(null);setSessionLoadError("");}}>×</button><span className="output-direction">{pendingLoadedSession?"SESSION · LINKED AIRR DATA":"PROJECT DIRECTORY · RESTORE"}</span><h2 id="session-load-title">{pendingLoadedSession?"Select the AIRR table linked to this session.":loadingSession?"Restoring the active project run.":"Saved state could not be loaded."}</h2>{pendingLoadedSession?<><p>The session stores references, options, masks, counts, lineage assignments, plots, and sparse double-D evidence. It deliberately does not duplicate the main AIRR table.</p><div className="output-flow"><div><span>Saved analysis</span><strong>{pendingLoadedSession.analysis.inputName}</strong><small>{pendingLoadedSession.linkedAirr.records.toLocaleString()} records · fingerprint {pendingLoadedSession.linkedAirr.fingerprint.slice(0,12)}…</small></div><b>+</b><div className="destination"><span>Required linked file</span><strong>{pendingLoadedSession.linkedAirr.name}</strong><small>AIRR TSV or TSV.gz; content is verified before restoration</small></div></div>{!loadingSession&&<button className="output-save-primary" type="button" onClick={()=>linkedAirrInputRef.current?.click()}><span>Choose linked AIRR TSV</span><b>Open →</b></button>}</>:loadingSession?<p>The active run's AIRR table is being verified and indexed from the selected directory.</p>:null}{loadingSession&&<div className="post-progress"><div><span>{sessionLoadProgress.stage}</span><strong>{sessionLoadProgress.total?`${Math.min(100,sessionLoadProgress.records/sessionLoadProgress.total*100).toFixed(1)}%`:"working"}</strong></div><progress max={Math.max(1,sessionLoadProgress.total)} value={sessionLoadProgress.records}/><small>{sessionLoadProgress.records.toLocaleString()} / {sessionLoadProgress.total.toLocaleString()} records</small></div>}{sessionLoadError?<p className="run-error" role="alert">{sessionLoadError}</p>:null}</section></div>}
       {outputPrompt && activeInput && <div className="output-modal-backdrop" role="presentation"><section className="output-modal" role="dialog" aria-modal="true" aria-labelledby="output-dialog-title">

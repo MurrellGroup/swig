@@ -34,6 +34,19 @@ test("FASTQ quality control is an initially collapsed pre-assignment step", () =
   assert.match(app, /FASTA and AIRR records will pass through this step unchanged/);
 });
 
+test("concatenated gzip uploads require an explicit merged-versus-separate sample choice", () => {
+  const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
+  const gzip = fs.readFileSync(new URL("../src/gzip-members.ts", import.meta.url), "utf8");
+
+  assert.match(app, /CONCATENATED GZIP · SAMPLE STRUCTURE/);
+  assert.match(app, /Import as \{pendingGzipImport\.members\.length\} separate samples/);
+  assert.match(app, /Merge into one sample/);
+  assert.match(app, /Independent sample, donor, cohort, timepoint, and tissue fields/);
+  assert.match(app, /gzipMemberSource\(candidate\.file,members\)/);
+  assert.match(gzip, /startsAtRecordBoundary/);
+  assert.match(gzip, /multi-member candidates are each decompressed once/);
+});
+
 test("assignment is one progressive action page while independent result tools remain contextual", () => {
   const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const repertoire = fs.readFileSync(new URL("../src/repertoire-charts.tsx", import.meta.url), "utf8");

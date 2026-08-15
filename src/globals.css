@@ -2714,6 +2714,12 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .project-directory-panel > button { flex: none; padding: 8px 10px; border: 1px solid #8eaaa1; border-radius: 4px; color: var(--teal); background: #fffdf8; font-size: 9px; font-weight: 800; }
 .project-directory-panel > button:disabled { opacity: .5; }
 .directory-donor-modal { max-width: 760px; }
+.gzip-member-modal { max-width: 820px; }
+.gzip-member-summary { display: grid; gap: 7px; max-height: min(340px,42vh); margin: 22px 0; overflow-y: auto; }
+.gzip-member-summary > span { display: grid; grid-template-columns: minmax(190px,1fr) auto; gap: 4px 16px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-soft); }
+.gzip-member-summary b { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.gzip-member-summary small { color: var(--muted); font-size: 8px; text-align: right; }
+.gzip-member-summary code { grid-column: 1 / -1; overflow: hidden; color: var(--teal); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .directory-donor-summary { display: flex; flex-wrap: wrap; gap: 7px; margin: 22px 0; }
 .directory-donor-summary > span { display: grid; gap: 2px; min-width: 150px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-soft); }
 .directory-donor-summary b { font-size: 10px; }
@@ -2726,6 +2732,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .dataset-import-heading strong { font-size: 13px; }
 .dataset-import-heading span { color: var(--muted); font-size: 10px; }
 .dataset-import-heading button { padding: 8px 11px; border: 1px solid #8eb1a6; border-radius: 4px; color: var(--teal); background: #fffdf8; font-size: 10px; font-weight: 800; }
+.dataset-import-heading button:disabled { cursor: wait; opacity: .55; }
 .dataset-manifest-table { overflow-x: auto; border: 1px solid var(--line); border-radius: 5px; background: #fffdf8; }
 .dataset-manifest-head,
 .dataset-manifest-row { display: grid; grid-template-columns: minmax(190px,1.65fr) repeat(5,minmax(115px,1fr)) 34px; min-width: 960px; }
@@ -2905,7 +2912,10 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
   .double-d-alignment-detail > header { flex-direction: column; }
   .project-directory-panel { align-items: stretch; flex-direction: column; }
   .project-directory-panel > button { width: 100%; }
-  .directory-donor-modal .output-modal-actions { grid-template-columns: 1fr; }
+  .directory-donor-modal .output-modal-actions,
+  .gzip-member-modal .output-modal-actions { grid-template-columns: 1fr; }
+  .gzip-member-summary > span { grid-template-columns: 1fr; }
+  .gzip-member-summary small { text-align: left; }
   .reference-exclusion-toolbar { align-items: stretch; flex-direction: column; }
   .reference-exclusion-toolbar > label { max-width: none; }
   .missing-allele-selection { grid-template-columns: 1fr; }

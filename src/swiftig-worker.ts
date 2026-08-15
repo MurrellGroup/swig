@@ -7,13 +7,15 @@ import {
   type FastqQualityFilterStats,
   type SequenceBatch,
   type SequenceFormat,
+  type SequenceSource,
+  sequenceSourceSize,
 } from "./sequence-stream";
 import type { AssignerStrategy, CallingProfile, DoubleDScreenOptions } from "./swiftig-runtime";
 
 interface StartRequest {
   type: "start";
   id: number;
-  query: string | File;
+  query: SequenceSource;
   format: SequenceFormat;
   references: { V: string; D: string; J: string; C: string };
   callingProfile: CallingProfile;
@@ -186,7 +188,7 @@ async function handleRequest(request: StartRequest) {
     let flushing = false;
     let lastProgress = 0.14;
     let bytesRead = 0;
-    let totalBytes = typeof request.query === "string" ? request.query.length : request.query.size;
+    let totalBytes = sequenceSourceSize(request.query);
     let inputRecords = 0;
     let eligibleRecords = 0;
     let fastqFilterStats: FastqQualityFilterStats = emptyFastqQualityFilterStats(
