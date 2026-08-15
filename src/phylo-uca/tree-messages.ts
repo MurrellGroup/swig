@@ -292,6 +292,37 @@ export class PhyloUcaTreeMessages {
     return score;
   }
 
+  /**
+   * Fast, independent-site V/J allele-mixture approximation used only to find
+   * promising attachment points.  The caller supplies per-column A/C/G/T/gap
+   * masses; columns without V/J support are deliberately ignored.  Full HMM
+   * likelihoods are still required for every retained placement.
+   */
+  nucleotideMixtureScore(surface: ConditionalLikelihoodSurface, columnMasses: readonly (readonly number[] | null)[]): number {
+    if (columnMasses.length !== this.sites) throw new Error("The V/J screen profile has different columns from the observed-only alignment.");
+    let score = 0;
+    for (let site = 0; site < this.sites; site += 1) {
+      const masses = columnMasses[site];
+      if (!masses) continue;
+      const limit = Math.min(surface.stateCount, masses.length);
+      let total = 0;
+      let maximumLog = Number.NEGATIVE_INFINITY;
+      for (let state = 0; state < limit; state += 1) {
+        if (!(masses[state] > 0)) continue;
+        total += masses[state];
+        maximumLog = Math.max(maximumLog, surface.logLikelihoods[site * surface.stateCount + state]);
+      }
+      if (!(total > 0) || !Number.isFinite(maximumLog)) continue;
+      let mixture = 0;
+      for (let state = 0; state < limit; state += 1) {
+        if (!(masses[state] > 0)) continue;
+        mixture += masses[state] / total * Math.exp(surface.logLikelihoods[site * surface.stateCount + state] - maximumLog);
+      }
+      score += maximumLog + Math.log(Math.max(LIKELIHOOD_FLOOR, mixture));
+    }
+    return score;
+  }
+
   placedTreeNewick(edgeIndex: number, rawDistanceFromA: number, rawUcaBranchLength: number, ucaName = "phylo_UCA"): string {
     const selected = this.edges[edgeIndex];
     if (!selected) throw new Error(`Unknown placement edge ${edgeIndex}.`);

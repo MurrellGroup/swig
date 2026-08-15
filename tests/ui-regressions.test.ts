@@ -106,6 +106,8 @@ test("allele pooling exposes parameter-responsive reference and hard assignment 
   const panel = fs.readFileSync(new URL("../src/allele-refinement/panel.tsx", import.meta.url), "utf8");
   const views = fs.readFileSync(new URL("../src/allele-refinement/diagnostic-views.tsx", import.meta.url), "utf8");
   const diagnostics = fs.readFileSync(new URL("../src/allele-refinement/diagnostics.ts", import.meta.url), "utf8");
+  const post = fs.readFileSync(new URL("../src/post-analysis.tsx", import.meta.url), "utf8");
+  const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   assert.match(panel, /ReferenceKernelInspector references=\{references\} options=\{options\}/);
   assert.match(panel, /AlleleAssignmentShiftChart results=\{segmentResults\}/);
   assert.match(panel, /Best posterior if confidence passes/);
@@ -119,9 +121,22 @@ test("allele pooling exposes parameter-responsive reference and hard assignment 
   assert.match(views, /Vanished alleles only/);
   assert.match(views, /local_best_count/);
   assert.match(views, /SVG ↓/);
+  assert.match(views, /Download surviving allele reference/);
+  assert.match(views, /minimumReferenceReads/);
   assert.match(diagnostics, /unstripped\.some\(\(row\) => row\.sequence\[column\] !== "-"\)/);
   assert.match(diagnostics, /export function hardAssignmentShiftData/);
+  assert.match(diagnostics, /export function survivingAlleleReference/);
   assert.match(diagnostics, /vanishes: beforeCount > 0 && afterCount === 0/);
+  assert.match(panel, /Cross-donor override/);
+  assert.match(panel, /Evidence never crosses participants/);
+  assert.match(post, /alleleRuntime\.run\(store, references, alleleOptions, null,/);
+  const automaticAlleles = post.indexOf("if (autoPipeline.alleleRefinement.enabled)");
+  const automaticCollapse = post.indexOf("if (autoPipeline.collapse.enabled)");
+  assert.ok(automaticAlleles >= 0 && automaticAlleles < automaticCollapse, "automatic pooling must run before collapse");
+  const manualCollapse = post.slice(post.indexOf("async function runDedup()"), post.indexOf("async function applyDedupFilter()"));
+  assert.doesNotMatch(manualCollapse, /setRepertoireCallOverrides\(null\)/);
+  assert.match(app, /1 · Repertoire allele pooling/);
+  assert.match(app, /Uses policy-selected V\/D\/J calls/);
 });
 
 test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligned HMM tracks", () => {
@@ -145,6 +160,13 @@ test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligne
   assert.match(component, /letter height is marginal frequency and is not scaled by entropy/i);
   assert.match(panel, /UCA posterior frequency logo/);
   assert.match(panel, /Logo SVG ↓/);
+  assert.match(panel, /Full tracks SVG ↓/);
+  assert.match(panel, /Visible tracks SVG ↓/);
+  assert.match(panel, /serializePhyloUcaHmmAnnotationSvg/);
+  assert.match(panel, /bottomAnnotations=\{logoBottomAnnotations\}/);
+  assert.match(panel, /PhyloUcaPlacementMap/);
+  assert.match(panel, /V\/J nucleotide mixture · default/);
+  assert.match(panel, /Full-HMM edges \(0 = all\)/);
   assert.match(panel, />Best path</);
   assert.match(panel, />Marginalized</);
   assert.match(panel, /PhyloUcaHmmAnnotationTracks/);
@@ -161,8 +183,12 @@ test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligne
   assert.match(annotation, /FittedLogoGlyph/);
   assert.match(annotation, /nucleotide mass/);
   assert.match(annotation, /phylo-uca-track-label-panel/);
+  assert.match(annotation, /exact scrolled crop/i);
+  assert.match(annotation, /viewBox.*\$\{x\}.*\$\{y\}.*\$\{width\}.*\$\{height\}/);
   assert.match(annotationModel, /combinedTrack\(`display\|\$\{key\}`/);
   assert.match(annotationModel, /weightedCenter/);
+  assert.match(annotationModel, /mode === "marginalized"/);
+  assert.match(annotationModel, /NT · all non-template mass/);
   assert.match(styles, /\.phylo-uca-track-legend \.v/);
   assert.match(styles, /\.phylo-uca-track-label-panel/);
   assert.match(hmm, /alignment site minus D-reference position/);

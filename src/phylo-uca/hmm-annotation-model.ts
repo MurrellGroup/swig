@@ -179,8 +179,18 @@ function alternativeOrder(left: PhyloUcaHmmDisplayTrack, right: PhyloUcaHmmDispl
  * posterior: route/register masses already produced by inference are summed by
  * allele, and non-template mass is organized into spatial junction slots.
  */
-export function collapseAndOrderHmmAnnotationTracks(tracks: readonly PhyloUcaHmmAnnotationTrack[]): PhyloUcaHmmDisplayTrack[] {
+export function collapseAndOrderHmmAnnotationTracks(
+  tracks: readonly PhyloUcaHmmAnnotationTrack[],
+  mode: "viterbi" | "marginalized" = "viterbi",
+): PhyloUcaHmmDisplayTrack[] {
   const template = groupTemplateTracks(tracks);
+  if (mode === "marginalized") {
+    const nSources = tracks.filter((track) => track.kind === "N");
+    const nt = nSources.length ? combinedTrack("display|NT", "N", "NT · all non-template mass", nSources) : undefined;
+    const byKind = (kind: PhyloUcaSegmentKind) => template.filter((track) => track.kind === kind).sort(alternativeOrder);
+    const unknown = template.filter((track) => !["V", "D", "J"].includes(track.kind)).sort(alternativeOrder);
+    return [...(nt ? [nt] : []), ...byKind("V"), ...byKind("D"), ...byKind("J"), ...unknown];
+  }
   const blocks = dBlocks(tracks);
   const nTracks = spatialNTracks(tracks, blocks);
   const v = template.filter((track) => track.kind === "V").sort(alternativeOrder);

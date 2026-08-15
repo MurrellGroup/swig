@@ -249,22 +249,25 @@ The interactive display now performs a visualization-only aggregation over that 
 
 - all V, D, or J rows with the same segment kind and allele call are summed into one display row;
 - if different routes/registers place different reference nucleotides at one column, the combined row shows their nucleotide mixture rather than choosing one registration;
-- N states and unresolved V-trim/J-entry boundary mass are summed into spatial `NT1`, `NT2`, and later junction rows;
-- template rows are ordered by their posterior-weighted horizontal center. The intended order is V, then the NT preceding each D-use block, that block's D alternatives, the next NT, and finally J. If one collapsed D allele carries mass in multiple D-use blocks, it is placed with the block carrying most of its integrated weight, so perfect ordering is not always possible.
+- in **Best path** only, N states and unresolved V-trim/J-entry boundary mass are summed into spatial `NT1`, `NT2`, and later junction rows. The intended order is V, then the NT preceding each D-use block, that block's D alternatives, the next NT, and finally J. If one collapsed D allele carries mass in multiple D-use blocks, it is placed with the block carrying most of its integrated weight, so perfect ordering is not always possible;
+- in **Marginalized** mode, every N and unresolved-boundary route is instead summed into one nucleotide-mixture row at the very top. The remaining rows are grouped V, then D, then J, with alleles inside each segment ordered by their posterior-mass center from left to right (mass breaks near ties).
 
 V, NT, D, and J rows have distinct background colors. The label rail counter-scrolls so it remains visible while the posterior is scrolled horizontally. Hovering a label reports the complete allele/track text, maximum occupancy, weighted center, underlying route/register count, D-use ordinals, and alignment-register offsets. Hovering an occupied nucleotide cell reports its alignment column, total source occupancy, each `A/C/G/T/gap` mass as a percentage of the complete posterior, and the corresponding composition conditional on that display row.
+
+The track toolbar exports either the complete HMM-track canvas or the exact currently visible horizontal and vertical crop. The visible SVG keeps the floating label rail at the current horizontal scroll position. These exports are separate from the nucleotide/codon/amino-acid frequency-logo SVG.
 
 An allele group enters the serialized sidecar when its combined occupancy reaches 1% in at least one column. Within a retained D group, raw registers reaching 0.1% are retained; if none does, the strongest register is retained. Raw N and uncertain-boundary rows reaching 0.1% are retained. Display aggregation happens only after these existing sidecar thresholds. The result reports how many subthreshold raw rows were omitted. Neither thresholding nor display aggregation changes the HMM likelihood, UCA posterior, Viterbi path, or exported sequence.
 
 ## Placement and branch-length search
 
-Search is coarse to fine.
+Search is coarse to fine, and it evaluates continuous branch interiors rather than restricting attachment candidates to existing tree nodes.
 
-1. Every observed-tree edge is screened at its midpoint using the existing N-masked lineage guide and several short pendant lengths. This screen is only a computational ranking device; it is not the reported UCA score.
-2. The top `fullHmmEdges` edges receive the complete recombination-HMM marginal likelihood.
-3. A grid spans attachment fraction along each selected edge and a quadratic grid spans UCA pendant length, giving more resolution near zero.
-4. The best placements are refined locally for the configured number of rounds.
-5. The reported point estimate maximizes marginal likelihood plus the fixed placement priors.
+1. Every observed-tree edge is screened at several attachment fractions and several short pendant lengths. By default, the screen uses only the fixed-alignment V and J regions. At each such column it forms one independent nucleotide mixture across the retained V or J allele projections and contracts that mixture with the tree likelihood surface. It does **not** run a separate likelihood for each complete V/J pairing and does not use D or junction states.
+2. The legacy single N-masked germline-guide screen remains selectable for comparison. Either screen is only a cheap computational ranking device; it is never reported as the UCA likelihood.
+3. The top `fullHmmEdges` edges receive the **complete recombination-HMM marginal likelihood**. Setting this control to zero sends every observed-tree edge to the full HMM.
+4. A full-HMM grid spans attachment fraction along each selected edge and a quadratic grid spans UCA pendant length, giving more resolution near zero. The best screen point on each retained edge is also evaluated exactly even when it lies between full-grid points.
+5. The best full-HMM placements are refined locally for the configured number of rounds.
+6. The reported point estimate maximizes full-HMM marginal likelihood plus the fixed placement priors. The cheap V/J or guide score cannot become the reported optimum without this full-HMM refinement.
 
 The default edge prior is proportional to edge length, approximating a uniform prior over location on the continuous tree. A uniform-per-edge alternative is available. Pendant length has an exponential prior with user-configurable mean and a hard user-configurable search maximum.
 
@@ -275,6 +278,8 @@ When enabled, Swig normalizes posterior weights over the best nearby evaluated `
 `N_eff = exp[-sum_k w_k log(w_k)]`.
 
 This represents local uncertainty around the best region of a fixed tree. It is not a continuous quadrature guarantee and does not represent alternative observed-tree topologies. The joint MAP path and placed-tree export remain tied to the single best placement.
+
+The results panel draws every discrete point actually retained in this local marginalization at its exact fraction along the observed-tree branch. Each marker includes the evaluated UCA pendant length. Marker color is scaled by `exp(LL_k - LL_best)`, using the raw full-HMM marginal log likelihood rather than the placement prior: the best likelihood is red and a relative likelihood approaching zero is blue. Hover text and the adjacent numeric list report the edge, fraction, pendant length, raw log likelihood difference, exponentiated difference, and normalized marginalization weight.
 
 ## Rooted-tree export
 
@@ -295,7 +300,11 @@ The placed Newick is rooted at the inferred UCA. The named `phylo_UCA` sequence 
 | HMM | mean N length | 5 nt |
 | HMM | template leakage | 0.003 |
 | HMM | junction gap probability, GTR5 only | 0.015 |
+| Search | starting-position screen | independent V/J nucleotide mixture |
+| Search | screen points per edge | 5 |
 | Search | full-HMM edges | 6 |
+| Search | full-HMM points per retained edge | 3 |
+| Search | UCA branch grid points | 3 |
 | Search | maximum UCA branch | 0.30 substitutions/character |
 | Search | exponential branch-prior mean | 0.06 |
 | Search | local posterior points | 12 |
@@ -320,6 +329,7 @@ The panel exports:
 - per-column posterior TSV (`A/C/G/T/gap`, entropy, HMM segment, and candidate call);
 - long-form exact codon-posterior TSV (alignment columns, codon, translated amino acid, probability, and MAP indicator);
 - frequency-logo SVG in nucleotide, codon, or amino-acid view;
+- complete HMM-source-track SVG and an SVG cropped to the current horizontal/vertical track viewport, for either Best path or Marginalized mode;
 - UCA-rooted placed Newick;
 - complete JSON containing the observed tree, placement set, weights, candidate report, model, parameters, Viterbi and marginalized HMM-source tracks, path, sequences, warnings, and alignment fingerprint;
 - publication-oriented SVG through the standard lineage tree viewer.

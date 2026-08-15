@@ -90,6 +90,71 @@ std::pair<int, int> substitution_counts(char query, char reference) {
         : std::pair<int, int>{0, 1};
 }
 
+/**
+ * A local alignment is allowed to reset across a short run of terminal SHM.
+ * Once a strong V or J core has been selected, restore co-linear outer bases
+ * where both the read and reference still exist.  This changes only endpoint
+ * materialization (linear in the omitted prefix/suffix); candidate discovery
+ * and the dynamic-programming search remain untouched.
+ */
+void extend_terminal_substitutions(
+    const std::string& query,
+    const std::string& reference,
+    const Scoring& scoring,
+    Alignment& alignment,
+    bool extend_left,
+    bool extend_right) {
+    if (!alignment.valid()) return;
+    if (extend_left) {
+        const auto length = std::min(alignment.query_start, alignment.reference_start);
+        if (length > 0) {
+            const auto query_start = alignment.query_start - length;
+            const auto reference_start = alignment.reference_start - length;
+            for (std::size_t offset = 0; offset < length; ++offset) {
+                const char q = query[query_start + offset];
+                const char r = reference[reference_start + offset];
+                alignment.score += substitution_score(q, r, scoring);
+                const auto [matches, mismatches] = substitution_counts(q, r);
+                alignment.matches += matches;
+                alignment.mismatches += mismatches;
+            }
+            alignment.aligned_query.insert(0, query, query_start, length);
+            alignment.aligned_reference.insert(0, reference, reference_start, length);
+            alignment.query_start = query_start;
+            alignment.reference_start = reference_start;
+        }
+    }
+    if (extend_right) {
+        const auto length = std::min(
+            query.size() - alignment.query_end,
+            reference.size() - alignment.reference_end);
+        if (length > 0) {
+            for (std::size_t offset = 0; offset < length; ++offset) {
+                const char q = query[alignment.query_end + offset];
+                const char r = reference[alignment.reference_end + offset];
+                alignment.score += substitution_score(q, r, scoring);
+                const auto [matches, mismatches] = substitution_counts(q, r);
+                alignment.matches += matches;
+                alignment.mismatches += mismatches;
+            }
+            alignment.aligned_query.append(query, alignment.query_end, length);
+            alignment.aligned_reference.append(reference, alignment.reference_end, length);
+            alignment.query_end += length;
+            alignment.reference_end += length;
+        }
+    }
+    refresh_airr_cigar(alignment, query.size(), reference.size());
+}
+
+void rank_segment_hits(std::vector<SegmentHit>& hits) {
+    std::sort(hits.begin(), hits.end(), [](const SegmentHit& left, const SegmentHit& right) {
+        if (left.alignment.score != right.alignment.score) return left.alignment.score > right.alignment.score;
+        if (aligned_bases(left.alignment) != aligned_bases(right.alignment)) return aligned_bases(left.alignment) > aligned_bases(right.alignment);
+        if (left.alignment.identity() != right.alignment.identity()) return left.alignment.identity() > right.alignment.identity();
+        return left.gene->name < right.gene->name;
+    });
+}
+
 struct FixedAlignmentPath {
     std::string query;
     std::string root_reference;
@@ -801,15 +866,21 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation(
     const OrientationHints* hints) const {
     OrientationResult result;
     result.oriented_sequence = sequence;
-    const auto v_hits = options_.assigner_strategy == AssignerStrategy::RiatMp
+    auto v_hits = options_.assigner_strategy == AssignerStrategy::RiatMp
         ? align_v_allele_tree(
             sequence, options_.top_v, options_.v_scoring, options_.min_v_length)
         : align_candidates(
             sequence, database_.v, options_.top_v, options_.v_scoring,
             options_.min_v_length, "", hints ? &hints->v : nullptr);
-    const auto j_hits = align_candidates(
+    auto j_hits = align_candidates(
         sequence, database_.j, options_.top_j, options_.j_scoring, options_.min_j_length,
         "", hints ? &hints->j : nullptr);
+    for (auto& hit : v_hits) extend_terminal_substitutions(
+        sequence, hit.gene->sequence, options_.v_scoring, hit.alignment, true, false);
+    for (auto& hit : j_hits) extend_terminal_substitutions(
+        sequence, hit.gene->sequence, options_.j_scoring, hit.alignment, false, true);
+    rank_segment_hits(v_hits);
+    rank_segment_hits(j_hits);
 
     double best_pair_score = -std::numeric_limits<double>::infinity();
     const std::size_t overlap = options_.allow_vdj_overlap

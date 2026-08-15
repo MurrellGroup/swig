@@ -5,7 +5,7 @@ import { defaultPhyloUcaOptions } from "../src/phylo-uca/defaults.ts";
 import { compileGtr, HS5F_REVERSIBLE_GTR5 } from "../src/phylo-uca/gtr.ts";
 import { phyloUcaHmmPosterior } from "../src/phylo-uca/hmm.ts";
 import { collapseAndOrderHmmAnnotationTracks } from "../src/phylo-uca/hmm-annotation-model.ts";
-import { inferPhyloUca } from "../src/phylo-uca/inference.ts";
+import { inferPhyloUca, vjNucleotideMixtureProfile } from "../src/phylo-uca/inference.ts";
 import { prepareObservedOnlyAlignment, type PreparedPhyloUcaReferences } from "../src/phylo-uca/references.ts";
 import { alignmentGapSemantics, observedAlignedCharacterPartial, PhyloUcaTreeMessages, type ConditionalLikelihoodSurface } from "../src/phylo-uca/tree-messages.ts";
 import { aminoAcidUcaLogoColumns, codonUcaLogoColumns, nucleotideUcaLogoColumns } from "../src/phylo-uca/logo.ts";
@@ -57,6 +57,33 @@ test("HMM annotation display follows weighted V, NT, D-block, NT, J order", () =
   const display = collapseAndOrderHmmAnnotationTracks(raw);
   assert.deepEqual(display.map((track) => track.label), ["V · V1", "NT1", "D · D1a", "D · D1b", "NT2", "D · D2", "NT3", "J · J1"]);
   assert.deepEqual(display.map((track) => track.weightedCenter), [1, 2, 4, 5, 6, 7, 8, 10]);
+});
+
+test("marginalized annotation puts one summed NT mixture above V, D, and J", () => {
+  const raw = [
+    annotationTrack("J", "J", "J · J1", 10, [0, 0.8, 0, 0, 0], { call: "J1" }),
+    annotationTrack("N0", "N", "N0", 2, [0.2, 0, 0, 0, 0]),
+    annotationTrack("D", "D", "D · D1", 6, [0, 0, 0.7, 0, 0], { call: "D1", dOrdinal: 1 }),
+    annotationTrack("N1", "N", "N1", 7, [0, 0.3, 0, 0, 0]),
+    annotationTrack("V", "V", "V · V1", 1, [0, 0, 0, 1, 0], { call: "V1" }),
+  ];
+  const display = collapseAndOrderHmmAnnotationTracks(raw, "marginalized");
+  assert.deepEqual(display.map((track) => track.kind), ["N", "V", "D", "J"]);
+  assert.equal(display[0].sourceTrackCount, 2);
+  assert.deepEqual(display[0].points.map((point) => point.alignmentColumn), [2, 7]);
+  assert.equal(display[0].integratedWeight, 0.5);
+});
+
+test("V/J screen profile mixes allele nucleotides independently and omits the junction", () => {
+  const candidate = (name: string, projection: string) => ({ name, sequence: projection, projection, differences: 0, compared: 1, identity: 1, observedHypothesis: true });
+  const profile = vjNucleotideMixtureProfile({
+    v: [candidate("V1", "AANNN"), candidate("V2", "ACNNN")],
+    j: [candidate("J1", "NNNGG"), candidate("J2", "NNNGT")],
+    vEndColumn: 1,
+    jStartColumn: 3,
+    guide: "NNNNN",
+  });
+  assert.deepEqual(profile, [[2, 0, 0, 0, 0], [1, 1, 0, 0, 0], null, [0, 0, 2, 0, 0], [0, 0, 1, 1, 0]]);
 });
 
 test("GTR4 and gap-aware GTR5 transition matrices are stochastic and reversible", () => {
@@ -242,7 +269,10 @@ test("end-to-end inference roots at a zero-length UCA carrier and preserves the 
   assert.match(result.placedTreeNewick, /phylo_UCA:0(?:\.0+)?(?:[,)]|$)/);
   assert.equal(result.mapAlignedSequence.length, 12);
   assert.equal(result.posterior.length, 12);
-  assert.equal(result.schema, 3);
+  assert.equal(result.schema, 4);
+  assert.equal(result.bestPlacement.screenMode, "vj-mixture");
+  assert.ok(Number.isFinite(result.bestPlacement.screenScore));
+  assert.ok(result.placements.some((placement) => placement.edgeFraction > 0 && placement.edgeFraction < 1));
   assert.equal(result.codonPosterior?.length, 4);
   for (const codon of result.codonPosterior ?? []) for (let position = 0; position < 3; position += 1) {
     const marginal = [0, 0, 0, 0, 0];

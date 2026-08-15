@@ -11,6 +11,15 @@ import {
   type ProbabilityLogoColumn,
 } from "./probability-logo.ts";
 
+export interface ProbabilityLogoAnnotation {
+  /** Zero-based inclusive display-column bounds. */
+  startColumn: number;
+  endColumn: number;
+  label: string;
+  color: string;
+  title?: string;
+}
+
 interface ProbabilityLogoProps {
   columns: readonly ProbabilityLogoColumn[];
   alphabet: ProbabilityLogoAlphabet;
@@ -23,6 +32,8 @@ interface ProbabilityLogoProps {
   leftInset?: number;
   /** Omit the overflow wrapper when a parent owns the shared scroll surface. */
   embedded?: boolean;
+  /** Optional compact bands drawn below the numbering axis. */
+  bottomAnnotations?: readonly ProbabilityLogoAnnotation[];
 }
 
 interface FittedLogoGlyphProps {
@@ -71,12 +82,14 @@ export const ProbabilityLogo = forwardRef<SVGSVGElement, ProbabilityLogoProps>(f
   labelEvery = 5,
   leftInset = 38,
   embedded = false,
+  bottomAnnotations = [],
 }, ref) {
   const normalized = useMemo(() => columns.map((column) => ({
     ...column,
     entries: normalizedLogoEntries(column.entries),
   })), [columns]);
-  const bottom = 24;
+  const annotationHeight = bottomAnnotations.length ? 17 : 0;
+  const bottom = 24 + annotationHeight;
   const width = Math.max(1, leftInset + normalized.length * columnWidth);
   const height = stackHeight + bottom;
   const ticks = [0, 0.25, 0.5, 0.75, 1];
@@ -108,6 +121,15 @@ export const ProbabilityLogo = forwardRef<SVGSVGElement, ProbabilityLogoProps>(f
           fill={entry.color ?? probabilityLogoColor(entry.symbol, alphabet)}
         />;
       })}{(columnIndex % Math.max(1, labelEvery) === 0 || columnIndex === normalized.length - 1) && <text x={x + columnWidth / 2} y={stackHeight + 15} textAnchor="middle" fill="#52605b" fontFamily={LOGO_MONOSPACE_FONT} fontSize="8">{column.label}</text>}</g>;
+    })}
+    {bottomAnnotations.map((annotation, index) => {
+      const start = Math.max(0, Math.min(normalized.length, annotation.startColumn));
+      const end = Math.max(start, Math.min(normalized.length - 1, annotation.endColumn));
+      const x = leftInset + start * columnWidth;
+      const annotationWidth = Math.max(0, (end - start + 1) * columnWidth);
+      if (!(annotationWidth > 0)) return null;
+      const tooltip = annotation.title ?? `${annotation.label}: display columns ${start + 1}–${end + 1}`;
+      return <g key={`${annotation.label}-${index}`} aria-label={tooltip}><title>{tooltip}</title><rect x={x} y={stackHeight + 23} width={annotationWidth} height={15} fill={annotation.color} stroke="#ffffff" strokeWidth="1" /><text x={x + annotationWidth / 2} y={stackHeight + 33.5} textAnchor="middle" fill="#26332f" fontFamily={LOGO_MONOSPACE_FONT} fontSize="8" fontWeight="800">{annotationWidth >= 28 ? annotation.label : ""}</text></g>;
     })}
     <text x="11" y={stackHeight / 2} transform={`rotate(-90 11 ${stackHeight / 2})`} textAnchor="middle" fill="#52605b" fontFamily={LOGO_MONOSPACE_FONT} fontSize="9">Probability</text>
   </svg>;

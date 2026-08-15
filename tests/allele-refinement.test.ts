@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { adaptiveNeighbourOdds, buildSparseEvidenceRow, sparseEvidenceMatrix } from "../src/allele-refinement/evidence.ts";
-import { alignReferenceKernelInspection, hardAssignmentShiftData, inspectReferenceEvidenceKernel } from "../src/allele-refinement/diagnostics.ts";
+import { alignReferenceKernelInspection, hardAssignmentShiftData, inspectReferenceEvidenceKernel, survivingAlleleReference } from "../src/allele-refinement/diagnostics.ts";
 import { fitSparseAlleleModel } from "../src/allele-refinement/model.ts";
 import { buildReferenceAlleleGraph, boundedReferenceDistance } from "../src/allele-refinement/reference-graph.ts";
 import { DEFAULT_ALLELE_REFINEMENT_OPTIONS, type RefinementInputRow, type SegmentRefinementResult } from "../src/allele-refinement/types.ts";
@@ -92,6 +92,7 @@ test("hard assignment projection counts MAP reassignments and exposes vanished a
     nodes: [
       { index: 0, segment: "V", locus: "IGH", names: ["IGHV1*01"], sequence: "AAAA" },
       { index: 1, segment: "V", locus: "IGH", names: ["IGHV1*02"], sequence: "AAAT" },
+      { index: 2, segment: "V", locus: "IGH", names: ["IGHV1*03"], sequence: "AATT" },
     ],
     mapNode: Int32Array.of(1, 1, 1),
     mapProbability: Float32Array.of(0.95, 0.7, 0.9),
@@ -102,7 +103,7 @@ test("hard assignment projection counts MAP reassignments and exposes vanished a
     assignmentWeight: Float32Array.of(1, 1, 1),
     models: [{
       key: "donor_1\u0000IGH\u0000V", scopeValue: "donor_1", locus: "IGH", segment: "V",
-      rows: 3, effectiveRows: 3, nonZeros: 6, databaseNodes: 2, inactivePriorNodes: 0,
+      rows: 3, effectiveRows: 3, nonZeros: 6, databaseNodes: 3, inactivePriorNodes: 1,
       iterations: 5, converged: true, finalMaximumChange: 1e-7,
       alleles: [
         { nodeIndex: 0, names: ["IGHV1*01"], sequenceLength: 4, posteriorMean: 0.25, posteriorSd: 0.1, localEvidenceAssignments: 2, expectedAssignments: 0.5 },
@@ -119,6 +120,15 @@ test("hard assignment projection counts MAP reassignments and exposes vanished a
   assert.deepEqual([bestSecond.before, bestSecond.after], [1, 3]);
   assert.equal(best.changedAssignments, 2);
   assert.equal(best.vanishedAlleles, 1);
+  const allReferences = survivingAlleleReference(result, 0, "best", 0.8, 0)!;
+  assert.equal(allReferences.retainedNodes, 3);
+  assert.match(allReferences.fasta, />IGHV1\*01 post_reassignment_reads=0\nAAAA/);
+  assert.match(allReferences.fasta, />IGHV1\*03 post_reassignment_reads=0\nAATT/);
+  const surviving = survivingAlleleReference(result, 0, "best", 0.8, 1)!;
+  assert.equal(surviving.retainedNodes, 1);
+  assert.equal(surviving.excludedNodes, 2);
+  assert.doesNotMatch(surviving.fasta, /IGHV1\*01/);
+  assert.match(surviving.fasta, />IGHV1\*02 post_reassignment_reads=3\nAAAT/);
 
   const confidence = hardAssignmentShiftData(result, 0, "confidence", 0.8)!;
   assert.deepEqual(confidence.rows.map((value) => [value.label, value.before, value.after]), [

@@ -222,6 +222,25 @@ test("calling profiles are explicit, switchable, and reject unknown profile iden
   assert.equal(compatibilityResult.rows[0].d_call, d[0]);
 });
 
+test("terminal SHM does not masquerade as missing V 5-prime or J 3-prime sequence", async () => {
+  const human = pack.species.find((entry) => entry.name === "Homo sapiens");
+  assert.ok(human?.loci.IGH);
+  const v = human.loci.IGH.V.find((allele) => allele[1].length >= 120) ?? human.loci.IGH.V[0];
+  const j = human.loci.IGH.J.find((allele) => allele[1].length >= 35) ?? human.loci.IGH.J[0];
+  const mutate = (base) => ({ A: "C", C: "A", G: "T", T: "G" })[base] ?? "A";
+  const terminalRun = 9;
+  const mutatedV = [...v[1]].map((base, index) => index < terminalRun ? mutate(base) : base).join("");
+  const mutatedJ = [...j[1]].map((base, index, values) => index >= values.length - terminalRun ? mutate(base) : base).join("");
+  const query = `${mutatedV}AACCGG${mutatedJ}`;
+  const runtime = await makeRuntime();
+  runtime.initialize({ V: asFasta([v]), D: "", J: asFasta([j]), C: "" });
+  const row = runtime.annotate(`>terminal_shm\n${query}\n`, 1).rows[0];
+  assert.equal(row.v_sequence_start, "1");
+  assert.equal(row.v_germline_start, "1");
+  assert.equal(Number(row.j_sequence_end), query.length);
+  assert.equal(Number(row.j_germline_end), j[1].length);
+});
+
 test("standard, RIAT-MP, and AER assignment strategies initialize explicitly", async () => {
   const human = pack.species.find((entry) => entry.name === "Homo sapiens");
   assert.ok(human?.loci.IGH);

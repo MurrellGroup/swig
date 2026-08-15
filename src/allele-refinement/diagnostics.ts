@@ -63,6 +63,14 @@ export interface HardAssignmentShift {
   appearedAlleles: number;
 }
 
+export interface SurvivingAlleleReference {
+  fasta: string;
+  retainedNodes: number;
+  retainedNames: number;
+  excludedNodes: number;
+  minimumReads: number;
+}
+
 function inspectionRow(node: ReferenceAlleleNode, assumedShm: number): RefinementInputRow {
   return {
     ordinal: 0,
@@ -340,5 +348,42 @@ export function hardAssignmentShiftData(
     heldBelowConfidence,
     vanishedAlleles: rows.reduce((sum, row) => sum + Number(row.vanishes), 0),
     appearedAlleles: rows.reduce((sum, row) => sum + Number(row.appears), 0),
+  };
+}
+
+/** FASTA projection of the selected fitted pool under the same hard-call policy as the shift chart. */
+export function survivingAlleleReference(
+  result: SegmentRefinementResult,
+  selectedModelIndex: number,
+  policy: AlleleReassignmentPolicy,
+  minimumPosterior: number,
+  rawMinimumReads: number,
+): SurvivingAlleleReference | null {
+  const model = result.models[selectedModelIndex];
+  const shift = hardAssignmentShiftData(result, selectedModelIndex, policy, minimumPosterior);
+  if (!model || !shift) return null;
+  const minimumReads = Math.max(0, Number.isFinite(rawMinimumReads) ? rawMinimumReads : 0);
+  const countByNode = new Map(shift.rows.map((row) => [row.nodeIndex, row.after]));
+  const activeUnknownNodes = new Set(model.alleles.map((allele) => allele.nodeIndex));
+  // At a zero threshold, include the model's complete known-locus reference,
+  // including prior-only nodes absent from every sparse candidate row. Unknown-
+  // locus custom records belong only when they actually entered this model.
+  const candidates = result.nodes.filter((node) => node.locus === model.locus || (!node.locus && activeUnknownNodes.has(node.index)));
+  const retained = candidates.filter((node) => (countByNode.get(node.index) ?? 0) >= minimumReads);
+  const records: string[] = [];
+  let retainedNames = 0;
+  for (const node of retained) {
+    const count = countByNode.get(node.index) ?? 0;
+    for (const name of node.names) {
+      records.push(`>${name} post_reassignment_reads=${count}\n${node.sequence}`);
+      retainedNames += 1;
+    }
+  }
+  return {
+    fasta: records.length ? `${records.join("\n")}\n` : "",
+    retainedNodes: retained.length,
+    retainedNames,
+    excludedNodes: candidates.length - retained.length,
+    minimumReads,
   };
 }

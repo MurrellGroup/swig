@@ -60,7 +60,11 @@ export interface PhyloUcaCandidateOptions {
 }
 
 export interface PhyloUcaSearchOptions {
-  /** Number of guide-ranked edges receiving the full recombination HMM. */
+  /** Cheap model used only to rank starting edges; every retained point is re-evaluated by the full HMM. */
+  screenMode: "vj-mixture" | "germline-guide";
+  /** Interior attachment positions evaluated by the cheap screen on every edge. */
+  screenEdgeGridPoints: number;
+  /** Number of screen-ranked edges receiving the full recombination HMM; zero means every edge. */
   fullHmmEdges: number;
   edgeGridPoints: number;
   branchGridPoints: number;
@@ -139,6 +143,10 @@ export interface PhyloUcaPlacement {
   logMarginalLikelihood: number;
   logPosteriorScore: number;
   localPosteriorWeight: number;
+  /** Cheap edge-screen score. This never substitutes for logMarginalLikelihood. */
+  screenScore?: number;
+  screenMode?: "vj-mixture" | "germline-guide";
+  /** Legacy name retained so schema-1–3 sessions remain readable. */
   guideScore: number;
 }
 
@@ -232,7 +240,7 @@ export interface PhyloUcaCandidateReport {
 }
 
 export interface PhyloUcaResult {
-  schema: 1 | 2 | 3;
+  schema: 1 | 2 | 3 | 4;
   method: "fixed-tree-empirical-bayes-phylo-uca";
   lineageLabel: string;
   generatedAt: string;

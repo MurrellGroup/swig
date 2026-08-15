@@ -160,6 +160,15 @@ export const DATASET_SCOPE_LABELS: Record<DatasetScope, string> = {
   global: "Entire study",
 };
 
+/** Explicit pooling language: cross-participant scopes are deliberate overrides. */
+export const ALLELE_POOL_SCOPE_LABELS: Record<DatasetScope, string> = {
+  dataset: "Loaded dataset / library only",
+  sample: "Biological sample only",
+  subject: "Donor / subject · default; combine samples",
+  cohort: "Cohort · cross-donor override",
+  global: "Entire study · cross-donor override",
+};
+
 export function studyScopeDefaults(design: StudyDesign): { collapse: DatasetScope; lineage: DatasetScope } {
   if (design === "longitudinal") return { collapse: "sample", lineage: "subject" };
   if (design === "technical") return { collapse: "sample", lineage: "sample" };

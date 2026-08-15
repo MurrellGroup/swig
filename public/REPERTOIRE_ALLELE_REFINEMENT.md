@@ -11,9 +11,9 @@ The method refines assignments. It does **not** certify a diploid genotype, infe
 
 ## Independent pools
 
-Models are fitted independently by user-selected study boundary (donor/subject by default), receptor locus, and segment. V and J are enabled by default. D is available as an experimental option because short templated spans, trimming, and N addition make D emissions much less identifiable.
+Models are fitted independently by user-selected study boundary (donor/subject by default), receptor locus, and segment. Under the default, every sample, timepoint, and compartment carrying the same donor ID contributes to the same fit, but evidence never crosses donor IDs. V and J are enabled by default. D is available as an experimental option because short templated spans, trimming, and N addition make D emissions much less identifiable.
 
-No posterior information crosses these boundaries. Donor pooling is usually appropriate for longitudinal or compartmental data; sample pooling is available when samples must remain independent.
+No posterior information crosses these boundaries. Donor pooling is usually appropriate for longitudinal or compartmental data; dataset and sample scopes are available when fits must remain narrower. Cohort and entire-study scopes are explicitly labeled **cross-donor overrides** because they deliberately allow information to cross participant IDs.
 
 ## Reference graph and local evidence
 
@@ -101,7 +101,7 @@ After fitting, Swig displays paired horizontal count bars for every allele recei
 
 With unique-record weighting, a bar value is a record count. With abundance weighting, it is a `duplicate_count`-weighted assignment count. The bars are therefore neither Dirichlet posterior means nor sums of variational responsibilities. Sequence-identical reference labels remain one unresolved node and are displayed together.
 
-The figure can show all hard-assigned alleles, only alleles whose counts change, or only alleles whose local-best count falls to zero after the selected policy. The latter is the exact “vanishes” set for the hard projection. CSV export includes every row and explicit `vanishes`/`appears` flags even when the on-screen row limit is smaller; the visible figure exports as SVG. The compact fitted-model summary remains available as a download rather than a truncated table in the page.
+The figure can show all hard-assigned alleles, only alleles whose counts change, or only alleles whose local-best count falls to zero after the selected policy. The latter is the exact “vanishes” set for the hard projection. CSV export includes every row and explicit `vanishes`/`appears` flags even when the on-screen row limit is smaller; the visible figure exports as SVG. The compact fitted-model summary remains available as a download rather than a truncated table in the page. No short, thresholded allele table is shown below the chart.
 
 For confidence-gated application, the actual AIRR overlay retains the immutable original call string below threshold. An original string may contain multiple co-optimal alleles, so it is deliberately not represented as a single hard-count bar. The chart uses the local-evidence argmax there to keep the projection one-record/one-allele; the note below the chart states this distinction.
 
@@ -123,9 +123,19 @@ Fitting never changes downstream calls. The user explicitly chooses a reassignme
 - **Best posterior if confidence passes** replaces a modeled V or J call only when its maximum posterior reaches the configurable threshold (80% by default). A call below threshold remains exactly as originally reported.
 - A record not modeled for that segment always retains its original call.
 - Reset restores immutable original calls.
-- Existing lineage-dependent results are invalidated when the overlay changes.
+- Existing downstream collapse, chimera, selection, lineage, SHM, and query results are reset when the upstream overlay changes, preventing partitions derived from one call policy from being reused under another.
 
-Exports include a complete model summary, a long-form sparse per-record posterior sidecar, a refined AIRR table, paired hard-count chart data as CSV, and the paired hard-count figure as SVG. The sidecar reconstructs every nonzero candidate responsibility from the saved mixture parameters while streaming the AIRR input, so the complete reads-by-candidate posterior is available without retaining a second large matrix in interactive memory. It records the selected reassignment policy, confidence threshold when applicable, and whether each MAP row is selected by that policy. The refined table places policy-selected calls in the ordinary call columns while `swig_original_*` and `swig_repertoire_*` columns retain provenance. Options, compact MAP/entropy and hard-projection vectors, mixture summaries, policy, threshold, and apply/reset state are included in Swig sessions.
+Exports include a complete model summary, a long-form sparse per-record posterior sidecar, a refined AIRR table, paired hard-count chart data as CSV, the paired hard-count figure as SVG, and a surviving-allele FASTA for the selected fitted pool. The FASTA uses the current reassignment policy and confidence threshold. Its minimum post-reassignment count defaults to zero and excludes nodes whose hard after-policy count is below the chosen value; sequence-identical labels are emitted as separate FASTA names over their shared reference sequence.
+
+The sidecar reconstructs every nonzero candidate responsibility from the saved mixture parameters while streaming the AIRR input, so the complete reads-by-candidate posterior is available without retaining a second large matrix in interactive memory. It records the selected reassignment policy, confidence threshold when applicable, and whether each MAP row is selected by that policy. The refined table places policy-selected calls in the ordinary call columns while `swig_original_*` and `swig_repertoire_*` columns retain provenance. Options, compact MAP/entropy and hard-projection vectors, mixture summaries, policy, threshold, and apply/reset state are included in Swig sessions.
+
+## Pipeline position
+
+Allele pooling is an optional first assignment stage. Its model is fitted on the complete assigned input before any collapse, chimera exclusion, or repertoire selection mask. Once the user applies a reassignment policy, collapse and denoising use those selected V/D/J calls when their key or partition depends on germline assignments. The automatic pipeline therefore runs:
+
+`assignment → allele pooling/reassignment → collapse/denoising → chimera exclusion → selection → lineage and diagnostics`.
+
+Later filters do not clear the fitted allele model or revert its calls. Conversely, applying, restoring, or changing an already-applied allele policy resets downstream stages whose partitions may have become stale.
 
 ## Interpretation and limitations
 

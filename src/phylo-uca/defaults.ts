@@ -29,6 +29,8 @@ export function defaultPhyloUcaOptions(): PhyloUcaOptions {
       nBaseFrequencies: [0.25, 0.25, 0.25, 0.25],
     },
     search: {
+      screenMode: "vj-mixture",
+      screenEdgeGridPoints: 5,
       fullHmmEdges: 6,
       edgeGridPoints: 3,
       branchGridPoints: 3,

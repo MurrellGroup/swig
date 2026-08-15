@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { forwardRef, useMemo } from "react";
 
 import {
   FittedLogoGlyph,
@@ -73,11 +73,11 @@ function pointTitle(track: PhyloUcaHmmDisplayTrack, alignmentColumn: number, pro
  * collapsed routes/registers disagree, their characters form a visible
  * mixture. Total glyph height is the posterior track occupancy.
  */
-export function PhyloUcaHmmAnnotationTracks({ tracks, columns, leftInset, contentWidth, title, labelOffset }: Props) {
+export const PhyloUcaHmmAnnotationTracks = forwardRef<SVGSVGElement, Props>(function PhyloUcaHmmAnnotationTracks({ tracks, columns, leftInset, contentWidth, title, labelOffset }, ref) {
   const layoutByColumn = useMemo(() => new Map(columns.map((column) => [column.alignmentColumn, column])), [columns]);
   const width = Math.max(1, leftInset + contentWidth);
   const height = Math.max(1, tracks.length * TRACK_HEIGHT);
-  return <svg className="phylo-uca-annotation-svg" xmlns="http://www.w3.org/2000/svg" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}>
+  return <svg ref={ref} className="phylo-uca-annotation-svg" xmlns="http://www.w3.org/2000/svg" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}>
     <title>{title}</title>
     <desc>Rows combine equivalent HMM routes and D-alignment registers. Conflicting template registrations and non-templated tracks are nucleotide mixtures. Letter height is posterior source occupancy.</desc>
     <rect width={width} height={height} fill="#ffffff" />
@@ -132,4 +132,33 @@ export function PhyloUcaHmmAnnotationTracks({ tracks, columns, leftInset, conten
       <line x1={leftInset - 0.5} x2={leftInset - 0.5} y1="0" y2={height} stroke="#aebbb5" strokeWidth="1" />
     </g>
   </svg>;
+});
+
+export interface PhyloUcaAnnotationSvgViewport {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Serialize either the complete track canvas or an exact scrolled crop. */
+export function serializePhyloUcaHmmAnnotationSvg(svg: SVGSVGElement, viewport?: PhyloUcaAnnotationSvgViewport): string {
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  const sourceWidth = Math.max(1, svg.viewBox.baseVal.width || Number(svg.getAttribute("width")) || 1);
+  const sourceHeight = Math.max(1, svg.viewBox.baseVal.height || Number(svg.getAttribute("height")) || 1);
+  const x = viewport ? Math.max(0, Math.min(sourceWidth - 1, viewport.x)) : 0;
+  const y = viewport ? Math.max(0, Math.min(sourceHeight - 1, viewport.y)) : 0;
+  const width = viewport ? Math.max(1, Math.min(sourceWidth - x, viewport.width)) : sourceWidth;
+  const height = viewport ? Math.max(1, Math.min(sourceHeight - y, viewport.height)) : sourceHeight;
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+  clone.setAttribute("width", String(width));
+  clone.setAttribute("height", String(height));
+  clone.setAttribute("viewBox", `${x} ${y} ${width} ${height}`);
+  const labelPanel = clone.querySelector(".phylo-uca-track-label-panel");
+  if (labelPanel) {
+    labelPanel.setAttribute("transform", `translate(${viewport ? x : 0} 0)`);
+    labelPanel.setAttribute("style", "filter:drop-shadow(2px 0 1px rgba(31,49,43,.18))");
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}\n`;
 }

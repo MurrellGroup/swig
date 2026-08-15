@@ -8,6 +8,7 @@ import {
   alignReferenceKernelInspection,
   hardAssignmentShiftData,
   inspectReferenceEvidenceKernel,
+  survivingAlleleReference,
 } from "./diagnostics.ts";
 import { adaptiveNeighbourOdds } from "./evidence.ts";
 import { buildReferenceAlleleGraph } from "./reference-graph.ts";
@@ -174,6 +175,7 @@ export function AlleleAssignmentShiftChart({
   const [modelKey, setModelKey] = useState(models[0]?.model.key ?? "");
   const [allelesShown, setAllelesShown] = useState(20);
   const [filter, setFilter] = useState<HardAssignmentFilter>("all");
+  const [minimumReferenceReads, setMinimumReferenceReads] = useState(0);
   const svgRef = useRef<SVGSVGElement>(null);
   useEffect(() => {
     if (!models.some((entry) => entry.model.key === modelKey)) setModelKey(models[0]?.model.key ?? "");
@@ -208,6 +210,12 @@ export function AlleleAssignmentShiftChart({
     const header = ["pool", "locus", "segment", "allele", "local_best_count", "after_policy_count", "delta", "vanishes", "appears", "record_weighting", "reassignment_policy", "minimum_posterior"];
     const rows = allRows.map((row) => [model.scopeValue, model.locus, model.segment, row.label, row.before, row.after, row.delta, row.vanishes, row.appears, weighting, reassignmentPolicy, reassignmentPolicy === "confidence" ? effectiveMinimumPosterior : ""]);
     download([header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n") + "\n", `${exportStem}.csv`, "text/csv;charset=utf-8");
+  };
+  const saveSurvivingReference = () => {
+    if (!selected) return;
+    const reference = survivingAlleleReference(selected.result, selected.modelIndex, reassignmentPolicy, effectiveMinimumPosterior, minimumReferenceReads);
+    if (!reference) return;
+    download(reference.fasta, `${safeName(`${model.scopeValue}-${model.locus}-${model.segment}`)}-surviving-alleles.fasta`, "text/plain;charset=utf-8");
   };
   const policyLabel = reassignmentPolicy === "best" ? "posterior MAP for every modeled record" : `posterior MAP at ≥ ${(effectiveMinimumPosterior * 100).toFixed(0)}% confidence, otherwise local best`;
 
@@ -246,6 +254,7 @@ export function AlleleAssignmentShiftChart({
       })}
       {!visible.length && <text x={width / 2} y="110" textAnchor="middle" fontFamily="Inter, Arial, sans-serif" fontSize="13" fill="#68746f">No alleles match this display filter</text>}
     </svg></div>}
+    {shift && <div className="allele-surviving-reference"><div><strong>Surviving allele reference</strong><small>Uses this fitted pool, the current reassignment policy, confidence gate, and record weighting. A threshold of 0 retains every candidate reference; use 1 to remove zero-count alleles.</small></div><label title="Exclude reference nodes with fewer hard post-reassignment reads than this value."><span>Minimum post-reassignment reads</span><CommitNumberInput min="0" step="1" value={minimumReferenceReads} onCommit={(value) => setMinimumReferenceReads(Math.max(0, value))} /></label><button type="button" onClick={saveSurvivingReference}>Download surviving allele reference ↓</button></div>}
     {shift && <p className="scientific-note"><span>i</span>{formatAssignmentCount(shift.totalAssignments)} {weighting === "abundance" ? "duplicate-count-weighted" : "unique-record"} hard assignments in this pool; {formatAssignmentCount(shift.changedAssignments)} change under this policy. {reassignmentPolicy === "confidence" ? `${formatAssignmentCount(shift.heldBelowConfidence)} differing posterior MAP assignments are held below confidence and remain at local best in this projection; the applied AIRR overlay preserves their original call strings.` : "Every modeled record is projected to its posterior MAP."} {shift.vanishedAlleles.toLocaleString()} allele class{shift.vanishedAlleles === 1 ? "" : "es"} vanish and {shift.appearedAlleles.toLocaleString()} appear. {filtered.length > visible.length ? `${(filtered.length - visible.length).toLocaleString()} matching rows are omitted from the figure but retained in the CSV.` : "Every matching row is shown."}</p>}
   </article>;
 }

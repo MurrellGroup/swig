@@ -149,6 +149,24 @@ function placementKey(edge: number, distance: number, branch: number): string {
   return `${edge}|${distance.toPrecision(11)}|${branch.toPrecision(11)}`;
 }
 
+/** Equal-weight, independent nucleotide mixtures over retained V and J alleles. */
+export function vjNucleotideMixtureProfile(references: Pick<ReturnType<typeof preparePhyloUcaReferences>, "v" | "j" | "vEndColumn" | "jStartColumn" | "guide">): Array<[number, number, number, number, number] | null> {
+  const profile: Array<[number, number, number, number, number] | null> = Array.from({ length: references.guide.length }, () => null);
+  const add = (candidates: typeof references.v, start: number, end: number) => {
+    for (let column = Math.max(0, start); column <= Math.min(profile.length - 1, end); column += 1) {
+      const masses: [number, number, number, number, number] = [0, 0, 0, 0, 0];
+      for (const candidate of candidates) {
+        const state = ["A", "C", "G", "T", "-"].indexOf(candidate.projection[column] ?? "N");
+        if (state >= 0) masses[state] += 1;
+      }
+      if (masses.some((value) => value > 0)) profile[column] = masses;
+    }
+  };
+  add(references.v, 0, references.vEndColumn);
+  add(references.j, references.jStartColumn, profile.length - 1);
+  return profile;
+}
+
 export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress: PhyloUcaProgress) => void): Promise<PhyloUcaResult> {
   const started = performance.now();
   const progress = (phase: PhyloUcaProgress["phase"], processed: number, total: number, detail: string) => onProgress?.({ phase, processed, total, detail });
@@ -188,22 +206,34 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
       ? "The forced four-state model treated internal as well as terminal gaps as missing data."
       : "The observed alignment contains no internal gaps, so the phylogenetic likelihood used ordinary four-state nucleotide GTR; terminal tip gaps, including columns missing at every tip, were missing data.");
 
-  const guideBranchSamples = [0, Math.min(0.02, input.options.search.maximumUcaBranchLength), Math.min(0.08, input.options.search.maximumUcaBranchLength)];
-  const edgeScores: Array<{ edge: number; guideScore: number }> = [];
-  progress("edge-screen", 0, tree.edges.length, "Screening every edge with the germline guide");
+  const screenMode = input.options.search.screenMode ?? "vj-mixture";
+  // Endpoints plus at least one branch-interior attachment are always tested.
+  const screenEdgePoints = Math.max(3, Math.floor(input.options.search.screenEdgeGridPoints ?? 5));
+  const guideBranchSamples = uniqueNumbers([0, Math.min(0.02, input.options.search.maximumUcaBranchLength), Math.min(0.08, input.options.search.maximumUcaBranchLength)]);
+  const vjProfile = vjNucleotideMixtureProfile(references);
+  const edgeScores: Array<{ edge: number; guideScore: number; distance: number; branch: number }> = [];
+  progress("edge-screen", 0, tree.edges.length, screenMode === "vj-mixture" ? "Screening every edge with the independent-site V/J nucleotide mixture" : "Screening every edge with the single germline guide");
   for (let edgeIndex = 0; edgeIndex < tree.edges.length; edgeIndex += 1) {
     const edge = tree.edges[edgeIndex];
     let guideScore = NEGATIVE_INFINITY;
-    for (const branch of guideBranchSamples) {
-      const surface = tree.conditionalLikelihoods(edgeIndex, edge.length / 2, branch);
-      guideScore = Math.max(guideScore, tree.guideScore(surface, references.guide));
+    let bestDistance = edge.length / 2;
+    let bestBranch = 0;
+    for (const distance of linearGrid(screenEdgePoints, edge.length)) for (const branch of guideBranchSamples) {
+      const surface = tree.conditionalLikelihoods(edgeIndex, distance, branch);
+      const score = screenMode === "vj-mixture" ? tree.nucleotideMixtureScore(surface, vjProfile) : tree.guideScore(surface, references.guide);
+      if (score > guideScore) {
+        guideScore = score;
+        bestDistance = distance;
+        bestBranch = branch;
+      }
     }
-    edgeScores.push({ edge: edgeIndex, guideScore });
+    edgeScores.push({ edge: edgeIndex, guideScore, distance: bestDistance, branch: bestBranch });
     progress("edge-screen", edgeIndex + 1, tree.edges.length, `Screened ${edge.id}`);
     if ((edgeIndex & 3) === 3) await Promise.resolve();
   }
   edgeScores.sort((left, right) => right.guideScore - left.guideScore);
-  const selectedEdges = edgeScores.slice(0, Math.max(1, Math.min(tree.edges.length, Math.floor(input.options.search.fullHmmEdges))));
+  const requestedFullHmmEdges = Math.floor(input.options.search.fullHmmEdges);
+  const selectedEdges = edgeScores.slice(0, requestedFullHmmEdges <= 0 ? tree.edges.length : Math.max(1, Math.min(tree.edges.length, requestedFullHmmEdges)));
   const evaluated = new Map<string, PhyloUcaPlacement>();
   const totalEdgeLength = tree.edges.reduce((sum, edge) => sum + Math.max(1e-12, edge.length), 0);
   const branchMean = Math.max(1e-5, input.options.search.branchPriorMean);
@@ -231,19 +261,22 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
       logMarginalLikelihood: likelihood,
       logPosteriorScore: likelihood + edgePrior + branchPrior,
       localPosteriorWeight: 0,
+      screenScore: guideScore,
+      screenMode,
       guideScore,
     };
     evaluated.set(key, placement);
     return placement;
   };
 
-  const coarseTasks = selectedEdges.flatMap(({ edge, guideScore }) => {
+  const coarseTasks = selectedEdges.flatMap(({ edge, guideScore, distance: screenDistance, branch: screenBranch }) => {
     const treeEdge = tree.edges[edge];
-    return linearGrid(Math.max(2, input.options.search.edgeGridPoints), treeEdge.length).flatMap((distance) =>
+    const uniform = linearGrid(Math.max(3, input.options.search.edgeGridPoints), treeEdge.length).flatMap((distance) =>
       branchGrid(Math.max(2, input.options.search.branchGridPoints), input.options.search.maximumUcaBranchLength).map((branch) => ({ edge, distance, branch, guideScore }))
     );
+    return [...uniform, { edge, distance: screenDistance, branch: screenBranch, guideScore }];
   });
-  progress("hmm-search", 0, coarseTasks.length, "Evaluating the recombination HMM on guide-ranked edges");
+  progress("hmm-search", 0, coarseTasks.length, "Evaluating the full recombination HMM on screen-ranked branch points");
   for (let index = 0; index < coarseTasks.length; index += 1) {
     const task = coarseTasks[index];
     evaluate(task.edge, task.distance, task.branch, task.guideScore);
@@ -371,7 +404,7 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   const effectivePlacementCount = Math.exp(-weights.reduce((sum, weight) => weight > 0 ? sum + weight * Math.log(weight) : sum, 0));
   progress("finalize", 1, 1, "Preparing UCA sequence, placement tree, and provenance");
   return {
-    schema: 3,
+    schema: 4,
     method: "fixed-tree-empirical-bayes-phylo-uca",
     lineageLabel: input.lineageLabel,
     generatedAt: new Date().toISOString(),
