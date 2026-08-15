@@ -169,6 +169,52 @@ test("sparse Dirichlet updates resolve ambiguous rows using repertoire-wide supp
   assert.equal(result.matrixNonZeros, rows.reduce((sum, value) => sum + value.entries.length, 0));
 });
 
+test("fast hurdle active set retains supported alleles and gives leakage-only neighbours exact zero usage", () => {
+  const activeOptions = {
+    ...options,
+    model: "active-set" as const,
+    activeSetPriorActiveFraction: 0.2,
+    activeSetInclusionThreshold: 0.5,
+  };
+  const graph = buildReferenceAlleleGraph(fasta, "V", 2);
+  const source = [
+    ...Array.from({ length: 80 }, (_, ordinal) => row(ordinal, "IGHV1*01")),
+    ...Array.from({ length: 20 }, (_, index) => row(80 + index, "IGHV1*02")),
+  ];
+  const evidenceRows = source.map((value) => buildSparseEvidenceRow(value, graph, activeOptions)!).filter(Boolean);
+  const result = fitSparseAlleleModel(sparseEvidenceMatrix(evidenceRows), graph, activeOptions, source.length);
+  const model = result.models[0];
+  const first = model.alleles.find((allele) => allele.names.includes("IGHV1*01"))!;
+  const second = model.alleles.find((allele) => allele.names.includes("IGHV1*02"))!;
+  const leakageOnly = model.alleles.find((allele) => allele.names.includes("IGHV1*03"))!;
+  assert.equal(model.inferenceModel, "active-set");
+  assert.equal(first.active, true);
+  assert.equal(second.active, true);
+  assert.equal(leakageOnly.active, false);
+  assert.equal(leakageOnly.posteriorMean, 0);
+  assert.equal(model.activeAlleles, 2);
+  const firstNode = graph.callToNode.get("IGHV1*01")!;
+  const secondNode = graph.callToNode.get("IGHV1*02")!;
+  assert.ok(source.slice(0, 80).every((_, ordinal) => result.mapNode[ordinal] === firstNode));
+  assert.ok(source.slice(80).every((_, index) => result.mapNode[80 + index] === secondNode));
+  assert.ok(source.every((_, ordinal) => result.mapProbability[ordinal] > 0.5));
+});
+
+test("fast hurdle output uses the existing confidence and hard-count adjudication path", () => {
+  const activeOptions = { ...options, model: "active-set" as const, activeSetPriorActiveFraction: 0.1 };
+  const graph = buildReferenceAlleleGraph(fasta, "V", 2);
+  const source = [
+    ...Array.from({ length: 50 }, (_, ordinal) => row(ordinal, "IGHV1*01")),
+    ...Array.from({ length: 10 }, (_, index) => row(50 + index, "IGHV1*01,IGHV1*02")),
+  ];
+  const evidenceRows = source.map((value) => buildSparseEvidenceRow(value, graph, activeOptions)!).filter(Boolean);
+  const result = fitSparseAlleleModel(sparseEvidenceMatrix(evidenceRows), graph, activeOptions, source.length);
+  const projection = hardAssignmentShiftData(result, 0, "confidence", 0.8)!;
+  assert.equal(projection.totalAssignments, source.length);
+  assert.ok(projection.rows.every((datum) => Number.isFinite(datum.after)));
+  assert.equal(projection.rows.reduce((sum, datum) => sum + datum.after, 0), source.length);
+});
+
 test("Dirichlet pools are isolated by donor", () => {
   const graph = buildReferenceAlleleGraph(fasta, "V", 2);
   const source = [
@@ -262,6 +308,8 @@ test("posterior sidecar streams the complete sparse responsibility vector", asyn
   const candidate = headers.indexOf("candidate_call");
   assert.ok(headers.includes("reassignment_policy"));
   assert.ok(headers.includes("map_selected_by_policy"));
+  assert.ok(headers.includes("pool_active"));
+  assert.ok(headers.includes("pool_inclusion_probability"));
   const rows = lines.slice(1).map((line) => line.split("\t"));
   for (const id of ["r0", "r1"]) {
     const selected = rows.filter((values) => values[sequence] === id);
@@ -269,4 +317,32 @@ test("posterior sidecar streams the complete sparse responsibility vector", asyn
     assert.ok(Math.abs(total - 1) < 1e-6);
   }
   assert.ok(new Set(rows.filter((values) => values[sequence] === "r1").map((values) => values[candidate])).size >= 2);
+});
+
+test("active-set sidecar reconstructs zero responsibility for excluded sparse candidates", async () => {
+  const activeOptions = { ...options, model: "active-set" as const, activeSetPriorActiveFraction: 0.1 };
+  const graph = buildReferenceAlleleGraph(fasta, "V", 2);
+  const inputs = Array.from({ length: 30 }, (_, ordinal) => row(ordinal, "IGHV1*01"));
+  const evidenceRows = inputs.map((value) => buildSparseEvidenceRow(value, graph, activeOptions)!).filter(Boolean);
+  const segment = fitSparseAlleleModel(sparseEvidenceMatrix(evidenceRows), graph, activeOptions, inputs.length);
+  const result = { version: 1 as const, options: activeOptions, totalRecords: inputs.length, activeRecords: inputs.length, segments: { V: segment }, runAt: "2026-08-15T00:00:00.000Z", warnings: [] };
+  const store = {
+    scanAirrRows: async (_fields: readonly string[], onBatch: (rows: Array<{ ordinal: number; values: Record<string,string> }>) => void | Promise<void>) => onBatch(inputs.map((input) => ({
+      ordinal: input.ordinal,
+      values: {
+        sequence_id: input.sequenceId, swig_dataset_id: input.datasetId, sample_id: input.sampleId,
+        subject_id: input.subjectId, locus: input.locus, duplicate_count: "1", v_call: input.call,
+        v_score: String(input.score), v_identity: String(input.identity), v_alternatives: input.alternatives,
+      },
+    }))),
+  } as unknown as AirrResultStore;
+  let output = "";
+  await writeRefinementSidecar(store, result, "best", 0.8, "tsv", async (part) => { output += typeof part === "string" ? part : ""; });
+  const lines = output.trim().split("\n");
+  const headers = lines[0].split("\t");
+  const posterior = headers.indexOf("repertoire_posterior");
+  const active = headers.indexOf("pool_active");
+  const rows = lines.slice(1).map((line) => line.split("\t"));
+  assert.ok(rows.some((values) => values[active] === "0" && Number(values[posterior]) === 0));
+  assert.ok(rows.some((values) => values[active] === "1" && Number(values[posterior]) > 0));
 });

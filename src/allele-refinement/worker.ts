@@ -65,9 +65,10 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       if (!accumulator || !graph) throw new Error("No allele-evidence matrix is available for fitting.");
       const matrix = accumulator.finish();
       accumulator = null;
-      worker.postMessage({ id: request.id, progress: { processed: 0, total: Math.max(1, matrix.groupKeys.length), phase: `Fitting sparse ${graph.segment} Dirichlet models` } });
+      const modelLabel = options.model === "active-set" ? "hurdle active-set" : "Dirichlet";
+      worker.postMessage({ id: request.id, progress: { processed: 0, total: Math.max(1, matrix.groupKeys.length), phase: `Fitting sparse ${graph.segment} ${modelLabel} models` } });
       const result = fitSparseAlleleModel(matrix, graph, options, totalRecords, (processed, total) => {
-        worker.postMessage({ id: request.id, progress: { processed, total: Math.max(1, total), phase: `Fitting sparse ${graph!.segment} Dirichlet models` } });
+        worker.postMessage({ id: request.id, progress: { processed, total: Math.max(1, total), phase: `Fitting sparse ${graph!.segment} ${modelLabel} models` } });
       });
       graph = null;
       accumulator = null;

@@ -104,7 +104,7 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(post, /Resolve ambiguous germline calls by pooling repertoire evidence/);
   assert.match(post, /<AlleleRefinementPanel references=\{references\} options=/);
   assert.match(post, /\{sidebarTools\}/);
-  assert.match(fs.readFileSync(new URL("../src/allele-refinement/panel.tsx", import.meta.url), "utf8"), /Advanced evidence-kernel and variational settings/);
+  assert.match(fs.readFileSync(new URL("../src/allele-refinement/panel.tsx", import.meta.url), "utf8"), /Advanced evidence-kernel and model settings/);
   assert.match(css, /\.post-context-main > \.post-module\.is-collapsed \{ display: none !important; \}/);
   assert.match(css, /\.pipeline-stage-grid article:not\(\.enabled\) \.pipeline-fields/);
   assert.match(css, /\.post-module > label\.constant-collapse-policy/);
@@ -125,6 +125,9 @@ test("allele pooling exposes parameter-responsive reference and hard assignment 
   assert.match(panel, /AlleleAssignmentShiftChart results=\{segmentResults\}/);
   assert.match(panel, /Best posterior if confidence passes/);
   assert.match(panel, /Best posterior for every modeled record/);
+  assert.match(panel, /Fast hurdle active set/);
+  assert.match(panel, /Continuous Dirichlet mixture/);
+  assert.match(panel, /Inclusion posterior threshold/);
   assert.doesNotMatch(panel, /allele-model-table/);
   assert.doesNotMatch(panel, /model\.alleles\.slice\(0,8\)/);
   assert.match(views, /label="Reference allele"/);
@@ -173,9 +176,9 @@ test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligne
   assert.match(component, /letter height is marginal frequency and is not scaled by entropy/i);
   assert.match(panel, /UCA posterior frequency logo/);
   assert.match(panel, /Logo SVG ↓/);
-  assert.match(panel, /Full tracks SVG ↓/);
-  assert.match(panel, /Visible tracks SVG ↓/);
-  assert.match(panel, /serializePhyloUcaHmmAnnotationSvg/);
+  assert.match(panel, /Full tracks \+ logo SVG ↓/);
+  assert.match(panel, /Visible tracks \+ logo SVG ↓/);
+  assert.match(panel, /serializePhyloUcaTrackLogoSvg/);
   assert.match(panel, /bottomAnnotations=\{logoBottomAnnotations\}/);
   assert.match(panel, /PhyloUcaPlacementMap/);
   assert.match(panel, /V\/J nucleotide mixture · default/);
@@ -188,6 +191,9 @@ test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligne
   assert.match(panel, /Reset all UCA settings to defaults/);
   assert.match(panel, /Additional-D probability[\s\S]{0,500}?max="1"/);
   assert.doesNotMatch(panel, /Additional-D probability[\s\S]{0,500}?max="0\.5"/);
+  assert.match(panel, /adoptedResultSnapshotRef\.current === incomingGeneratedAt/);
+  assert.match(panel, /adoptedResultSnapshotRef\.current = inference\.generatedAt/);
+  assert.doesNotMatch(panel, /\[matchingInitial, result\?\.generatedAt\]/);
   assert.match(panel, /position \* logoColumnWidth \/ 3/);
   assert.match(panel, />Codon</);
   assert.match(panel, /Amino acid/);
@@ -198,6 +204,8 @@ test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligne
   assert.match(annotation, /phylo-uca-track-label-panel/);
   assert.match(annotation, /exact scrolled crop/i);
   assert.match(annotation, /viewBox.*\$\{x\}.*\$\{y\}.*\$\{width\}.*\$\{height\}/);
+  assert.match(annotation, /root\.append\(logo\)/);
+  assert.match(annotation, /trackHeight \+ logoSize\.height/);
   assert.match(annotationModel, /combinedTrack\(`display\|\$\{key\}`/);
   assert.match(annotationModel, /weightedCenter/);
   assert.match(annotationModel, /mode === "marginalized"/);

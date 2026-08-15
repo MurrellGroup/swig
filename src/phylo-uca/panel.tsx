@@ -12,7 +12,7 @@ import { alignmentRegionMap, type AlignmentFrameOffset, type VariableRegion } fr
 import { parseFasta } from "../post-analysis-core.ts";
 import type { SampleColorMap } from "../sample-colors.ts";
 import { defaultPhyloUcaOptions } from "./defaults.ts";
-import { PhyloUcaHmmAnnotationTracks, serializePhyloUcaHmmAnnotationSvg, type PhyloUcaAnnotationColumnLayout } from "./hmm-annotation.tsx";
+import { PhyloUcaHmmAnnotationTracks, serializePhyloUcaTrackLogoSvg, type PhyloUcaAnnotationColumnLayout } from "./hmm-annotation.tsx";
 import { collapseAndOrderHmmAnnotationTracks } from "./hmm-annotation-model.ts";
 import { aminoAcidUcaLogoColumns, codonUcaLogoColumns, nucleotideUcaLogoColumns } from "./logo.ts";
 import { PHYLO_UCA_CODON_SYMBOLS, translatePhyloUcaCodonState } from "./codons.ts";
@@ -105,6 +105,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
   const annotationSvgRef = useRef<SVGSVGElement>(null);
   const annotationViewportRef = useRef<HTMLDivElement>(null);
   const annotationScrollRef = useRef<HTMLDivElement>(null);
+  const adoptedResultSnapshotRef = useRef(matchingInitial?.result?.generatedAt ?? null);
   const identityKey = `${lineageIds.join(",")}|${fingerprint}|${frameOffset}`;
   const identityKeyRef = useRef(identityKey);
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -114,16 +115,21 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
     abortRef.current?.abort();
     const restoredFrame = initialState?.frameOffset ?? initialState?.result?.frameOffset ?? 0;
     const restored = initialState?.alignmentFingerprint === fingerprint && initialState.lineageIds.join(",") === lineageIds.join(",") && restoredFrame === frameOffset ? initialState : null;
+    adoptedResultSnapshotRef.current = restored?.result?.generatedAt ?? null;
     setOptions(restored?.options ?? defaultPhyloUcaOptions());
     setResult(restored?.result ?? null);
     setProgress(null);
     setError("");
   }, [fingerprint, identityKey, initialState, lineageIds]);
   useEffect(() => {
-    if (!matchingInitial?.result || matchingInitial.result.generatedAt === result?.generatedAt) return;
-    setOptions(matchingInitial.options);
-    setResult(matchingInitial.result);
-  }, [matchingInitial, result?.generatedAt]);
+    const incoming = matchingInitial;
+    if (!incoming?.result) return;
+    const incomingGeneratedAt = incoming.result.generatedAt;
+    if (adoptedResultSnapshotRef.current === incomingGeneratedAt) return;
+    adoptedResultSnapshotRef.current = incomingGeneratedAt;
+    setOptions(incoming.options);
+    setResult(incoming.result);
+  }, [matchingInitial]);
   useEffect(() => {
     const currentResult = result && result.alignmentFingerprint === fingerprint && (result.frameOffset ?? 0) === frameOffset ? result : undefined;
     onStateChange?.({ lineageIds: [...lineageIds], alignmentFingerprint: fingerprint, frameOffset, options, result: currentResult });
@@ -177,6 +183,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
         frameOffset,
         options,
       }, setProgress, controller.signal);
+      adoptedResultSnapshotRef.current = inference.generatedAt;
       setResult(inference);
       window.requestAnimationFrame(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     } catch (runError) {
@@ -190,22 +197,23 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
 
   function downloadAnnotationSvg(visibleOnly: boolean) {
     const svg = annotationSvgRef.current;
-    if (!svg) return;
+    const logo = logoRef.current;
+    if (!svg || !logo) return;
     let serialized: string;
     if (visibleOnly) {
       const viewport = annotationViewportRef.current;
       const trackScroll = annotationScrollRef.current;
       if (!viewport || !trackScroll) return;
-      serialized = serializePhyloUcaHmmAnnotationSvg(svg, {
+      serialized = serializePhyloUcaTrackLogoSvg(svg, logo, {
         x: viewport.scrollLeft,
         y: trackScroll.scrollTop,
         width: viewport.clientWidth,
         height: trackScroll.clientHeight,
       });
     } else {
-      serialized = serializePhyloUcaHmmAnnotationSvg(svg);
+      serialized = serializePhyloUcaTrackLogoSvg(svg, logo);
     }
-    download(serialized, `${base}.${annotationMode}.${visibleOnly ? "visible" : "full"}-hmm-tracks.svg`, "image/svg+xml;charset=utf-8");
+    download(serialized, `${base}.${annotationMode}.${visibleOnly ? "visible" : "full"}-hmm-tracks-and-logo.svg`, "image/svg+xml;charset=utf-8");
   }
 
   const progressFraction = treeStage ? 0.03 : progress?.total ? Math.max(0.04, Math.min(1, progress.processed / progress.total)) : 0;
@@ -295,7 +303,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
         <header><div><span className="section-kicker">Marginal character probabilities</span><h5>UCA posterior frequency logo</h5><p>Every stack has height 1. Letter height is posterior frequency; entropy does not rescale the column.</p></div><div><div className="mode-toggle"><button className={logoMode === "nt" ? "active" : ""} type="button" onClick={() => setLogoMode("nt")}>Nucleotide</button><button className={logoMode === "codon" ? "active" : ""} type="button" disabled={!result.codonPosterior?.length} onClick={() => setLogoMode("codon")}>Codon</button><button className={logoMode === "aa" ? "active" : ""} type="button" disabled={!result.codonPosterior?.length} onClick={() => setLogoMode("aa")}>Amino acid</button></div><button type="button" onClick={() => logoRef.current && download(serializeProbabilityLogoSvg(logoRef.current), `${base}.${logoMode}-posterior-logo.svg`, "image/svg+xml;charset=utf-8")}>Logo SVG ↓</button></div></header>
         {result.hmmAnnotations && <div className="phylo-uca-annotation-toolbar"><div className="mode-toggle"><button className={annotationMode === "viterbi" ? "active" : ""} type="button" onClick={() => setAnnotationMode("viterbi")}>Best path</button><button className={annotationMode === "marginalized" ? "active" : ""} type="button" onClick={() => setAnnotationMode("marginalized")}>Marginalized</button></div><div className="phylo-uca-track-legend" aria-label="Track background colors"><span className="v">V</span><span className="n">NT</span><span className="d">D</span><span className="j">J</span></div><p>{annotationMode === "viterbi"
           ? `One Viterbi recombination path at the single highest-scoring tree placement. Identical D alleles are combined across alignment registers and D-use ordinals; disagreements become nucleotide mixtures. Rows follow weighted left-to-right source position. ${annotationTracks.length} display tracks.`
-          : `Forward–backward source occupancy summed over HMM paths and retained tree placements. Every non-template and unresolved-boundary route is summed into the single NT mixture at the top. V, D, and J allele rows then follow in segment order and are sorted by their posterior-mass center from left to right. ${annotationTracks.length} display tracks; allele groups appear at ≥ ${(result.hmmAnnotations.minimumDisplayedWeight * 100).toFixed(1)}%.${result.hmmAnnotations.omittedMarginalTrackCount ? ` ${result.hmmAnnotations.omittedMarginalTrackCount} subthreshold source track${result.hmmAnnotations.omittedMarginalTrackCount === 1 ? " is" : "s are"} hidden before display aggregation.` : ""}`}</p><div className="phylo-uca-track-downloads"><button type="button" onClick={() => downloadAnnotationSvg(false)}>Full tracks SVG ↓</button><button type="button" onClick={() => downloadAnnotationSvg(true)}>Visible tracks SVG ↓</button></div></div>}
+          : `Forward–backward source occupancy summed over HMM paths and retained tree placements. Every non-template and unresolved-boundary route is summed into the single NT mixture at the top. V, D, and J allele rows then follow in segment order and are sorted by their posterior-mass center from left to right. ${annotationTracks.length} display tracks; allele groups appear at ≥ ${(result.hmmAnnotations.minimumDisplayedWeight * 100).toFixed(1)}%.${result.hmmAnnotations.omittedMarginalTrackCount ? ` ${result.hmmAnnotations.omittedMarginalTrackCount} subthreshold source track${result.hmmAnnotations.omittedMarginalTrackCount === 1 ? " is" : "s are"} hidden before display aggregation.` : ""}`}</p><div className="phylo-uca-track-downloads"><button type="button" onClick={() => downloadAnnotationSvg(false)}>Full tracks + logo SVG ↓</button><button type="button" onClick={() => downloadAnnotationSvg(true)}>Visible tracks + logo SVG ↓</button></div></div>}
         <div ref={annotationViewportRef} className="phylo-uca-posterior-viewport" onScroll={(event) => setAnnotationScrollLeft(event.currentTarget.scrollLeft)}>
           {result.hmmAnnotations && <div ref={annotationScrollRef} className="phylo-uca-annotation-scroll" style={{ width: logoLeftInset + logoContentWidth }}><PhyloUcaHmmAnnotationTracks ref={annotationSvgRef} tracks={annotationTracks} columns={annotationColumns} leftInset={logoLeftInset} contentWidth={logoContentWidth} labelOffset={annotationScrollLeft} title={`${lineageLabel} ${annotationMode === "viterbi" ? "best-path" : "marginalized"} phylo-HMM source annotation`} /></div>}
           <ProbabilityLogo ref={logoRef} embedded leftInset={logoLeftInset} columns={logoColumns} alphabet={logoMode === "nt" ? "nucleotide" : logoMode === "aa" ? "amino-acid" : "custom"} title={`${lineageLabel} phylogenetic UCA ${logoMode === "nt" ? "nucleotide" : logoMode === "codon" ? "codon" : "amino-acid"} posterior`} labelEvery={logoMode === "nt" ? 5 : 2} columnWidth={logoColumnWidth} bottomAnnotations={logoBottomAnnotations} />

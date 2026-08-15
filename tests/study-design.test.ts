@@ -98,5 +98,6 @@ test("longitudinal/compartmental defaults keep collapse within sample and lineag
   assert.equal(DEFAULT_PIPELINE_PLAN.lineage.scope,"subject");
   assert.equal(DEFAULT_PIPELINE_PLAN.alleleRefinement.reassignmentPolicy,"confidence");
   assert.equal(DEFAULT_PIPELINE_PLAN.alleleRefinement.applyMinimumPosterior,0.8);
+  assert.equal(DEFAULT_PIPELINE_PLAN.alleleRefinement.model,"dirichlet");
   assert.equal("excludedAlleles" in DEFAULT_PIPELINE_PLAN.chimera,false);
 });

@@ -87,6 +87,7 @@ export class AlleleRefinementRuntime {
       for (const value of includeMask) activeRecords += value ? 1 : 0;
     }
     const warnings: string[] = [];
+    if (options.model === "active-set") warnings.push("The fast hurdle model estimates repertoire-active usage, not literal genomic presence; a genomically present but silent allele is not identifiable from expressed reads alone.");
     if (options.weighting === "abundance") warnings.push("Read-abundance weighting lets clonal expansion influence the inferred mixture. Unique active records are the conservative default.");
     if (segments.D) warnings.push("D refinement is exploratory: short templated spans, exonuclease trimming, and N addition make D emissions less identifiable than V or J.");
     const truncated = Object.values(segments).reduce((sum, segment) => sum + (segment?.truncatedRows ?? 0), 0);

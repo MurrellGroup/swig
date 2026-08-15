@@ -60,6 +60,7 @@ export interface PipelinePlan {
   };
   alleleRefinement: {
     enabled: boolean;
+    model: "dirichlet" | "active-set";
     scope: DatasetScope;
     segments: Array<"V" | "D" | "J">;
     weighting: "unique" | "abundance";
@@ -127,6 +128,7 @@ export const DEFAULT_PIPELINE_PLAN: PipelinePlan = {
   },
   alleleRefinement: {
     enabled: false,
+    model: "dirichlet",
     scope: "subject",
     segments: ["V", "J"],
     weighting: "unique",

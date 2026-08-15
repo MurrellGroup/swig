@@ -66,7 +66,7 @@ export function refineDetailRows(
 export const REFINEMENT_SIDECAR_FIELDS = [
   "sequence_id", "swig_dataset_id", "sample_id", "subject_id", "locus", "segment",
   "original_call", "candidate_call", "candidate_source", "local_evidence",
-  "repertoire_posterior", "pool_posterior_mean", "is_map", "map_probability",
+  "repertoire_posterior", "pool_posterior_mean", "pool_active", "pool_inclusion_probability", "is_map", "map_probability",
   "posterior_entropy", "reassignment_policy", "minimum_posterior", "map_selected_by_policy",
 ];
 
@@ -81,11 +81,21 @@ function resultGraph(result: SegmentRefinementResult, radius: number) {
 
 function expectedLogByModel(result: SegmentRefinementResult, alpha: number) {
   return new Map(result.models.map((model) => {
+    if ((model.inferenceModel ?? "dirichlet") === "active-set") {
+      return [model.key, {
+        expectedLog: new Map(model.alleles.map((allele) => [allele.nodeIndex, allele.active && allele.posteriorMean > 0 ? Math.log(allele.posteriorMean) : Number.NEGATIVE_INFINITY] as const)),
+        posteriorMean: new Map(model.alleles.map((allele) => [allele.nodeIndex, allele.posteriorMean] as const)),
+        active: new Map(model.alleles.map((allele) => [allele.nodeIndex, Boolean(allele.active)] as const)),
+        inclusionProbability: new Map(model.alleles.map((allele) => [allele.nodeIndex, allele.inclusionProbability ?? 0] as const)),
+      }] as const;
+    }
     const gamma = model.alleles.map((allele) => Math.max(1e-12, alpha + allele.expectedAssignments));
     const total = (model.inactivePriorNodes ?? 0) * alpha + gamma.reduce((sum, value) => sum + value, 0);
     return [model.key, {
       expectedLog: new Map(model.alleles.map((allele, index) => [allele.nodeIndex, digamma(gamma[index]) - digamma(total)] as const)),
       posteriorMean: new Map(model.alleles.map((allele) => [allele.nodeIndex, allele.posteriorMean] as const)),
+      active: new Map(model.alleles.map((allele) => [allele.nodeIndex, true] as const)),
+      inclusionProbability: new Map<number, number>(),
     }] as const;
   }));
 }
@@ -116,6 +126,7 @@ export async function writeRefinementSidecar(
         if (!model) continue;
         let maximum = Number.NEGATIVE_INFINITY;
         for (const entry of sparse.entries) maximum = Math.max(maximum, Math.log(entry.weight) + (model.expectedLog.get(entry.node) ?? Number.NEGATIVE_INFINITY));
+        if (!Number.isFinite(maximum)) continue;
         let normalizer = 0;
         for (const entry of sparse.entries) normalizer += Math.exp(Math.log(entry.weight) + (model.expectedLog.get(entry.node) ?? Number.NEGATIVE_INFINITY) - maximum);
         const reported = new Set(input.call.split(",").map((value) => value.trim()).filter(Boolean).map((call) => graph.callToNode.get(call)).filter((value): value is number => value !== undefined));
@@ -129,6 +140,8 @@ export async function writeRefinementSidecar(
             candidate_source: reported.has(entry.node) ? "reported" : alternatives.has(entry.node) ? "retained_alternative" : "reference_neighbour",
             local_evidence: entry.weight, repertoire_posterior: posterior,
             pool_posterior_mean: model.posteriorMean.get(entry.node) ?? 0,
+            pool_active: model.active.get(entry.node) ? 1 : 0,
+            pool_inclusion_probability: model.inclusionProbability.get(entry.node) ?? "",
             is_map: segmentResult.mapNode[row.ordinal] === entry.node,
             map_probability: segmentResult.mapProbability[row.ordinal] ?? 0,
             posterior_entropy: segmentResult.posteriorEntropy[row.ordinal] ?? 0,
@@ -183,16 +196,19 @@ export async function writeRefinedAirr(
 }
 
 export function modelSummaryTable(result: AlleleRefinementResult, format: TableExportFormat): string {
-  const fields = ["pool", "locus", "segment", "reference_labels", "posterior_mean", "posterior_sd", "expected_assignments", "local_evidence_assignments", "rows", "effective_rows", "database_nodes", "inactive_prior_nodes", "iterations", "converged"];
+  const fields = ["pool", "locus", "segment", "inference_model", "reference_labels", "active", "inclusion_probability", "posterior_mean", "posterior_sd", "expected_assignments", "local_evidence_assignments", "rows", "effective_rows", "database_nodes", "inactive_prior_nodes", "active_alleles", "iterations", "converged"];
   let output = tableHeader(fields, format);
   for (const segment of SEGMENTS) for (const model of result.segments[segment]?.models ?? []) for (const allele of model.alleles) {
     output += tableRow(fields, {
       pool: model.scopeValue, locus: model.locus, segment: model.segment,
-      reference_labels: allele.names.join(","), posterior_mean: allele.posteriorMean,
+      inference_model: model.inferenceModel ?? "dirichlet", reference_labels: allele.names.join(","),
+      active: allele.active === undefined ? "" : Number(allele.active),
+      inclusion_probability: allele.inclusionProbability ?? "", posterior_mean: allele.posteriorMean,
       posterior_sd: allele.posteriorSd, expected_assignments: allele.expectedAssignments,
       local_evidence_assignments: allele.localEvidenceAssignments, rows: model.rows,
       effective_rows: model.effectiveRows, database_nodes: model.databaseNodes ?? model.alleles.length,
       inactive_prior_nodes: model.inactivePriorNodes ?? 0,
+      active_alleles: model.activeAlleles ?? "",
       iterations: model.iterations, converged: model.converged,
     }, format);
   }

@@ -62,7 +62,11 @@ The advanced settings include a reference-sequence inspector so parameter change
 - Nucleotide coloring shows ordinary bases. Difference-highlighter coloring makes matches neutral, substitutions red, and insertion/deletion columns amber.
 - Sequence-identical database labels remain one unresolved reference node and are displayed together.
 
-The diagnostic responds to the zero-SHM floor, SHM sensitivity and cap, assumed SHM, edit radius, maximum neighbour odds, and candidate cap. Dirichlet alpha and variational stopping controls do not alter this local pre-repertoire kernel. Numeric settings commit on Enter or when focus leaves the field, matching the rest of Swig's large-data controls; the inexpensive diagnostic then updates immediately.
+The diagnostic responds to the zero-SHM floor, SHM sensitivity and cap, assumed SHM, edit radius, maximum neighbour odds, and candidate cap. Dirichlet alpha, hurdle-model presence/tail controls, and fitting stopping controls do not alter this local pre-repertoire kernel. Numeric settings commit on Enter or when focus leaves the field, matching the rest of Swig's large-data controls; the inexpensive diagnostic then updates immediately.
+
+## Selectable repertoire models
+
+The model selector leaves the original continuous Dirichlet implementation intact and adds a fast hurdle active-set alternative. Both models consume exactly the same sparse local-evidence matrix, pool at the same donor/study boundary, and produce the same per-record MAP probability interface. Reassignment policies and every hard-count/export diagnostic therefore work identically after either fit.
 
 ## Dirichlet mixture
 
@@ -92,6 +96,25 @@ The symmetric prior covers every locus-matched reference node in the selected se
 
 This resembles sparse variational machinery used for LDA, but the biological model is a finite mixture with one latent germline node per read, not a document containing multiple topics.
 
+## Fast hurdle active set
+
+The alternative model separates repertoire activity from positive usage. An excluded allele has exactly zero mixture weight; a retained allele has positive frequency under a long-tailed slab. For candidate active set (A),
+
+\[
+p(r\mid A,\boldsymbol\theta)=\sum_{a\in A}\theta_aE_{ra}.
+\]
+
+The configurable active prior is the per-database-allele probability of contributing measurable rearrangements in this donor/locus/segment pool. It is not a claim of genomic presence. Conditional positive frequency uses a discretized gamma slab whose default shape is below one, preserving substantial density in the low-frequency tail. The quadrature floor is numerical integration support, not a biological minimum frequency or read-count threshold.
+
+Inference avoids subset enumeration:
+
+1. sparse EM fits frequencies over the current active set;
+2. each allele receives a one-dimensional conditional inclusion test obtained by removing its current weight and integrating a possible positive frequency over a small log-spaced quadrature;
+3. alleles below the configurable inclusion-posterior threshold are pruned in parallel, except when removal would leave any observed sparse evidence pattern with no active explanation; and
+4. frequencies are refitted over the smaller exact non-zero set.
+
+For a candidate frequency (f), records outside that allele's sparse neighbourhood contribute one aggregated \(\log(1-f)\) term. Only evidence patterns containing the candidate are visited explicitly. Consequently a complete inclusion sweep remains proportional to the sparse matrix size rather than the number of reads times the complete database. The saved model and sidecar report the approximate inclusion probability and exact active/inactive state separately from the per-record MAP probability used by reassignment.
+
 ### Before/after hard-assignment figure
 
 After fitting, Swig displays paired horizontal count bars for every allele receiving at least one hard assignment in a selected donor/study-boundary, locus, and segment pool. Each modeled record contributes its complete configured weight to exactly one reference node in each series:
@@ -99,7 +122,7 @@ After fitting, Swig displays paired horizontal count bars for every allele recei
 - **Local best** is the argmax of that record's normalized sparse local-evidence row before repertoire pooling.
 - **After policy** is the fitted posterior MAP node. Under the confidence-gated policy, a MAP node below the selected confidence threshold is held at the local-best node in this hard-count projection.
 
-With unique-record weighting, a bar value is a record count. With abundance weighting, it is a `duplicate_count`-weighted assignment count. The bars are therefore neither Dirichlet posterior means nor sums of variational responsibilities. Sequence-identical reference labels remain one unresolved node and are displayed together.
+With unique-record weighting, a bar value is a record count. With abundance weighting, it is a `duplicate_count`-weighted assignment count. The bars are therefore neither mixture-frequency posterior means nor sums of soft responsibilities. Sequence-identical reference labels remain one unresolved node and are displayed together.
 
 The figure can show all hard-assigned alleles, only alleles whose counts change, or only alleles whose local-best count falls to zero after the selected policy. The latter is the exact “vanishes” set for the hard projection. CSV export includes every row and explicit `vanishes`/`appears` flags even when the on-screen row limit is smaller; the visible figure exports as SVG. The compact fitted-model summary remains available as a download rather than a truncated table in the page. No short, thresholded allele table is shown below the chart.
 
@@ -110,7 +133,7 @@ For confidence-gated application, the actual AIRR overlay retains the immutable 
 - Candidate evidence uses compressed sparse row storage.
 - Repeated sparse evidence patterns are collapsed during coordinate updates and multiplied by their accumulated weight.
 - Donor/locus/segment pools are fitted separately.
-- Expected-log weights use a stable digamma approximation and responsibilities are normalized in log space.
+- Dirichlet expected-log weights use a stable digamma approximation; hurdle frequencies use sparse EM and small one-dimensional inclusion quadratures. Responsibilities are normalized in log space in both models.
 - The model runs in a dedicated worker. V, D, and J matrices are built and released sequentially to bound peak memory.
 
 For \(N\) modeled records and average sparse width \(K\), iterative work is proportional to \(NK\), rather than \(N\) times the complete reference count.
@@ -127,7 +150,7 @@ Fitting never changes downstream calls. The user explicitly chooses a reassignme
 
 Exports include a complete model summary, a long-form sparse per-record posterior sidecar, a refined AIRR table, paired hard-count chart data as CSV, the paired hard-count figure as SVG, and a surviving-allele FASTA for the selected fitted pool. The FASTA uses the current reassignment policy and confidence threshold. Its minimum post-reassignment count defaults to zero and excludes nodes whose hard after-policy count is below the chosen value; sequence-identical labels are emitted as separate FASTA names over their shared reference sequence.
 
-The sidecar reconstructs every nonzero candidate responsibility from the saved mixture parameters while streaming the AIRR input, so the complete reads-by-candidate posterior is available without retaining a second large matrix in interactive memory. It records the selected reassignment policy, confidence threshold when applicable, and whether each MAP row is selected by that policy. The refined table places policy-selected calls in the ordinary call columns while `swig_original_*` and `swig_repertoire_*` columns retain provenance. Options, compact MAP/entropy and hard-projection vectors, mixture summaries, policy, threshold, and apply/reset state are included in Swig sessions.
+The sidecar reconstructs every sparse candidate responsibility from the saved mixture parameters while streaming the AIRR input, so the complete reads-by-candidate posterior—including zero responsibility for hurdle-excluded candidates—is available without retaining a second large matrix in interactive memory. It records model activity/inclusion probability, the selected reassignment policy, confidence threshold when applicable, and whether each MAP row is selected by that policy. The refined table places policy-selected calls in the ordinary call columns while `swig_original_*` and `swig_repertoire_*` columns retain provenance. Options, compact MAP/entropy and hard-projection vectors, mixture summaries, policy, threshold, and apply/reset state are included in Swig sessions.
 
 ## Pipeline position
 
@@ -145,6 +168,8 @@ Later filters do not clear the fitted allele model or revert its calls. Converse
 - D pooling is experimental.
 - The SHM term is a context-averaged approximation. Its sensitivity control exists for explicit sensitivity analysis, not to imply universal calibration.
 - A symmetric Dirichlet prior does not force exact zero usage: every known-locus database node retains its prior mass. Local assignment probability is nevertheless exactly zero outside the configured sparse evidence neighbourhood; broadening that neighbourhood is an evidence-model decision, not something the repertoire prior should silently do.
+- The hurdle model's “active” state means detectably used in the expressed repertoire. Expressed-read evidence alone cannot distinguish genomic absence from a genomically present but silent allele.
+- Hurdle inclusion probabilities use conditional active-set empirical-Bayes quadrature rather than an exhaustive posterior over all allele subsets. Correlated near-identical alleles should be checked for threshold sensitivity.
 
 ## Related methods
 

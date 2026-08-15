@@ -723,6 +723,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           if (autoPipeline.alleleRefinement.enabled) {
             const options: AlleleRefinementOptions = {
               ...DEFAULT_ALLELE_REFINEMENT_OPTIONS,
+              model: autoPipeline.alleleRefinement.model ?? "dirichlet",
               scope: autoPipeline.alleleRefinement.scope,
               segments: [...autoPipeline.alleleRefinement.segments],
               weighting: autoPipeline.alleleRefinement.weighting,
@@ -742,7 +743,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             setAlleleRefinement(pipelineAlleleResult);
             setAlleleApplied(true);
             await runtime.setRepertoireCallOverrides(pipelineAlleleResult, pipelineAllelePolicy, pipelineAlleleThreshold);
-            report.push(`Allele pooling first fitted ${Object.values(pipelineAlleleResult.segments).reduce((sum, segment) => sum + (segment?.models.length ?? 0), 0).toLocaleString()} independent ${options.scope === "subject" ? "donor" : options.scope} / locus / segment models and applied ${pipelineAllelePolicy === "best" ? "the posterior MAP call to every modeled record" : `posterior MAP calls at confidence ≥ ${pipelineAlleleThreshold}`}.`);
+            report.push(`Allele pooling first fitted ${Object.values(pipelineAlleleResult.segments).reduce((sum, segment) => sum + (segment?.models.length ?? 0), 0).toLocaleString()} independent ${options.scope === "subject" ? "donor" : options.scope} / locus / segment ${options.model === "active-set" ? "hurdle active-set" : "Dirichlet"} models and applied ${pipelineAllelePolicy === "best" ? "the posterior MAP call to every modeled record" : `posterior MAP calls at confidence ≥ ${pipelineAlleleThreshold}`}.`);
             if (!autoPipeline.lineage.enabled) openModule("alleles");
           }
 
@@ -2283,7 +2284,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("alleles","post-module allele-refinement-module")}>
-      <header><div className="module-number amber">01</div><div><span className="section-kicker">Optional first-stage repertoire assignment model</span><h3>Resolve ambiguous germline calls by pooling repertoire evidence</h3><p>Fit sparse Dirichlet mixtures before collapse or filtering so policy-selected V/D/J calls define every downstream partition. The default is one independent fit per donor, combining that donor's samples without crossing participant IDs.</p></div><a href="REPERTOIRE_ALLELE_REFINEMENT.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("alleles")} onClick={()=>toggleModule("alleles")}>{openModules.has("alleles")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number amber">01</div><div><span className="section-kicker">Optional first-stage repertoire assignment model</span><h3>Resolve ambiguous germline calls by pooling repertoire evidence</h3><p>Choose the continuous Dirichlet mixture or the fast exact-zero hurdle model before collapse or filtering, so policy-selected V/D/J calls define every downstream partition. The default is one independent fit per donor, combining that donor's samples without crossing participant IDs.</p></div><a href="REPERTOIRE_ALLELE_REFINEMENT.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("alleles")} onClick={()=>toggleModule("alleles")}>{openModules.has("alleles")?"Collapse ↑":"Expand ↓"}</button></header>
       <AlleleRefinementPanel references={references} options={alleleOptions} onOptionsChange={(next)=>{setAlleleOptions(next);setAlleleRefinement(null);discardAppliedAllelePolicy();}} result={alleleRefinement} applied={alleleApplied} reassignmentPolicy={alleleReassignmentPolicy} onReassignmentPolicyChange={(policy)=>{setAlleleReassignmentPolicy(policy);discardAppliedAllelePolicy();}} applyMinimumPosterior={alleleApplyMinimumPosterior} onApplyMinimumPosteriorChange={(value)=>{setAlleleApplyMinimumPosterior(Math.max(0,Math.min(1,value)));discardAppliedAllelePolicy();}} busy={Boolean(busy)} progress={alleleProgress} onRun={()=>void runAlleleRefinement()} onApply={()=>void applyAlleleRefinement()} onReset={()=>void resetAlleleRefinement()} onDownloadModel={downloadAlleleModel} onDownloadSidecar={()=>void downloadAlleleSidecar()} onDownloadAirr={()=>void downloadRefinedAirr()} />
     </section>
 

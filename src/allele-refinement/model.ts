@@ -6,6 +6,7 @@ import type {
   SegmentRefinementResult,
   SparseEvidenceMatrix,
 } from "./types.ts";
+import { fitSparseActiveSetAlleleModel } from "./active-set-model.ts";
 
 /** Accurate enough for variational mixture updates over positive Dirichlet parameters. */
 export function digamma(value: number): number {
@@ -155,6 +156,7 @@ function fitGroup(
       nonZeros,
       databaseNodes,
       inactivePriorNodes,
+      inferenceModel: "dirichlet",
       alleles,
       iterations,
       converged,
@@ -170,6 +172,9 @@ export function fitSparseAlleleModel(
   totalRecords: number,
   onProgress?: (completedGroups: number, totalGroups: number) => void,
 ): SegmentRefinementResult {
+  if (options.model === "active-set") {
+    return fitSparseActiveSetAlleleModel(matrix, graph, options, totalRecords, onProgress);
+  }
   const mapNode = new Int32Array(totalRecords);
   const localTopNode = new Int32Array(totalRecords);
   mapNode.fill(-1);

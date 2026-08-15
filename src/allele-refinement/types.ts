@@ -3,13 +3,28 @@ import type { DatasetScope } from "../study-design.ts";
 export type RefinementSegment = "V" | "D" | "J";
 export type AlleleReassignmentPolicy = "best" | "confidence";
 export type RefinementWeighting = "unique" | "abundance";
+export type AlleleRefinementModel = "dirichlet" | "active-set";
 
 export interface AlleleRefinementOptions {
+  /** Repertoire-level usage model. The legacy Dirichlet path remains available unchanged. */
+  model: AlleleRefinementModel;
   /** Genotype/usage pools never cross this study boundary. Subject is the scientific default. */
   scope: DatasetScope;
   segments: RefinementSegment[];
   /** Symmetric Dirichlet pseudo-count assigned to every modelled reference element. */
   alphaPerAllele: number;
+  /** Prior probability that a database allele is active in a fitted repertoire pool. */
+  activeSetPriorActiveFraction: number;
+  /** Posterior inclusion probability required to retain an active-set allele. */
+  activeSetInclusionThreshold: number;
+  /** Gamma-shape parameter for positive usage; values below one retain a long low-frequency tail. */
+  activeSetTailShape: number;
+  /** Numerical integration floor for positive allele frequency, not a hard count cutoff. */
+  activeSetFrequencyFloor: number;
+  /** Log-spaced quadrature points used for each one-dimensional inclusion test. */
+  activeSetQuadraturePoints: number;
+  /** Maximum backward active-set pruning sweeps per independent repertoire pool. */
+  activeSetMaxSweeps: number;
   /** Irreducible per-SNP neighbour evidence odds at zero estimated SHM. */
   baselineNeighbourOdds: number;
   /** Multiplier on the mechanistic mu/[3(1-mu)] SHM contribution. */
@@ -33,9 +48,16 @@ export interface AlleleRefinementOptions {
 }
 
 export const DEFAULT_ALLELE_REFINEMENT_OPTIONS: AlleleRefinementOptions = {
+  model: "dirichlet",
   scope: "subject",
   segments: ["V", "J"],
   alphaPerAllele: 0.1,
+  activeSetPriorActiveFraction: 0.15,
+  activeSetInclusionThreshold: 0.5,
+  activeSetTailShape: 0.35,
+  activeSetFrequencyFloor: 1e-6,
+  activeSetQuadraturePoints: 12,
+  activeSetMaxSweeps: 8,
   baselineNeighbourOdds: 0.01,
   shmLeakageSensitivity: 1,
   maximumNeighbourOdds: 0.25,
@@ -115,6 +137,10 @@ export interface AllelePosteriorSummary {
   expectedAssignments: number;
   localEvidenceAssignments: number;
   posteriorSd: number;
+  /** Active-set inclusion probability. Undefined for the Dirichlet model. */
+  inclusionProbability?: number;
+  /** Exact active-set state. Dirichlet components are all continuous and leave this undefined. */
+  active?: boolean;
 }
 
 export interface RefinementModelSummary {
@@ -125,10 +151,14 @@ export interface RefinementModelSummary {
   rows: number;
   effectiveRows: number;
   nonZeros: number;
-  /** Complete known-locus reference-node count under the Dirichlet prior. */
+  /** Complete known-locus reference-node count considered by the selected repertoire prior. */
   databaseNodes: number;
   /** Prior-only nodes absent from every sparse candidate row in this pool. */
   inactivePriorNodes: number;
+  /** Saved explicitly for new fits; absent means a legacy Dirichlet result. */
+  inferenceModel?: AlleleRefinementModel;
+  /** Number of exact non-zero usage components in an active-set fit. */
+  activeAlleles?: number;
   alleles: AllelePosteriorSummary[];
   iterations: number;
   converged: boolean;

@@ -198,6 +198,7 @@ export function AlleleAssignmentShiftChart({
   const exportStem = safeName(`${model?.scopeValue ?? "pool"}-${model?.locus ?? "locus"}-${model?.segment ?? "segment"}-hard-assignment-shift`);
 
   if (!model) return null;
+  const modelAlleleByNode = new Map(model.alleles.map((allele) => [allele.nodeIndex, allele] as const));
   const saveSvg = () => {
     if (!svgRef.current) return;
     const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
@@ -207,8 +208,12 @@ export function AlleleAssignmentShiftChart({
     download(`<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}`, `${exportStem}.svg`, "image/svg+xml;charset=utf-8");
   };
   const saveCsv = () => {
-    const header = ["pool", "locus", "segment", "allele", "local_best_count", "after_policy_count", "delta", "vanishes", "appears", "record_weighting", "reassignment_policy", "minimum_posterior"];
-    const rows = allRows.map((row) => [model.scopeValue, model.locus, model.segment, row.label, row.before, row.after, row.delta, row.vanishes, row.appears, weighting, reassignmentPolicy, reassignmentPolicy === "confidence" ? effectiveMinimumPosterior : ""]);
+    const header = ["pool", "locus", "segment", "inference_model", "allele", "model_active", "inclusion_probability", "local_best_count", "after_policy_count", "delta", "vanishes", "appears", "record_weighting", "reassignment_policy", "minimum_posterior"];
+    const summaryByNode = new Map(model.alleles.map((allele) => [allele.nodeIndex, allele] as const));
+    const rows = allRows.map((row) => {
+      const allele = summaryByNode.get(row.nodeIndex);
+      return [model.scopeValue, model.locus, model.segment, model.inferenceModel ?? "dirichlet", row.label, allele?.active ?? "", allele?.inclusionProbability ?? "", row.before, row.after, row.delta, row.vanishes, row.appears, weighting, reassignmentPolicy, reassignmentPolicy === "confidence" ? effectiveMinimumPosterior : ""];
+    });
     download([header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n") + "\n", `${exportStem}.csv`, "text/csv;charset=utf-8");
   };
   const saveSurvivingReference = () => {
@@ -218,10 +223,11 @@ export function AlleleAssignmentShiftChart({
     download(reference.fasta, `${safeName(`${model.scopeValue}-${model.locus}-${model.segment}`)}-surviving-alleles.fasta`, "text/plain;charset=utf-8");
   };
   const policyLabel = reassignmentPolicy === "best" ? "posterior MAP for every modeled record" : `posterior MAP at ≥ ${(effectiveMinimumPosterior * 100).toFixed(0)}% confidence, otherwise local best`;
+  const fittedModelLabel = (model.inferenceModel ?? "dirichlet") === "active-set" ? "fast hurdle active-set model" : "continuous Dirichlet model";
 
   return <article className="allele-shift-chart">
     <header>
-      <div><span className="section-kicker">Hard assignment projection</span><h4>Best-match allele counts before and after reassignment</h4><p>Each modeled record contributes its complete configured weight to one allele. Local best is the pre-pooling evidence argmax; after policy applies {policyLabel}. The fitted Dirichlet model itself is unchanged.</p></div>
+      <div><span className="section-kicker">Hard assignment projection</span><h4>Best-match allele counts before and after reassignment</h4><p>Each modeled record contributes its complete configured weight to one allele. Local best is the pre-pooling evidence argmax; after policy applies {policyLabel}. Counts are recomputed from the fitted {fittedModelLabel} and the currently selected decision policy.</p></div>
       <div className="result-actions"><button type="button" disabled={!shift} onClick={saveCsv}>Data CSV ↓</button><button type="button" disabled={!shift} onClick={saveSvg}>SVG ↓</button></div>
     </header>
     <div className="allele-shift-controls">
@@ -242,8 +248,10 @@ export function AlleleAssignmentShiftChart({
         const beforeWidth = row.before / maximum * plotWidth;
         const afterWidth = row.after / maximum * plotWidth;
         const shownLabel = row.label.length > 34 ? `${row.label.slice(0, 32)}…` : row.label;
+        const allele = modelAlleleByNode.get(row.nodeIndex);
+        const inclusionDetail = allele?.inclusionProbability === undefined ? "" : `\nModel active ${allele.active ? "yes" : "no"}\nInclusion probability ${(allele.inclusionProbability * 100).toFixed(2)}%`;
         return <g key={row.nodeIndex}>
-          <title>{`${row.label}\nLocal best ${formatAssignmentCount(row.before)}\nAfter policy ${formatAssignmentCount(row.after)}\nChange ${row.delta >= 0 ? "+" : ""}${formatAssignmentCount(row.delta)}${row.vanishes ? "\nVanishes from this hard-assigned pool" : row.appears ? "\nAppears after reassignment" : ""}`}</title>
+          <title>{`${row.label}${inclusionDetail}\nLocal best ${formatAssignmentCount(row.before)}\nAfter policy ${formatAssignmentCount(row.after)}\nChange ${row.delta >= 0 ? "+" : ""}${formatAssignmentCount(row.delta)}${row.vanishes ? "\nVanishes from this hard-assigned pool" : row.appears ? "\nAppears after reassignment" : ""}`}</title>
           <text x="10" y={y + 14} fontFamily="Inter, Arial, sans-serif" fontSize="11" fontWeight="600" fill={row.vanishes ? "#a33b32" : "#26332f"}>{shownLabel}</text>
           <rect x={labelWidth} y={y + 2} width={Math.max(0, beforeWidth)} height="9" rx="2" fill="#aeb8b2" />
           <rect x={labelWidth} y={y + 16} width={Math.max(0, afterWidth)} height="9" rx="2" fill="#2f7767" />

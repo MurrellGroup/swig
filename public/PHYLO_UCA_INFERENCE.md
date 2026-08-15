@@ -254,7 +254,7 @@ The interactive display now performs a visualization-only aggregation over that 
 
 V, NT, D, and J rows have distinct background colors. The label rail counter-scrolls so it remains visible while the posterior is scrolled horizontally. Hovering a label reports the complete allele/track text, maximum occupancy, weighted center, underlying route/register count, D-use ordinals, and alignment-register offsets. Hovering an occupied nucleotide cell reports its alignment column, total source occupancy, each `A/C/G/T/gap` mass as a percentage of the complete posterior, and the corresponding composition conditional on that display row.
 
-The track toolbar exports either the complete HMM-track canvas or the exact currently visible horizontal and vertical crop. The visible SVG keeps the floating label rail at the current horizontal scroll position. These exports are separate from the nucleotide/codon/amino-acid frequency-logo SVG.
+The track toolbar exports either the complete HMM-track canvas or the exact currently visible horizontal and vertical track crop. Both exports include the horizontally aligned UCA probability logo, numbering, and CDR bands directly below the tracks. The visible SVG keeps the floating label rail at the current horizontal scroll position and uses the same horizontal crop for the logo. The standalone nucleotide/codon/amino-acid frequency-logo SVG remains available separately.
 
 An allele group enters the serialized sidecar when its combined occupancy reaches 1% in at least one column. Within a retained D group, raw registers reaching 0.1% are retained; if none does, the strongest register is retained. Raw N and uncertain-boundary rows reaching 0.1% are retained. Display aggregation happens only after these existing sidecar thresholds. The result reports how many subthreshold raw rows were omitted. Neither thresholding nor display aggregation changes the HMM likelihood, UCA posterior, Viterbi path, or exported sequence.
 
@@ -329,7 +329,7 @@ The panel exports:
 - per-column posterior TSV (`A/C/G/T/gap`, entropy, HMM segment, and candidate call);
 - long-form exact codon-posterior TSV (alignment columns, codon, translated amino acid, probability, and MAP indicator);
 - frequency-logo SVG in nucleotide, codon, or amino-acid view;
-- complete HMM-source-track SVG and an SVG cropped to the current horizontal/vertical track viewport, for either Best path or Marginalized mode;
+- complete HMM-source-track-plus-UCA-logo SVG and an SVG cropped to the current horizontal/vertical track viewport with the corresponding logo window below, for either Best path or Marginalized mode;
 - UCA-rooted placed Newick;
 - complete JSON containing the observed tree, placement set, weights, candidate report, model, parameters, Viterbi and marginalized HMM-source tracks, path, sequences, warnings, and alignment fingerprint;
 - publication-oriented SVG through the standard lineage tree viewer.

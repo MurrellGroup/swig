@@ -141,11 +141,17 @@ export interface PhyloUcaAnnotationSvgViewport {
   height: number;
 }
 
+function svgDimensions(svg: SVGSVGElement): { width: number; height: number } {
+  return {
+    width: Math.max(1, svg.viewBox.baseVal.width || Number(svg.getAttribute("width")) || 1),
+    height: Math.max(1, svg.viewBox.baseVal.height || Number(svg.getAttribute("height")) || 1),
+  };
+}
+
 /** Serialize either the complete track canvas or an exact scrolled crop. */
 export function serializePhyloUcaHmmAnnotationSvg(svg: SVGSVGElement, viewport?: PhyloUcaAnnotationSvgViewport): string {
   const clone = svg.cloneNode(true) as SVGSVGElement;
-  const sourceWidth = Math.max(1, svg.viewBox.baseVal.width || Number(svg.getAttribute("width")) || 1);
-  const sourceHeight = Math.max(1, svg.viewBox.baseVal.height || Number(svg.getAttribute("height")) || 1);
+  const { width: sourceWidth, height: sourceHeight } = svgDimensions(svg);
   const x = viewport ? Math.max(0, Math.min(sourceWidth - 1, viewport.x)) : 0;
   const y = viewport ? Math.max(0, Math.min(sourceHeight - 1, viewport.y)) : 0;
   const width = viewport ? Math.max(1, Math.min(sourceWidth - x, viewport.width)) : sourceWidth;
@@ -161,4 +167,64 @@ export function serializePhyloUcaHmmAnnotationSvg(svg: SVGSVGElement, viewport?:
     labelPanel.setAttribute("style", "filter:drop-shadow(2px 0 1px rgba(31,49,43,.18))");
   }
   return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}\n`;
+}
+
+/**
+ * Export the HMM source rows and their aligned UCA probability logo as one
+ * self-contained SVG. A visible-window export crops the track rows vertically
+ * at their inner scroll position and crops both panels to the same horizontal
+ * window; the complete corresponding logo remains directly below the tracks.
+ */
+export function serializePhyloUcaTrackLogoSvg(
+  trackSvg: SVGSVGElement,
+  logoSvg: SVGSVGElement,
+  viewport?: PhyloUcaAnnotationSvgViewport,
+): string {
+  const trackSize = svgDimensions(trackSvg);
+  const logoSize = svgDimensions(logoSvg);
+  const sharedWidth = Math.max(1, Math.min(trackSize.width, logoSize.width));
+  const x = viewport ? Math.max(0, Math.min(sharedWidth - 1, viewport.x)) : 0;
+  const trackY = viewport ? Math.max(0, Math.min(trackSize.height - 1, viewport.y)) : 0;
+  const width = viewport ? Math.max(1, Math.min(sharedWidth - x, viewport.width)) : sharedWidth;
+  const trackHeight = viewport ? Math.max(1, Math.min(trackSize.height - trackY, viewport.height)) : trackSize.height;
+  const height = trackHeight + logoSize.height;
+
+  const namespace = "http://www.w3.org/2000/svg";
+  const root = document.createElementNS(namespace, "svg");
+  root.setAttribute("xmlns", namespace);
+  root.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+  root.setAttribute("width", String(width));
+  root.setAttribute("height", String(height));
+  root.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  root.setAttribute("role", "img");
+  root.setAttribute("aria-label", "Phylogenetic UCA HMM source tracks and aligned posterior frequency logo");
+  const title = document.createElementNS(namespace, "title");
+  title.textContent = "Phylogenetic UCA HMM source tracks and posterior frequency logo";
+  root.append(title);
+  const description = document.createElementNS(namespace, "desc");
+  description.textContent = "The upper rows show HMM source occupancy; the aligned UCA probability logo and its numbering and CDR annotations are included below.";
+  root.append(description);
+
+  const tracks = trackSvg.cloneNode(true) as SVGSVGElement;
+  tracks.setAttribute("x", "0");
+  tracks.setAttribute("y", "0");
+  tracks.setAttribute("width", String(width));
+  tracks.setAttribute("height", String(trackHeight));
+  tracks.setAttribute("viewBox", `${x} ${trackY} ${width} ${trackHeight}`);
+  const labelPanel = tracks.querySelector(".phylo-uca-track-label-panel");
+  if (labelPanel) {
+    labelPanel.setAttribute("transform", `translate(${x} 0)`);
+    labelPanel.setAttribute("style", "filter:drop-shadow(2px 0 1px rgba(31,49,43,.18))");
+  }
+  root.append(tracks);
+
+  const logo = logoSvg.cloneNode(true) as SVGSVGElement;
+  logo.setAttribute("x", "0");
+  logo.setAttribute("y", String(trackHeight));
+  logo.setAttribute("width", String(width));
+  logo.setAttribute("height", String(logoSize.height));
+  logo.setAttribute("viewBox", `${x} 0 ${width} ${logoSize.height}`);
+  root.append(logo);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(root)}\n`;
 }
