@@ -47,6 +47,16 @@ test("concatenated gzip uploads require an explicit merged-versus-separate sampl
   assert.match(gzip, /multi-member candidates are each decompressed once/);
 });
 
+test("session restoration applies saved metadata during the first index pass", () => {
+  const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
+  const restore = app.slice(app.indexOf("async function restoreSavedSession"), app.indexOf("async function restoreLinkedAirr"));
+  const configure = restore.indexOf("configureStudyMetadataForImport(restoredDatasets)");
+  const append = restore.indexOf("store.appendBatch(header,body)");
+  assert.ok(configure >= 0 && configure < append, "saved metadata must be installed before AIRR indexing starts");
+  assert.doesNotMatch(restore, /updateStudyMetadata/);
+  assert.doesNotMatch(restore, /Applying saved study metadata to local indexes/);
+});
+
 test("assignment is one progressive action page while independent result tools remain contextual", () => {
   const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const repertoire = fs.readFileSync(new URL("../src/repertoire-charts.tsx", import.meta.url), "utf8");

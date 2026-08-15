@@ -191,7 +191,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.25.1";
+const APP_VERSION = "0.25.2";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -1640,7 +1640,8 @@ export default function SwigApp() {
     let store:AirrResultStore|undefined;
     setLoadingSession(true);setSessionLoadError("");setSessionLoadProgress({records:0,total:saved.linkedAirr.records,stage:"Streaming linked AIRR table into the local index"});
     try{
-      store=new AirrResultStore();let records=0;
+      const restoredDatasets=(saved.analysis.datasets?.length?saved.analysis.datasets:[{datasetId:"legacy",inputName:saved.analysis.inputName,sampleId:"sample_1",subjectId:"subject_1",cohort:"",timepoint:"",compartment:"",records:saved.linkedAirr.records}]).map((dataset)=>({...dataset,compartment:dataset.compartment??""}));
+      store=new AirrResultStore();store.configureStudyMetadataForImport(restoredDatasets);let records=0;
       for await(const batch of streamSequenceBatches({source:file,format:3,batchSize:2000,onProgress:(value)=>setSessionLoadProgress({records:value.recordsRead,total:saved.linkedAirr.records,stage:"Reading and indexing linked AIRR records"})})){
         const newline=batch.text.indexOf("\n");const header=batch.text.slice(0,newline).replace(/\r$/,"");const body=batch.text.slice(newline+1);
         if(!header.includes("\t"))throw new Error("Session loading requires the original AIRR TSV or TSV.gz file, not a comma-separated conversion.");
@@ -1651,9 +1652,7 @@ export default function SwigApp() {
       if(mismatches.length)throw new Error(`This is not the AIRR table linked by the session: ${mismatches.join("; ")}.`);
       if(saved.doubleD.length)await store.importDoubleDRecords(saved.doubleD);
       const dd={mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8,...saved.analysis.doubleD} as DoubleDScreenOptions;
-      const restoredDatasets=(saved.analysis.datasets?.length?saved.analysis.datasets:[{datasetId:"legacy",inputName:saved.analysis.inputName,sampleId:"sample_1",subjectId:"subject_1",cohort:"",timepoint:"",compartment:"",records:store.count}]).map((dataset)=>({...dataset,compartment:dataset.compartment??""}));
-      setSessionLoadProgress({records:0,total:store.count,stage:"Applying saved study metadata to local indexes"});
-      await store.updateStudyMetadata(restoredDatasets,(processed,total)=>setSessionLoadProgress({records:processed,total,stage:"Applying saved study metadata to local indexes"}));
+      setSessionLoadProgress({records:store.count,total:store.count,stage:"Local AIRR indexes ready"});
       setSession({id:Date.now(),store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:null,subsampleSeed:null,fastqFilter:copyFastqQualityFilter(saved.analysis.fastqFilter),fastqFilterStats:saved.analysis.fastqFilterStats??emptyFastqQualityFilterStats(Boolean(saved.analysis.fastqFilter?.enabled),false),references:saved.analysis.references,referenceExclusions:Object.fromEntries(Object.entries(saved.analysis.referenceExclusions??{}).map(([key,names])=>[key,[...names]])),callingProfile:saved.analysis.callingProfile??"truth_optimized",assignerStrategy:saved.analysis.assignerStrategy??"standard",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true,project:restoredProject});
       if(restoredProject){setProjectWorkspace(restoredProject);const run=activeProjectRun(restoredProject);if(run)await appendProjectLog(restoredProject,run,"project_opened",{records:store.count});setProjectStatus(`Restored ${run?.id??"active run"}`);}
       setPendingLoadedSession(null);setSessionLoadProgress({records:store.count,total:store.count,stage:"Session restored"});setPage("results");window.scrollTo({top:0});

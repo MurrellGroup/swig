@@ -149,6 +149,46 @@ test("study metadata is indexed for dataset, sample, donor, cohort, timepoint, a
   await store.clear();
 });
 
+test("saved study metadata is materialized during the first import without changing the AIRR fingerprint", async () => {
+  const studyHeader = `${header}\tswig_dataset_id\tsample_id\tsubject_id\tswig_cohort\tswig_timepoint\tswig_compartment`;
+  const baseRows = new TextDecoder().decode(makeBody(0, 3)).trimEnd().split("\n");
+  const body = [
+    `${baseRows[0]}\tdataset_1\told_A\told_donor\told\told\told`,
+    `${baseRows[1]}\tdataset_2\told_B\told_donor\told\told\told`,
+    `${baseRows[2]}\tdataset_3\told_C\told_donor\told\told\told`,
+  ].join("\n") + "\n";
+  const datasets = [
+    { datasetId: "dataset_1", inputName: "one.tsv", sampleId: "sample_A", subjectId: "donor_1", cohort: "case", timepoint: "day_0", compartment: "blood" },
+    { datasetId: "dataset_2", inputName: "two.tsv", sampleId: "sample_B", subjectId: "donor_1", cohort: "case", timepoint: "day_30", compartment: "node" },
+    { datasetId: "dataset_3", inputName: "three.tsv", sampleId: "sample_C", subjectId: "donor_2", cohort: "control", timepoint: "day_0", compartment: "blood" },
+  ];
+
+  const baseline = new AirrResultStore();
+  await baseline.appendBatch(studyHeader, body);
+  await baseline.finalize();
+
+  const restored = new AirrResultStore();
+  restored.configureStudyMetadataForImport(datasets);
+  await restored.appendBatch(studyHeader, body);
+  await restored.finalize();
+
+  assert.equal(restored.fingerprint, baseline.fingerprint, "saved metadata must not alter linked-file verification");
+  assert.equal((await restored.page({ ...EMPTY_FILTERS, subjectId: "donor_1" }, 0, 10)).rows.length, 2);
+  assert.deepEqual(restored.facets().samples.map((item) => item.value).sort(), ["sample_A", "sample_B", "sample_C"]);
+  const [detail] = await restored.detailMany([1]);
+  assert.equal(detail.values.sample_id, "sample_B");
+  assert.equal(detail.values.subject_id, "donor_1");
+  assert.equal(detail.values.swig_compartment, "node");
+  let exported = "";
+  await restored.writeAirr(async (part) => { exported += typeof part === "string" ? part : part instanceof Blob ? await part.text() : new TextDecoder().decode(part); });
+  const exportedRows = exported.trimEnd().split("\n").map((line) => line.split("\t"));
+  const sampleColumn = exportedRows[0].indexOf("sample_id");
+  assert.deepEqual(exportedRows.slice(1).map((row) => row[sampleColumn]), ["sample_A", "sample_B", "sample_C"]);
+
+  await baseline.clear();
+  await restored.clear();
+});
+
 test("lineage export adds AIRR clone_id values and leaves excluded records blank", async () => {
   const store = new AirrResultStore();
   await store.appendBatch(header, makeBody(0, 3));

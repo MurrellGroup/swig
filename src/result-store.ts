@@ -367,6 +367,25 @@ function numeric(value: string): number | null {
   return value !== "" && Number.isFinite(parsed) ? parsed : null;
 }
 
+function normalizedStudyMetadata(datasets: readonly DatasetManifestEntry[]): Map<string, DatasetManifestEntry> {
+  const byDataset = new Map<string, DatasetManifestEntry>();
+  for (const dataset of datasets) {
+    const datasetId = dataset.datasetId.trim();
+    if (!datasetId) throw new Error("Every dataset must retain a non-empty dataset ID.");
+    if (byDataset.has(datasetId)) throw new Error(`Dataset ID ${datasetId} occurs more than once.`);
+    byDataset.set(datasetId, {
+      ...dataset,
+      datasetId,
+      sampleId: dataset.sampleId.trim(),
+      subjectId: dataset.subjectId.trim(),
+      cohort: dataset.cohort.trim(),
+      timepoint: dataset.timepoint.trim(),
+      compartment: (dataset.compartment ?? "").trim(),
+    });
+  }
+  return byDataset;
+}
+
 function packRecord(record: AirrIndexRecord): PackedIndexRecord {
   return {
     o: record.ordinal, c: record.chunk, n: record.line, i: record.sequenceId,
@@ -521,6 +540,18 @@ export class AirrResultStore {
     return this.studyMetadataOverrides.size > 0;
   }
 
+  /**
+   * Install saved dataset metadata before the first AIRR batch is indexed.
+   * Import can then materialize the final searchable values in its existing
+   * write, avoiding a second read-modify-write pass over every record.
+   */
+  configureStudyMetadataForImport(datasets: readonly DatasetManifestEntry[]): void {
+    if (this.nextOrdinal || this.nextChunk || this.finalized) {
+      throw new Error("Saved study metadata must be configured before AIRR records are imported.");
+    }
+    this.studyMetadataOverrides = normalizedStudyMetadata(datasets);
+  }
+
   get fingerprint(): string {
     return [...this.fingerprintState].map((value) => value.toString(16).padStart(8, "0")).join("");
   }
@@ -570,21 +601,7 @@ export class AirrResultStore {
     datasets: readonly DatasetManifestEntry[],
     onProgress?: (processed: number, total: number) => void,
   ): Promise<ResultFacets> {
-    const byDataset = new Map<string, DatasetManifestEntry>();
-    for (const dataset of datasets) {
-      const datasetId = dataset.datasetId.trim();
-      if (!datasetId) throw new Error("Every dataset must retain a non-empty dataset ID.");
-      if (byDataset.has(datasetId)) throw new Error(`Dataset ID ${datasetId} occurs more than once.`);
-      byDataset.set(datasetId, {
-        ...dataset,
-        datasetId,
-        sampleId: dataset.sampleId.trim(),
-        subjectId: dataset.subjectId.trim(),
-        cohort: dataset.cohort.trim(),
-        timepoint: dataset.timepoint.trim(),
-        compartment: (dataset.compartment ?? "").trim(),
-      });
-    }
+    const byDataset = normalizedStudyMetadata(datasets);
     const nextSamples = new Map<string, number>();
     const nextSubjects = new Map<string, number>();
     const nextCohorts = new Map<string, number>();
@@ -780,17 +797,19 @@ export class AirrResultStore {
     const at = (values: string[], name: string) => values[positions[name]] ?? "";
     for (let line = 0; line < lines.length; line += 1) {
       const values = lines[line].split("\t");
+      const datasetId = at(values, "swig_dataset_id");
+      const savedDataset = this.studyMetadataOverrides.get(datasetId);
       const record: AirrIndexRecord = {
         ordinal: this.nextOrdinal++,
         chunk: chunkIndex,
         line,
         sequenceId: at(values, "sequence_id"),
-        datasetId: at(values, "swig_dataset_id"),
-        sampleId: at(values, "sample_id"),
-        subjectId: at(values, "subject_id"),
-        cohort: at(values, "swig_cohort"),
-        timepoint: at(values, "swig_timepoint"),
-        compartment: at(values, "swig_compartment"),
+        datasetId,
+        sampleId: savedDataset?.sampleId ?? at(values, "sample_id"),
+        subjectId: savedDataset?.subjectId ?? at(values, "subject_id"),
+        cohort: savedDataset?.cohort ?? at(values, "swig_cohort"),
+        timepoint: savedDataset?.timepoint ?? at(values, "swig_timepoint"),
+        compartment: savedDataset?.compartment ?? at(values, "swig_compartment"),
         locus: at(values, "locus"),
         vCall: at(values, "v_call"),
         dCall: doubleDByLine.get(line)?.d_call || at(values, "d_call"),
