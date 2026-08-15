@@ -86,6 +86,7 @@ import { ShmAccumulator, type ShmDashboard, type ShmMetricKey } from "./shm-anal
 import { packSessionVector, unpackSessionVector, type PostAnalysisSessionSnapshot } from "./session-state";
 import { DATASET_SCOPE_LABELS, datasetScopeValue, type DatasetManifestEntry, type DatasetScope, type PipelinePlan } from "./study-design";
 import { sampleColor, type SampleColorMap } from "./sample-colors";
+import { PhyloUcaPanel, type PhyloUcaPanelState } from "./phylo-uca/panel";
 
 interface Props {
   store: AirrResultStore;
@@ -512,6 +513,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [treeError, setTreeError] = useState("");
   const [treeModel, setTreeModel] = useState<"gtr" | "jc">("gtr");
   const [treeFast, setTreeFast] = useState(false);
+  const [phyloUcaState, setPhyloUcaState] = useState<PhyloUcaPanelState | null>(() => initialSession?.phyloUca ?? null);
   const treeResultRef = useRef<HTMLDivElement>(null);
   const alivibeSessionRef = useRef<AlivibeRoundTripSession | null>(null);
   const alignmentRef = useRef(alignment);
@@ -540,6 +542,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setAlignmentFrameOffset(0);
     setTreeRun(null);
     setTreeError("");
+    setPhyloUcaState(null);
   }
 
   function installAlignment(next: string, source: string, edited = false, lineageIds: number[] = selectedLineageIds, frameOffset?: AlignmentFrameOffset) {
@@ -552,6 +555,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setAlignmentFrameOffset(resolvedFrameOffset);
     setTreeRun(null);
     setTreeError("");
+    setPhyloUcaState(null);
     const key=lineageGroupKey(lineageIds);
     if(edited&&key){
       const entry:EditedAlignmentState={key,lineageIds:[...new Set(lineageIds)].sort((a,b)=>a-b),fasta:inspected.fasta,source,frameOffset:resolvedFrameOffset,savedAt:new Date().toISOString()};
@@ -892,7 +896,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         query:{queryText,queryTarget,queryMetric,queryIdentity,queryLimit,queryLocus,queryV,queryJ,queryConstraintMode,queryResultMode,queryInference,queryHits,queryLineageHits,expanded},
         editedAlignments:[...editedAlignments.values()].map((entry)=>({...entry,lineageIds:[...entry.lineageIds]})),
         lineageMerges:lineageMerges.map((merge)=>({...merge,originalLineageIds:[...merge.originalLineageIds]})),
-        tree:treeRun?{rawNewick:treeRun.newick,rootedNewick:treeRun.rootedNewick,stableNewick:treeRun.stableNewick,source:treeRun.source,lineageIds:[...selectedLineageIds],run:{...treeRun}}:undefined,
+        tree:treeRun?{rawNewick:treeRun.newick,rootedNewick:treeRun.rootedNewick,stableNewick:treeRun.stableNewick,source:treeRun.source,lineageIds:[...selectedLineageIds],run:{...treeRun}}:undefined,phyloUca:phyloUcaState??undefined,
         shm:shmDashboard?{metric:shmMetric,dashboard:shmDashboard,sampleOrder:[...shmSampleOrder]}:undefined,missingAlleles:missingAlleles?{options:missingAlleleOptions,dashboard:missingAlleles,selectedCandidateIds:[...selectedMissingAlleleIds]}:undefined} satisfies PostAnalysisSessionSnapshot;
     }};
     sessionHandleRef.current=handle;
@@ -909,7 +913,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     alignment,alignmentFrameOffset,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
     missingAlleleOptions,missingAlleles,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
     queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,
-    selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,workingStages,
+    selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,phyloUcaState,workingStages,
   ]);
 
   useEffect(()=>{
@@ -958,7 +962,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           if(restored)installAlignment(restored.fasta,restored.source,true,restored.lineageIds,restored.frameOffset??savedFrameOffset);
           else if(initialSession.tree?.run&&typeof initialSession.tree.run.alignmentFasta==="string")installAlignment(initialSession.tree.run.alignmentFasta,initialSession.tree.source||"Saved tree input",false,restoredSelectedIds,validAlignmentFrameOffset(initialSession.tree.run.frameOffset)??savedFrameOffset);
         }
-        if(initialSession.tree?.run)setTreeRun(initialSession.tree.run as unknown as TreeSnapshot);
+        if(initialSession.tree?.run)setTreeRun(initialSession.tree.run as unknown as TreeSnapshot);if(initialSession.phyloUca)setPhyloUcaState(initialSession.phyloUca);
       }catch(restoreError){setError(restoreError instanceof Error?restoreError.message:String(restoreError));}finally{setBusy("");}
     })();
   },[initialSession,runtime,store.count]);
@@ -2302,6 +2306,22 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             />
           </>}
         </div>
+        <PhyloUcaPanel
+          alignment={alignment}
+          lineageRows={lineageRows}
+          lineageIds={selectedLineageIds}
+          lineageLabel={selectedLineageIds.length > 1 ? `lineages-${selectedLineageIds.join("-")}` : `lineage-${selectedLineage.id}`}
+          locus={selectedLineage.locus || lineageRows[0]?.values.locus || ""}
+          references={references}
+          inputName={inputName}
+          frameOffset={alignmentFrameOffset}
+          isTcr={isTcr}
+          sampleColors={sampleColors}
+          multiplicityByOrdinal={lineageMultiplicity}
+          lineageByOrdinal={originalLineageByOrdinal}
+          initialState={phyloUcaState}
+          onStateChange={setPhyloUcaState}
+        />
       </>}
     </section>}
       </div>

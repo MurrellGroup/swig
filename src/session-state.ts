@@ -8,6 +8,7 @@ import type { SampleColorMap } from "./sample-colors";
 import type { LineageGermlineMethod } from "./lineage-alignment";
 import type { AlignmentFrameOffset } from "./lineage-phylogeny";
 import type { FastqQualityFilterOptions, FastqQualityFilterStats } from "./sequence-stream";
+import type { PhyloUcaSavedState } from "./phylo-uca/types";
 
 export const SWIG_SESSION_SCHEMA = 1 as const;
 
@@ -69,6 +70,8 @@ export interface PostAnalysisSessionSnapshot {
   editedAlignments?: Array<{ key: string; lineageIds: number[]; fasta: string; source: string; frameOffset?: AlignmentFrameOffset; savedAt: string }>;
   lineageMerges?: Array<{ id: string; label: string; originalLineageIds: number[]; createdAt: string }>;
   tree?: { rawNewick: string; rootedNewick: string; stableNewick: string; source: string; lineageIds?: number[]; run?: Record<string, unknown> };
+  /** Full result is retained because it depends on a searched placement posterior, not only the ordinary lineage tree. */
+  phyloUca?: PhyloUcaSavedState;
   shm?: { metric: ShmMetricKey; dashboard: ShmDashboard; sampleOrder?: string[] };
   missingAlleles?: { options: MissingAlleleOptions; dashboard: MissingAlleleDashboard; selectedCandidateIds?: string[] };
 }

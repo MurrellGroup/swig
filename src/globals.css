@@ -1898,6 +1898,71 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .inline-method-error button { padding: 6px 8px; border: 1px solid #d4513d; border-radius: 3px; color: inherit; background: transparent; font-size: 7px; font-weight: 800; }
 .tree-operation-region { scroll-margin-top: 15px; }
 .tree-operation-region .tree-error { margin-top: -11px; }
+
+/* Phylogenetic UCA inference is deliberately a self-contained workbench
+   module: defaults and the run action remain together; technical priors live
+   behind one attached advanced disclosure. */
+.phylo-uca-panel { margin: 18px 24px 24px; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); }
+.phylo-uca-panel > header { display: flex; gap: 20px; padding: 18px 20px; align-items: flex-start; justify-content: space-between; border-bottom: 1px solid var(--line); background: #f5f7f4; }
+.phylo-uca-panel > header h4,
+.phylo-uca-result-head h4 { margin: 4px 0 5px; font: 650 18px/1.15 inherit; }
+.phylo-uca-panel > header p,
+.phylo-uca-result-head p { max-width: 900px; margin: 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
+.phylo-uca-panel > header a { flex: 0 0 auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; color: var(--teal); background: var(--surface); font-size: 8px; font-weight: 800; }
+.phylo-uca-run-row { display: flex; gap: 20px; padding: 17px 20px; align-items: center; justify-content: space-between; }
+.phylo-uca-run-row > div { display: grid; gap: 3px; min-width: 0; }
+.phylo-uca-run-row strong { font-size: 10px; }
+.phylo-uca-run-row span { color: var(--muted); font-size: 8px; }
+.phylo-uca-advanced { margin: 0 20px 18px !important; }
+.phylo-uca-advanced-body { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 14px; }
+.phylo-uca-advanced-body fieldset { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--line); }
+.phylo-uca-advanced-body legend { padding: 0 6px; color: var(--teal); font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.phylo-uca-advanced-body label { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 8px; font-weight: 700; }
+.phylo-uca-advanced-body label.check-line { display: flex; align-items: center; }
+.phylo-uca-advanced-body input:not([type="checkbox"]),
+.phylo-uca-advanced-body select { width: 100%; min-width: 0; }
+.phylo-uca-progress { display: grid; grid-template-columns: minmax(180px,1fr) minmax(220px,2fr) auto; gap: 15px; padding: 14px 20px; align-items: center; border-top: 1px solid var(--line); background: #eef4f1; }
+.phylo-uca-progress > div { display: grid; gap: 2px; }
+.phylo-uca-progress strong { font-size: 9px; }
+.phylo-uca-progress span,
+.phylo-uca-progress b { color: var(--muted); font-size: 8px; }
+.phylo-uca-progress progress { width: 100%; accent-color: var(--teal); }
+.phylo-uca-results { scroll-margin-top: 15px; border-top: 1px solid var(--line); }
+.phylo-uca-result-head { display: flex; gap: 20px; padding: 18px 20px; align-items: flex-start; justify-content: space-between; background: #fbfaf6; }
+.phylo-uca-result-head .result-actions { max-width: 520px; justify-content: flex-end; }
+.phylo-uca-stats { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.phylo-uca-stats article { display: grid; gap: 4px; padding: 12px 16px; border-right: 1px solid var(--line); }
+.phylo-uca-stats article:last-child { border-right: 0; }
+.phylo-uca-stats span { color: var(--muted); font-size: 7px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.phylo-uca-stats strong { overflow-wrap: anywhere; font-size: 11px; }
+.phylo-uca-sequence { display: grid; grid-template-columns: 150px minmax(0,1fr); max-height: 190px; overflow: auto; border-bottom: 1px solid var(--line); color: #d8e5df; background: #10201c; }
+.phylo-uca-sequence strong { position: sticky; left: 0; padding: 8px 12px; color: #9eafa8; background: #172a25; font-size: 8px; }
+.phylo-uca-sequence code { padding: 8px 12px; font-size: 9px; white-space: pre; }
+.phylo-uca-segments { display: flex; gap: 2px; padding: 13px 20px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+.phylo-uca-segments > span { display: grid; min-width: 52px; padding: 7px 9px; border-radius: 2px; color: #15221e; }
+.phylo-uca-segments b { font-size: 9px; }
+.phylo-uca-segments small { overflow: hidden; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.phylo-uca-segments .segment-v { background: #89cec2; }
+.phylo-uca-segments .segment-d { background: #e8be59; }
+.phylo-uca-segments .segment-j { background: #ed8a78; }
+.phylo-uca-segments .segment-n { background: #d9ddda; }
+.phylo-uca-results > .scientific-note { margin: 10px 20px; }
+.phylo-uca-results > .tree-output-switch { margin-top: 12px; }
+
+@media (max-width: 1000px) {
+  .phylo-uca-advanced-body { grid-template-columns: 1fr; }
+  .phylo-uca-result-head { display: grid; }
+  .phylo-uca-stats { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+
+@media (max-width: 680px) {
+  .phylo-uca-panel { margin: 14px; }
+  .phylo-uca-panel > header,
+  .phylo-uca-run-row { display: grid; }
+  .phylo-uca-advanced-body fieldset { grid-template-columns: 1fr; }
+  .phylo-uca-progress { grid-template-columns: 1fr; }
+  .phylo-uca-stats { grid-template-columns: 1fr; }
+}
 .tree-controls { display: grid; grid-template-columns: 1fr 130px 150px auto; gap: 12px; align-items: end; padding: 24px 28px; border-top: 1px solid var(--line); }
 .tree-controls h4 { margin: 7px 0 4px; font: 650 20px Georgia,serif; }
 .tree-controls p { margin: 0; color: var(--muted); font-size: 8px; }
