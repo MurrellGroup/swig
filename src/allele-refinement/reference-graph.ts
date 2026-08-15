@@ -80,7 +80,7 @@ export function buildReferenceAlleleGraph(
     node.names.forEach((name) => callToNode.set(name, index));
   });
   const neighbours: ReferenceNeighbour[][] = nodes.map(() => []);
-  const radius = Math.max(0, Math.min(4, Math.floor(maximumDistance)));
+  const radius = Math.max(0, Math.min(5, Math.floor(maximumDistance)));
   if (radius > 0) {
     const byLocusLength = new Map<string, number[]>();
     nodes.forEach((node, index) => {

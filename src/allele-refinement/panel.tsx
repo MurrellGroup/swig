@@ -1,9 +1,14 @@
+import { useState } from "react";
+
 import { CommitNumberInput } from "../commit-number-input.tsx";
+import type { CompiledReferences } from "../reference-pack.ts";
 import { DATASET_SCOPE_LABELS, type DatasetScope } from "../study-design.ts";
+import { AlleleAssignmentShiftChart, ReferenceKernelInspector } from "./diagnostic-views.tsx";
 import type { AlleleRefinementOptions, AlleleRefinementResult, RefinementSegment } from "./types.ts";
 import { adaptiveNeighbourOdds } from "./evidence.ts";
 
 interface Props {
+  references: CompiledReferences;
   options: AlleleRefinementOptions;
   onOptionsChange: (options: AlleleRefinementOptions) => void;
   result: AlleleRefinementResult | null;
@@ -27,10 +32,11 @@ const SEGMENT_LABELS: Record<RefinementSegment, string> = {
 };
 
 export function AlleleRefinementPanel({
-  options, onOptionsChange, result, applied, applyMinimumPosterior,
+  references, options, onOptionsChange, result, applied, applyMinimumPosterior,
   onApplyMinimumPosteriorChange, busy, progress, onRun, onApply, onReset,
   onDownloadModel, onDownloadSidecar, onDownloadAirr,
 }: Props) {
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const update = <K extends keyof AlleleRefinementOptions>(key: K, value: AlleleRefinementOptions[K]) => onOptionsChange({ ...options, [key]: value });
   const toggleSegment = (segment: RefinementSegment) => {
     const selected = options.segments.includes(segment)
@@ -63,7 +69,7 @@ export function AlleleRefinementPanel({
         <label title="Unique weighting prevents expanded clones or PCR abundance from acting as independent genotype evidence. Abundance weighting is available for deliberate usage estimation."><span>Record weighting</span><select value={options.weighting} onChange={(event) => update("weighting", event.target.value as AlleleRefinementOptions["weighting"])}><option value="unique">One vote per active record · default</option><option value="abundance">Weight by duplicate_count</option></select></label>
       </div>
       <div className="allele-refinement-action"><div><strong>{result ? `${result.activeRecords.toLocaleString()} active records modeled` : "No repertoire posterior fitted"}</strong><small>Explicit co-optimal calls enter with equal local weight. Only reference-graph neighbours inside the selected edit radius receive leakage support.</small></div><button className="post-primary" type="button" disabled={busy || !options.segments.length} onClick={onRun}>{result ? "Refit repertoire allele model" : "Fit repertoire allele model"}</button></div>
-      <details className="post-advanced"><summary>Advanced evidence-kernel and variational settings</summary><div><div className="control-grid four allele-refinement-advanced">
+      <details className="post-advanced" onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}><summary>Advanced evidence-kernel and variational settings</summary><div><div className="control-grid four allele-refinement-advanced">
         <label title="Irreducible relative evidence odds for a one-nucleotide reference neighbour when estimated SHM is zero. This is an assignment-model leakage term, not a sequencing-error estimate."><span>Zero-SHM neighbour odds</span><CommitNumberInput min="0" max="0.5" step="0.001" value={options.baselineNeighbourOdds} onCommit={(value) => update("baselineNeighbourOdds", value)} /></label>
         <label title="Multiplier on the mechanistic mu/[3(1-mu)] contribution for a specific nucleotide substitution at a diagnostic allele position. Set to zero for SHM-independent leakage."><span>SHM sensitivity</span><CommitNumberInput min="0" max="10" step="0.1" value={options.shmLeakageSensitivity} onCommit={(value) => update("shmLeakageSensitivity", value)} /></label>
         <label title="Upper bound on one-SNP neighbour evidence odds for highly mutated or poorly matched reads."><span>Maximum neighbour odds</span><CommitNumberInput min="0.001" max="0.99" step="0.01" value={options.maximumNeighbourOdds} onCommit={(value) => update("maximumNeighbourOdds", value)} /></label>
@@ -75,7 +81,7 @@ export function AlleleRefinementPanel({
         <label title="Hard memory guard for unusually dense reference neighbourhoods. Candidates are retained in descending local evidence order."><span>Candidate cap / record</span><CommitNumberInput min="1" max="10000" step="1" value={options.maxCandidatesPerRow} onCommit={(value) => update("maxCandidatesPerRow", Math.floor(value))} /></label>
         <label title="Maximum coordinate-ascent updates for each independent pooling group."><span>Maximum iterations</span><CommitNumberInput min="1" max="10000" step="10" value={options.maxIterations} onCommit={(value) => update("maxIterations", Math.floor(value))} /></label>
         <label title="Stop when the maximum relative change in any Dirichlet parameter falls below this value."><span>Convergence tolerance</span><CommitNumberInput min="0.000000001" max="0.1" step="0.000001" value={options.convergenceTolerance} onCommit={(value) => update("convergenceTolerance", value)} /></label>
-      </div><div className="algorithm-note"><strong>Implied one-SNP neighbour probability</strong><span>{leakageExamples}. Displayed probabilities are odds/(1+odds); distance-d evidence uses the per-edit odds to the dth power.</span></div></div></details>
+      </div><div className="algorithm-note"><strong>Implied one-SNP neighbour probability</strong><span>{leakageExamples}. Displayed probabilities are odds/(1+odds); distance-d evidence uses the per-edit odds to the dth power.</span></div>{advancedOpen && <ReferenceKernelInspector references={references} options={options} />}</div></details>
     </div>
     {progress && <div className="allele-refinement-progress" role="status"><div><strong>{progress.phase}</strong><span>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()}</span></div><progress max="1" value={progressFraction} /></div>}
     {result && <div className="allele-refinement-results">
@@ -83,6 +89,7 @@ export function AlleleRefinementPanel({
       <div className="allele-apply-row"><div><strong>{applied ? "Posterior MAP calls are active for downstream lineage analysis" : "Original AIRR calls remain active downstream"}</strong><small>Only MAP calls at or above the selected posterior threshold replace enabled segment calls. Original calls remain in the AIRR source and all refined exports.</small></div><label title="Calls below this posterior probability remain unchanged when refinement is applied."><span>Apply at posterior ≥</span><CommitNumberInput min="0" max="1" step="0.01" value={applyMinimumPosterior} onCommit={onApplyMinimumPosteriorChange} /></label><button type="button" className="post-primary" disabled={busy} onClick={onApply}>Apply to downstream calls</button>{applied && <button type="button" disabled={busy} onClick={onReset}>Restore original calls</button>}</div>
       {result.warnings.map((warning) => <p className="scientific-note warning" key={warning}><span>!</span>{warning}</p>)}
       <div className="result-actions"><button type="button" onClick={onDownloadModel}>Model summary</button><button type="button" onClick={onDownloadSidecar}>Full sparse posterior sidecar</button><button type="button" onClick={onDownloadAirr}>AIRR with thresholded refined calls</button></div>
+      {models.length > 0 && <AlleleAssignmentShiftChart models={models} />}
       <div className="allele-model-table"><table><thead><tr><th>Pool</th><th>Locus</th><th>Segment</th><th>Reference allele / identical class</th><th>Posterior use</th><th>Expected assignments</th><th>Local evidence</th></tr></thead><tbody>{topAlleles.map(({ model, allele }) => <tr key={`${model.key}-${allele.nodeIndex}`}><td>{model.scopeValue}</td><td>{model.locus}</td><td>{model.segment}</td><td><code>{allele.names.join(", ")}</code></td><td>{(allele.posteriorMean * 100).toFixed(3)}%</td><td>{allele.expectedAssignments.toFixed(2)}</td><td>{allele.localEvidenceAssignments.toFixed(2)}</td></tr>)}</tbody></table></div>
       <p className="scientific-note"><span>i</span>Posterior-use denominators include every locus-matched database node. Prior-only nodes absent from all sparse read neighbourhoods remain implicit; their counts are included in the model-summary export.</p>
       {topAlleles.length >= 250 && <p className="scientific-note"><span>i</span>The interactive table is limited to 250 entries. The model-summary export contains every modeled reference node.</p>}

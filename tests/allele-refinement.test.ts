@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { adaptiveNeighbourOdds, buildSparseEvidenceRow, sparseEvidenceMatrix } from "../src/allele-refinement/evidence.ts";
+import { alignReferenceKernelInspection, assignmentShiftData, inspectReferenceEvidenceKernel } from "../src/allele-refinement/diagnostics.ts";
 import { fitSparseAlleleModel } from "../src/allele-refinement/model.ts";
 import { buildReferenceAlleleGraph, boundedReferenceDistance } from "../src/allele-refinement/reference-graph.ts";
 import { DEFAULT_ALLELE_REFINEMENT_OPTIONS, type RefinementInputRow } from "../src/allele-refinement/types.ts";
@@ -64,6 +65,51 @@ test("one-SNP neighbour leakage increases with SHM but retains an explicit floor
   assert.ok(capped <= options.maximumNeighbourOdds);
   assert.equal(adaptiveNeighbourOdds(0.9, { ...options, shmLeakageSensitivity: 10 }), options.maximumNeighbourOdds);
   assert.equal(adaptiveNeighbourOdds(0.12, { ...options, shmLeakageSensitivity: 0 }), baseline);
+});
+
+test("the interactive error-model diagnostic uses the fitted sparse kernel and excludes the primary from alternative bars", () => {
+  const graph = buildReferenceAlleleGraph(fasta, "V", 2);
+  const selected = graph.callToNode.get("IGHV1*01")!;
+  const zeroShm = inspectReferenceEvidenceKernel(graph, selected, 0, options)!;
+  const highShm = inspectReferenceEvidenceKernel(graph, selected, 0.12, options)!;
+  const second = graph.callToNode.get("IGHV1*02")!;
+  const zeroAlternative = zeroShm.alternatives.find((value) => value.nodeIndex === second)!;
+  const highAlternative = highShm.alternatives.find((value) => value.nodeIndex === second)!;
+  assert.ok(highAlternative.probability > zeroAlternative.probability);
+  assert.equal(highShm.alternatives.some((value) => value.nodeIndex === selected), false);
+  assert.ok(Math.abs(highShm.primaryProbability + highShm.alternativeProbability - 1) < 1e-12);
+
+  const alignment = alignReferenceKernelInspection(highShm);
+  assert.equal(new Set(alignment.rows.map((value) => value.sequence.length)).size, 1);
+  for (let column = 0; column < alignment.columns; column += 1) {
+    assert.equal(alignment.rows.every((value) => value.sequence[column] === "-"), false);
+  }
+});
+
+test("before/after assignment frequencies exclude prior mass and sort on post-pooling frequency", () => {
+  const shifts = assignmentShiftData({
+    key: "donor_1\u0000IGH\u0000V",
+    scopeValue: "donor_1",
+    locus: "IGH",
+    segment: "V",
+    rows: 100,
+    effectiveRows: 100,
+    nonZeros: 200,
+    databaseNodes: 2,
+    inactivePriorNodes: 0,
+    iterations: 5,
+    converged: true,
+    finalMaximumChange: 1e-7,
+    alleles: [
+      { nodeIndex: 0, names: ["IGHV1*01"], sequenceLength: 10, posteriorMean: 0.4, posteriorSd: 0.01, localEvidenceAssignments: 80, expectedAssignments: 35 },
+      { nodeIndex: 1, names: ["IGHV1*02"], sequenceLength: 10, posteriorMean: 0.6, posteriorSd: 0.01, localEvidenceAssignments: 20, expectedAssignments: 65 },
+    ],
+  });
+  assert.equal(shifts[0].label, "IGHV1*02");
+  assert.equal(shifts[0].before, 0.2);
+  assert.equal(shifts[0].after, 0.65);
+  assert.ok(Math.abs(shifts.reduce((sum, value) => sum + value.before, 0) - 1) < 1e-12);
+  assert.ok(Math.abs(shifts.reduce((sum, value) => sum + value.after, 0) - 1) < 1e-12);
 });
 
 test("literal co-optimal calls begin equal and graph neighbours receive geometric non-zero evidence", () => {

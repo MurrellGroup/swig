@@ -3787,6 +3787,7 @@ label[data-field-help] > span:first-child { cursor: help; text-decoration: under
 }
 
 /* Repertoire-level germline-call pooling. */
+.allele-refinement-module { overflow: visible; }
 .allele-refinement-config { display: grid; gap: 16px; padding: 22px; border-bottom: 1px solid var(--line); }
 .allele-refinement-config .control-grid { padding: 0; }
 .allele-segment-picker { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
@@ -3808,6 +3809,73 @@ label[data-field-help] > span:first-child { cursor: help; text-decoration: under
 .allele-model-table th { position: sticky; top: 0; z-index: 1; padding: 9px; border-bottom: 1px solid var(--line); color: var(--muted); background: var(--surface-soft); text-align: left; text-transform: uppercase; }
 .allele-model-table td { padding: 8px 9px; border-bottom: 1px solid var(--line); }
 .allele-model-table code { white-space: normal; overflow-wrap: anywhere; }
+.allele-kernel-inspector { margin-top: 14px; overflow: visible; border: 1px solid #9eb6ad; border-radius: 4px; background: var(--surface); }
+.allele-kernel-inspector > header { display: flex; gap: 18px; align-items: flex-start; justify-content: space-between; padding: 15px 16px; border-bottom: 1px solid var(--line); background: #f4f7f4; }
+.allele-kernel-inspector > header h4 { margin: 4px 0 5px; font-size: 15px; line-height: 1.2; }
+.allele-kernel-inspector > header p { max-width: 820px; margin: 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
+.allele-kernel-inspector > header .mode-toggle { flex: 0 0 auto; }
+.allele-kernel-controls { display: grid; grid-template-columns: 170px minmax(260px,1fr) minmax(230px,.75fr); gap: 10px; align-items: end; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.allele-kernel-controls > label { display: grid; min-width: 0; gap: 6px; color: var(--muted); font-size: 7px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
+.allele-kernel-controls select { width: 100%; min-height: 37px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); font-size: 9px; }
+.allele-kernel-controls .range-number { min-height: 37px; padding: 0 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); }
+.allele-kernel-controls .range-number b { min-width: 42px; color: var(--teal); font-size: 8px; text-align: right; }
+.allele-kernel-controls .facet-picker > details[open] { z-index: 140; }
+.allele-kernel-summary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border-bottom: 1px solid var(--line); }
+.allele-kernel-summary > div { display: grid; gap: 4px; padding: 11px 14px; border-right: 1px solid var(--line); }
+.allele-kernel-summary > div:last-child { border-right: 0; }
+.allele-kernel-summary span { color: var(--muted); font-size: 7px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.allele-kernel-summary strong { font-size: 12px; }
+.allele-kernel-legend { display: flex; flex-wrap: wrap; gap: 7px 14px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); color: var(--muted); background: #fbfaf6; font-size: 7px; }
+.allele-kernel-legend span { display: inline-flex; gap: 5px; align-items: center; }
+.allele-kernel-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.allele-kernel-legend .kernel-same { background: #f0f1ee; }
+.allele-kernel-legend .kernel-substitution { background: #df735f; }
+.allele-kernel-legend .kernel-indel { background: #efc267; }
+.allele-kernel-legend small { margin-left: auto; max-width: 600px; font-size: 7px; line-height: 1.4; }
+.allele-kernel-table-wrap { max-height: 510px; overflow: auto; border-bottom: 1px solid var(--line); background: #fff; }
+.allele-kernel-table-wrap table { border-spacing: 0; table-layout: fixed; font-size: 8px; }
+.allele-kernel-table-wrap th,
+.allele-kernel-table-wrap td { height: 31px; padding: 0; border-right: 1px solid #e1e5e1; border-bottom: 1px solid #e9ece9; background: #fff; text-align: left; vertical-align: middle; }
+.allele-kernel-table-wrap thead th { position: sticky; z-index: 4; top: 0; height: 32px; padding: 0 9px; color: var(--muted); background: #eef1ee; font-size: 7px; font-weight: 850; letter-spacing: .04em; text-transform: uppercase; }
+.allele-kernel-table-wrap th:nth-child(1) { left: 0; width: 220px; min-width: 220px; max-width: 220px; }
+.allele-kernel-table-wrap th:nth-child(2),
+.allele-kernel-table-wrap td:nth-child(2) { left: 220px; width: 90px; min-width: 90px; max-width: 90px; }
+.allele-kernel-table-wrap th:nth-child(3),
+.allele-kernel-table-wrap td:nth-child(3) { left: 310px; width: 210px; min-width: 210px; max-width: 210px; }
+.allele-kernel-table-wrap tbody th,
+.allele-kernel-table-wrap tbody td:nth-child(2),
+.allele-kernel-table-wrap tbody td:nth-child(3) { position: sticky; z-index: 2; }
+.allele-kernel-table-wrap thead th:nth-child(-n+3) { z-index: 5; }
+.allele-kernel-table-wrap tbody th { display: grid; gap: 1px; align-content: center; padding: 0 9px; }
+.allele-kernel-table-wrap tbody th strong { overflow: hidden; font: 700 8px/1.2 "SFMono-Regular",Consolas,monospace; text-overflow: ellipsis; white-space: nowrap; }
+.allele-kernel-table-wrap tbody th small,
+.allele-kernel-table-wrap tbody td:nth-child(3) small { color: var(--muted); font-size: 6px; font-weight: 600; }
+.allele-kernel-table-wrap tbody td:nth-child(2) { padding: 0 8px; font: 700 7px/1.2 "SFMono-Regular",Consolas,monospace; }
+.allele-kernel-table-wrap tbody td:nth-child(3) { padding: 0 8px; }
+.allele-kernel-table-wrap tbody tr.primary th,
+.allele-kernel-table-wrap tbody tr.primary td { background: #edf7f2; }
+.allele-kernel-bar { height: 9px; overflow: hidden; border-radius: 2px; background: #e4e8e4; }
+.allele-kernel-bar i { display: block; height: 100%; min-width: 1px; border-radius: inherit; background: var(--teal); }
+.allele-kernel-sequence { display: inline-flex; height: 31px; align-items: center; padding: 0 7px; color: var(--ink); background: #fbfbf8; font: 8px/1 "SFMono-Regular",Consolas,monospace; letter-spacing: 0; white-space: pre; }
+.allele-kernel-sequence span { display: inline-grid; width: 11px; height: 16px; flex: 0 0 11px; place-items: center; }
+.allele-kernel-inspector > .scientific-note { margin: 9px 14px; }
+.allele-shift-chart { overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.allele-shift-chart > header { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; padding: 15px 16px; border-bottom: 1px solid var(--line); background: #f7f7f3; }
+.allele-shift-chart > header h4 { margin: 4px 0 5px; font-size: 15px; line-height: 1.2; }
+.allele-shift-chart > header p { max-width: 800px; margin: 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
+.allele-shift-chart > header .result-actions { flex: 0 0 auto; margin: 0; }
+.allele-shift-controls { display: grid; grid-template-columns: minmax(300px,1fr) 140px auto; gap: 10px; align-items: end; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.allele-shift-controls > label { display: grid; min-width: 0; gap: 5px; color: var(--muted); font-size: 7px; font-weight: 850; letter-spacing: .05em; text-transform: uppercase; }
+.allele-shift-controls select,
+.allele-shift-controls input { width: 100%; min-width: 0; min-height: 36px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); font-size: 8px; }
+.allele-shift-legend { display: flex; gap: 12px; min-height: 36px; align-items: center; justify-content: flex-end; color: var(--muted); font-size: 8px; }
+.allele-shift-legend span { display: inline-flex; gap: 5px; align-items: center; }
+.allele-shift-legend i { display: inline-block; width: 13px; height: 8px; border-radius: 2px; }
+.allele-shift-legend i.before { background: #aeb8b2; }
+.allele-shift-legend i.after { background: #2f7767; }
+.allele-shift-scroll { max-height: 660px; overflow: auto; background: #fffdf8; }
+.allele-shift-scroll svg { display: block; min-width: 920px; }
+.allele-shift-chart > .scientific-note { margin: 9px 14px; }
 .pipeline-segment-checks { display: flex; min-width: 0; align-items: center; gap: 10px; margin: 0; padding: 9px 10px; border: 1px solid var(--line); }
 .pipeline-segment-checks legend { padding: 0 4px; color: var(--muted); font-size: 7px; font-weight: 800; text-transform: uppercase; }
 .pipeline-segment-checks label { display: flex !important; flex-direction: row !important; align-items: center; gap: 5px !important; }
@@ -3816,4 +3884,21 @@ label[data-field-help] > span:first-child { cursor: help; text-decoration: under
   .allele-apply-row { grid-template-columns: 1fr 1fr; }
   .allele-apply-row > div { grid-column: 1 / -1; }
   .allele-segment-picker { grid-template-columns: 1fr; }
+  .allele-kernel-inspector > header,
+  .allele-shift-chart > header { display: grid; }
+  .allele-kernel-controls { grid-template-columns: 1fr 1fr; }
+  .allele-kernel-controls > :last-child { grid-column: 1 / -1; }
+  .allele-kernel-summary { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .allele-kernel-summary > div:nth-child(2) { border-right: 0; }
+  .allele-shift-controls { grid-template-columns: 1fr 140px; }
+  .allele-shift-legend { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
+@media (max-width: 620px) {
+  .allele-kernel-controls,
+  .allele-shift-controls { grid-template-columns: 1fr; }
+  .allele-kernel-controls > :last-child,
+  .allele-shift-legend { grid-column: auto; }
+  .allele-kernel-inspector > header .mode-toggle { width: 100%; }
+  .allele-kernel-inspector > header .mode-toggle button { flex: 1; }
 }

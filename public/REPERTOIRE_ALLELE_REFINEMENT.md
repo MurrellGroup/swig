@@ -51,6 +51,19 @@ The term \(\mu/[3(1-\mu)]\) is the likelihood ratio of a particular diagnostic s
 
 A substitution-only neighbour at distance \(d\) receives relative leakage \(o_1(\mu)^d\). Reference neighbours involving an indel receive the non-SHM baseline only because the substitution derivation does not apply. Direct, alternative, and neighbour weights are combined, capped to a maximum sparse row width, and normalized.
 
+### Interactive evidence-kernel inspection
+
+The advanced settings include a reference-sequence inspector so parameter changes can be interpreted before fitting the repertoire model. The user chooses a V, D, or J database allele and an assumed read SHM fraction. Swig then evaluates the exact sparse evidence-row constructor used by the worker with that allele as the sole literal primary call.
+
+- The selected reference sequence remains visible as the alignment anchor, but its dominant probability is deliberately not drawn as a bar.
+- Every non-primary candidate receives a horizontal bar and its absolute probability after normalization over the complete row, including the primary.
+- Alternative bar lengths are scaled relative to the largest non-primary candidate. The printed percentage, rather than bar length, is the absolute probability.
+- Candidate sequences are globally aligned to the selected reference through a common anchor coordinate. Columns that are gaps in every displayed sequence are removed.
+- Nucleotide coloring shows ordinary bases. Difference-highlighter coloring makes matches neutral, substitutions red, and insertion/deletion columns amber.
+- Sequence-identical database labels remain one unresolved reference node and are displayed together.
+
+The diagnostic responds to the zero-SHM floor, SHM sensitivity and cap, assumed SHM, edit radius, maximum neighbour odds, and candidate cap. Dirichlet alpha and variational stopping controls do not alter this local pre-repertoire kernel. Numeric settings commit on Enter or when focus leaves the field, matching the rest of Swig's large-data controls; the inexpensive diagnostic then updates immediately.
+
 ## Dirichlet mixture
 
 For one independent pool, let \(\boldsymbol\theta\) be expressed reference usage:
@@ -79,6 +92,15 @@ The symmetric prior covers every locus-matched reference node in the selected se
 
 This resembles sparse variational machinery used for LDA, but the biological model is a finite mixture with one latent germline node per read, not a document containing multiple topics.
 
+### Before/after assignment-frequency figure
+
+After fitting, Swig displays paired horizontal bars for every modeled allele in a selected donor/study-boundary, locus, and segment pool. Rows are sorted by post-pooling assignment frequency.
+
+- **Before** is the normalized sum of local evidence responsibilities, \(\sum_r w_r E_{ra}\), over materialized candidates.
+- **After** is the normalized sum of fitted variational responsibilities, \(\sum_r w_r q(z_r=a)\).
+
+Both denominators describe assignment mass over observed records. Dirichlet prior-only mass is intentionally excluded, so the figure isolates redistribution of assignments rather than conflating it with the usage prior. The model table still reports the full posterior usage mean, which includes the complete reference-set prior denominator. The interactive display has a configurable row limit; CSV export always includes every modeled allele in the selected pool, and the complete paired-bar figure is exportable as SVG.
+
 ## Sparse browser implementation
 
 - Candidate evidence uses compressed sparse row storage.
@@ -98,7 +120,7 @@ Fitting never changes downstream calls. The user must explicitly choose **Apply 
 - Reset restores immutable original calls.
 - Existing lineage-dependent results are invalidated when the overlay changes.
 
-Exports include a complete model summary, a long-form sparse per-record posterior sidecar, and a refined AIRR table. The sidecar reconstructs every nonzero candidate responsibility from the saved mixture parameters while streaming the AIRR input, so the complete reads-by-candidate posterior is available without retaining a second large matrix in interactive memory. The refined table places threshold-passing calls in the ordinary call columns while `swig_original_*` and `swig_repertoire_*` columns retain provenance. Options, compact MAP/entropy vectors, mixture summaries, threshold, and apply/reset state are included in Swig sessions.
+Exports include a complete model summary, a long-form sparse per-record posterior sidecar, a refined AIRR table, paired-frequency chart data as CSV, and the paired-frequency figure as SVG. The sidecar reconstructs every nonzero candidate responsibility from the saved mixture parameters while streaming the AIRR input, so the complete reads-by-candidate posterior is available without retaining a second large matrix in interactive memory. The refined table places threshold-passing calls in the ordinary call columns while `swig_original_*` and `swig_repertoire_*` columns retain provenance. Options, compact MAP/entropy vectors, mixture summaries, threshold, and apply/reset state are included in Swig sessions.
 
 ## Interpretation and limitations
 

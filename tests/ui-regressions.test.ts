@@ -86,7 +86,7 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(post, /vCallIncludeAmbiguous/);
   assert.match(post, /<span>Allele pooling<small>/);
   assert.match(post, /Resolve ambiguous germline calls by pooling repertoire evidence/);
-  assert.match(post, /<AlleleRefinementPanel options=/);
+  assert.match(post, /<AlleleRefinementPanel references=\{references\} options=/);
   assert.match(post, /\{sidebarTools\}/);
   assert.match(fs.readFileSync(new URL("../src/allele-refinement/panel.tsx", import.meta.url), "utf8"), /Advanced evidence-kernel and variational settings/);
   assert.match(css, /\.post-context-main > \.post-module\.is-collapsed \{ display: none !important; \}/);
@@ -97,6 +97,22 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(css, /results are an application workspace, not a report masthead/);
   assert.match(css, /\.results-application-page \.results-view-tabs[\s\S]*background: var\(--ink\)/);
   assert.match(css, /\.post-analysis-heading \{ display: none !important; \}/);
+});
+
+test("allele pooling exposes parameter-responsive reference and pre/post assignment diagnostics", () => {
+  const panel = fs.readFileSync(new URL("../src/allele-refinement/panel.tsx", import.meta.url), "utf8");
+  const views = fs.readFileSync(new URL("../src/allele-refinement/diagnostic-views.tsx", import.meta.url), "utf8");
+  const diagnostics = fs.readFileSync(new URL("../src/allele-refinement/diagnostics.ts", import.meta.url), "utf8");
+  assert.match(panel, /ReferenceKernelInspector references=\{references\} options=\{options\}/);
+  assert.match(panel, /AlleleAssignmentShiftChart models=\{models\}/);
+  assert.match(views, /label="Reference allele"/);
+  assert.match(views, />Differences<\/button>/);
+  assert.match(views, /row\.primary \? <small>bar omitted<\/small>/);
+  assert.match(views, /Allele frequencies before and after repertoire pooling/);
+  assert.match(views, /models\.map\(\(candidate\)/);
+  assert.match(views, /SVG ↓/);
+  assert.match(diagnostics, /unstripped\.some\(\(row\) => row\.sequence\[column\] !== "-"\)/);
+  assert.match(diagnostics, /sort\(\(left, right\) => right\.after - left\.after/);
 });
 
 test("phylogenetic UCA posterior uses the reusable bounded serif frequency logo", () => {
