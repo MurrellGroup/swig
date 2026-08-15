@@ -58,6 +58,15 @@ export interface PipelinePlan {
     hasCdr3: "any" | "yes" | "no";
     doubleD: "any" | "positive" | "negative";
   };
+  alleleRefinement: {
+    enabled: boolean;
+    scope: DatasetScope;
+    segments: Array<"V" | "D" | "J">;
+    weighting: "unique" | "abundance";
+    baselineNeighbourOdds: number;
+    shmLeakageSensitivity: number;
+    applyMinimumPosterior: number;
+  };
   lineage: {
     enabled: boolean;
     scope: DatasetScope;
@@ -113,6 +122,15 @@ export const DEFAULT_PIPELINE_PLAN: PipelinePlan = {
     productive: "any",
     hasCdr3: "any",
     doubleD: "any",
+  },
+  alleleRefinement: {
+    enabled: false,
+    scope: "subject",
+    segments: ["V", "J"],
+    weighting: "unique",
+    baselineNeighbourOdds: 0.01,
+    shmLeakageSensitivity: 1,
+    applyMinimumPosterior: 0.8,
   },
   lineage: {
     enabled: true,

@@ -87,6 +87,11 @@ import { packSessionVector, unpackSessionVector, type PostAnalysisSessionSnapsho
 import { DATASET_SCOPE_LABELS, datasetScopeValue, type DatasetManifestEntry, type DatasetScope, type PipelinePlan } from "./study-design";
 import { sampleColor, type SampleColorMap } from "./sample-colors";
 import { PhyloUcaPanel, type PhyloUcaPanelState } from "./phylo-uca/panel";
+import { AlleleRefinementPanel } from "./allele-refinement/panel";
+import { AlleleRefinementRuntime } from "./allele-refinement/runtime";
+import { refinedCall, refineDetailRows, modelSummaryTable, writeRefinedAirr, writeRefinementSidecar } from "./allele-refinement/export";
+import { restoreAlleleRefinement, saveAlleleRefinement } from "./allele-refinement/serialization";
+import { DEFAULT_ALLELE_REFINEMENT_OPTIONS, type AlleleRefinementOptions, type AlleleRefinementResult } from "./allele-refinement/types";
 
 interface Props {
   store: AirrResultStore;
@@ -146,7 +151,7 @@ interface TreeSnapshot extends FastTreeRun {
 }
 
 type TreeViewMode = "stable" | "rooted" | "raw";
-type PostModuleId = "dedup" | "chimera" | "selection" | "lineage" | "diagnostics" | "workbench" | "query";
+type PostModuleId = "dedup" | "chimera" | "selection" | "alleles" | "lineage" | "diagnostics" | "workbench" | "query";
 type PostWorkspaceId = "overview" | PostModuleId;
 
 interface EditedAlignmentState {
@@ -402,11 +407,13 @@ function parseQueries(text: string): string[] {
 
 export function PostAnalysisWorkbench({ store, references, scope, loci, resultFacets, inputName, workers, callingProfile, assignerStrategy, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", doubleDCount = 0, autoPipeline, sidebarTools, onInspect, onSessionChange, sessionHandleRef, initialSession }: Props) {
   const runtime = useMemo(() => new PostAnalysisRuntime(store), [store]);
+  const alleleRuntime = useMemo(() => new AlleleRefinementRuntime(), [store]);
   const postLockAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => {
     postLockAbortRef.current?.abort();
     runtime.terminate();
-  }, [runtime]);
+    alleleRuntime.terminate();
+  }, [alleleRuntime, runtime]);
   const [busy, setBusy] = useState("");
   const [postLockState, setPostLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
   const [progress, setProgress] = useState<{ processed: number; total: number; unit?: string }>({ processed: 0, total: store.count });
@@ -439,6 +446,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [selectionPreview, setSelectionPreview] = useState<RepertoireSelectionResult | null>(null);
   const [selectionBaseMask, setSelectionBaseMask] = useState<Uint8Array | null>(null);
   const [selectionApplied, setSelectionApplied] = useState(false);
+  const [alleleOptions, setAlleleOptions] = useState<AlleleRefinementOptions>({ ...DEFAULT_ALLELE_REFINEMENT_OPTIONS, segments: [...DEFAULT_ALLELE_REFINEMENT_OPTIONS.segments] });
+  const [alleleRefinement, setAlleleRefinement] = useState<AlleleRefinementResult | null>(null);
+  const [alleleApplied, setAlleleApplied] = useState(false);
+  const [alleleApplyMinimumPosterior, setAlleleApplyMinimumPosterior] = useState(0.8);
+  const [alleleProgress, setAlleleProgress] = useState<{ processed: number; total: number; phase: string } | null>(null);
   const selectionFacets=useMemo(()=>({
     datasets:uniqueFacetItems(datasets.map((dataset)=>dataset.datasetId)),
     samples:uniqueFacetItems(datasets.map((dataset)=>dataset.sampleId)),
@@ -820,6 +832,42 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             report.push(`Repertoire selection retained ${selected.retainedRecords.toLocaleString()} records.`);
           }
 
+          let pipelineAlleleResult: AlleleRefinementResult | null = null;
+          const pipelineAlleleThreshold = autoPipeline.alleleRefinement.applyMinimumPosterior;
+          const overlayPipelineAlleleCalls = (row: { ordinal: number; values: Record<string,string> }) => {
+            if (!pipelineAlleleResult) return;
+            const v = refinedCall(pipelineAlleleResult, "V", row.ordinal, pipelineAlleleThreshold);
+            const d = refinedCall(pipelineAlleleResult, "D", row.ordinal, pipelineAlleleThreshold);
+            const j = refinedCall(pipelineAlleleResult, "J", row.ordinal, pipelineAlleleThreshold);
+            if (v) row.values.v_call = v;
+            if (d) row.values.d_call = d;
+            if (j) row.values.j_call = j;
+          };
+          if (autoPipeline.alleleRefinement.enabled) {
+            const options: AlleleRefinementOptions = {
+              ...DEFAULT_ALLELE_REFINEMENT_OPTIONS,
+              scope: autoPipeline.alleleRefinement.scope,
+              segments: [...autoPipeline.alleleRefinement.segments],
+              weighting: autoPipeline.alleleRefinement.weighting,
+              baselineNeighbourOdds: autoPipeline.alleleRefinement.baselineNeighbourOdds,
+              shmLeakageSensitivity: autoPipeline.alleleRefinement.shmLeakageSensitivity,
+            };
+            setAlleleOptions(options);
+            setAlleleApplyMinimumPosterior(pipelineAlleleThreshold);
+            setBusy("Pipeline · pooling repertoire germline evidence");
+            pipelineAlleleResult = await alleleRuntime.run(store, references, options, activeMask, (next) => {
+              setAlleleProgress(next);
+              setBusy(`Pipeline · ${next.phase}`);
+              setProgress({ processed: next.processed, total: next.total, unit: "records or independent repertoire pools" });
+            }, postLockAbortRef.current?.signal);
+            setAlleleProgress(null);
+            setAlleleRefinement(pipelineAlleleResult);
+            setAlleleApplied(true);
+            await runtime.setRepertoireCallOverrides(pipelineAlleleResult, pipelineAlleleThreshold);
+            report.push(`Allele pooling fitted ${Object.values(pipelineAlleleResult.segments).reduce((sum, segment) => sum + (segment?.models.length ?? 0), 0).toLocaleString()} donor/locus/segment models and applied calls at posterior ≥ ${pipelineAlleleThreshold}.`);
+            if (!autoPipeline.lineage.enabled) openModule("alleles");
+          }
+
           let lineageResult: LineageDashboard | null = null;
           if (autoPipeline.lineage.enabled) {
             setIdentity(autoPipeline.lineage.identity);
@@ -849,7 +897,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             const counts = collapseResult ? await runtime.dedupCounts() : null;
             const accumulator = new ShmAccumulator({ metric: autoPipeline.shm.metric, maxSamplesPerLineage: 2000 });
             const fields = ["sequence_id","v_call","j_call","locus","isotype","sample_id","subject_id","swig_cohort","swig_timepoint","swig_compartment","duplicate_count","v_sequence_alignment","v_germline_alignment","sequence_alignment","germline_alignment","v_sequence_start","sequence_frame","v_frame","cdr1_start","cdr1_end","cdr2_start","cdr2_end","fwr1_start","fwr1_end","fwr2_start","fwr2_end","fwr3_start","fwr3_end"];
-            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) { if (counts?.[row.ordinal]) row.values.duplicate_count = String(counts[row.ordinal]); accumulator.add(row.values, row.ordinal, assignments?.[row.ordinal] ?? 0, "All selected"); } }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed, total }) });
+            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) { overlayPipelineAlleleCalls(row); if (counts?.[row.ordinal]) row.values.duplicate_count = String(counts[row.ordinal]); accumulator.add(row.values, row.ordinal, assignments?.[row.ordinal] ?? 0, "All selected"); } }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed, total }) });
             const dashboard = accumulator.finish();
             setShmDashboard(dashboard);
             report.push(`SHM summarized ${dashboard.analyzedRecords.toLocaleString()} records.`);
@@ -861,10 +909,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             const assignments = await runtime.lineageAssignments();
             const accumulator = new MissingAlleleAccumulator(DEFAULT_MISSING_ALLELE_OPTIONS);
             const fields = ["subject_id","v_call","j_call","cdr3","junction","v_germline_start","v_sequence_alignment","v_germline_alignment"];
-            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) accumulator.add(row.values, row.ordinal, assignments[row.ordinal] ?? 0); }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed, total: total * 2 }) });
+            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) { overlayPipelineAlleleCalls(row); accumulator.add(row.values, row.ordinal, assignments[row.ordinal] ?? 0); } }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed, total: total * 2 }) });
             setBusy("Pipeline · screening every lineage member (pass 2 of 2)");
             const validator = accumulator.prepareValidation(references.V);
-            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) validator.add(row.values, row.ordinal, assignments[row.ordinal] ?? 0); }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed: total + processed, total: total * 2 }) });
+            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) { overlayPipelineAlleleCalls(row); validator.add(row.values, row.ordinal, assignments[row.ordinal] ?? 0); } }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed: total + processed, total: total * 2 }) });
             const dashboard = validator.finish();
             setMissingAlleles(dashboard);
             setSelectedMissingAlleleIds(new Set());
@@ -882,7 +930,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         setBusy("");
       }
     })();
-  }, [autoPipeline, initialSession, references, runtime, scope, store, workers]);
+  }, [alleleRuntime, autoPipeline, initialSession, references, runtime, scope, store, workers]);
 
   useEffect(() => {
     if(!sessionHandleRef)return;
@@ -891,7 +939,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const collapse=dedup?await (async()=>{const state=await runtime.dedupState();return {mode:dedup.mode,options:{dedupKey,collapseMode,collapseScope,respectConstantCall,denoiseErrorRate,denoiseAlpha,denoiseResolution,denoiseAmbiguity,minimumParentCount,denoiseAmbiguousPolicy,denoiseUnresolvedPolicy,fadNeighborThreshold,fadMethod,expectedZeroErrorFraction,maximumDenoiseDistance,maximumEditDistance,minimumIndelParentRatio,denoiseCandidateCap},counts:packSessionVector(state.counts),representatives:packSessionVector(state.representatives),dashboard:{...dedup}};})():undefined;
       const lineage=lineages?{options:{identity,resolution,ambiguity,productiveOnly,candidateCap,lineageScope},assignments:packSessionVector(await runtime.lineageAssignments()),dashboard:{...lineages}}:undefined;
       const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
-      return {workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
+      return {workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,alleleRefinement:alleleRefinement?saveAlleleRefinement(alleleRefinement,alleleApplied,alleleApplyMinimumPosterior):undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
         alignmentFrameOffset,
         query:{queryText,queryTarget,queryMetric,queryIdentity,queryLimit,queryLocus,queryV,queryJ,queryConstraintMode,queryResultMode,queryInference,queryHits,queryLineageHits,expanded},
         editedAlignments:[...editedAlignments.values()].map((entry)=>({...entry,lineageIds:[...entry.lineageIds]})),
@@ -910,7 +958,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     const reason=treeRun?"phylogeny_changed":editedAlignments.size?"edited_alignment_changed":alignment?"lineage_alignment_changed":missingAlleles?"missing_allele_screen_changed":shmDashboard?"shm_changed":lineages?"lineages_changed":chmm?"chimera_state_changed":dedup?"collapse_state_changed":selectionApplied||selectionPreview?"repertoire_selection_changed":"post_analysis_state_changed";
     sessionChangeCallbackRef.current?.(reason);
   },[
-    alignment,alignmentFrameOffset,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
+    alignment,alignmentFrameOffset,alleleApplied,alleleApplyMinimumPosterior,alleleOptions,alleleRefinement,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
     missingAlleleOptions,missingAlleles,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
     queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,
     selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,phyloUcaState,workingStages,
@@ -926,6 +974,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         const collapse=initialSession.collapse;const lineage=initialSession.lineage;
         const dedupState=collapse?.counts&&collapse.representatives&&collapse.dashboard?{dashboard:collapse.dashboard as unknown as DedupDashboard,counts:unpackSessionVector(collapse.counts) as Uint32Array,representatives:unpackSessionVector(collapse.representatives) as Int32Array}:undefined;
         const lineageState=lineage?.assignments&&lineage.dashboard?{dashboard:lineage.dashboard as unknown as LineageDashboard,assignments:unpackSessionVector(lineage.assignments) as Int32Array}:undefined;
+        let restoredAllele:AlleleRefinementResult|null=null;let restoredAlleleApplied=false;let restoredAlleleThreshold=0.8;
+        if(initialSession.alleleRefinement){restoredAllele=restoreAlleleRefinement(initialSession.alleleRefinement);restoredAllele.options={...DEFAULT_ALLELE_REFINEMENT_OPTIONS,...restoredAllele.options,segments:[...restoredAllele.options.segments]};restoredAlleleApplied=Boolean(initialSession.alleleRefinement.applied);restoredAlleleThreshold=initialSession.alleleRefinement.applyMinimumPosterior??0.8;setAlleleRefinement(restoredAllele);setAlleleOptions(restoredAllele.options);setAlleleApplied(restoredAlleleApplied);setAlleleApplyMinimumPosterior(restoredAlleleThreshold);if(restoredAlleleApplied)await runtime.setRepertoireCallOverrides(restoredAllele,restoredAlleleThreshold);}
         const restoredRuntimeState=await runtime.restoreState({activeMask:active,dedup:dedupState,lineages:lineageState});
         setWorkingMask(active);setWorkingStages(initialSession.workingStages as WorkingSetStage[]);
         if(collapse?.dashboard){setDedup(collapse.dashboard as unknown as DedupDashboard);setCollapseMode(collapse.mode);const o=collapse.options; if(typeof o.dedupKey==="string")setDedupKey(o.dedupKey as DedupKey);if(typeof o.collapseScope==="string")setCollapseScope(o.collapseScope as DatasetScope);if(typeof o.respectConstantCall==="boolean")setRespectConstantCall(o.respectConstantCall);if(typeof o.denoiseUnresolvedPolicy==="string")setDenoiseUnresolvedPolicy(o.denoiseUnresolvedPolicy as "discard"|"retain");}
@@ -952,7 +1002,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           const selectedId=restoredSelectedIds[0];
           const summary=restoredLineages?.summaries.find(item=>item.id===selectedId);
           if(summary){
-            const limitPerLineage=restoredSelectedIds.length===1?500:Math.max(20,Math.floor(1000/restoredSelectedIds.length));const memberGroups=await runtime.lineageMembersMany(restoredSelectedIds,limitPerLineage);const rows=await store.detailMany(memberGroups.flatMap((group)=>group.ordinals));
+            const limitPerLineage=restoredSelectedIds.length===1?500:Math.max(20,Math.floor(1000/restoredSelectedIds.length));const memberGroups=await runtime.lineageMembersMany(restoredSelectedIds,limitPerLineage);const rows=refineDetailRows(await store.detailMany(memberGroups.flatMap((group)=>group.ordinals)),restoredAllele,restoredAlleleThreshold,restoredAlleleApplied);
             const counts=initialSession.workingStages.some(stage=>stage.id==="dedup")?await runtime.dedupCounts():null;
             const originalByOrdinal=new Map<number,number>();memberGroups.forEach((group)=>group.ordinals.forEach((ordinal)=>originalByOrdinal.set(ordinal,group.lineageId)));
             setSelectedLineage(summary);setSelectedLineageIds(restoredSelectedIds);setLineageRows(rows);setLineageTotal(memberGroups.reduce((sum,group)=>sum+group.total,0));setOriginalLineageByOrdinal(originalByOrdinal);setLineageMultiplicity(new Map(rows.map(row=>{const imported=Number(row.values.duplicate_count);const count=counts?.[row.record.ordinal]||(Number.isFinite(imported)&&imported>0?imported:1);return [row.record.ordinal,Math.max(1,Math.floor(count))] as const;})));
@@ -997,7 +1047,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   async function runDedup() {
     setProgress({ processed: 0, total: store.count });
     const label = collapseMode === "exact" ? "Deduplicating AIRR records" : collapseMode === "fad" ? "Running FAD-compatible denoising" : collapseMode === "indel" ? "Running indel-aware denoising" : "Running conservative error-model denoising";
-    const result = await operation(label, () => collapseMode === "exact" ? runtime.deduplicate(dedupKey, denoiseUnresolvedPolicy, collapseScope, respectConstantCall) : runtime.denoise({
+    const result = await operation(label, async () => {
+      // Collapse/denoising belongs upstream of repertoire allele pooling and
+      // must always use the original assignment calls.
+      if (alleleApplied) await runtime.setRepertoireCallOverrides(null);
+      return collapseMode === "exact" ? runtime.deduplicate(dedupKey, denoiseUnresolvedPolicy, collapseScope, respectConstantCall) : runtime.denoise({
       mode: collapseMode,
       errorRate: denoiseErrorRate,
       alpha: denoiseAlpha,
@@ -1019,7 +1073,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const stage = phase === "variants" ? "Denoising indexed sequence variants" : phase === "finalize" ? "Materializing representatives and multiplicities" : "Streaming VDJ sequences into the denoising index";
       setBusy(stage);
       setProgress({ processed, total, unit: phase === "variants" ? "unique sequence variants processed" : phase === "finalize" ? "representative-state operations completed" : "AIRR records streamed into the denoising index" });
-    }));
+      });
+    });
     if (result) {
       setDedup(result);
       setWorkingMask(null);
@@ -1072,7 +1127,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setActiveWorkspace("dedup");
   }
 
-  function invalidatePopulationAnalyses() {
+  function invalidateAssignmentDependentAnalyses() {
     setLineages(null);
     setSelectedLineage(null);
     setSelectedLineageIds([]);
@@ -1090,6 +1145,24 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setShmDashboard(null);
     setMissingAlleles(null);
     setSelectedMissingAlleleIds(new Set());
+  }
+
+  function invalidatePopulationAnalyses() {
+    setAlleleRefinement(null);
+    setAlleleApplied(false);
+    setAlleleProgress(null);
+    void runtime.setRepertoireCallOverrides(null).catch(() => undefined);
+    invalidateAssignmentDependentAnalyses();
+  }
+
+  function overlayRefinedCalls(row: { ordinal: number; values: Record<string,string> }) {
+    if (!alleleRefinement || !alleleApplied) return;
+    const v = refinedCall(alleleRefinement, "V", row.ordinal, alleleApplyMinimumPosterior);
+    const d = refinedCall(alleleRefinement, "D", row.ordinal, alleleApplyMinimumPosterior);
+    const j = refinedCall(alleleRefinement, "J", row.ordinal, alleleApplyMinimumPosterior);
+    if (v) row.values.v_call = v;
+    if (d) row.values.d_call = d;
+    if (j) row.values.j_call = j;
   }
 
   async function previewSelection() {
@@ -1137,6 +1210,73 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     invalidatePopulationAnalyses();
   }
 
+  async function runAlleleRefinement() {
+    setAlleleProgress({ processed: 0, total: store.count, phase: "Preparing repertoire allele evidence" });
+    const result = await operation("Pooling ambiguous germline assignments across the repertoire", async () => {
+      const mask = await runtime.activeMask();
+      const fitted = await alleleRuntime.run(store, references, alleleOptions, mask, (next) => {
+        setAlleleProgress(next);
+        setBusy(next.phase);
+        setProgress({ processed: next.processed, total: next.total, unit: "records or independent repertoire pools" });
+      }, postLockAbortRef.current?.signal);
+      await runtime.setRepertoireCallOverrides(null);
+      return fitted;
+    });
+    setAlleleProgress(null);
+    if (!result) return;
+    setAlleleRefinement(result);
+    setAlleleApplied(false);
+    invalidateAssignmentDependentAnalyses();
+    openModule("alleles");
+  }
+
+  async function applyAlleleRefinement() {
+    if (!alleleRefinement) return;
+    const result = await operation("Applying repertoire posterior calls to downstream analyses", () => runtime.setRepertoireCallOverrides(alleleRefinement, alleleApplyMinimumPosterior));
+    if (!result) return;
+    setAlleleApplied(true);
+    invalidateAssignmentDependentAnalyses();
+    openModule("alleles");
+  }
+
+  async function resetAlleleRefinement() {
+    const result = await operation("Restoring original AIRR germline calls downstream", () => runtime.setRepertoireCallOverrides(null));
+    if (!result) return;
+    setAlleleApplied(false);
+    invalidateAssignmentDependentAnalyses();
+    openModule("alleles");
+  }
+
+  function downloadAlleleModel() {
+    if (!alleleRefinement) return;
+    const extension = tableExtension(exportFormat);
+    downloadText(modelSummaryTable(alleleRefinement, exportFormat), `${baseName(inputName)}.repertoire-allele-model${extension}`);
+  }
+
+  async function downloadAlleleSidecar() {
+    if (!alleleRefinement) return;
+    setBusy("Writing per-record repertoire allele posterior sidecar");
+    setError("");
+    try {
+      const mask = await runtime.activeMask();
+      const extension = tableExtension(exportFormat);
+      await saveStream(`${baseName(inputName)}.repertoire-allele-posteriors${extension}`, "Sparse per-record repertoire allele posterior", extension, (writer) => writeRefinementSidecar(store, alleleRefinement, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined));
+    } catch (operationError) { setError(operationError instanceof Error ? operationError.message : String(operationError)); }
+    finally { setBusy(""); }
+  }
+
+  async function downloadRefinedAirr() {
+    if (!alleleRefinement) return;
+    setBusy("Writing AIRR table with repertoire-refined germline calls");
+    setError("");
+    try {
+      const mask = await runtime.activeMask();
+      const extension = tableExtension(exportFormat);
+      await saveStream(`${baseName(inputName)}.repertoire-refined.airr${extension}`, "AIRR table with thresholded repertoire allele calls", extension, (writer) => writeRefinedAirr(store, alleleRefinement, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined));
+    } catch (operationError) { setError(operationError instanceof Error ? operationError.message : String(operationError)); }
+    finally { setBusy(""); }
+  }
+
   async function downloadActivePopulation() {
     setBusy("Writing the current selected population");setError("");
     try { const mask=await runtime.activeMask();const extension=tableExtension(exportFormat);await saveStream(`${baseName(inputName)}.selected.airr${extension}`,"Selected AIRR population",extension,(writer)=>store.writeAirrFormat(exportFormat,writer.write,mask??undefined)); }
@@ -1148,7 +1288,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const mask=await runtime.activeMask();const assignments=lineages?await analysisLineageAssignments():null;const counts=workingStages.some((stage)=>stage.id==="dedup")?await runtime.dedupCounts():null;
       const accumulator=new ShmAccumulator({metric:shmMetric,maxSamplesPerLineage:shmSampleCap});
       const fields=["sequence_id","v_call","j_call","locus","isotype","sample_id","subject_id","swig_cohort","swig_timepoint","swig_compartment","duplicate_count","v_sequence_alignment","v_germline_alignment","sequence_alignment","germline_alignment","v_sequence_start","sequence_frame","v_frame","cdr1_start","cdr1_end","cdr2_start","cdr2_end","fwr1_start","fwr1_end","fwr2_start","fwr2_end","fwr3_start","fwr3_end"];
-      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){if(counts?.[row.ordinal])row.values.duplicate_count=String(counts[row.ordinal]);const stratum=shmStratum==="all"?"All selected":row.values[shmStratum]||"Unassigned";accumulator.add(row.values,row.ordinal,assignments?.[row.ordinal]??0,stratum);}}, {batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total})});
+      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){overlayRefinedCalls(row);if(counts?.[row.ordinal])row.values.duplicate_count=String(counts[row.ordinal]);const stratum=shmStratum==="all"?"All selected":row.values[shmStratum]||"Unassigned";accumulator.add(row.values,row.ordinal,assignments?.[row.ordinal]??0,stratum);}}, {batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total})});
       return accumulator.finish();
     });
     if(result)setShmDashboard(result);
@@ -1160,10 +1300,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const mask=await runtime.activeMask();const assignments=await analysisLineageAssignments();const accumulator=new MissingAlleleAccumulator(missingAlleleOptions);
       const fields=["subject_id","v_call","j_call","cdr3","junction","v_germline_start","v_sequence_alignment","v_germline_alignment"];
       setBusy("Missing-V screen · discovery representatives (pass 1 of 2)");
-      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows)accumulator.add(row.values,row.ordinal,assignments[row.ordinal]??0);},{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total:total*2})});
+      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){overlayRefinedCalls(row);accumulator.add(row.values,row.ordinal,assignments[row.ordinal]??0);}},{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total:total*2})});
       const validator=accumulator.prepareValidation(references.V);
       setBusy("Missing-V screen · all-member reference veto (pass 2 of 2)");
-      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows)validator.add(row.values,row.ordinal,assignments[row.ordinal]??0);},{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed:total+processed,total:total*2})});
+      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){overlayRefinedCalls(row);validator.add(row.values,row.ordinal,assignments[row.ordinal]??0);}},{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed:total+processed,total:total*2})});
       return validator.finish();
     });
     if(result){setMissingAlleles(result);setSelectedMissingAlleleIds(new Set());}
@@ -1269,7 +1409,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const limitPerLineage = lineageIds.length === 1 ? 500 : Math.max(20, Math.floor(1_000 / lineageIds.length));
       const memberGroups = await runtime.lineageMembersMany(lineageIds, limitPerLineage);
       const ordinals = memberGroups.flatMap((group) => group.ordinals);
-      const rows = await store.detailMany(ordinals);
+      const rows = refineDetailRows(await store.detailMany(ordinals), alleleRefinement, alleleApplyMinimumPosterior, alleleApplied);
       const lineageByOrdinal = new Map<number, number>();
       memberGroups.forEach((group) => group.ordinals.forEach((ordinal) => lineageByOrdinal.set(ordinal, group.lineageId)));
       const deduplicationApplied = workingStages.some((stage) => stage.id === "dedup");
@@ -1369,7 +1509,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         }
         // Cheap representative-level exact scoring removes weak MinHash hits;
         // only the best shortlist needs multi-member germline reconstruction.
-        const representativeRows = await store.detailMany([...screens.values()].map((entry) => entry.screen.representativeOrdinal));
+        const representativeRows = refineDetailRows(await store.detailMany([...screens.values()].map((entry) => entry.screen.representativeOrdinal)), alleleRefinement, alleleApplyMinimumPosterior, alleleApplied);
         const representativeByOrdinal = new Map(representativeRows.map((row) => [row.record.ordinal, row]));
         const ranked = [...screens.values()].map((entry) => {
           const representative = representativeByOrdinal.get(entry.screen.representativeOrdinal);
@@ -1380,7 +1520,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           .slice(0, Math.min(400, Math.max(100, neighbourLimit * 6)));
         const memberGroups = await runtime.lineageMembersMany(ranked.map((value) => value.entry.screen.lineageId), 250);
         const memberByLineage = new Map(memberGroups.map((group) => [group.lineageId, group]));
-        const candidateRows = await store.detailMany(memberGroups.flatMap((group) => group.ordinals));
+        const candidateRows = refineDetailRows(await store.detailMany(memberGroups.flatMap((group) => group.ordinals)), alleleRefinement, alleleApplyMinimumPosterior, alleleApplied);
         const rowsByLineage = new Map<number, AirrDetailRow[]>();
         for (const row of candidateRows) {
           const lineageId = assignments[row.record.ordinal];
@@ -1964,10 +2104,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         <button type="button" className={activeWorkspace==="dedup"?"active":""} onClick={()=>setActiveWorkspace("dedup")}><b>01</b><span>Collapse<small>{dedup?`${dedup.uniqueRecords.toLocaleString()} representatives`:"Not run"}</small></span></button>
         <button type="button" className={activeWorkspace==="chimera"?"active":""} onClick={()=>setActiveWorkspace("chimera")}><b>02</b><span>Chimera<small>{chmm?`${chmm.evaluated.toLocaleString()} evaluated`:"Optional"}</small></span></button>
         <button type="button" className={activeWorkspace==="selection"?"active":""} onClick={()=>setActiveWorkspace("selection")}><b>03</b><span>Selection<small>{selectionApplied?"Committed":selectionPreview?"Preview ready":"Configure filters"}</small></span></button>
-        <button type="button" className={activeWorkspace==="lineage"?"active":""} onClick={()=>setActiveWorkspace("lineage")}><b>04</b><span>Lineages<small>{lineages?`${lineages.summaries.length.toLocaleString()} assigned`:"Not run"}</small></span></button>
-        <button type="button" className={activeWorkspace==="diagnostics"?"active":""} onClick={()=>setActiveWorkspace("diagnostics")}><b>05</b><span>Diagnostics<small>SHM + allele hints</small></span></button>
-        <button type="button" disabled={!selectedLineage} className={activeWorkspace==="workbench"?"active":""} onClick={()=>setActiveWorkspace("workbench")}><b>06</b><span>Workbench<small>{selectedLineage?`Lineage ${selectedLineage.id}`:"Select a lineage"}</small></span></button>
-        <button type="button" className={activeWorkspace==="query"?"active":""} onClick={()=>setActiveWorkspace("query")}><b>07</b><span>Query<small>Search + expand</small></span></button>
+        <button type="button" className={activeWorkspace==="alleles"?"active":""} onClick={()=>setActiveWorkspace("alleles")}><b>04</b><span>Allele pooling<small>{alleleRefinement?`${alleleRefinement.activeRecords.toLocaleString()} modeled`:"Optional"}</small></span></button>
+        <button type="button" className={activeWorkspace==="lineage"?"active":""} onClick={()=>setActiveWorkspace("lineage")}><b>05</b><span>Lineages<small>{lineages?`${lineages.summaries.length.toLocaleString()} assigned`:"Not run"}</small></span></button>
+        <button type="button" className={activeWorkspace==="diagnostics"?"active":""} onClick={()=>setActiveWorkspace("diagnostics")}><b>06</b><span>Diagnostics<small>SHM + allele hints</small></span></button>
+        <button type="button" disabled={!selectedLineage} className={activeWorkspace==="workbench"?"active":""} onClick={()=>setActiveWorkspace("workbench")}><b>07</b><span>Workbench<small>{selectedLineage?`Lineage ${selectedLineage.id}`:"Select a lineage"}</small></span></button>
+        <button type="button" className={activeWorkspace==="query"?"active":""} onClick={()=>setActiveWorkspace("query")}><b>08</b><span>Query<small>Search + expand</small></span></button>
         {sidebarTools}
       </nav>
 
@@ -1977,7 +2118,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
 
     {autoPipeline?.enabled&&<section className={`pipeline-run-banner ${busy?"running":"complete"}`}><div><span className="section-kicker">Pipeline execution</span><h3>{busy?busy:"Selected repertoire-scale stages complete"}</h3><p>{pipelineReport.length?pipelineReport.join(" "):"The configured stages are running in order; each stage receives the retained set from the previous stage."}</p></div><strong>{busy?"RUNNING":"COMPLETE"}</strong></section>}
 
-    <div className="post-method-map"><article><b>01</b><span>Collapse</span><strong>Exact deduplication or denoising</strong></article><article><b>02</b><span>QC</span><strong>Optional CHMMAIRRa</strong></article><article><b>03</b><span>Select</span><strong>Commit a repertoire population</strong></article><article><b>04</b><span>Repertoire</span><strong>Assign lineages</strong></article><article><b>05</b><span>Diagnostics</span><strong>SHM + allele hints</strong></article><article><b>06</b><span>On demand</span><strong>Align + infer tree</strong></article><article><b>07</b><span>Targeted</span><strong>Query + expand</strong></article></div>
+    <div className="post-method-map"><article><b>01</b><span>Collapse</span><strong>Exact deduplication or denoising</strong></article><article><b>02</b><span>QC</span><strong>Optional CHMMAIRRa</strong></article><article><b>03</b><span>Select</span><strong>Commit a repertoire population</strong></article><article><b>04</b><span>Alleles</span><strong>Optional repertoire evidence pooling</strong></article><article><b>05</b><span>Repertoire</span><strong>Assign lineages</strong></article><article><b>06</b><span>Diagnostics</span><strong>SHM + allele hints</strong></article><article><b>07</b><span>On demand</span><strong>Align + infer tree</strong></article><article><b>08</b><span>Targeted</span><strong>Query + expand</strong></article></div>
 
     {datasets.length>0&&<section className="study-policy-panel"><header><div><span className="section-kicker">Multi-dataset policy</span><h3>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"} · {new Set(datasets.map((item)=>item.sampleId)).size.toLocaleString()} sample{new Set(datasets.map((item)=>item.sampleId)).size===1?"":"s"} · {new Set(datasets.map((item)=>item.subjectId)).size.toLocaleString()} donor{new Set(datasets.map((item)=>item.subjectId)).size===1?"":"s"}</h3></div><p>Metadata are stored on every AIRR row. Scope controls below are candidate-generation boundaries, not display-only labels.</p></header><div>{datasets.slice(0,12).map((item)=><article key={item.datasetId}><strong>{item.sampleId}</strong><span>{item.subjectId}</span><small>{[item.cohort,item.timepoint,item.compartment,item.inputName].filter(Boolean).join(" · ")}</small></article>)}</div>{datasets.length>12&&<small>+ {(datasets.length-12).toLocaleString()} additional datasets</small>}</section>}
 
@@ -2103,8 +2244,13 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       <p className="scientific-note"><span>i</span>Fields are committed only on Enter or blur. Previewing performs the scan; typing does not repeatedly resolve a million-row dataset. All non-empty conditions compose with logical AND, while comma/newline-separated call filters and motifs use their stated any/all rule.</p>
     </section>
 
+    <section className={moduleClass("alleles","post-module allele-refinement-module")}>
+      <header><div className="module-number amber">04</div><div><span className="section-kicker">Optional repertoire-level assignment model</span><h3>Resolve ambiguous germline calls by pooling repertoire evidence</h3><p>Fit independent sparse Dirichlet mixtures within the selected study boundary and locus. Literal co-optimal calls begin equally; retained alternatives and nearby reference alleles receive local evidence before repertoire usage updates each record posterior.</p></div><a href="REPERTOIRE_ALLELE_REFINEMENT.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("alleles")} onClick={()=>toggleModule("alleles")}>{openModules.has("alleles")?"Collapse ↑":"Expand ↓"}</button></header>
+      <AlleleRefinementPanel options={alleleOptions} onOptionsChange={(next)=>{setAlleleOptions(next);setAlleleRefinement(null);setAlleleApplied(false);void runtime.setRepertoireCallOverrides(null).catch(()=>undefined);invalidateAssignmentDependentAnalyses();}} result={alleleRefinement} applied={alleleApplied} applyMinimumPosterior={alleleApplyMinimumPosterior} onApplyMinimumPosteriorChange={(value)=>{setAlleleApplyMinimumPosterior(Math.max(0,Math.min(1,value)));if(alleleApplied){setAlleleApplied(false);void runtime.setRepertoireCallOverrides(null).catch(()=>undefined);invalidateAssignmentDependentAnalyses();}}} busy={Boolean(busy)} progress={alleleProgress} onRun={()=>void runAlleleRefinement()} onApply={()=>void applyAlleleRefinement()} onReset={()=>void resetAlleleRefinement()} onDownloadModel={downloadAlleleModel} onDownloadSidecar={()=>void downloadAlleleSidecar()} onDownloadAirr={()=>void downloadRefinedAirr()} />
+    </section>
+
     <section className={moduleClass("lineage","post-module lineage-module")}>
-      <header><div className="module-number">04</div><div><span className="section-kicker">Repertoire-scale clonal grouping</span><h3>Assign lineages from CDR3 nucleotide distance</h3><p>Default: same locus, overlapping V/J gene assignments, exact CDR3 nucleotide length, and single-linkage at ≥85% identity. The threshold is a starting point and remains dataset-adjustable.</p></div><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC5340603/" target="_blank" rel="noreferrer">Clonal threshold literature ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("lineage")} onClick={()=>toggleModule("lineage")}>{openModules.has("lineage")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number">05</div><div><span className="section-kicker">Repertoire-scale clonal grouping</span><h3>Assign lineages from CDR3 nucleotide distance</h3><p>Default: same locus, overlapping V/J gene assignments, exact CDR3 nucleotide length, and single-linkage at ≥85% identity. The threshold is a starting point and remains dataset-adjustable.</p></div><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC5340603/" target="_blank" rel="noreferrer">Clonal threshold literature ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("lineage")} onClick={()=>toggleModule("lineage")}>{openModules.has("lineage")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="lineage-config">
         <div className="control-grid three"><label><span>Study boundary</span><select value={lineageScope} onChange={(event)=>{setLineageScope(event.target.value as DatasetScope);setLineages(null);}}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><label><span>CDR3 identity</span><div className="range-number"><input type="range" min="0.7" max="1" step="0.01" value={identity} onChange={(event) => setIdentity(Number(event.target.value))} /><b>{Math.round(identity * 100)}%</b></div></label><label className="check-line"><input type="checkbox" checked={productiveOnly} onChange={(event) => setProductiveOnly(event.target.checked)} /><span>Productive only</span></label></div>
         <details className="post-advanced"><summary>Advanced call matching and performance settings</summary><div className="control-grid three"><label><span>Call level</span><select value={resolution} onChange={(event) => setResolution(event.target.value as CallResolution)}><option value="gene">Gene</option><option value="allele">Allele</option></select></label><label><span>Ambiguous calls</span><select value={ambiguity} onChange={(event) => setAmbiguity(event.target.value as AmbiguityPolicy)}><option value="overlap">Any assignment overlaps</option><option value="top">Top call only</option><option value="strict">Exact call sets</option></select></label><label><span>Candidate cap / record</span><CommitNumberInput min="100" max="1000000" step="1000" value={candidateCap} onCommit={setCandidateCap} /></label></div><div className="algorithm-note"><strong>Exact accelerated single-linkage · {DATASET_SCOPE_LABELS[lineageScope]}</strong><span>Partition by study boundary → locus → V/J calls → CDR3 length → d+1 exact blocks → verify normalized Hamming distance → union-find components.</span></div></details>
@@ -2188,7 +2334,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("diagnostics","post-module downstream-viz-module")}>
-      <header><div className="module-number amber">05</div><div><span className="section-kicker">Selected-population diagnostics</span><h3>Somatic hypermutation and reference-set evidence</h3><p>Both analyses inherit the committed population above. SHM summaries retain collapsed abundance; missing-V screening tests linked nucleotide haplotypes across independent lineages and then checks every retained member of each lineage.</p></div><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC5187446/" target="_blank" rel="noreferrer">IgDiscover method ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("diagnostics")} onClick={()=>toggleModule("diagnostics")}>{openModules.has("diagnostics")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number amber">06</div><div><span className="section-kicker">Selected-population diagnostics</span><h3>Somatic hypermutation and reference-set evidence</h3><p>Both analyses inherit the committed population above. SHM summaries retain collapsed abundance; missing-V screening tests linked nucleotide haplotypes across independent lineages and then checks every retained member of each lineage.</p></div><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC5187446/" target="_blank" rel="noreferrer">IgDiscover method ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("diagnostics")} onClick={()=>toggleModule("diagnostics")}>{openModules.has("diagnostics")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="diagnostic-grid">
         <article><span className="section-kicker">SHM</span><h4>Mutation distributions</h4><div className="control-grid two"><label><span>Measure</span><select value={shmMetric} onChange={(event)=>{setShmMetric(event.target.value as ShmMetricKey);setShmDashboard(null);}}><option value="vNtRate">V nucleotide rate</option><option value="vNtMutations">V nucleotide count</option><option value="vAaRate">V amino-acid replacement rate</option><option value="vAaReplacements">V amino-acid replacement count</option><option value="synonymous">Synonymous codon count</option><option value="cdrNtRate">CDR1/2 nucleotide rate</option><option value="frameworkNtRate">Framework nucleotide rate</option></select></label><label><span>Stratify by</span><select value={shmStratum} onChange={(event)=>{setShmStratum(event.target.value as typeof shmStratum);setShmDashboard(null);}}><option value="all">No additional stratum</option><option value="sample_id">Sample</option><option value="subject_id">Donor / subject</option><option value="swig_cohort">Cohort</option><option value="swig_timepoint">Timepoint</option><option value="swig_compartment">Compartment / tissue</option><option value="locus">Locus</option><option value="v_call">V call</option><option value="isotype">Isotype</option></select></label></div><details className="post-advanced"><summary>Advanced plot sampling</summary><div className="control-grid"><label><span>Plot sample / lineage</span><CommitNumberInput min="50" max="10000" step="50" value={shmSampleCap} onCommit={(value)=>{setShmSampleCap(value);setShmDashboard(null);}} /></label></div></details><button className={guidedClass("run-shm")} type="button" disabled={Boolean(busy)} onClick={()=>void runShmAnalysis()}>Calculate SHM on {workingCount.toLocaleString()} records</button><p>Plot memory is bounded per lineage; scalar counts still cover every selected row.</p></article>
         <article><span className="section-kicker">Reference warning</span><h4>Possible missing V alleles</h4>
@@ -2218,7 +2364,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("query","post-module query-module")}>
-      <header><div className="module-number dark">07</div><div><span className="section-kicker">Targeted repertoire search</span><h3>Query sequences, then expand the matched set</h3><p>Paste one or more sequences or FASTA records. V/J constraints can be supplied directly or inferred per seed with the same references, assignment strategy, and calling profile as the main analysis.</p></div><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("query")} onClick={()=>toggleModule("query")}>{openModules.has("query")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number dark">08</div><div><span className="section-kicker">Targeted repertoire search</span><h3>Query sequences, then expand the matched set</h3><p>Paste one or more sequences or FASTA records. V/J constraints can be supplied directly or inferred per seed with the same references, assignment strategy, and calling profile as the main analysis.</p></div><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("query")} onClick={()=>toggleModule("query")}>{openModules.has("query")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="query-layout">
         <div className="query-input">
           <label><span>Query sequence(s) or FASTA</span><CommitTextarea value={queryText} onCommit={setQueryText} placeholder=">seed_1\nTGTGCGAGAGAT…\n>seed_2\nTGTGCGAGGGAT…" /></label>
@@ -2243,7 +2389,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     {selectedLineage && <section ref={workbenchRef} className={moduleClass("workbench","post-module lineage-workbench")} tabIndex={-1}>
-      <header><div className="module-number dark">06</div><div><span className="section-kicker">{selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>Lineage neighbours, alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · {selectedLineage.locus} · original assignments {selectedLineageIds.map((id) => `L${id}`).join(", ")}</p></div><button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number dark">07</div><div><span className="section-kicker">{selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>Lineage neighbours, alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · {selectedLineage.locus} · original assignments {selectedLineageIds.map((id) => `L${id}`).join(", ")}</p></div><button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `${lineageRows.length} stratified members loaded from ${lineageTotal.toLocaleString()}; analysis remains bounded` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => {const sample=row.values.sample_id||row.record.sampleId||"";const original=originalLineageByOrdinal.get(row.record.ordinal);const cdr3=row.values.cdr3_aa||row.values.cdr3||"CDR3 —";return <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)} title={`${sample||"sample unassigned"}${original?` · original lineage ${original}`:""} · ${cdr3}`}><i style={{background:sampleColor(sample,sampleColors)}}/><span><b>{row.record.sequenceId}</b><small>{cdr3}</small></span></button>;})}</div></div>
       <div className="lineage-neighbour-explorer">
         <header><div><span className="section-kicker">Exploratory boundary review</span><h4>Lineage neighbours</h4><p>Find separate assigned lineages with CDR3 links below the clustering cutoff, similar inferred lineage germlines, or either criterion. Search is read-only until you explicitly merge.</p></div><span className="neighbour-source-chip">Source {selectedLineageIds.map((id)=>`L${id}`).join(" + ")}</span></header>

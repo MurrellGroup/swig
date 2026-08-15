@@ -12,6 +12,7 @@ import type {
   QueryOptions,
 } from "./post-analysis-core";
 import type { DatasetScope } from "./study-design";
+import type { AlleleRefinementResult, RefinementSegment } from "./allele-refinement/types";
 
 export interface DedupDashboard {
   mode: CollapseMode;
@@ -136,6 +137,27 @@ export class PostAnalysisRuntime {
     await this.ensureIndexed();
     const result = await this.request<{ mask: Uint8Array | null }>({ type: "activeMask" });
     return result.mask;
+  }
+
+  async setRepertoireCallOverrides(
+    refinement: AlleleRefinementResult | null,
+    minimumPosterior = 0.8,
+  ): Promise<{ changedV: number; changedJ: number; threshold: number }> {
+    await this.ensureIndexed();
+    const payload = (segment: RefinementSegment) => {
+      const result = refinement?.segments[segment];
+      return result ? {
+        labels: result.nodes.map((node) => node.names.join(",")),
+        mapNode: result.mapNode,
+        probability: result.mapProbability,
+      } : undefined;
+    };
+    return this.request({
+      type: "setCallOverrides",
+      minimumPosterior,
+      v: payload("V"),
+      j: payload("J"),
+    });
   }
 
   async assignLineages(options: LineageOptions, useDedup: boolean): Promise<LineageDashboard> {

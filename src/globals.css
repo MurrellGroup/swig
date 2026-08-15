@@ -3774,3 +3774,35 @@ label[data-field-help] > span:first-child { cursor: help; text-decoration: under
   .results-drawer-study,
   .results-drawer-palette { padding: 16px; }
 }
+
+/* Repertoire-level germline-call pooling. */
+.allele-refinement-config { display: grid; gap: 16px; padding: 22px; border-bottom: 1px solid var(--line); }
+.allele-refinement-config .control-grid { padding: 0; }
+.allele-segment-picker { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.allele-segment-picker legend { margin-bottom: 7px; color: var(--muted); font-size: 8px; font-weight: 820; letter-spacing: .08em; text-transform: uppercase; }
+.allele-segment-picker label { display: flex; min-width: 0; align-items: center; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-soft); font-size: 9px; font-weight: 700; }
+.allele-refinement-action { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
+.allele-refinement-action > div { display: grid; gap: 4px; }
+.allele-refinement-action small { max-width: 760px; color: var(--muted); font-size: 8px; line-height: 1.5; }
+.allele-refinement-progress { display: grid; gap: 7px; padding: 14px 22px; border-bottom: 1px solid var(--line); background: var(--lime-soft); }
+.allele-refinement-progress > div { display: flex; justify-content: space-between; gap: 18px; font-size: 9px; }
+.allele-refinement-progress progress { width: 100%; accent-color: var(--teal); }
+.allele-refinement-results { display: grid; gap: 16px; padding: 22px; }
+.allele-apply-row { display: grid; grid-template-columns: minmax(0,1fr) 180px auto auto; align-items: end; gap: 12px; padding: 15px; border: 1px solid var(--line); background: var(--surface-soft); }
+.allele-apply-row > div { display: grid; gap: 5px; align-self: center; }
+.allele-apply-row small { color: var(--muted); font-size: 8px; line-height: 1.5; }
+.allele-apply-row > label { display: grid; gap: 6px; color: var(--muted); font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.allele-model-table { max-height: 520px; overflow: auto; border: 1px solid var(--line); }
+.allele-model-table table { width: 100%; min-width: 840px; border-collapse: collapse; font-size: 8px; }
+.allele-model-table th { position: sticky; top: 0; z-index: 1; padding: 9px; border-bottom: 1px solid var(--line); color: var(--muted); background: var(--surface-soft); text-align: left; text-transform: uppercase; }
+.allele-model-table td { padding: 8px 9px; border-bottom: 1px solid var(--line); }
+.allele-model-table code { white-space: normal; overflow-wrap: anywhere; }
+.pipeline-segment-checks { display: flex; min-width: 0; align-items: center; gap: 10px; margin: 0; padding: 9px 10px; border: 1px solid var(--line); }
+.pipeline-segment-checks legend { padding: 0 4px; color: var(--muted); font-size: 7px; font-weight: 800; text-transform: uppercase; }
+.pipeline-segment-checks label { display: flex !important; flex-direction: row !important; align-items: center; gap: 5px !important; }
+
+@media (max-width: 900px) {
+  .allele-apply-row { grid-template-columns: 1fr 1fr; }
+  .allele-apply-row > div { grid-column: 1 / -1; }
+  .allele-segment-picker { grid-template-columns: 1fr; }
+}

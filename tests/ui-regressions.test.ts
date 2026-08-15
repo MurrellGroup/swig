@@ -84,7 +84,11 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(post, /FacetPicker label="Sample"/);
   assert.match(post, /FacetPicker label="V gene or allele"/);
   assert.match(post, /vCallIncludeAmbiguous/);
+  assert.match(post, /<span>Allele pooling<small>/);
+  assert.match(post, /Resolve ambiguous germline calls by pooling repertoire evidence/);
+  assert.match(post, /<AlleleRefinementPanel options=/);
   assert.match(post, /\{sidebarTools\}/);
+  assert.match(fs.readFileSync(new URL("../src/allele-refinement/panel.tsx", import.meta.url), "utf8"), /Advanced evidence-kernel and variational settings/);
   assert.match(css, /\.post-context-main > \.post-module\.is-collapsed \{ display: none !important; \}/);
   assert.match(css, /\.pipeline-stage-grid article:not\(\.enabled\) \.pipeline-fields/);
   assert.match(css, /\.post-module > label\.constant-collapse-policy/);

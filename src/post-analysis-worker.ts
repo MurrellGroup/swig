@@ -22,6 +22,7 @@ import {
   type QueryOptions,
 } from "./post-analysis-core";
 import type { DatasetScope } from "./study-design";
+import { applyCallOverrides } from "./allele-refinement/apply";
 
 interface IngestRow {
   ordinal: number;
@@ -56,6 +57,7 @@ type Request =
   | { id: number; type: "applyDedupFilter" }
   | { id: number; type: "setActiveMask"; mask: Uint8Array | null }
   | { id: number; type: "activeMask" }
+  | { id: number; type: "setCallOverrides"; minimumPosterior: number; v?: { labels: string[]; mapNode: Int32Array; probability: Float32Array }; j?: { labels: string[]; mapNode: Int32Array; probability: Float32Array } }
   | { id: number; type: "lineages"; options: LineageOptions; useDedup: boolean }
   | { id: number; type: "query"; queries: string[]; options: QueryOptions }
   | { id: number; type: "expand"; seedOrdinals: number[]; options: ExpansionOptions }
@@ -168,6 +170,8 @@ worker.onmessage = (event: MessageEvent<Request>) => {
           locus: intern(row.locus),
           vCall: intern(row.v_call),
           jCall: intern(row.j_call),
+          originalVCall: intern(row.v_call),
+          originalJCall: intern(row.j_call),
           cCall: intern(row.c_call),
           cdr3Nt: normalizeNt(row.cdr3),
           cdr3Aa: row.cdr3_aa.toUpperCase().replace(/[^A-Z*]/g, ""),
@@ -226,6 +230,10 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       result = { retained };
     } else if (request.type === "activeMask") {
       result = { mask: currentActiveMask?.slice() ?? null };
+    } else if (request.type === "setCallOverrides") {
+      const applied = applyCallOverrides(records, request.v, request.j, request.minimumPosterior, intern);
+      currentLineages = undefined;
+      result = applied;
     } else if (request.type === "lineages") {
       currentLineages = assignLineages(records, request.options, request.useDedup ? currentDedup : undefined, currentActiveMask, currentDoubleDMask);
       result = compactLineageResult(currentLineages);

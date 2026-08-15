@@ -9,6 +9,7 @@ import type { LineageGermlineMethod } from "./lineage-alignment";
 import type { AlignmentFrameOffset } from "./lineage-phylogeny";
 import type { FastqQualityFilterOptions, FastqQualityFilterStats } from "./sequence-stream";
 import type { PhyloUcaSavedState } from "./phylo-uca/types";
+import type { SavedAlleleRefinement } from "./allele-refinement/types";
 
 export const SWIG_SESSION_SCHEMA = 1 as const;
 
@@ -59,6 +60,8 @@ export interface PostAnalysisSessionSnapshot {
   chimera?: ChimeraReplayState;
   selection?: { options: RepertoireSelectionOptions; mask?: SessionVector; baseMask?: SessionVector };
   lineage?: LineageReplayState;
+  /** Sparse repertoire-level allele posterior and whether its MAP calls were applied downstream. */
+  alleleRefinement?: SavedAlleleRefinement;
   /** Original lineage IDs currently opened together in the workbench. */
   selectedLineageIds?: number[];
   lineageGermlineMethod?: LineageGermlineMethod;

@@ -17,6 +17,9 @@ export interface PostAnalysisRecord {
   locus: string;
   vCall: string;
   jCall: string;
+  /** Immutable AIRR calls retained when repertoire-level posterior calls are reset. */
+  originalVCall?: string;
+  originalJCall?: string;
   /** AIRR constant-region call. Used as a gene-level collapse partition when requested. */
   cCall?: string;
   cdr3Nt: string;
