@@ -10,7 +10,7 @@ This module estimates the unmutated common ancestor (UCA) of a selected BCR or T
 
 The method is a **fixed-tree empirical-Bayes approximation**. It is not the MCMC phylo-HMM of Dhar et al. and it does not integrate over observed-tree topology or branch-length uncertainty. Swig first infers one tree from the observed sequences, holds it fixed, and then integrates or optimizes the quantities listed above.
 
-The implementation is isolated under `src/phylo-uca/`. It has no React dependency except for `panel.tsx`; the likelihood, HMM, placement search, worker, and public data contracts are separate modules.
+The implementation is isolated under `src/phylo-uca/`. React is confined to `panel.tsx` and the HMM-annotation renderer; the likelihood, HMM, placement search, worker, and public data contracts are separate modules.
 
 ## Inputs and invariants
 
@@ -200,7 +200,9 @@ The results panel includes a reusable probability-logo component. It is delibera
 - every column has total height one;
 - character height is its marginal posterior probability;
 - entropy does not rescale the stack;
-- all glyphs use a serif face and each is clipped to its exact probability rectangle;
+- glyphs use a bold monospace face so narrow characters such as `I` remain visible;
+- the browser measures each glyph's actual painted SVG bounds and maps those bounds exactly onto its probability rectangle, removing horizontal side bearings and vertical font padding while retaining descenders such as the tail of `Q`;
+- adjacent column rectangles share an edge: the renderer adds no horizontal inter-letter spacing;
 - the displayed and SVG-exported stacks use the same normalized vectors as the posterior table.
 
 The viewer has three representations of the same posterior:
@@ -210,6 +212,40 @@ The viewer has three representations of the same posterior:
 - **Amino acid:** an exact deterministic marginal obtained by summing probabilities of synonymous codon states. No nucleotide probabilities are multiplied.
 
 A fully gapped codon maps to `-`; a partially gapped codon maps to `X`. The selected lineage-alignment reading frame determines codon boundaries and is stored with the result. Each view can be exported as SVG.
+
+## HMM-derived V(D)J source tracks
+
+The annotation immediately above the frequency logo comes from the phylogenetic recombination HMM itself. It does not reuse the input AIRR calls. The track surface and logo share one horizontal scroll container and one exact column grid. In codon or amino-acid mode, the three contributing nucleotide columns occupy three equal subcolumns above each codon/AA stack.
+
+Codon display never constrains recombination states to multiples of three. V/D/J/N occupancy and transitions remain nucleotide-column quantities, so a trimming or segment boundary may occur after the first or second nucleotide of a displayed codon. The codon posterior explicitly retains the two intervening HMM transitions rather than replacing three nucleotide states with one codon-level source state.
+
+The user can switch between two estimands.
+
+### Best path
+
+**Best path** conditions on the single highest-posterior evaluated tree attachment and pendant length and displays the max-product Viterbi HMM state path at that placement.
+
+- A V, D, or J row displays the fixed reference character belonging to the chosen template state. It is deliberately not replaced with the UCA MAP character; the track describes source annotation, while the logo below describes UCA character uncertainty.
+- An N or uncertain trimming-boundary row has no fixed template character. It displays `q_i(c | h)` as a nucleotide stack at the chosen state.
+- Exactly one source row has total height one at each alignment column, apart from floating-point tolerance.
+
+### Marginalized
+
+For retained placement `k`, let `gamma_(k,i)(h)` be the forward-backward posterior occupancy of HMM state `h` at alignment column `i`, and let `w_k` be the normalized local placement weight.
+
+For a pure template track `r`, the displayed occupancy is
+
+`W_(r,i) = sum_k w_k sum_(h in r) gamma_(k,i)(h)`.
+
+That mass is drawn as the one reference character fixed by track `r` at column `i`. For a non-templated track `n`, character-specific height is
+
+`W_(n,i,c) = sum_k w_k sum_(h in n) gamma_(k,i)(h) q_(k,i)(c | h)`.
+
+Therefore the total height of the N stack is exactly its source occupancy, `sum_c W_(n,i,c)`, rather than a separately normalized logo.
+
+V and J candidates have one fixed projection and therefore one pure row per allele. D start/trim uncertainty can align different positions of one allele to the same alignment column. To prevent that uncertainty from creating a mixed "allele" row, Swig keys D rows by allele, D ordinal, and alignment register (`alignment column - D-reference position`). Multiple registers of the same D allele may consequently appear as separate compact rows. Every allele/register row is tested to contain at most one nonzero template character per column.
+
+An allele group is shown when its combined occupancy reaches 1% in at least one column. Within a retained D group, registers reaching 0.1% are shown; if none does, the strongest register is retained. N and uncertain-boundary rows reaching 0.1% are retained. The result reports how many subthreshold rows were omitted. This threshold affects only the visualization and serialized track sidecar, never the HMM likelihood, UCA posterior, Viterbi path, or exported sequence.
 
 ## Placement and branch-length search
 
@@ -263,6 +299,8 @@ For `n` observed tips and `L` alignment columns, directed tree messages cost `O(
 
 If `S` is the number of HMM profile states, a marginal placement evaluation is approximately `O(L S)`. D-repeat transitions do not add `O(S^2)` cost. Full posterior inference stores one forward table for each local placement as it is processed; coarse search uses rolling rows. Exact codon marginalization branches over the character alphabet for two transitions per codon: `4 + 16` sparse HMM advances under GTR4 or `5 + 25` under GTR5, followed by a terminal contraction for all 64 or 125 triples. It remains linear in `L` and `S`, with a larger constant than the single-site posterior, and never constructs a dense `S x S` matrix.
 
+HMM-source visualization is accumulated during the same backward pass. V/J tracks use their fixed projections; D tracks use sparse allele/register keys; N tracks retain five character masses. Track construction does not rerun placement search or allocate a dense track-by-column-by-state tensor.
+
 The whole inference runs in a dedicated browser worker. Progress distinguishes observed-tree inference, message construction, edge screening, full-HMM search, joint nucleotide/codon posterior integration, and finalization.
 
 ## Exports and session behavior
@@ -274,7 +312,7 @@ The panel exports:
 - long-form exact codon-posterior TSV (alignment columns, codon, translated amino acid, probability, and MAP indicator);
 - frequency-logo SVG in nucleotide, codon, or amino-acid view;
 - UCA-rooted placed Newick;
-- complete JSON containing the observed tree, placement set, weights, candidate report, model, parameters, path, sequences, warnings, and alignment fingerprint;
+- complete JSON containing the observed tree, placement set, weights, candidate report, model, parameters, Viterbi and marginalized HMM-source tracks, path, sequences, warnings, and alignment fingerprint;
 - publication-oriented SVG through the standard lineage tree viewer.
 
 Save session retains the inferred UCA result and all settings because reconstructing it requires a searched placement posterior. The state is bound to the exact lineage ID set, alignment fingerprint, and selected reading frame. Editing, replacing, deleting alignment rows, or changing the frame invalidates the result rather than silently reusing an incompatible codon posterior.

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
+import { logoGlyphRun } from "../src/logo-glyphs.ts";
+import { AMINO_ACID_LOGO_SYMBOLS, NUCLEOTIDE_LOGO_SYMBOLS } from "../src/probability-logo.ts";
+
 test("clickable individual-sequence views retain CDR3 context", () => {
   const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const post = fs.readFileSync(new URL("../src/post-analysis.tsx", import.meta.url), "utf8");
@@ -115,17 +118,44 @@ test("allele pooling exposes parameter-responsive reference and pre/post assignm
   assert.match(diagnostics, /sort\(\(left, right\) => right\.after - left\.after/);
 });
 
-test("phylogenetic UCA posterior uses the reusable bounded serif frequency logo", () => {
+test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligned HMM tracks", () => {
   const component = fs.readFileSync(new URL("../src/probability-logo.tsx", import.meta.url), "utf8");
+  const glyphs = fs.readFileSync(new URL("../src/logo-glyphs.ts", import.meta.url), "utf8");
   const panel = fs.readFileSync(new URL("../src/phylo-uca/panel.tsx", import.meta.url), "utf8");
+  const annotation = fs.readFileSync(new URL("../src/phylo-uca/hmm-annotation.tsx", import.meta.url), "utf8");
   const hmm = fs.readFileSync(new URL("../src/phylo-uca/hmm.ts", import.meta.url), "utf8");
-  assert.match(component, /Georgia, 'Times New Roman', Times, serif/);
-  assert.match(component, /preserveAspectRatio="none" overflow="hidden"/);
+  assert.match(component, /LOGO_MONOSPACE_FONT/);
+  assert.match(component, /logoGlyphRun/);
+  assert.match(component, /<path/);
+  assert.match(component, /run\.yMax \* scaleY/);
+  assert.match(component, /\$\{-scaleY\}/);
+  assert.doesNotMatch(component, /getBBox|useLogoGlyphBounds|data-logo-measurement/);
+  assert.match(glyphs, /Literal glyph contours from DejaVu Sans Mono Bold/);
+  assert.match(glyphs, /"Q": \{[^\n]+yMin: -281/);
+  assert.match(component, /width=\{columnWidth\}/);
+  assert.doesNotMatch(component, /textLength=/);
   assert.match(component, /letter height is marginal frequency and is not scaled by entropy/i);
   assert.match(panel, /UCA posterior frequency logo/);
   assert.match(panel, /Logo SVG ↓/);
+  assert.match(panel, />Best path</);
+  assert.match(panel, />Marginalized</);
+  assert.match(panel, /PhyloUcaHmmAnnotationTracks/);
+  assert.match(panel, /position \* logoColumnWidth \/ 3/);
   assert.match(panel, />Codon</);
   assert.match(panel, /Amino acid/);
   assert.match(panel, /does not multiply nucleotide marginals/);
+  assert.match(annotation, /total glyph height is the posterior track occupancy/);
+  assert.match(annotation, /FittedLogoGlyph/);
+  assert.match(hmm, /alignment site minus D-reference position/);
   assert.match(hmm, /Exact P\(x_i,x_\{i\+1\},x_\{i\+2\}/);
+
+  for (const symbol of new Set([...NUCLEOTIDE_LOGO_SYMBOLS, ...AMINO_ACID_LOGO_SYMBOLS])) {
+    const run = logoGlyphRun(symbol);
+    assert.ok(run, `missing embedded outline for ${symbol}`);
+    assert.equal(run.width, run.xMax - run.xMin);
+    assert.equal(run.height, run.yMax - run.yMin);
+    assert.ok(run.width > 0 && run.height > 0, `degenerate embedded outline for ${symbol}`);
+  }
+  const codon = logoGlyphRun("A-Q");
+  assert.ok(codon && codon.paths.length === 3, "multi-character codon glyph runs must retain all contours");
 });

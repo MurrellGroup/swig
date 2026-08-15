@@ -1945,8 +1945,14 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .phylo-uca-logo > header p { margin: 0; color: var(--muted); font-size: 8px; line-height: 1.45; }
 .phylo-uca-logo > header > div:last-child { display: flex; gap: 8px; flex: 0 0 auto; align-items: center; }
 .phylo-uca-logo > header > div:last-child > button { min-height: 34px; }
-.probability-logo-viewport { max-width: calc(100% - 40px); margin: 0 20px 12px; overflow-x: auto; border: 1px solid #cbd4d0; background: #fff; }
-.probability-logo-svg { display: block; max-width: none; font-family: Georgia,"Times New Roman",Times,serif; }
+.probability-logo-viewport,
+.phylo-uca-posterior-viewport { max-width: calc(100% - 40px); margin: 0 20px 12px; overflow-x: auto; border: 1px solid #cbd4d0; background: #fff; }
+.probability-logo-svg,
+.phylo-uca-annotation-svg { display: block; max-width: none; font-family: "Liberation Mono","DejaVu Sans Mono","Courier New",monospace; }
+.phylo-uca-annotation-scroll { max-height: 360px; overflow-x: hidden; overflow-y: auto; }
+.phylo-uca-annotation-toolbar { display: flex; gap: 12px; padding: 0 20px 8px; align-items: center; }
+.phylo-uca-annotation-toolbar .mode-toggle { flex: 0 0 auto; }
+.phylo-uca-annotation-toolbar p { margin: 0; color: var(--muted); font-size: 7px; line-height: 1.35; }
 .phylo-uca-logo-note { margin: -3px 20px 12px; color: var(--muted); font-size: 7px; line-height: 1.5; }
 .phylo-uca-segments { display: flex; gap: 2px; padding: 13px 20px; overflow-x: auto; border-bottom: 1px solid var(--line); }
 .phylo-uca-segments > span { display: grid; min-width: 52px; padding: 7px 9px; border-radius: 2px; color: #15221e; }
@@ -1963,6 +1969,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
   .phylo-uca-advanced-body { grid-template-columns: 1fr; }
   .phylo-uca-result-head { display: grid; }
   .phylo-uca-logo > header { display: grid; align-items: start; }
+  .phylo-uca-annotation-toolbar { display: grid; }
   .phylo-uca-stats { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
 

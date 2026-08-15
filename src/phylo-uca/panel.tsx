@@ -11,6 +11,7 @@ import type { AirrDetailRow } from "../result-store.ts";
 import type { AlignmentFrameOffset } from "../lineage-phylogeny.ts";
 import type { SampleColorMap } from "../sample-colors.ts";
 import { defaultPhyloUcaOptions } from "./defaults.ts";
+import { PhyloUcaHmmAnnotationTracks, type PhyloUcaAnnotationColumnLayout } from "./hmm-annotation.tsx";
 import { aminoAcidUcaLogoColumns, codonUcaLogoColumns, nucleotideUcaLogoColumns } from "./logo.ts";
 import { PHYLO_UCA_CODON_SYMBOLS, translatePhyloUcaCodonState } from "./codons.ts";
 import { prepareObservedOnlyAlignment } from "./references.ts";
@@ -93,6 +94,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
   const [running, setRunning] = useState(false);
   const [treeMode, setTreeMode] = useState<"nt" | "aa">("nt");
   const [logoMode, setLogoMode] = useState<"nt" | "codon" | "aa">("nt");
+  const [annotationMode, setAnnotationMode] = useState<"viterbi" | "marginalized">("viterbi");
   const abortRef = useRef<AbortController | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const logoRef = useRef<SVGSVGElement>(null);
@@ -182,6 +184,19 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
     : logoMode === "codon"
       ? codonUcaLogoColumns(result.codonPosterior ?? [])
       : aminoAcidUcaLogoColumns(result.codonPosterior ?? []), [logoMode, result]);
+  const logoColumnWidth = logoMode === "codon" ? 48 : 22;
+  const logoLeftInset = result?.hmmAnnotations ? 170 : 38;
+  const annotationColumns = useMemo<PhyloUcaAnnotationColumnLayout[]>(() => {
+    if (!result) return [];
+    if (logoMode === "nt") return result.posterior.map((site, index) => ({ alignmentColumn: site.alignmentColumn, x: index * logoColumnWidth, width: logoColumnWidth }));
+    return (result.codonPosterior ?? []).flatMap((codon, codonIndex) => codon.alignmentColumns.map((alignmentColumn, position) => ({
+      alignmentColumn,
+      x: codonIndex * logoColumnWidth + position * logoColumnWidth / 3,
+      width: logoColumnWidth / 3,
+    })));
+  }, [logoColumnWidth, logoMode, result]);
+  const annotationTracks = result?.hmmAnnotations?.[annotationMode] ?? [];
+  const logoContentWidth = logoColumns.length * logoColumnWidth;
   return <section className="phylo-uca-panel">
     <header>
       <div><span className="section-kicker">Fixed-tree empirical Bayes</span><h4>Phylogenetic UCA inference</h4><p>Infer the UCA attachment, pendant length, recombination path, and nucleotide posterior from the exact curated lineage alignment. The ordinary germline guide is removed before the observed tree is inferred.</p></div>
@@ -208,11 +223,17 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
       <div className="phylo-uca-sequence"><strong>Joint MAP aligned UCA</strong><code>{result.mapAlignedSequence}</code><strong>Marginal consensus</strong><code>{result.posteriorConsensusAligned}</code></div>
       <section className="phylo-uca-logo">
         <header><div><span className="section-kicker">Marginal character probabilities</span><h5>UCA posterior frequency logo</h5><p>Every stack has height 1. Letter height is posterior frequency; entropy does not rescale the column.</p></div><div><div className="mode-toggle"><button className={logoMode === "nt" ? "active" : ""} type="button" onClick={() => setLogoMode("nt")}>Nucleotide</button><button className={logoMode === "codon" ? "active" : ""} type="button" disabled={!result.codonPosterior?.length} onClick={() => setLogoMode("codon")}>Codon</button><button className={logoMode === "aa" ? "active" : ""} type="button" disabled={!result.codonPosterior?.length} onClick={() => setLogoMode("aa")}>Amino acid</button></div><button type="button" onClick={() => logoRef.current && download(serializeProbabilityLogoSvg(logoRef.current), `${base}.${logoMode}-posterior-logo.svg`, "image/svg+xml;charset=utf-8")}>Logo SVG ↓</button></div></header>
-        <ProbabilityLogo ref={logoRef} columns={logoColumns} alphabet={logoMode === "nt" ? "nucleotide" : logoMode === "aa" ? "amino-acid" : "custom"} title={`${lineageLabel} phylogenetic UCA ${logoMode === "nt" ? "nucleotide" : logoMode === "codon" ? "codon" : "amino-acid"} posterior`} labelEvery={logoMode === "nt" ? 5 : 2} columnWidth={logoMode === "codon" ? 48 : 22} />
+        {result.hmmAnnotations && <div className="phylo-uca-annotation-toolbar"><div className="mode-toggle"><button className={annotationMode === "viterbi" ? "active" : ""} type="button" onClick={() => setAnnotationMode("viterbi")}>Best path</button><button className={annotationMode === "marginalized" ? "active" : ""} type="button" onClick={() => setAnnotationMode("marginalized")}>Marginalized</button></div><p>{annotationMode === "viterbi"
+          ? `One Viterbi recombination path at the single highest-scoring tree placement. Template rows show their fixed germline nucleotide; N rows show the conditional UCA mixture. ${annotationTracks.length} tracks.`
+          : `Forward–backward source occupancy summed over HMM paths and retained tree placements. Letter height is P(column came from that track); every allele/register row is pure, while each N stack sums to its total non-template weight. ${annotationTracks.length} tracks shown; allele groups appear at ≥ ${(result.hmmAnnotations.minimumDisplayedWeight * 100).toFixed(1)}%.${result.hmmAnnotations.omittedMarginalTrackCount ? ` ${result.hmmAnnotations.omittedMarginalTrackCount} subthreshold register/track${result.hmmAnnotations.omittedMarginalTrackCount === 1 ? " is" : "s are"} hidden.` : ""}`}</p></div>}
+        <div className="phylo-uca-posterior-viewport">
+          {result.hmmAnnotations && <div className="phylo-uca-annotation-scroll" style={{ width: logoLeftInset + logoContentWidth }}><PhyloUcaHmmAnnotationTracks tracks={annotationTracks} columns={annotationColumns} leftInset={logoLeftInset} contentWidth={logoContentWidth} title={`${lineageLabel} ${annotationMode === "viterbi" ? "best-path" : "marginalized"} phylo-HMM source annotation`} /></div>}
+          <ProbabilityLogo ref={logoRef} embedded leftInset={logoLeftInset} columns={logoColumns} alphabet={logoMode === "nt" ? "nucleotide" : logoMode === "aa" ? "amino-acid" : "custom"} title={`${lineageLabel} phylogenetic UCA ${logoMode === "nt" ? "nucleotide" : logoMode === "codon" ? "codon" : "amino-acid"} posterior`} labelEvery={logoMode === "nt" ? 5 : 2} columnWidth={logoColumnWidth} />
+        </div>
         {logoMode !== "nt" && <p className="phylo-uca-logo-note">Exact joint codon probabilities are computed in reading frame {(result.frameOffset ?? frameOffset) + 1} by summing over HMM state paths, V/D/J candidate identities, and retained placement hypotheses. The amino-acid view sums synonymous codon states; it does not multiply nucleotide marginals. A complete gap codon is “-” and a partly gapped codon is “X”.</p>}
         {!result.codonPosterior?.length && <p className="phylo-uca-logo-note">This result predates exact codon posteriors. Re-run phylogenetic UCA inference to enable codon and amino-acid marginals.</p>}
+        {!result.hmmAnnotations && <p className="phylo-uca-logo-note">This saved result predates HMM-source annotation tracks. Re-run phylogenetic UCA inference to add best-path and marginalized V/D/J/N tracks.</p>}
       </section>
-      <div className="phylo-uca-segments">{result.path.map((segment, index) => <span key={`${segment.kind}-${segment.startColumn}-${index}`} className={`segment-${segment.kind.toLowerCase()}`} style={{ flexGrow: Math.max(1, segment.endColumn - segment.startColumn + 1) }} title={`${segment.kind}${segment.call ? ` · ${segment.call}` : ""} · columns ${segment.startColumn}–${segment.endColumn}`}><b>{segment.kind}{segment.dOrdinal ? segment.dOrdinal : ""}</b><small>{segment.call || `${segment.startColumn}–${segment.endColumn}`}</small></span>)}</div>
       {result.warnings.map((warning, index) => <div className="scientific-note" key={index}><span>i</span><p>{warning}</p></div>)}
       <div className="tree-output-switch"><div className="mode-toggle"><button className={treeMode === "nt" ? "active" : ""} type="button" onClick={() => setTreeMode("nt")}>Nucleotide</button><button className={treeMode === "aa" ? "active" : ""} type="button" onClick={() => setTreeMode("aa")}>Amino acid</button></div><span>Tree rooted at the inferred UCA; its named sequence carrier is zero length and the complete inferred branch lies on the observed-tree side.</span></div>
       <LineageTreeViewer newick={result.placedTreeNewick} alignmentFasta={displayAlignment} rows={lineageRows} multiplicityByOrdinal={multiplicityByOrdinal} sampleColors={sampleColors} lineageByOrdinal={lineageByOrdinal} variant="rooted" collapsedEdges={0} collapseThreshold={0} mode={treeMode} onModeChange={setTreeMode} frameOffset={frameOffset} isTcr={isTcr} name={`${base}.tree`} />

@@ -2,6 +2,7 @@ import type { ConditionalLikelihoodSurface } from "./tree-messages.ts";
 import type {
   PhyloUcaCharacter,
   PhyloUcaFrameOffset,
+  PhyloUcaHmmAnnotationTrack,
   PhyloUcaHmmOptions,
   PhyloUcaPathSegment,
   PhyloUcaSegmentKind,
@@ -13,6 +14,8 @@ import { PHYLO_UCA_CODON_STATE_COUNT, phyloUcaCodonStateIndex } from "./codons.t
 const NEGATIVE_INFINITY = Number.NEGATIVE_INFINITY;
 const PROBABILITY_FLOOR = 1e-300;
 const CHARACTERS = ["A", "C", "G", "T", "-"] as const;
+export const PHYLO_UCA_ANNOTATION_ALLELE_MINIMUM_WEIGHT = 0.01;
+export const PHYLO_UCA_ANNOTATION_REGISTER_MINIMUM_WEIGHT = 0.001;
 
 interface HmmState {
   kind: Exclude<PhyloUcaSegmentKind, "unknown">;
@@ -48,6 +51,13 @@ export interface PhyloUcaHmmPosterior {
   stateCalls: Array<string | undefined>;
   stateDOrdinals: Array<number | undefined>;
   path: PhyloUcaPathSegment[];
+  /** Best-placement Viterbi state path, expressed as compact source tracks. */
+  viterbiTracks: PhyloUcaHmmAnnotationTrack[];
+  /** Best-placement forward-backward source occupancy. */
+  marginalTracks: PhyloUcaHmmAnnotationTrack[];
+  /** Track identities screened below visualization-only occupancy thresholds. */
+  omittedMarginalTrackIds: string[];
+  omittedMarginalMaximumWeight: number;
   mapVCall: string;
   mapDCalls: string[];
   mapJCall: string;
@@ -494,6 +504,177 @@ function conditionalCharacterProbabilities(surface: ConditionalLikelihoodSurface
   return result;
 }
 
+interface TrackDescriptor {
+  id: string;
+  kind: PhyloUcaSegmentKind;
+  label: string;
+  call?: string;
+  dOrdinal?: number;
+  registrationOffset?: number;
+  pure: boolean;
+  characterIndex?: number;
+}
+
+interface TrackAccumulator extends TrackDescriptor {
+  points: Map<number, Float64Array>;
+}
+
+function normalizedTemplateCharacter(state: HmmState, site: number): string {
+  if (state.kind === "N") return "N";
+  return (state.kind === "D" ? state.character : state.projection?.[site])?.toUpperCase().replace("U", "T").replace(".", "-") ?? "N";
+}
+
+/**
+ * V and J projections have one fixed register. D paths retain a register key
+ * (alignment site minus D-reference position), so each allele row remains a
+ * pure template even while start/trim uncertainty is marginalized. Unknown
+ * projected template columns are diverted to a mixed unresolved row rather
+ * than contaminating an allele row with a nucleotide mixture.
+ */
+function trackDescriptor(state: HmmState, site: number): TrackDescriptor {
+  if (state.kind === "N") {
+    return {
+      id: `N|${state.dUsed}`,
+      kind: "N",
+      label: `N${state.dUsed}`,
+      dOrdinal: state.dUsed || undefined,
+      pure: false,
+    };
+  }
+  const characterIndex = CHARACTERS.indexOf(normalizedTemplateCharacter(state, site) as PhyloUcaCharacter);
+  if (characterIndex < 0) {
+    const boundaryLabel = state.kind === "V" ? "N · V-trim boundary" : state.kind === "J" ? "N · J-entry boundary" : `N · unresolved ${state.kind}${state.dOrdinal ?? ""}`;
+    return {
+      id: `N|boundary|${state.kind}|${state.dUsed}`,
+      kind: "N",
+      label: boundaryLabel,
+      dOrdinal: state.dOrdinal,
+      pure: false,
+    };
+  }
+  if (state.kind === "D") {
+    const registrationOffset = site - state.dPosition;
+    const sign = registrationOffset >= 0 ? "+" : "";
+    return {
+      id: `D|${state.dOrdinal ?? state.dUsed}|${state.call ?? "?"}|${registrationOffset}`,
+      kind: "D",
+      label: `D${state.dOrdinal ?? state.dUsed} · ${state.call ?? "?"} · register ${sign}${registrationOffset}`,
+      call: state.call,
+      dOrdinal: state.dOrdinal,
+      registrationOffset,
+      pure: true,
+      characterIndex,
+    };
+  }
+  return {
+    id: `${state.kind}|${state.call ?? "?"}`,
+    kind: state.kind,
+    label: `${state.kind} · ${state.call ?? "?"}`,
+    call: state.call,
+    pure: true,
+    characterIndex,
+  };
+}
+
+function trackAlleleGroup(descriptor: TrackDescriptor): string {
+  return descriptor.call ? `${descriptor.kind}|${descriptor.dOrdinal ?? 0}|${descriptor.call}` : descriptor.id;
+}
+
+function selectedMarginalTrackIds(
+  metadata: ReadonlyMap<string, TrackDescriptor>,
+  trackMaximums: ReadonlyMap<string, number>,
+  alleleGroupMaximums: ReadonlyMap<string, number>,
+): Set<string> {
+  const selected = new Set<string>();
+  const selectedGroups = new Set<string>();
+  const strongestByGroup = new Map<string, { id: string; maximum: number }>();
+  for (const descriptor of metadata.values()) {
+    const maximum = trackMaximums.get(descriptor.id) ?? 0;
+    const group = trackAlleleGroup(descriptor);
+    const previous = strongestByGroup.get(group);
+    if (!previous || maximum > previous.maximum) strongestByGroup.set(group, { id: descriptor.id, maximum });
+    if (!descriptor.call) {
+      if (maximum >= PHYLO_UCA_ANNOTATION_REGISTER_MINIMUM_WEIGHT) {
+        selected.add(descriptor.id);
+        selectedGroups.add(group);
+      }
+      continue;
+    }
+    if ((alleleGroupMaximums.get(group) ?? 0) < PHYLO_UCA_ANNOTATION_ALLELE_MINIMUM_WEIGHT) continue;
+    if (descriptor.kind !== "D" || maximum >= PHYLO_UCA_ANNOTATION_REGISTER_MINIMUM_WEIGHT) {
+      selected.add(descriptor.id);
+      selectedGroups.add(group);
+    }
+  }
+  // A D allele can exceed the group threshold while its mass is split across
+  // many individually tiny registers. Retain the strongest pure register so a
+  // non-negligible allele is never absent from the annotation.
+  for (const [group, maximum] of alleleGroupMaximums) {
+    if (maximum < PHYLO_UCA_ANNOTATION_ALLELE_MINIMUM_WEIGHT) continue;
+    if (selectedGroups.has(group)) continue;
+    const strongest = strongestByGroup.get(group);
+    if (strongest) selected.add(strongest.id);
+  }
+  return selected;
+}
+
+function addTrackMass(
+  tracks: Map<string, TrackAccumulator>,
+  state: HmmState,
+  site: number,
+  weight: number,
+  conditional: Float64Array,
+): void {
+  if (!(weight > 0) || !Number.isFinite(weight)) return;
+  const descriptor = trackDescriptor(state, site);
+  let track = tracks.get(descriptor.id);
+  if (!track) {
+    track = { ...descriptor, points: new Map() };
+    tracks.set(descriptor.id, track);
+  }
+  let masses = track.points.get(site);
+  if (!masses) {
+    masses = new Float64Array(5);
+    track.points.set(site, masses);
+  }
+  if (descriptor.pure && descriptor.characterIndex !== undefined) masses[descriptor.characterIndex] += weight;
+  else for (let character = 0; character < 5; character += 1) masses[character] += weight * conditional[character];
+}
+
+function finalizeTracks(tracks: Map<string, TrackAccumulator>, siteTotals: Float64Array): PhyloUcaHmmAnnotationTrack[] {
+  const kindOrder: Record<PhyloUcaSegmentKind, number> = { V: 0, N: 1, D: 2, J: 3, unknown: 4 };
+  return [...tracks.values()].map((track) => {
+    let maximumWeight = 0;
+    const points = [...track.points.entries()].sort(([left], [right]) => left - right).flatMap(([site, raw]) => {
+      const denominator = siteTotals[site];
+      if (!(denominator > 0)) return [];
+      const probabilities = Array.from(raw, (value) => value / denominator) as [number, number, number, number, number];
+      const total = probabilities.reduce((sum, value) => sum + value, 0);
+      if (!(total > 1e-14)) return [];
+      maximumWeight = Math.max(maximumWeight, total);
+      return [{ alignmentColumn: site + 1, probabilities }];
+    });
+    return {
+      id: track.id,
+      kind: track.kind,
+      label: track.label,
+      call: track.call,
+      dOrdinal: track.dOrdinal,
+      registrationOffset: track.registrationOffset,
+      pure: track.pure,
+      points,
+      maximumWeight,
+    };
+  }).filter((track) => track.points.length > 0).sort((left, right) => {
+    const kind = kindOrder[left.kind] - kindOrder[right.kind];
+    if (kind) return kind;
+    const ordinal = (left.dOrdinal ?? 0) - (right.dOrdinal ?? 0);
+    if (ordinal) return ordinal;
+    const start = (left.points[0]?.alignmentColumn ?? 0) - (right.points[0]?.alignmentColumn ?? 0);
+    return start || left.label.localeCompare(right.label);
+  });
+}
+
 /** Log q(character | HMM state, phylogenetic column data), character-major. */
 function conditionalCharacterLogMatrix(surface: ConditionalLikelihoodSurface, emissions: EmissionCache, site: number, stateTotal: number): Float64Array {
   const result = new Float64Array(5 * stateTotal);
@@ -604,19 +785,33 @@ export function phyloUcaHmmPosterior(
   const logZWithoutSiteOffsets = summed.logLikelihood - emissions.siteOffsets.reduce((sum, value) => sum + value, 0);
   const posterior = Array.from({ length: surface.sites }, () => [0, 0, 0, 0, 0] as [number, number, number, number, number]);
   const codonPosterior: Array<{ startSite: number; probabilities: number[] }> = [];
+  const marginalTrackMetadata = new Map<string, TrackDescriptor>();
+  const marginalTrackMaximums = new Map<string, number>();
+  const marginalAlleleGroupMaximums = new Map<string, number>();
   let beta: Float64Array<ArrayBufferLike> = new Float64Array(stateTotal);
   beta.fill(NEGATIVE_INFINITY);
   for (const state of catalog.j) beta[state] = 0;
   const context = { catalog, references, options, window: junctionWindow(surface.sites, references, options) };
   for (let site = surface.sites - 1; site >= 0; site -= 1) {
     const rowOffset = site * stateTotal;
+    const siteTrackWeights = new Map<string, number>();
+    const siteAlleleGroupWeights = new Map<string, number>();
     for (let state = 0; state < stateTotal; state += 1) {
       const gammaLog = rows[rowOffset + state] + beta[state] - logZWithoutSiteOffsets;
       if (!Number.isFinite(gammaLog) || gammaLog < -745) continue;
       const weight = Math.exp(gammaLog);
       const conditional = conditionalCharacterProbabilities(surface, emissions, state, site);
       for (let character = 0; character < 5; character += 1) posterior[site][character] += weight * conditional[character];
+      if (weight >= 1e-8) {
+        const descriptor = trackDescriptor(catalog.states[state], site);
+        marginalTrackMetadata.set(descriptor.id, descriptor);
+        siteTrackWeights.set(descriptor.id, (siteTrackWeights.get(descriptor.id) ?? 0) + weight);
+        const group = trackAlleleGroup(descriptor);
+        siteAlleleGroupWeights.set(group, (siteAlleleGroupWeights.get(group) ?? 0) + weight);
+      }
     }
+    for (const [id, weight] of siteTrackWeights) marginalTrackMaximums.set(id, Math.max(marginalTrackMaximums.get(id) ?? 0, weight));
+    for (const [group, weight] of siteAlleleGroupWeights) marginalAlleleGroupMaximums.set(group, Math.max(marginalAlleleGroupMaximums.get(group) ?? 0, weight));
     const total = posterior[site].reduce((sum, value) => sum + value, 0);
     if (!(total > 0) || !Number.isFinite(total)) throw new Error(`The UCA HMM posterior at alignment column ${site + 1} has no finite probability mass.`);
     posterior[site] = normalizeProbabilityVector(posterior[site]) as [number, number, number, number, number];
@@ -634,6 +829,37 @@ export function phyloUcaHmmPosterior(
     }
   }
   codonPosterior.reverse();
+  const selectedTrackIds = selectedMarginalTrackIds(marginalTrackMetadata, marginalTrackMaximums, marginalAlleleGroupMaximums);
+  const omittedMarginalTrackIds = [...marginalTrackMetadata.keys()].filter((id) => !selectedTrackIds.has(id));
+  let omittedMarginalMaximumWeight = 0;
+  for (const id of omittedMarginalTrackIds) omittedMarginalMaximumWeight = Math.max(omittedMarginalMaximumWeight, marginalTrackMaximums.get(id) ?? 0);
+  const marginalTrackAccumulator = new Map<string, TrackAccumulator>();
+  const marginalTrackSiteTotals = new Float64Array(surface.sites);
+  beta = new Float64Array(stateTotal);
+  beta.fill(NEGATIVE_INFINITY);
+  for (const state of catalog.j) beta[state] = 0;
+  for (let site = surface.sites - 1; site >= 0; site -= 1) {
+    const rowOffset = site * stateTotal;
+    let stateWeightTotal = 0;
+    for (let state = 0; state < stateTotal; state += 1) {
+      const gammaLog = rows[rowOffset + state] + beta[state] - logZWithoutSiteOffsets;
+      if (!Number.isFinite(gammaLog) || gammaLog < -745) continue;
+      const weight = Math.exp(gammaLog);
+      stateWeightTotal += weight;
+      if (weight < 1e-8) continue;
+      const descriptor = trackDescriptor(catalog.states[state], site);
+      if (!selectedTrackIds.has(descriptor.id)) continue;
+      const conditional = conditionalCharacterProbabilities(surface, emissions, state, site);
+      addTrackMass(marginalTrackAccumulator, catalog.states[state], site, weight, conditional);
+    }
+    marginalTrackSiteTotals[site] = stateWeightTotal;
+    if (site > 0) {
+      const future = new Float64Array(stateTotal);
+      const emissionOffset = site * stateTotal;
+      for (let state = 0; state < stateTotal; state += 1) future[state] = emissions.values[emissionOffset + state] + beta[state];
+      beta = transitionBackward(future, site - 1, context);
+    }
+  }
   const statePath = new Int32Array(surface.sites);
   statePath[surface.sites - 1] = viterbi.endState;
   for (let site = surface.sites - 1; site > 0; site -= 1) {
@@ -646,9 +872,13 @@ export function phyloUcaHmmPosterior(
   const stateKinds: PhyloUcaSegmentKind[] = [];
   const stateCalls: Array<string | undefined> = [];
   const stateDOrdinals: Array<number | undefined> = [];
+  const viterbiTrackAccumulator = new Map<string, TrackAccumulator>();
+  const viterbiTrackSiteTotals = new Float64Array(surface.sites);
   for (let site = 0; site < surface.sites; site += 1) {
     const stateIndex = statePath[site];
     const conditional = conditionalCharacterProbabilities(surface, emissions, stateIndex, site);
+    viterbiTrackSiteTotals[site] = 1;
+    addTrackMass(viterbiTrackAccumulator, catalog.states[stateIndex], site, 1, conditional);
     let jointCharacter = 0;
     for (let character = 1; character < 5; character += 1) if (conditional[character] > conditional[jointCharacter]) jointCharacter = character;
     mapAlignedSequence += CHARACTERS[jointCharacter];
@@ -661,6 +891,8 @@ export function phyloUcaHmmPosterior(
     stateDOrdinals.push(state.dOrdinal);
   }
   const segments = pathSegments(catalog.states, statePath, mapAlignedSequence);
+  const viterbiTracks = finalizeTracks(viterbiTrackAccumulator, viterbiTrackSiteTotals);
+  const marginalTracks = finalizeTracks(marginalTrackAccumulator, marginalTrackSiteTotals);
   return {
     logMarginalLikelihood: summed.logLikelihood,
     probabilities: posterior,
@@ -671,6 +903,10 @@ export function phyloUcaHmmPosterior(
     stateCalls,
     stateDOrdinals,
     path: segments,
+    viterbiTracks,
+    marginalTracks,
+    omittedMarginalTrackIds,
+    omittedMarginalMaximumWeight,
     mapVCall: segments.find((segment) => segment.kind === "V")?.call ?? "",
     mapDCalls: segments.filter((segment) => segment.kind === "D").map((segment) => segment.call ?? ""),
     mapJCall: segments.find((segment) => segment.kind === "J")?.call ?? "",

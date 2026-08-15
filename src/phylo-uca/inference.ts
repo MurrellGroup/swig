@@ -1,11 +1,17 @@
 import { parseFasta } from "../post-analysis-core.ts";
-import { phyloUcaHmmLogMarginal, phyloUcaHmmPosterior } from "./hmm.ts";
+import {
+  PHYLO_UCA_ANNOTATION_ALLELE_MINIMUM_WEIGHT,
+  PHYLO_UCA_ANNOTATION_REGISTER_MINIMUM_WEIGHT,
+  phyloUcaHmmLogMarginal,
+  phyloUcaHmmPosterior,
+} from "./hmm.ts";
 import { preparePhyloUcaReferences } from "./references.ts";
 import { PhyloUcaTreeMessages } from "./tree-messages.ts";
 import { normalizeProbabilityVector } from "../probability-logo.ts";
 import { PHYLO_UCA_CODON_STATE_COUNT, PHYLO_UCA_CODON_SYMBOLS } from "./codons.ts";
 import type {
   PhyloUcaCodonPosterior,
+  PhyloUcaHmmAnnotationTrack,
   PhyloUcaInput,
   PhyloUcaPlacement,
   PhyloUcaProgress,
@@ -15,6 +21,11 @@ import type {
 
 const NEGATIVE_INFINITY = Number.NEGATIVE_INFINITY;
 const CHARACTERS = ["A", "C", "G", "T", "-"] as const;
+
+interface AnnotationTrackMixture {
+  metadata: Omit<PhyloUcaHmmAnnotationTrack, "points" | "maximumWeight">;
+  points: Map<number, Float64Array>;
+}
 
 function entropyBits(probabilities: readonly number[]): number {
   let entropy = 0;
@@ -28,6 +39,95 @@ function normalizedWeights(scores: readonly number[]): number[] {
   const weights = scores.map((score) => Math.exp(score - maximum));
   const total = weights.reduce((sum, weight) => sum + weight, 0);
   return weights.map((weight) => weight / total);
+}
+
+function addAnnotationTrackMixture(
+  mixture: Map<string, AnnotationTrackMixture>,
+  tracks: readonly PhyloUcaHmmAnnotationTrack[],
+  placementWeight: number,
+): void {
+  for (const track of tracks) {
+    let destination = mixture.get(track.id);
+    if (!destination) {
+      const { points: _points, maximumWeight: _maximumWeight, ...metadata } = track;
+      destination = { metadata, points: new Map() };
+      mixture.set(track.id, destination);
+    }
+    for (const point of track.points) {
+      let masses = destination.points.get(point.alignmentColumn);
+      if (!masses) {
+        masses = new Float64Array(5);
+        destination.points.set(point.alignmentColumn, masses);
+      }
+      for (let character = 0; character < 5; character += 1) masses[character] += placementWeight * point.probabilities[character];
+    }
+  }
+}
+
+function finalizeAnnotationTrackMixture(mixture: Map<string, AnnotationTrackMixture>): PhyloUcaHmmAnnotationTrack[] {
+  return [...mixture.values()].map(({ metadata, points: rawPoints }) => {
+    let maximumWeight = 0;
+    const points = [...rawPoints.entries()].sort(([left], [right]) => left - right).map(([alignmentColumn, raw]) => {
+      const probabilities = Array.from(raw) as [number, number, number, number, number];
+      maximumWeight = Math.max(maximumWeight, probabilities.reduce((sum, value) => sum + value, 0));
+      return { alignmentColumn, probabilities };
+    });
+    return { ...metadata, points, maximumWeight };
+  });
+}
+
+function projectAnnotationTracks(tracks: readonly PhyloUcaHmmAnnotationTrack[], retainedColumns: readonly number[]): PhyloUcaHmmAnnotationTrack[] {
+  return tracks.map((track) => ({
+    ...track,
+    points: track.points.map((point) => ({
+      ...point,
+      alignmentColumn: (retainedColumns[point.alignmentColumn - 1] ?? point.alignmentColumn - 1) + 1,
+    })),
+  }));
+}
+
+function annotationAlleleGroup(track: PhyloUcaHmmAnnotationTrack): string {
+  return track.call ? `${track.kind}|${track.dOrdinal ?? 0}|${track.call}` : track.id;
+}
+
+function pruneMarginalAnnotationTracks(tracks: readonly PhyloUcaHmmAnnotationTrack[]): {
+  retained: PhyloUcaHmmAnnotationTrack[];
+  omittedCount: number;
+  omittedMaximumWeight: number;
+} {
+  const groups = new Map<string, PhyloUcaHmmAnnotationTrack[]>();
+  for (const track of tracks) {
+    const key = annotationAlleleGroup(track);
+    const group = groups.get(key) ?? [];
+    group.push(track);
+    groups.set(key, group);
+  }
+  const retainedIds = new Set<string>();
+  for (const group of groups.values()) {
+    if (!group[0].call) {
+      for (const track of group) if (track.maximumWeight >= PHYLO_UCA_ANNOTATION_REGISTER_MINIMUM_WEIGHT) retainedIds.add(track.id);
+      continue;
+    }
+    const columnTotals = new Map<number, number>();
+    for (const track of group) for (const point of track.points) {
+      const total = point.probabilities.reduce((sum, value) => sum + value, 0);
+      columnTotals.set(point.alignmentColumn, (columnTotals.get(point.alignmentColumn) ?? 0) + total);
+    }
+    let groupMaximum = 0;
+    for (const total of columnTotals.values()) groupMaximum = Math.max(groupMaximum, total);
+    if (groupMaximum < PHYLO_UCA_ANNOTATION_ALLELE_MINIMUM_WEIGHT) continue;
+    const eligible = group.filter((track) => track.maximumWeight >= PHYLO_UCA_ANNOTATION_REGISTER_MINIMUM_WEIGHT);
+    for (const track of eligible.length ? eligible : [...group].sort((left, right) => right.maximumWeight - left.maximumWeight).slice(0, 1)) retainedIds.add(track.id);
+  }
+  const retained = tracks.filter((track) => retainedIds.has(track.id));
+  const omitted = tracks.filter((track) => !retainedIds.has(track.id));
+  let omittedMaximumWeight = 0;
+  for (const track of omitted) omittedMaximumWeight = Math.max(omittedMaximumWeight, track.maximumWeight);
+  return {
+    retained,
+    omittedCount: omitted.length,
+    omittedMaximumWeight,
+  };
 }
 
 function uniqueNumbers(values: readonly number[], tolerance = 1e-10): number[] {
@@ -180,6 +280,9 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   const mixture = Array.from({ length: observedColumns }, () => [0, 0, 0, 0, 0] as [number, number, number, number, number]);
   let codonMixture: Array<{ startSite: number; probabilities: number[] }> = [];
   let bestPosterior: ReturnType<typeof phyloUcaHmmPosterior> | null = null;
+  const marginalTrackMixture = new Map<string, AnnotationTrackMixture>();
+  const prefilteredMarginalTrackIds = new Set<string>();
+  let prefilteredMarginalMaximumWeight = 0;
   progress("posterior", 0, local.length, "Marginalizing UCA nucleotides and exact codons around the best placement");
   for (let index = 0; index < local.length; index += 1) {
     const placement = local[index];
@@ -187,6 +290,9 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     const surface = tree.conditionalLikelihoods(edge.index, placement.distanceFromA, placement.ucaBranchLength);
     const posterior = phyloUcaHmmPosterior(surface, references, input.options.hmm, frameOffset);
     if (index === 0) bestPosterior = posterior;
+    addAnnotationTrackMixture(marginalTrackMixture, posterior.marginalTracks, weights[index]);
+    for (const id of posterior.omittedMarginalTrackIds) prefilteredMarginalTrackIds.add(id);
+    prefilteredMarginalMaximumWeight = Math.max(prefilteredMarginalMaximumWeight, posterior.omittedMarginalMaximumWeight);
     for (let site = 0; site < observedColumns; site += 1) for (let character = 0; character < 5; character += 1) mixture[site][character] += weights[index] * posterior.probabilities[site][character];
     if (!codonMixture.length) codonMixture = posterior.codonPosterior.map((codon) => ({ startSite: codon.startSite, probabilities: Array.from({ length: PHYLO_UCA_CODON_STATE_COUNT }, () => 0) }));
     if (posterior.codonPosterior.length !== codonMixture.length) throw new Error("Local UCA placements produced incompatible codon posterior dimensions.");
@@ -254,12 +360,18 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     startColumn: (input.retainedColumns[segment.startColumn] ?? segment.startColumn) + 1,
     endColumn: (input.retainedColumns[segment.endColumn] ?? segment.endColumn) + 1,
   }));
+  const viterbiAnnotationTracks = projectAnnotationTracks(bestPosterior.viterbiTracks, input.retainedColumns);
+  const allMarginalAnnotationTracks = projectAnnotationTracks(finalizeAnnotationTrackMixture(marginalTrackMixture), input.retainedColumns);
+  const prunedMarginalAnnotation = pruneMarginalAnnotationTracks(allMarginalAnnotationTracks);
+  const retainedMarginalTrackIds = new Set(prunedMarginalAnnotation.retained.map((track) => track.id));
+  for (const id of retainedMarginalTrackIds) prefilteredMarginalTrackIds.delete(id);
+  for (const track of allMarginalAnnotationTracks) if (!retainedMarginalTrackIds.has(track.id)) prefilteredMarginalTrackIds.add(track.id);
   const bestPlacement = placements[0];
   const bestEdge = tree.edges.find((edge) => edge.id === bestPlacement.edgeId)!;
   const effectivePlacementCount = Math.exp(-weights.reduce((sum, weight) => weight > 0 ? sum + weight * Math.log(weight) : sum, 0));
   progress("finalize", 1, 1, "Preparing UCA sequence, placement tree, and provenance");
   return {
-    schema: 2,
+    schema: 3,
     method: "fixed-tree-empirical-bayes-phylo-uca",
     lineageLabel: input.lineageLabel,
     generatedAt: new Date().toISOString(),
@@ -280,6 +392,13 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     posteriorConsensusAligned,
     posterior,
     codonPosterior,
+    hmmAnnotations: {
+      minimumDisplayedWeight: PHYLO_UCA_ANNOTATION_ALLELE_MINIMUM_WEIGHT,
+      viterbi: viterbiAnnotationTracks,
+      marginalized: prunedMarginalAnnotation.retained,
+      omittedMarginalTrackCount: prefilteredMarginalTrackIds.size,
+      omittedMarginalMaximumWeight: Math.max(prefilteredMarginalMaximumWeight, prunedMarginalAnnotation.omittedMaximumWeight),
+    },
     path,
     candidateReport: references.report,
     mapVCall: bestPosterior.mapVCall,

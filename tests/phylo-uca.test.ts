@@ -128,6 +128,9 @@ test("factorized HMM returns a complete V-to-J joint path", () => {
   assert.ok(Number.isFinite(result.logMarginalLikelihood));
   assert.equal(result.path[0].kind, "V");
   assert.equal(result.path.at(-1)?.kind, "J");
+  const dStart = result.path.find((segment) => segment.kind === "D")?.startColumn;
+  assert.equal(dStart, 4);
+  assert.notEqual((dStart ?? 0) % 3, 0, "the nucleotide HMM must allow a V/D boundary inside a displayed codon");
   assert.equal(result.codonPosterior.length, 4);
   for (const codon of result.codonPosterior) {
     assert.ok(Math.abs(codon.probabilities.reduce((sum, probability) => sum + probability, 0) - 1) < 1e-12);
@@ -192,7 +195,7 @@ test("end-to-end inference roots at a zero-length UCA carrier and preserves the 
   assert.match(result.placedTreeNewick, /phylo_UCA:0(?:\.0+)?(?:[,)]|$)/);
   assert.equal(result.mapAlignedSequence.length, 12);
   assert.equal(result.posterior.length, 12);
-  assert.equal(result.schema, 2);
+  assert.equal(result.schema, 3);
   assert.equal(result.codonPosterior?.length, 4);
   for (const codon of result.codonPosterior ?? []) for (let position = 0; position < 3; position += 1) {
     const marginal = [0, 0, 0, 0, 0];
@@ -205,5 +208,17 @@ test("end-to-end inference roots at a zero-length UCA carrier and preserves the 
   }
   assert.equal(result.candidateReport.v[0], "IGHV1*01");
   assert.equal(result.candidateReport.j[0], "IGHJ1*01");
+  assert.ok(result.hmmAnnotations);
+  assert.ok(result.hmmAnnotations.viterbi.some((track) => track.kind === "V" && track.call === "IGHV1*01" && track.pure));
+  assert.ok(result.hmmAnnotations.viterbi.some((track) => track.kind === "D" && track.call === "IGHD1*01" && track.pure));
+  assert.ok(result.hmmAnnotations.viterbi.some((track) => track.kind === "J" && track.call === "IGHJ1*01" && track.pure));
+  assert.ok(result.hmmAnnotations.viterbi.some((track) => track.kind === "N" && !track.pure));
+  for (const track of [...result.hmmAnnotations.viterbi, ...result.hmmAnnotations.marginalized]) if (track.pure) {
+    for (const point of track.points) assert.ok(point.probabilities.filter((probability) => probability > 1e-12).length <= 1, `${track.label} mixed template characters at column ${point.alignmentColumn}`);
+  }
+  for (let column = 1; column <= result.posterior.length; column += 1) {
+    const total = result.hmmAnnotations.viterbi.flatMap((track) => track.points).filter((point) => point.alignmentColumn === column).reduce((sum, point) => sum + point.probabilities.reduce((inner, value) => inner + value, 0), 0);
+    assert.ok(Math.abs(total - 1) < 1e-10, `Viterbi source tracks sum to ${total} at column ${column}`);
+  }
   assert.ok(result.bestPlacement.ucaBranchLength >= 0);
 });

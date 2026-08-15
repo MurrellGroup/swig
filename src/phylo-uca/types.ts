@@ -153,6 +153,42 @@ export interface PhyloUcaPathSegment {
   alignedSequence: string;
 }
 
+export interface PhyloUcaHmmAnnotationPoint {
+  /** One-based column in the original user-curated alignment. */
+  alignmentColumn: number;
+  /**
+   * Unnormalized A/C/G/T/gap masses. Their sum is this track's posterior
+   * occupancy at the column, rather than one.
+   */
+  probabilities: [number, number, number, number, number];
+}
+
+export interface PhyloUcaHmmAnnotationTrack {
+  /** Stable across locally marginalized placement hypotheses. */
+  id: string;
+  kind: PhyloUcaSegmentKind;
+  label: string;
+  call?: string;
+  dOrdinal?: number;
+  /** D register = alignment-site index minus reference-D position. */
+  registrationOffset?: number;
+  /** True only when every occupied column has one fixed template character. */
+  pure: boolean;
+  points: PhyloUcaHmmAnnotationPoint[];
+  maximumWeight: number;
+}
+
+export interface PhyloUcaHmmAnnotations {
+  /** Allele groups must reach this occupancy in some column to be displayed. */
+  minimumDisplayedWeight: number;
+  /** Viterbi state path at the single best placement. */
+  viterbi: PhyloUcaHmmAnnotationTrack[];
+  /** Forward-backward state occupancy mixed across retained placements. */
+  marginalized: PhyloUcaHmmAnnotationTrack[];
+  omittedMarginalTrackCount: number;
+  omittedMarginalMaximumWeight: number;
+}
+
 export interface PhyloUcaSitePosterior {
   /** One-based column in the original user-curated alignment. */
   alignmentColumn: number;
@@ -196,7 +232,7 @@ export interface PhyloUcaCandidateReport {
 }
 
 export interface PhyloUcaResult {
-  schema: 1 | 2;
+  schema: 1 | 2 | 3;
   method: "fixed-tree-empirical-bayes-phylo-uca";
   lineageLabel: string;
   generatedAt: string;
@@ -220,6 +256,8 @@ export interface PhyloUcaResult {
   posterior: PhyloUcaSitePosterior[];
   /** Exact three-column HMM/placement posterior; present in schema 2. */
   codonPosterior?: PhyloUcaCodonPosterior[];
+  /** HMM-derived V/D/J/N annotation tracks; present in schema 3. */
+  hmmAnnotations?: PhyloUcaHmmAnnotations;
   path: PhyloUcaPathSegment[];
   candidateReport: PhyloUcaCandidateReport;
   mapVCall: string;
