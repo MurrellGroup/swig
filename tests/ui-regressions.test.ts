@@ -98,3 +98,18 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(css, /\.results-application-page \.results-view-tabs[\s\S]*background: var\(--ink\)/);
   assert.match(css, /\.post-analysis-heading \{ display: none !important; \}/);
 });
+
+test("phylogenetic UCA posterior uses the reusable bounded serif frequency logo", () => {
+  const component = fs.readFileSync(new URL("../src/probability-logo.tsx", import.meta.url), "utf8");
+  const panel = fs.readFileSync(new URL("../src/phylo-uca/panel.tsx", import.meta.url), "utf8");
+  const hmm = fs.readFileSync(new URL("../src/phylo-uca/hmm.ts", import.meta.url), "utf8");
+  assert.match(component, /Georgia, 'Times New Roman', Times, serif/);
+  assert.match(component, /preserveAspectRatio="none" overflow="hidden"/);
+  assert.match(component, /letter height is marginal frequency and is not scaled by entropy/i);
+  assert.match(panel, /UCA posterior frequency logo/);
+  assert.match(panel, /Logo SVG ↓/);
+  assert.match(panel, />Codon</);
+  assert.match(panel, /Amino acid/);
+  assert.match(panel, /does not multiply nucleotide marginals/);
+  assert.match(hmm, /Exact P\(x_i,x_\{i\+1\},x_\{i\+2\}/);
+});

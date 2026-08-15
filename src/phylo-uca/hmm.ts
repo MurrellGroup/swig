@@ -1,11 +1,14 @@
 import type { ConditionalLikelihoodSurface } from "./tree-messages.ts";
 import type {
   PhyloUcaCharacter,
+  PhyloUcaFrameOffset,
   PhyloUcaHmmOptions,
   PhyloUcaPathSegment,
   PhyloUcaSegmentKind,
 } from "./types.ts";
 import type { PreparedPhyloUcaReferences } from "./references.ts";
+import { normalizeProbabilityVector } from "../probability-logo.ts";
+import { PHYLO_UCA_CODON_STATE_COUNT, phyloUcaCodonStateIndex } from "./codons.ts";
 
 const NEGATIVE_INFINITY = Number.NEGATIVE_INFINITY;
 const PROBABILITY_FLOOR = 1e-300;
@@ -37,6 +40,8 @@ interface StateCatalog {
 export interface PhyloUcaHmmPosterior {
   logMarginalLikelihood: number;
   probabilities: Array<[number, number, number, number, number]>;
+  /** Exact three-column probabilities conditional on the HMM and placement. */
+  codonPosterior: Array<{ startSite: number; probabilities: number[] }>;
   mapAlignedSequence: string;
   posteriorConsensusAligned: string;
   stateKinds: PhyloUcaSegmentKind[];
@@ -489,6 +494,82 @@ function conditionalCharacterProbabilities(surface: ConditionalLikelihoodSurface
   return result;
 }
 
+/** Log q(character | HMM state, phylogenetic column data), character-major. */
+function conditionalCharacterLogMatrix(surface: ConditionalLikelihoodSurface, emissions: EmissionCache, site: number, stateTotal: number): Float64Array {
+  const result = new Float64Array(5 * stateTotal);
+  result.fill(NEGATIVE_INFINITY);
+  for (let state = 0; state < stateTotal; state += 1) {
+    const conditional = conditionalCharacterProbabilities(surface, emissions, state, site);
+    for (let character = 0; character < 5; character += 1) {
+      if (conditional[character] > 0) result[character * stateTotal + state] = Math.log(conditional[character]);
+    }
+  }
+  return result;
+}
+
+function addSiteEmission(values: Float64Array, emissions: EmissionCache, site: number, stateTotal: number): void {
+  const offset = site * stateTotal;
+  for (let state = 0; state < stateTotal; state += 1) {
+    if (values[state] !== NEGATIVE_INFINITY) values[state] += emissions.values[offset + state];
+  }
+}
+
+/**
+ * Exact P(x_i,x_{i+1},x_{i+2} | tree data, HMM, placement).
+ *
+ * The alpha row already contains the integrated emission at i. Multiplying it
+ * by q_i(x_i | state_i,data_i), advancing the ordinary HMM, and finally
+ * contracting against beta at i+2 fixes the three emitted characters while
+ * summing over every germline candidate and recombination path. This preserves
+ * the within-codon dependence that a product of site marginals discards.
+ */
+function exactCodonPosterior(
+  surface: ConditionalLikelihoodSurface,
+  emissions: EmissionCache,
+  rows: Float64Array,
+  betaAtEnd: Float64Array,
+  startSite: number,
+  context: TransitionContext,
+): number[] {
+  const stateTotal = context.catalog.states.length;
+  const firstLogs = conditionalCharacterLogMatrix(surface, emissions, startSite, stateTotal);
+  const secondLogs = conditionalCharacterLogMatrix(surface, emissions, startSite + 1, stateTotal);
+  const thirdLogs = conditionalCharacterLogMatrix(surface, emissions, startSite + 2, stateTotal);
+  const codonLogs = new Float64Array(PHYLO_UCA_CODON_STATE_COUNT);
+  codonLogs.fill(NEGATIVE_INFINITY);
+  const firstRow = startSite * stateTotal;
+
+  const activeCharacters = surface.stateCount;
+  for (let first = 0; first < activeCharacters; first += 1) {
+    const fixedFirst = new Float64Array(stateTotal);
+    for (let state = 0; state < stateTotal; state += 1) fixedFirst[state] = rows[firstRow + state] + firstLogs[first * stateTotal + state];
+    const atSecond = transitionForward(fixedFirst, startSite, context, "sum");
+    addSiteEmission(atSecond, emissions, startSite + 1, stateTotal);
+
+    for (let second = 0; second < activeCharacters; second += 1) {
+      const fixedSecond = new Float64Array(stateTotal);
+      for (let state = 0; state < stateTotal; state += 1) fixedSecond[state] = atSecond[state] + secondLogs[second * stateTotal + state];
+      const atThird = transitionForward(fixedSecond, startSite + 1, context, "sum");
+      addSiteEmission(atThird, emissions, startSite + 2, stateTotal);
+
+      for (let third = 0; third < activeCharacters; third += 1) {
+        let score = NEGATIVE_INFINITY;
+        const logOffset = third * stateTotal;
+        for (let state = 0; state < stateTotal; state += 1) {
+          score = logAdd(score, atThird[state] + thirdLogs[logOffset + state] + betaAtEnd[state]);
+        }
+        codonLogs[phyloUcaCodonStateIndex(first, second, third)] = score;
+      }
+    }
+  }
+
+  let maximum = NEGATIVE_INFINITY;
+  for (const score of codonLogs) maximum = Math.max(maximum, score);
+  if (!Number.isFinite(maximum)) throw new Error(`The exact UCA codon posterior at alignment columns ${startSite + 1}-${startSite + 3} has no finite probability mass.`);
+  const masses = Array.from(codonLogs, (score) => Number.isFinite(score) ? Math.exp(score - maximum) : 0);
+  return normalizeProbabilityVector(masses);
+}
+
 function pathSegments(states: readonly HmmState[], path: Int32Array, sequence: string): PhyloUcaPathSegment[] {
   const segments: PhyloUcaPathSegment[] = [];
   for (let column = 0; column < path.length; column += 1) {
@@ -509,7 +590,12 @@ function pathSegments(states: readonly HmmState[], path: Int32Array, sequence: s
   return segments;
 }
 
-export function phyloUcaHmmPosterior(surface: ConditionalLikelihoodSurface, references: PreparedPhyloUcaReferences, options: PhyloUcaHmmOptions): PhyloUcaHmmPosterior {
+export function phyloUcaHmmPosterior(
+  surface: ConditionalLikelihoodSurface,
+  references: PreparedPhyloUcaReferences,
+  options: PhyloUcaHmmOptions,
+  frameOffset: PhyloUcaFrameOffset = 0,
+): PhyloUcaHmmPosterior {
   const summed = forward(surface, references, options, true, "sum");
   const viterbi = forward(surface, references, options, false, "max");
   const { catalog, emissions, rows } = summed;
@@ -517,6 +603,7 @@ export function phyloUcaHmmPosterior(surface: ConditionalLikelihoodSurface, refe
   const stateTotal = catalog.states.length;
   const logZWithoutSiteOffsets = summed.logLikelihood - emissions.siteOffsets.reduce((sum, value) => sum + value, 0);
   const posterior = Array.from({ length: surface.sites }, () => [0, 0, 0, 0, 0] as [number, number, number, number, number]);
+  const codonPosterior: Array<{ startSite: number; probabilities: number[] }> = [];
   let beta: Float64Array<ArrayBufferLike> = new Float64Array(stateTotal);
   beta.fill(NEGATIVE_INFINITY);
   for (const state of catalog.j) beta[state] = 0;
@@ -525,13 +612,20 @@ export function phyloUcaHmmPosterior(surface: ConditionalLikelihoodSurface, refe
     const rowOffset = site * stateTotal;
     for (let state = 0; state < stateTotal; state += 1) {
       const gammaLog = rows[rowOffset + state] + beta[state] - logZWithoutSiteOffsets;
-      if (gammaLog < -40 || !Number.isFinite(gammaLog)) continue;
+      if (!Number.isFinite(gammaLog) || gammaLog < -745) continue;
       const weight = Math.exp(gammaLog);
       const conditional = conditionalCharacterProbabilities(surface, emissions, state, site);
       for (let character = 0; character < 5; character += 1) posterior[site][character] += weight * conditional[character];
     }
     const total = posterior[site].reduce((sum, value) => sum + value, 0);
-    if (total > 0) for (let character = 0; character < 5; character += 1) posterior[site][character] /= total;
+    if (!(total > 0) || !Number.isFinite(total)) throw new Error(`The UCA HMM posterior at alignment column ${site + 1} has no finite probability mass.`);
+    posterior[site] = normalizeProbabilityVector(posterior[site]) as [number, number, number, number, number];
+    if (site >= frameOffset + 2 && (site - frameOffset) % 3 === 2) {
+      codonPosterior.push({
+        startSite: site - 2,
+        probabilities: exactCodonPosterior(surface, emissions, rows, beta, site - 2, context),
+      });
+    }
     if (site > 0) {
       const future = new Float64Array(stateTotal);
       const emissionOffset = site * stateTotal;
@@ -539,6 +633,7 @@ export function phyloUcaHmmPosterior(surface: ConditionalLikelihoodSurface, refe
       beta = transitionBackward(future, site - 1, context);
     }
   }
+  codonPosterior.reverse();
   const statePath = new Int32Array(surface.sites);
   statePath[surface.sites - 1] = viterbi.endState;
   for (let site = surface.sites - 1; site > 0; site -= 1) {
@@ -569,6 +664,7 @@ export function phyloUcaHmmPosterior(surface: ConditionalLikelihoodSurface, refe
   return {
     logMarginalLikelihood: summed.logLikelihood,
     probabilities: posterior,
+    codonPosterior,
     mapAlignedSequence,
     posteriorConsensusAligned,
     stateKinds,

@@ -2,7 +2,10 @@ import { parseFasta } from "../post-analysis-core.ts";
 import { phyloUcaHmmLogMarginal, phyloUcaHmmPosterior } from "./hmm.ts";
 import { preparePhyloUcaReferences } from "./references.ts";
 import { PhyloUcaTreeMessages } from "./tree-messages.ts";
+import { normalizeProbabilityVector } from "../probability-logo.ts";
+import { PHYLO_UCA_CODON_STATE_COUNT, PHYLO_UCA_CODON_SYMBOLS } from "./codons.ts";
 import type {
+  PhyloUcaCodonPosterior,
   PhyloUcaInput,
   PhyloUcaPlacement,
   PhyloUcaProgress,
@@ -49,6 +52,7 @@ function placementKey(edge: number, distance: number, branch: number): string {
 export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress: PhyloUcaProgress) => void): Promise<PhyloUcaResult> {
   const started = performance.now();
   const progress = (phase: PhyloUcaProgress["phase"], processed: number, total: number, detail: string) => onProgress?.({ phase, processed, total, detail });
+  const frameOffset = input.frameOffset === 1 || input.frameOffset === 2 ? input.frameOffset : 0;
   progress("references", 0, 1, "Preparing broad V, D, and J hypothesis sets");
   const observedRecords = parseFasta(input.observedAlignmentFasta, true);
   if (!observedRecords.length) throw new Error("The observed-only alignment is empty.");
@@ -76,11 +80,13 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   );
   if (!messageCount) progress("tree-messages", 1, 1, "Directed messages ready");
   const warnings = [...references.warnings];
-  const observedHasGap = observedRecords.some((record) => record.sequence.includes("-") || record.sequence.includes("."));
-  if (input.options.characterMode === "nucleotide-gtr4" && observedHasGap) warnings.push("The alignment contains gaps but the advanced GTR4 override was selected; observed gaps were treated as missing characters. Auto mode would use the gap-aware GTR5 approximation.");
+  if (tree.terminalMissingGapCount > 0) warnings.push(`${tree.terminalMissingGapCount.toLocaleString()} leading/trailing tip-gap characters were treated as missing sequence coverage, not as a fifth character.`);
+  if (input.options.characterMode === "nucleotide-gtr4" && tree.internalGapCount > 0) warnings.push(`The alignment contains ${tree.internalGapCount.toLocaleString()} internal tip-gap characters but the advanced GTR4 override was selected; those internal gaps were treated as missing. Auto mode would use gap-aware GTR5.`);
   warnings.push(tree.characterModel === "gap-aware-gtr5"
-    ? "The observed alignment contains gaps, so the phylogenetic likelihood used the explicit A/C/G/T/gap fixed-alignment model. This is not a continuous-time insertion/deletion process."
-    : "The observed alignment contains no gaps after removal of all-gap columns, so the phylogenetic likelihood used ordinary four-state nucleotide GTR.");
+    ? `The observed alignment contains ${tree.internalGapCount.toLocaleString()} internal tip-gap characters, so those internal positions used the explicit A/C/G/T/gap fixed-alignment model. This is not a continuous-time insertion/deletion process.`
+    : tree.internalGapCount > 0
+      ? "The forced four-state model treated internal as well as terminal gaps as missing data."
+      : "The observed alignment contains no internal gaps, so the phylogenetic likelihood used ordinary four-state nucleotide GTR; terminal tip gaps, including columns missing at every tip, were missing data.");
 
   const guideBranchSamples = [0, Math.min(0.02, input.options.search.maximumUcaBranchLength), Math.min(0.08, input.options.search.maximumUcaBranchLength)];
   const edgeScores: Array<{ edge: number; guideScore: number }> = [];
@@ -172,16 +178,25 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   const weights = normalizedWeights(local.map((placement) => placement.logPosteriorScore));
   local.forEach((placement, index) => { placement.localPosteriorWeight = weights[index]; });
   const mixture = Array.from({ length: observedColumns }, () => [0, 0, 0, 0, 0] as [number, number, number, number, number]);
+  let codonMixture: Array<{ startSite: number; probabilities: number[] }> = [];
   let bestPosterior: ReturnType<typeof phyloUcaHmmPosterior> | null = null;
-  progress("posterior", 0, local.length, "Marginalizing UCA nucleotides around the best placement");
+  progress("posterior", 0, local.length, "Marginalizing UCA nucleotides and exact codons around the best placement");
   for (let index = 0; index < local.length; index += 1) {
     const placement = local[index];
     const edge = tree.edges.find((candidate) => candidate.id === placement.edgeId)!;
     const surface = tree.conditionalLikelihoods(edge.index, placement.distanceFromA, placement.ucaBranchLength);
-    const posterior = phyloUcaHmmPosterior(surface, references, input.options.hmm);
+    const posterior = phyloUcaHmmPosterior(surface, references, input.options.hmm, frameOffset);
     if (index === 0) bestPosterior = posterior;
     for (let site = 0; site < observedColumns; site += 1) for (let character = 0; character < 5; character += 1) mixture[site][character] += weights[index] * posterior.probabilities[site][character];
-    progress("posterior", index + 1, local.length, `Integrated placement ${index + 1} of ${local.length}`);
+    if (!codonMixture.length) codonMixture = posterior.codonPosterior.map((codon) => ({ startSite: codon.startSite, probabilities: Array.from({ length: PHYLO_UCA_CODON_STATE_COUNT }, () => 0) }));
+    if (posterior.codonPosterior.length !== codonMixture.length) throw new Error("Local UCA placements produced incompatible codon posterior dimensions.");
+    for (let codon = 0; codon < codonMixture.length; codon += 1) {
+      const source = posterior.codonPosterior[codon];
+      const destination = codonMixture[codon];
+      if (source.startSite !== destination.startSite || source.probabilities.length !== PHYLO_UCA_CODON_STATE_COUNT) throw new Error("Local UCA placements produced incompatible codon state orderings.");
+      for (let state = 0; state < PHYLO_UCA_CODON_STATE_COUNT; state += 1) destination.probabilities[state] += weights[index] * source.probabilities[state];
+    }
+    progress("posterior", index + 1, local.length, `Integrated nucleotide and codon posterior for placement ${index + 1} of ${local.length}`);
     await Promise.resolve();
   }
   if (!bestPosterior) throw new Error("The best UCA placement did not produce a posterior sequence.");
@@ -196,7 +211,9 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     let mapCharacter = 0;
     for (let character = 1; character < 5; character += 1) if (mixture[site][character] > mixture[site][mapCharacter]) mapCharacter = character;
     consensusCharacters[original] = CHARACTERS[mapCharacter];
-    const probabilities = mixture[site];
+    const mixtureTotal = mixture[site].reduce((sum, value) => sum + value, 0);
+    if (!(mixtureTotal > 0) || !Number.isFinite(mixtureTotal)) throw new Error(`The UCA posterior at alignment column ${original + 1} has no finite probability mass.`);
+    const probabilities = normalizeProbabilityVector(mixture[site]) as [number, number, number, number, number];
     posteriorByOriginal.set(original, {
       alignmentColumn: original + 1,
       probabilities,
@@ -218,6 +235,20 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     entropyBits: 0,
     segment: "unknown",
   });
+  const codonPosterior: PhyloUcaCodonPosterior[] = codonMixture.map((codon, index) => {
+    const probabilities = normalizeProbabilityVector(codon.probabilities);
+    let mapState = 0;
+    for (let state = 1; state < probabilities.length; state += 1) if (probabilities[state] > probabilities[mapState]) mapState = state;
+    const columns = [0, 1, 2].map((offset) => (input.retainedColumns[codon.startSite + offset] ?? codon.startSite + offset) + 1) as [number, number, number];
+    return {
+      codonIndex: index + 1,
+      alignmentColumns: columns,
+      probabilities,
+      mapCodon: PHYLO_UCA_CODON_SYMBOLS[mapState],
+      mapProbability: probabilities[mapState],
+      entropyBits: entropyBits(probabilities),
+    };
+  });
   const path = bestPosterior.path.map((segment) => ({
     ...segment,
     startColumn: (input.retainedColumns[segment.startColumn] ?? segment.startColumn) + 1,
@@ -228,7 +259,7 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   const effectivePlacementCount = Math.exp(-weights.reduce((sum, weight) => weight > 0 ? sum + weight * Math.log(weight) : sum, 0));
   progress("finalize", 1, 1, "Preparing UCA sequence, placement tree, and provenance");
   return {
-    schema: 1,
+    schema: 2,
     method: "fixed-tree-empirical-bayes-phylo-uca",
     lineageLabel: input.lineageLabel,
     generatedAt: new Date().toISOString(),
@@ -241,12 +272,14 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     observedAlignmentFasta: input.observedAlignmentFasta,
     retainedColumns: [...input.retainedColumns],
     alignmentFingerprint: input.alignmentFingerprint,
+    frameOffset,
     bestPlacement,
     placements,
     mapAlignedSequence,
     mapUngappedSequence: mapAlignedSequence.replaceAll("-", ""),
     posteriorConsensusAligned,
     posterior,
+    codonPosterior,
     path,
     candidateReport: references.report,
     mapVCall: bestPosterior.mapVCall,

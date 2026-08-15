@@ -5,6 +5,7 @@ import type {
   PhyloUcaCandidateReport,
   PhyloUcaReferenceRecord,
 } from "./types.ts";
+import { alignmentGapSemantics, isInternalAlignmentGap } from "./gaps.ts";
 
 export interface ProjectedGermlineCandidate {
   name: string;
@@ -30,8 +31,12 @@ export interface PreparedPhyloUcaReferences {
 }
 
 export interface ObservedOnlyAlignment {
+  /** Observed rows with columns missing at every tip removed; used for FastTree. */
   fasta: string;
   retainedColumns: number[];
+  /** Observed rows at the full curated alignment width; used for UCA posterior inference. */
+  posteriorFasta: string;
+  posteriorColumns: number[];
   guide: string;
   rows: number;
   columns: number;
@@ -51,11 +56,13 @@ export function prepareObservedOnlyAlignment(curatedFasta: string, guideName: st
   const guideRecord = records.find((record) => record.name === guideName);
   const observed = records.filter((record) => record.name !== guideName);
   if (observed.length < 3) throw new Error("Phylogenetic UCA placement needs at least three observed sequences after the germline guide is removed.");
+  const observedSequences = observed.map((record) => normalizeSequence(record.sequence));
+  const gapSemantics = observedSequences.map(alignmentGapSemantics);
   const retainedColumns: number[] = [];
   for (let column = 0; column < columns; column += 1) {
-    if (observed.some((record) => {
-      const character = normalizeSequence(record.sequence)[column];
-      return character !== "-" && character !== "?";
+    if (observedSequences.some((sequence, row) => {
+      const character = sequence[column];
+      return character !== "?" && (character !== "-" || isInternalAlignmentGap(column, gapSemantics[row]));
     })) retainedColumns.push(column);
   }
   if (!retainedColumns.length) throw new Error("The observed sequences contain no informative alignment columns.");
@@ -64,9 +71,13 @@ export function prepareObservedOnlyAlignment(curatedFasta: string, guideName: st
     return retainedColumns.map((column) => normalized[column] ?? "-").join("");
   };
   const fasta = observed.map((record) => `>${record.name}\n${project(record.sequence)}`).join("\n") + "\n";
+  const posteriorColumns = Array.from({ length: columns }, (_, column) => column);
+  const posteriorFasta = observed.map((record, index) => `>${record.name}\n${observedSequences[index]}`).join("\n") + "\n";
   return {
     fasta,
     retainedColumns,
+    posteriorFasta,
+    posteriorColumns,
     guide: project(guideRecord?.sequence ?? "-".repeat(columns)),
     rows: observed.length,
     columns: retainedColumns.length,

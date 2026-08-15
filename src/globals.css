@@ -1300,6 +1300,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .copy-fasta { padding: 8px 0; border-bottom: 1px solid #667771; color: #a5b2ad; background: transparent; font-size: 8px; font-weight: 760; }
 .mode-toggle { display: flex; gap: 3px; padding: 3px; border: 1px solid #465650; border-radius: 4px; background: #0d1a18; }
 .mode-toggle button { padding: 8px 13px; border-radius: 2px; color: #7f8f89; background: transparent; font-size: 8px; font-weight: 800; }
+.mode-toggle button:disabled { cursor: not-allowed; opacity: .38; }
 .mode-toggle button.active { color: var(--ink); background: var(--lime); }
 .alignment-explainer { max-width: 760px; margin: 16px 0 0; color: #7e8d87; font-size: 8px; line-height: 1.6; }
 .annotation-status { display: grid; grid-template-columns: 165px 1fr; gap: 15px; padding: 12px 14px; margin-top: 20px; border: 1px solid #40504b; border-left-width: 4px; border-radius: 3px; background: #111f1c; }
@@ -1938,6 +1939,15 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .phylo-uca-sequence { display: grid; grid-template-columns: 150px minmax(0,1fr); max-height: 190px; overflow: auto; border-bottom: 1px solid var(--line); color: #d8e5df; background: #10201c; }
 .phylo-uca-sequence strong { position: sticky; left: 0; padding: 8px 12px; color: #9eafa8; background: #172a25; font-size: 8px; }
 .phylo-uca-sequence code { padding: 8px 12px; font-size: 9px; white-space: pre; }
+.phylo-uca-logo { border-bottom: 1px solid var(--line); background: #f8faf8; }
+.phylo-uca-logo > header { display: flex; gap: 20px; padding: 14px 20px 10px; align-items: flex-end; justify-content: space-between; }
+.phylo-uca-logo > header h5 { margin: 3px 0 4px; font: 650 14px/1.2 Georgia,"Times New Roman",Times,serif; }
+.phylo-uca-logo > header p { margin: 0; color: var(--muted); font-size: 8px; line-height: 1.45; }
+.phylo-uca-logo > header > div:last-child { display: flex; gap: 8px; flex: 0 0 auto; align-items: center; }
+.phylo-uca-logo > header > div:last-child > button { min-height: 34px; }
+.probability-logo-viewport { max-width: calc(100% - 40px); margin: 0 20px 12px; overflow-x: auto; border: 1px solid #cbd4d0; background: #fff; }
+.probability-logo-svg { display: block; max-width: none; font-family: Georgia,"Times New Roman",Times,serif; }
+.phylo-uca-logo-note { margin: -3px 20px 12px; color: var(--muted); font-size: 7px; line-height: 1.5; }
 .phylo-uca-segments { display: flex; gap: 2px; padding: 13px 20px; overflow-x: auto; border-bottom: 1px solid var(--line); }
 .phylo-uca-segments > span { display: grid; min-width: 52px; padding: 7px 9px; border-radius: 2px; color: #15221e; }
 .phylo-uca-segments b { font-size: 9px; }
@@ -1952,6 +1962,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 @media (max-width: 1000px) {
   .phylo-uca-advanced-body { grid-template-columns: 1fr; }
   .phylo-uca-result-head { display: grid; }
+  .phylo-uca-logo > header { display: grid; align-items: start; }
   .phylo-uca-stats { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
 

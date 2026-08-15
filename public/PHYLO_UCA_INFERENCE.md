@@ -21,7 +21,9 @@ The analysis uses:
 - the active composed V, D, and J reference FASTA sets;
 - fixed, user-visible model and search parameters.
 
-The N-masked germline guide row used by the ordinary lineage viewer is **not an observed taxon**. It is removed before tree inference. Columns that are gaps in every remaining observed row are also removed from the phylogenetic calculation and mapped back to their original alignment coordinates in the result.
+The N-masked germline guide row used by the ordinary lineage viewer is **not an observed taxon**. It is removed before tree inference. For FastTree fitting, a column is removed only when every remaining tip is missing there (`?` or a leading/trailing gap). A column containing an internal gap is retained even when every tip has that internal gap.
+
+The posterior pass then uses the **full original alignment width**. Columns omitted only from FastTree fitting are restored as missing tip data, so they do not change the fitted observed tree but the V(D)J prior can infer a UCA state there. Keeping these columns also preserves the selected codon phase exactly; deleting a three-column-external padding site must not shift every downstream codon. Result coordinates always refer to the original curated alignment.
 
 At least three observed sequences are required. The observed-only tree is inferred with the same double-precision FastTree 2.1.11 WebAssembly executable used by the ordinary lineage-tree action, using nucleotide GTR and the exact retained alignment.
 
@@ -29,12 +31,14 @@ At least three observed sequences are required. The observed-only tree is inferr
 
 This module does **not** use a 5-mer or any other context-dependent likelihood.
 
+Gap semantics are determined **per observed tip**, not per alignment column. For each sequence, Swig finds the first and last observed nucleotide or IUPAC nucleotide character. Gap runs before the first or after the last such character are fragment boundaries and contribute an all-ones likelihood partial (missing data). Only a `-` between those boundaries is an observed internal gap.
+
 In automatic mode:
 
-- an observed alignment with no `-` characters uses an ordinary four-state `A/C/G/T` reversible GTR model;
-- an observed alignment containing at least one `-` uses a five-character `A/C/G/T/-` reversible continuous-time Markov chain.
+- an observed alignment with no **internal** gap characters uses an ordinary four-state `A/C/G/T` reversible GTR model, even when partial reads have leading or trailing gap padding;
+- an observed alignment containing at least one internal gap uses a five-character `A/C/G/T/-` reversible continuous-time Markov chain for internal gaps only.
 
-`N` and IUPAC ambiguity symbols are partial observations over nucleotide states. They are not gap observations. A `?` is completely missing information. In GTR5, `-` is an exact fifth character. In an explicitly forced GTR4 analysis, a gap is treated as missing and a warning is recorded.
+`N` and IUPAC ambiguity symbols are partial observations over nucleotide states. They are not gap observations. A `?` is completely missing information. In GTR5, an internal `-` is an exact fifth character; a leading or trailing `-` remains missing. In an explicitly forced GTR4 analysis, internal gaps are also treated as missing and a warning is recorded.
 
 The GTR5 treatment is a fixed-alignment approximation. It assigns likelihood to a gap character without modeling insertion/deletion history, fragment length, or alignment uncertainty. It is therefore not a TKF-style indel process. The approximation is useful when the user has already committed to an alignment and wants those gap columns to carry information, but the result should not be interpreted as an indel-rate estimate.
 
@@ -147,7 +151,7 @@ Templated V/D/J states put nearly all mass on their reference character, with a 
 This distinction is important:
 
 - `N` means an unknown or non-templated **nucleotide**;
-- `-` means an explicit fixed-alignment **gap character**;
+- an internal `-` means an explicit fixed-alignment **gap character**, whereas a terminal `-` is missing coverage;
 - the HMM does not silently convert one into the other;
 - gap runs are not treated as ordinary N-addition runs;
 - no context/5-mer state is present.
@@ -165,12 +169,47 @@ For a proposed attachment and pendant length, the HMM forward algorithm marginal
 
 The resulting value is the marginal likelihood of the observed tree plus the recombination prior for that placement.
 
-For the selected placement, Swig runs:
+For each retained local placement, Swig runs:
 
 - forward/backward HMM inference to obtain marginal `P(UCA_i = c | data)` at every column;
+- an exact three-column forward/backward contraction for every complete codon in the selected alignment frame;
 - a max-product Viterbi pass to obtain one joint MAP recombination path and sequence.
 
 These are different estimands. The exported **joint MAP aligned UCA** follows one globally consistent V(D)J path. The **marginal consensus** chooses the highest posterior character independently at each site and need not itself be the highest-probability complete path.
+
+Every reported five-character site vector is normalized after local-placement mixing, with the floating-point residual returned to the largest component, so its entries sum to one to machine precision.
+
+### Exact codon posterior
+
+The codon calculation does **not** multiply three nucleotide marginals. Let `alpha_i(h)` be the HMM forward value after the integrated emission at column `i`, let `beta_i(h)` be the backward value for all later columns, and define
+
+`q_i(c | h) = p(c | h,i) L_i(c) / e_i(h)`.
+
+For a codon beginning at `i`, Swig fixes one character at each of the three columns while retaining the HMM state transitions:
+
+`P(c1,c2,c3,data) = sum_(h1,h2,h3) alpha_i(h1) q_i(c1|h1) T_i(h1,h2) e_(i+1)(h2) q_(i+1)(c2|h2) T_(i+1)(h2,h3) e_(i+2)(h3) q_(i+2)(c3|h3) beta_(i+2)(h3)`.
+
+Normalizing the 125 `A/C/G/T/gap` triples gives the joint codon posterior for that placement. Because the hidden state is not discarded between columns, this sum retains correlation induced by a shared V/J candidate, a particular D identity and position, trimming/recombination path, and N/D/J transitions. Marginalizing this 125-state vector at any of its three positions recovers the corresponding nucleotide posterior (up to floating-point precision).
+
+This is posterior aggregation over three nucleotide columns, **not** a codon substitution process. The expensive tree messages, attachment search, and pendant-length search still use nucleotide GTR4/GTR5. No codon-rate matrix or context/5-mer likelihood has been introduced.
+
+## Posterior frequency logo
+
+The results panel includes a reusable probability-logo component. It is deliberately a **frequency logo**, not an information-content logo:
+
+- every column has total height one;
+- character height is its marginal posterior probability;
+- entropy does not rescale the stack;
+- all glyphs use a serif face and each is clipped to its exact probability rectangle;
+- the displayed and SVG-exported stacks use the same normalized vectors as the posterior table.
+
+The viewer has three representations of the same posterior:
+
+- **Nucleotide:** the five single-column states `A/C/G/T/gap`.
+- **Codon:** the exact 125-state joint distribution described above. Codon strings are colored by their translated amino-acid class.
+- **Amino acid:** an exact deterministic marginal obtained by summing probabilities of synonymous codon states. No nucleotide probabilities are multiplied.
+
+A fully gapped codon maps to `-`; a partially gapped codon maps to `X`. The selected lineage-alignment reading frame determines codon boundaries and is stored with the result. Each view can be exported as SVG.
 
 ## Placement and branch-length search
 
@@ -186,7 +225,7 @@ The default edge prior is proportional to edge length, approximating a uniform p
 
 ## Local empirical-Bayes marginalization
 
-When enabled, Swig normalizes posterior weights over the best nearby evaluated `(edge, attachment fraction, pendant length)` points and averages their sitewise UCA nucleotide posteriors. The result reports the effective number of placements:
+When enabled, Swig normalizes posterior weights over the best nearby evaluated `(edge, attachment fraction, pendant length)` points and averages both their sitewise nucleotide posteriors and their 125-state **joint codon** posteriors. Thus placement uncertainty is marginalized before codons are translated to amino acids. The result reports the effective number of placements:
 
 `N_eff = exp[-sum_k w_k log(w_k)]`.
 
@@ -200,7 +239,7 @@ The placed Newick is rooted at the inferred UCA. The named `phylo_UCA` sequence 
 
 | Group | Parameter | Default |
 |---|---|---:|
-| Character model | mode | automatic GTR4/GTR5 |
+| Character model | mode | automatic GTR4 / internal-gap GTR5 |
 | Character model | gap equilibrium frequency | 0.02 |
 | Candidate screen | V extra differences | 6 |
 | Candidate screen | J extra differences | 4 |
@@ -222,7 +261,9 @@ These are fixed regularizing values, not fitted biological recombination rates. 
 
 For `n` observed tips and `L` alignment columns, directed tree messages cost `O(n L K^2)` once, where `K` is four or five. Each proposed placement then costs `O(L K^2)` to construct the phylogenetic surface plus one sparse/factorized HMM pass.
 
-If `S` is the number of HMM profile states, a marginal placement evaluation is approximately `O(L S)`. D-repeat transitions do not add `O(S^2)` cost. Full posterior inference stores forward values for the selected local placements; coarse search uses rolling rows. The whole inference runs in a dedicated browser worker. Progress distinguishes observed-tree inference, message construction, edge screening, full-HMM search, local posterior integration, and finalization.
+If `S` is the number of HMM profile states, a marginal placement evaluation is approximately `O(L S)`. D-repeat transitions do not add `O(S^2)` cost. Full posterior inference stores one forward table for each local placement as it is processed; coarse search uses rolling rows. Exact codon marginalization branches over the character alphabet for two transitions per codon: `4 + 16` sparse HMM advances under GTR4 or `5 + 25` under GTR5, followed by a terminal contraction for all 64 or 125 triples. It remains linear in `L` and `S`, with a larger constant than the single-site posterior, and never constructs a dense `S x S` matrix.
+
+The whole inference runs in a dedicated browser worker. Progress distinguishes observed-tree inference, message construction, edge screening, full-HMM search, joint nucleotide/codon posterior integration, and finalization.
 
 ## Exports and session behavior
 
@@ -230,18 +271,20 @@ The panel exports:
 
 - aligned joint-MAP and marginal-consensus UCA FASTA;
 - per-column posterior TSV (`A/C/G/T/gap`, entropy, HMM segment, and candidate call);
+- long-form exact codon-posterior TSV (alignment columns, codon, translated amino acid, probability, and MAP indicator);
+- frequency-logo SVG in nucleotide, codon, or amino-acid view;
 - UCA-rooted placed Newick;
 - complete JSON containing the observed tree, placement set, weights, candidate report, model, parameters, path, sequences, warnings, and alignment fingerprint;
 - publication-oriented SVG through the standard lineage tree viewer.
 
-Save session retains the inferred UCA result and all settings because reconstructing it requires a searched placement posterior. The state is bound to the exact lineage ID set and alignment fingerprint. Editing, replacing, or deleting alignment rows invalidates the result rather than silently reusing it.
+Save session retains the inferred UCA result and all settings because reconstructing it requires a searched placement posterior. The state is bound to the exact lineage ID set, alignment fingerprint, and selected reading frame. Editing, replacing, deleting alignment rows, or changing the frame invalidates the result rather than silently reusing an incompatible codon posterior.
 
 ## Limitations
 
 1. The observed tree is fixed. Tree-topology and ordinary branch-length uncertainty are excluded.
 2. FastTree is a practical approximate tree estimator, not a full antibody-specific Bayesian tree model.
 3. The HS5F-derived GTR is a context-averaged nucleotide approximation. It is not a 5-mer model and does not reproduce full SHM targeting.
-4. The five-character model conditions on a user-curated alignment and is not a generative indel model.
+4. The five-character model conditions on user-curated internal alignment gaps and is not a generative indel model; terminal gap padding is missing data.
 5. Candidate reference annotations and fixed projections must be biologically coherent. Results with incomplete or wrongly aligned germlines require inspection.
 6. Local placement marginalization is discrete and local, not full MCMC.
 7. Fixed transition parameters influence weakly identified junctions. Important UCAs should be rerun across sensible prior settings.

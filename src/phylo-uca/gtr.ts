@@ -3,6 +3,7 @@ import {
   type PhyloUcaCharacter,
   type PhyloUcaGtrModel,
 } from "./types.ts";
+import { alignmentGapSemantics, isTerminalAlignmentGap } from "./gaps.ts";
 
 export const PHYLO_UCA_MAX_STATE_COUNT = 5;
 
@@ -51,7 +52,10 @@ export function empiricalGtr5Model(alignmentSequences: readonly string[], useHs5
   const counts = [1, 1, 1, 1, 1];
   for (const raw of alignmentSequences) {
     const sequence = raw.toUpperCase().replaceAll(".", "-").replaceAll("U", "T");
-    for (const character of sequence) {
+    const semantics = alignmentGapSemantics(sequence);
+    for (let site = 0; site < sequence.length; site += 1) {
+      const character = sequence[site];
+      if (character === "-" && isTerminalAlignmentGap(site, semantics)) continue;
       const index = PHYLO_UCA_CHARACTERS.indexOf(character as PhyloUcaCharacter);
       if (index >= 0) counts[index] += 1;
     }
@@ -210,7 +214,7 @@ export function observedCharacterPartial(character: string, dimension: 4 | 5): F
     return partial;
   }
   // Under an explicit GTR4 override, a gap is missing rather than a fifth
-  // character. Auto mode never takes this path when observed gaps are present.
+  // character. Auto mode takes this path only when an internal gap is present.
   partial.fill(1);
   return partial;
 }

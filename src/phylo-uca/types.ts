@@ -8,6 +8,7 @@
 
 export const PHYLO_UCA_CHARACTERS = ["A", "C", "G", "T", "-"] as const;
 export type PhyloUcaCharacter = typeof PHYLO_UCA_CHARACTERS[number];
+export type PhyloUcaFrameOffset = 0 | 1 | 2;
 
 export interface PhyloUcaGtrModel {
   /** Human-readable identifier stored in result provenance. */
@@ -72,7 +73,7 @@ export interface PhyloUcaSearchOptions {
 }
 
 export interface PhyloUcaOptions {
-  /** Auto selects GTR4 unless the observed curated alignment contains a gap. */
+  /** Auto selects GTR4 unless an observed tip contains an internal gap. */
   characterMode: "auto" | "nucleotide-gtr4" | "gap-aware-gtr5";
   model: PhyloUcaGtrModel;
   hmm: PhyloUcaHmmOptions;
@@ -97,9 +98,9 @@ export interface PhyloUcaInput {
   curatedAlignmentFasta: string;
   /** FastTree inferred from observed rows only. */
   observedTreeNewick: string;
-  /** Alignment actually supplied to observed-only FastTree after all-gap removal. */
+  /** Full-width observed alignment used for tree messages and the HMM posterior. */
   observedAlignmentFasta: string;
-  /** Original alignment columns retained in observedAlignmentFasta. */
+  /** Original alignment columns represented in observedAlignmentFasta. */
   retainedColumns: number[];
   germlineGuideName: string;
   lineageRows: PhyloUcaAirrRow[];
@@ -107,6 +108,8 @@ export interface PhyloUcaInput {
   locus: string;
   lineageLabel: string;
   alignmentFingerprint: string;
+  /** Zero-based first nucleotide column of the selected codon frame. */
+  frameOffset: PhyloUcaFrameOffset;
   options: PhyloUcaOptions;
 }
 
@@ -161,6 +164,21 @@ export interface PhyloUcaSitePosterior {
   call?: string;
 }
 
+export interface PhyloUcaCodonPosterior {
+  /** One-based codon ordinal in the selected alignment frame. */
+  codonIndex: number;
+  /** One-based original alignment columns forming this codon. */
+  alignmentColumns: [number, number, number];
+  /**
+   * Joint probabilities in base-5 lexicographic A/C/G/T/gap order:
+   * index = 25 * first + 5 * second + third.
+   */
+  probabilities: number[];
+  mapCodon: string;
+  mapProbability: number;
+  entropyBits: number;
+}
+
 export interface PhyloUcaCandidateReport {
   locus: string;
   v: string[];
@@ -178,7 +196,7 @@ export interface PhyloUcaCandidateReport {
 }
 
 export interface PhyloUcaResult {
-  schema: 1;
+  schema: 1 | 2;
   method: "fixed-tree-empirical-bayes-phylo-uca";
   lineageLabel: string;
   generatedAt: string;
@@ -192,12 +210,16 @@ export interface PhyloUcaResult {
   /** Zero-based original curated-alignment columns represented above. */
   retainedColumns: number[];
   alignmentFingerprint: string;
+  /** Present in schema 2; schema-1 sessions implicitly used frame 0. */
+  frameOffset?: PhyloUcaFrameOffset;
   bestPlacement: PhyloUcaPlacement;
   placements: PhyloUcaPlacement[];
   mapAlignedSequence: string;
   mapUngappedSequence: string;
   posteriorConsensusAligned: string;
   posterior: PhyloUcaSitePosterior[];
+  /** Exact three-column HMM/placement posterior; present in schema 2. */
+  codonPosterior?: PhyloUcaCodonPosterior[];
   path: PhyloUcaPathSegment[];
   candidateReport: PhyloUcaCandidateReport;
   mapVCall: string;
@@ -212,6 +234,8 @@ export interface PhyloUcaResult {
 export interface PhyloUcaSavedState {
   lineageIds: number[];
   alignmentFingerprint: string;
+  /** Codon posterior is valid only for this selected alignment frame. */
+  frameOffset?: PhyloUcaFrameOffset;
   options: PhyloUcaOptions;
   result?: PhyloUcaResult;
 }

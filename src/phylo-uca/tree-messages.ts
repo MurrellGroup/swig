@@ -7,6 +7,9 @@ import {
   type ReversibleCharacterModel,
 } from "./gtr.ts";
 import type { PhyloUcaGtrModel, PhyloUcaOptions } from "./types.ts";
+import { alignmentGapSemantics, isTerminalAlignmentGap, type AlignmentGapSemantics } from "./gaps.ts";
+
+export { alignmentGapSemantics } from "./gaps.ts";
 
 const LIKELIHOOD_FLOOR = 1e-300;
 
@@ -30,6 +33,22 @@ export interface PhyloUcaTreeEdge {
 interface CavityMessage {
   values: Float64Array;
   scales: Float64Array;
+}
+
+/** A leading/trailing alignment gap is absent coverage; only an internal gap is an observed fifth state. */
+export function observedAlignedCharacterPartial(
+  sequence: string,
+  site: number,
+  dimension: 4 | 5,
+  semantics = alignmentGapSemantics(sequence),
+): Float64Array {
+  const character = sequence[site]?.toUpperCase().replace("U", "T").replace(".", "-") ?? "?";
+  if (character === "-" && isTerminalAlignmentGap(site, semantics)) {
+    const missing = new Float64Array(dimension);
+    missing.fill(1);
+    return missing;
+  }
+  return observedCharacterPartial(character, dimension);
 }
 
 function directedKey(node: number, blockedEdge: number): string {
@@ -71,6 +90,9 @@ export class PhyloUcaTreeMessages {
   readonly alignmentNames: string[];
   readonly alignmentSequences: string[];
   readonly characterModel: "nucleotide-gtr4" | "gap-aware-gtr5";
+  readonly internalGapCount: number;
+  readonly terminalMissingGapCount: number;
+  private readonly gapSemantics: AlignmentGapSemantics[];
   private readonly cavities = new Map<string, CavityMessage>();
 
   constructor(
@@ -88,9 +110,11 @@ export class PhyloUcaTreeMessages {
     }
     this.alignmentNames = records.map((record) => record.name);
     this.alignmentSequences = records.map((record) => record.sequence.toUpperCase().replaceAll(".", "-").replaceAll("U", "T"));
-    const observedGap = this.alignmentSequences.some((sequence) => sequence.includes("-"));
+    this.gapSemantics = this.alignmentSequences.map(alignmentGapSemantics);
+    this.internalGapCount = this.gapSemantics.reduce((sum, value) => sum + value.internalGaps, 0);
+    this.terminalMissingGapCount = this.gapSemantics.reduce((sum, value) => sum + value.terminalMissingGaps, 0);
     this.characterModel = characterMode === "auto"
-      ? observedGap ? "gap-aware-gtr5" : "nucleotide-gtr4"
+      ? this.internalGapCount > 0 ? "gap-aware-gtr5" : "nucleotide-gtr4"
       : characterMode;
     this.model = compileGtr(model, this.characterModel === "gap-aware-gtr5");
     this.nodes = [];
@@ -158,8 +182,9 @@ export class PhyloUcaTreeMessages {
       const row = alignmentByName.get(node.name);
       if (row === undefined) throw new Error(`Tree tip ${node.name} has no alignment row.`);
       const sequence = this.alignmentSequences[row];
+      const semantics = this.gapSemantics[row];
       for (let site = 0; site < this.sites; site += 1) {
-        const partial = observedCharacterPartial(sequence[site], dimension);
+        const partial = observedAlignedCharacterPartial(sequence, site, dimension, semantics);
         values.set(partial, site * dimension);
       }
     } else {
@@ -243,19 +268,24 @@ export class PhyloUcaTreeMessages {
     if (alignedGuide.length !== this.sites) throw new Error("The germline placement guide has different columns from the observed-only alignment.");
     let score = 0;
     const nucleotideTotal = this.model.frequencies[0] + this.model.frequencies[1] + this.model.frequencies[2] + this.model.frequencies[3];
+    const gapSemantics = alignmentGapSemantics(alignedGuide);
     for (let site = 0; site < this.sites; site += 1) {
       const character = alignedGuide[site]?.toUpperCase().replace("U", "T").replace(".", "-") ?? "N";
       const exact = ["A", "C", "G", "T", "-"].indexOf(character);
       const offset = site * surface.stateCount;
-      if (exact >= 0 && exact < surface.stateCount) {
+      const terminalMissing = character === "-" && isTerminalAlignmentGap(site, gapSemantics);
+      const completelyMissing = terminalMissing || character === "?";
+      if (!completelyMissing && exact >= 0 && exact < surface.stateCount) {
         score += surface.logLikelihoods[offset + exact];
         continue;
       }
       let maximumLog = Number.NEGATIVE_INFINITY;
-      for (let state = 0; state < 4; state += 1) maximumLog = Math.max(maximumLog, surface.logLikelihoods[offset + state]);
+      const stateLimit = completelyMissing ? surface.stateCount : 4;
+      const frequencyTotal = completelyMissing ? 1 : nucleotideTotal;
+      for (let state = 0; state < stateLimit; state += 1) maximumLog = Math.max(maximumLog, surface.logLikelihoods[offset + state]);
       let sum = 0;
-      for (let state = 0; state < 4; state += 1) {
-        sum += this.model.frequencies[state] / nucleotideTotal * Math.exp(surface.logLikelihoods[offset + state] - maximumLog);
+      for (let state = 0; state < stateLimit; state += 1) {
+        sum += this.model.frequencies[state] / frequencyTotal * Math.exp(surface.logLikelihoods[offset + state] - maximumLog);
       }
       score += maximumLog + Math.log(Math.max(LIKELIHOOD_FLOOR, sum));
     }
