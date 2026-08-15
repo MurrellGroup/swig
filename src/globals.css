@@ -1922,6 +1922,11 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .phylo-uca-advanced-body label.check-line { display: flex; align-items: center; }
 .phylo-uca-advanced-body input:not([type="checkbox"]),
 .phylo-uca-advanced-body select { width: 100%; min-width: 0; }
+.phylo-uca-default-reset { display: flex; gap: 18px; margin: 0 14px 14px; padding: 12px 14px; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); background: #f7f8f5; }
+.phylo-uca-default-reset > div { display: grid; gap: 3px; min-width: 0; }
+.phylo-uca-default-reset strong { color: var(--ink-2); font-size: 8px; }
+.phylo-uca-default-reset span { color: var(--muted); font-size: 7px; line-height: 1.45; }
+.phylo-uca-default-reset button { flex: 0 0 auto; }
 .phylo-uca-progress { display: grid; grid-template-columns: minmax(180px,1fr) minmax(220px,2fr) auto; gap: 15px; padding: 14px 20px; align-items: center; border-top: 1px solid var(--line); background: #eef4f1; }
 .phylo-uca-progress > div { display: grid; gap: 2px; }
 .phylo-uca-progress strong { font-size: 9px; }
@@ -1953,6 +1958,13 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .phylo-uca-annotation-toolbar { display: flex; gap: 12px; padding: 0 20px 8px; align-items: center; }
 .phylo-uca-annotation-toolbar .mode-toggle { flex: 0 0 auto; }
 .phylo-uca-annotation-toolbar p { margin: 0; color: var(--muted); font-size: 7px; line-height: 1.35; }
+.phylo-uca-track-legend { display: inline-flex; flex: 0 0 auto; gap: 3px; align-items: center; }
+.phylo-uca-track-legend span { min-width: 26px; padding: 4px 6px; border-radius: 2px; color: #26332f; font: 800 7px/1 "Liberation Mono","DejaVu Sans Mono","Courier New",monospace; text-align: center; }
+.phylo-uca-track-legend .v { background: #e8f6f1; box-shadow: inset 3px 0 0 #4ba996; }
+.phylo-uca-track-legend .n { background: #eef2f1; box-shadow: inset 3px 0 0 #87938e; }
+.phylo-uca-track-legend .d { background: #fff5d8; box-shadow: inset 3px 0 0 #d2a12f; }
+.phylo-uca-track-legend .j { background: #ffede8; box-shadow: inset 3px 0 0 #d76755; }
+.phylo-uca-track-label-panel { filter: drop-shadow(2px 0 1px rgba(31,49,43,.18)); }
 .phylo-uca-logo-note { margin: -3px 20px 12px; color: var(--muted); font-size: 7px; line-height: 1.5; }
 .phylo-uca-segments { display: flex; gap: 2px; padding: 13px 20px; overflow-x: auto; border-bottom: 1px solid var(--line); }
 .phylo-uca-segments > span { display: grid; min-width: 52px; padding: 7px 9px; border-radius: 2px; color: #15221e; }
@@ -1978,6 +1990,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
   .phylo-uca-panel > header,
   .phylo-uca-run-row { display: grid; }
   .phylo-uca-advanced-body fieldset { grid-template-columns: 1fr; }
+  .phylo-uca-default-reset { display: grid; align-items: start; }
   .phylo-uca-progress { grid-template-columns: 1fr; }
   .phylo-uca-stats { grid-template-columns: 1fr; }
 }
@@ -3807,15 +3820,11 @@ label[data-field-help] > span:first-child { cursor: help; text-decoration: under
 .allele-refinement-progress > div { display: flex; justify-content: space-between; gap: 18px; font-size: 9px; }
 .allele-refinement-progress progress { width: 100%; accent-color: var(--teal); }
 .allele-refinement-results { display: grid; gap: 16px; padding: 22px; }
-.allele-apply-row { display: grid; grid-template-columns: minmax(0,1fr) 180px auto auto; align-items: end; gap: 12px; padding: 15px; border: 1px solid var(--line); background: var(--surface-soft); }
+.allele-apply-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(220px,280px) 180px auto auto; align-items: end; gap: 12px; padding: 15px; border: 1px solid var(--line); background: var(--surface-soft); }
 .allele-apply-row > div { display: grid; gap: 5px; align-self: center; }
 .allele-apply-row small { color: var(--muted); font-size: 8px; line-height: 1.5; }
 .allele-apply-row > label { display: grid; gap: 6px; color: var(--muted); font-size: 8px; font-weight: 800; text-transform: uppercase; }
-.allele-model-table { max-height: 520px; overflow: auto; border: 1px solid var(--line); }
-.allele-model-table table { width: 100%; min-width: 840px; border-collapse: collapse; font-size: 8px; }
-.allele-model-table th { position: sticky; top: 0; z-index: 1; padding: 9px; border-bottom: 1px solid var(--line); color: var(--muted); background: var(--surface-soft); text-align: left; text-transform: uppercase; }
-.allele-model-table td { padding: 8px 9px; border-bottom: 1px solid var(--line); }
-.allele-model-table code { white-space: normal; overflow-wrap: anywhere; }
+.allele-apply-row select { width: 100%; min-height: 36px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); font-size: 8px; text-transform: none; }
 .allele-kernel-inspector { margin-top: 14px; overflow: visible; border: 1px solid #9eb6ad; border-radius: 4px; background: var(--surface); }
 .allele-kernel-inspector > header { display: flex; gap: 18px; align-items: flex-start; justify-content: space-between; padding: 15px 16px; border-bottom: 1px solid var(--line); background: #f4f7f4; }
 .allele-kernel-inspector > header h4 { margin: 4px 0 5px; font-size: 15px; line-height: 1.2; }
@@ -3871,7 +3880,7 @@ label[data-field-help] > span:first-child { cursor: help; text-decoration: under
 .allele-shift-chart > header h4 { margin: 4px 0 5px; font-size: 15px; line-height: 1.2; }
 .allele-shift-chart > header p { max-width: 800px; margin: 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
 .allele-shift-chart > header .result-actions { flex: 0 0 auto; margin: 0; }
-.allele-shift-controls { display: grid; grid-template-columns: minmax(300px,1fr) 140px auto; gap: 10px; align-items: end; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.allele-shift-controls { display: grid; grid-template-columns: minmax(280px,1fr) minmax(190px,240px) 120px auto; gap: 10px; align-items: end; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .allele-shift-controls > label { display: grid; min-width: 0; gap: 5px; color: var(--muted); font-size: 7px; font-weight: 850; letter-spacing: .05em; text-transform: uppercase; }
 .allele-shift-controls select,
 .allele-shift-controls input { width: 100%; min-width: 0; min-height: 36px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); font-size: 8px; }

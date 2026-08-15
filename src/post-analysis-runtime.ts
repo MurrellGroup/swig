@@ -12,7 +12,7 @@ import type {
   QueryOptions,
 } from "./post-analysis-core";
 import type { DatasetScope } from "./study-design";
-import type { AlleleRefinementResult, RefinementSegment } from "./allele-refinement/types";
+import type { AlleleReassignmentPolicy, AlleleRefinementResult, RefinementSegment } from "./allele-refinement/types";
 
 export interface DedupDashboard {
   mode: CollapseMode;
@@ -141,8 +141,9 @@ export class PostAnalysisRuntime {
 
   async setRepertoireCallOverrides(
     refinement: AlleleRefinementResult | null,
+    reassignmentPolicy: AlleleReassignmentPolicy = "confidence",
     minimumPosterior = 0.8,
-  ): Promise<{ changedV: number; changedJ: number; threshold: number }> {
+  ): Promise<{ changedV: number; changedJ: number; policy: AlleleReassignmentPolicy; threshold: number }> {
     await this.ensureIndexed();
     const payload = (segment: RefinementSegment) => {
       const result = refinement?.segments[segment];
@@ -154,6 +155,7 @@ export class PostAnalysisRuntime {
     };
     return this.request({
       type: "setCallOverrides",
+      reassignmentPolicy,
       minimumPosterior,
       v: payload("V"),
       j: payload("J"),

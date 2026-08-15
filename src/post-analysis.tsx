@@ -91,7 +91,7 @@ import { AlleleRefinementPanel } from "./allele-refinement/panel";
 import { AlleleRefinementRuntime } from "./allele-refinement/runtime";
 import { refinedCall, refineDetailRows, modelSummaryTable, writeRefinedAirr, writeRefinementSidecar } from "./allele-refinement/export";
 import { restoreAlleleRefinement, saveAlleleRefinement } from "./allele-refinement/serialization";
-import { DEFAULT_ALLELE_REFINEMENT_OPTIONS, type AlleleRefinementOptions, type AlleleRefinementResult } from "./allele-refinement/types";
+import { DEFAULT_ALLELE_REFINEMENT_OPTIONS, type AlleleReassignmentPolicy, type AlleleRefinementOptions, type AlleleRefinementResult } from "./allele-refinement/types";
 
 interface Props {
   store: AirrResultStore;
@@ -449,6 +449,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [alleleOptions, setAlleleOptions] = useState<AlleleRefinementOptions>({ ...DEFAULT_ALLELE_REFINEMENT_OPTIONS, segments: [...DEFAULT_ALLELE_REFINEMENT_OPTIONS.segments] });
   const [alleleRefinement, setAlleleRefinement] = useState<AlleleRefinementResult | null>(null);
   const [alleleApplied, setAlleleApplied] = useState(false);
+  const [alleleReassignmentPolicy, setAlleleReassignmentPolicy] = useState<AlleleReassignmentPolicy>("confidence");
   const [alleleApplyMinimumPosterior, setAlleleApplyMinimumPosterior] = useState(0.8);
   const [alleleProgress, setAlleleProgress] = useState<{ processed: number; total: number; phase: string } | null>(null);
   const selectionFacets=useMemo(()=>({
@@ -833,12 +834,13 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           }
 
           let pipelineAlleleResult: AlleleRefinementResult | null = null;
+          const pipelineAllelePolicy = autoPipeline.alleleRefinement.reassignmentPolicy ?? "confidence";
           const pipelineAlleleThreshold = autoPipeline.alleleRefinement.applyMinimumPosterior;
           const overlayPipelineAlleleCalls = (row: { ordinal: number; values: Record<string,string> }) => {
             if (!pipelineAlleleResult) return;
-            const v = refinedCall(pipelineAlleleResult, "V", row.ordinal, pipelineAlleleThreshold);
-            const d = refinedCall(pipelineAlleleResult, "D", row.ordinal, pipelineAlleleThreshold);
-            const j = refinedCall(pipelineAlleleResult, "J", row.ordinal, pipelineAlleleThreshold);
+            const v = refinedCall(pipelineAlleleResult, "V", row.ordinal, pipelineAllelePolicy, pipelineAlleleThreshold);
+            const d = refinedCall(pipelineAlleleResult, "D", row.ordinal, pipelineAllelePolicy, pipelineAlleleThreshold);
+            const j = refinedCall(pipelineAlleleResult, "J", row.ordinal, pipelineAllelePolicy, pipelineAlleleThreshold);
             if (v) row.values.v_call = v;
             if (d) row.values.d_call = d;
             if (j) row.values.j_call = j;
@@ -853,6 +855,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
               shmLeakageSensitivity: autoPipeline.alleleRefinement.shmLeakageSensitivity,
             };
             setAlleleOptions(options);
+            setAlleleReassignmentPolicy(pipelineAllelePolicy);
             setAlleleApplyMinimumPosterior(pipelineAlleleThreshold);
             setBusy("Pipeline · pooling repertoire germline evidence");
             pipelineAlleleResult = await alleleRuntime.run(store, references, options, activeMask, (next) => {
@@ -863,8 +866,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             setAlleleProgress(null);
             setAlleleRefinement(pipelineAlleleResult);
             setAlleleApplied(true);
-            await runtime.setRepertoireCallOverrides(pipelineAlleleResult, pipelineAlleleThreshold);
-            report.push(`Allele pooling fitted ${Object.values(pipelineAlleleResult.segments).reduce((sum, segment) => sum + (segment?.models.length ?? 0), 0).toLocaleString()} donor/locus/segment models and applied calls at posterior ≥ ${pipelineAlleleThreshold}.`);
+            await runtime.setRepertoireCallOverrides(pipelineAlleleResult, pipelineAllelePolicy, pipelineAlleleThreshold);
+            report.push(`Allele pooling fitted ${Object.values(pipelineAlleleResult.segments).reduce((sum, segment) => sum + (segment?.models.length ?? 0), 0).toLocaleString()} donor/locus/segment models and applied ${pipelineAllelePolicy === "best" ? "the posterior MAP call to every modeled record" : `posterior MAP calls at confidence ≥ ${pipelineAlleleThreshold}`}.`);
             if (!autoPipeline.lineage.enabled) openModule("alleles");
           }
 
@@ -939,7 +942,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const collapse=dedup?await (async()=>{const state=await runtime.dedupState();return {mode:dedup.mode,options:{dedupKey,collapseMode,collapseScope,respectConstantCall,denoiseErrorRate,denoiseAlpha,denoiseResolution,denoiseAmbiguity,minimumParentCount,denoiseAmbiguousPolicy,denoiseUnresolvedPolicy,fadNeighborThreshold,fadMethod,expectedZeroErrorFraction,maximumDenoiseDistance,maximumEditDistance,minimumIndelParentRatio,denoiseCandidateCap},counts:packSessionVector(state.counts),representatives:packSessionVector(state.representatives),dashboard:{...dedup}};})():undefined;
       const lineage=lineages?{options:{identity,resolution,ambiguity,productiveOnly,candidateCap,lineageScope},assignments:packSessionVector(await runtime.lineageAssignments()),dashboard:{...lineages}}:undefined;
       const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
-      return {workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,alleleRefinement:alleleRefinement?saveAlleleRefinement(alleleRefinement,alleleApplied,alleleApplyMinimumPosterior):undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
+      return {workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,alleleRefinement:alleleRefinement?saveAlleleRefinement(alleleRefinement,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior):undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
         alignmentFrameOffset,
         query:{queryText,queryTarget,queryMetric,queryIdentity,queryLimit,queryLocus,queryV,queryJ,queryConstraintMode,queryResultMode,queryInference,queryHits,queryLineageHits,expanded},
         editedAlignments:[...editedAlignments.values()].map((entry)=>({...entry,lineageIds:[...entry.lineageIds]})),
@@ -958,7 +961,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     const reason=treeRun?"phylogeny_changed":editedAlignments.size?"edited_alignment_changed":alignment?"lineage_alignment_changed":missingAlleles?"missing_allele_screen_changed":shmDashboard?"shm_changed":lineages?"lineages_changed":chmm?"chimera_state_changed":dedup?"collapse_state_changed":selectionApplied||selectionPreview?"repertoire_selection_changed":"post_analysis_state_changed";
     sessionChangeCallbackRef.current?.(reason);
   },[
-    alignment,alignmentFrameOffset,alleleApplied,alleleApplyMinimumPosterior,alleleOptions,alleleRefinement,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
+    alignment,alignmentFrameOffset,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior,alleleOptions,alleleRefinement,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
     missingAlleleOptions,missingAlleles,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
     queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,
     selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,phyloUcaState,workingStages,
@@ -974,8 +977,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         const collapse=initialSession.collapse;const lineage=initialSession.lineage;
         const dedupState=collapse?.counts&&collapse.representatives&&collapse.dashboard?{dashboard:collapse.dashboard as unknown as DedupDashboard,counts:unpackSessionVector(collapse.counts) as Uint32Array,representatives:unpackSessionVector(collapse.representatives) as Int32Array}:undefined;
         const lineageState=lineage?.assignments&&lineage.dashboard?{dashboard:lineage.dashboard as unknown as LineageDashboard,assignments:unpackSessionVector(lineage.assignments) as Int32Array}:undefined;
-        let restoredAllele:AlleleRefinementResult|null=null;let restoredAlleleApplied=false;let restoredAlleleThreshold=0.8;
-        if(initialSession.alleleRefinement){restoredAllele=restoreAlleleRefinement(initialSession.alleleRefinement);restoredAllele.options={...DEFAULT_ALLELE_REFINEMENT_OPTIONS,...restoredAllele.options,segments:[...restoredAllele.options.segments]};restoredAlleleApplied=Boolean(initialSession.alleleRefinement.applied);restoredAlleleThreshold=initialSession.alleleRefinement.applyMinimumPosterior??0.8;setAlleleRefinement(restoredAllele);setAlleleOptions(restoredAllele.options);setAlleleApplied(restoredAlleleApplied);setAlleleApplyMinimumPosterior(restoredAlleleThreshold);if(restoredAlleleApplied)await runtime.setRepertoireCallOverrides(restoredAllele,restoredAlleleThreshold);}
+        let restoredAllele:AlleleRefinementResult|null=null;let restoredAlleleApplied=false;let restoredAllelePolicy:AlleleReassignmentPolicy="confidence";let restoredAlleleThreshold=0.8;
+        if(initialSession.alleleRefinement){restoredAllele=restoreAlleleRefinement(initialSession.alleleRefinement);restoredAllele.options={...DEFAULT_ALLELE_REFINEMENT_OPTIONS,...restoredAllele.options,segments:[...restoredAllele.options.segments]};restoredAlleleApplied=Boolean(initialSession.alleleRefinement.applied);restoredAllelePolicy=initialSession.alleleRefinement.reassignmentPolicy??"confidence";restoredAlleleThreshold=initialSession.alleleRefinement.applyMinimumPosterior??0.8;setAlleleRefinement(restoredAllele);setAlleleOptions(restoredAllele.options);setAlleleApplied(restoredAlleleApplied);setAlleleReassignmentPolicy(restoredAllelePolicy);setAlleleApplyMinimumPosterior(restoredAlleleThreshold);if(restoredAlleleApplied)await runtime.setRepertoireCallOverrides(restoredAllele,restoredAllelePolicy,restoredAlleleThreshold);}
         const restoredRuntimeState=await runtime.restoreState({activeMask:active,dedup:dedupState,lineages:lineageState});
         setWorkingMask(active);setWorkingStages(initialSession.workingStages as WorkingSetStage[]);
         if(collapse?.dashboard){setDedup(collapse.dashboard as unknown as DedupDashboard);setCollapseMode(collapse.mode);const o=collapse.options; if(typeof o.dedupKey==="string")setDedupKey(o.dedupKey as DedupKey);if(typeof o.collapseScope==="string")setCollapseScope(o.collapseScope as DatasetScope);if(typeof o.respectConstantCall==="boolean")setRespectConstantCall(o.respectConstantCall);if(typeof o.denoiseUnresolvedPolicy==="string")setDenoiseUnresolvedPolicy(o.denoiseUnresolvedPolicy as "discard"|"retain");}
@@ -1002,7 +1005,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           const selectedId=restoredSelectedIds[0];
           const summary=restoredLineages?.summaries.find(item=>item.id===selectedId);
           if(summary){
-            const limitPerLineage=restoredSelectedIds.length===1?500:Math.max(20,Math.floor(1000/restoredSelectedIds.length));const memberGroups=await runtime.lineageMembersMany(restoredSelectedIds,limitPerLineage);const rows=refineDetailRows(await store.detailMany(memberGroups.flatMap((group)=>group.ordinals)),restoredAllele,restoredAlleleThreshold,restoredAlleleApplied);
+            const limitPerLineage=restoredSelectedIds.length===1?500:Math.max(20,Math.floor(1000/restoredSelectedIds.length));const memberGroups=await runtime.lineageMembersMany(restoredSelectedIds,limitPerLineage);const rows=refineDetailRows(await store.detailMany(memberGroups.flatMap((group)=>group.ordinals)),restoredAllele,restoredAllelePolicy,restoredAlleleThreshold,restoredAlleleApplied);
             const counts=initialSession.workingStages.some(stage=>stage.id==="dedup")?await runtime.dedupCounts():null;
             const originalByOrdinal=new Map<number,number>();memberGroups.forEach((group)=>group.ordinals.forEach((ordinal)=>originalByOrdinal.set(ordinal,group.lineageId)));
             setSelectedLineage(summary);setSelectedLineageIds(restoredSelectedIds);setLineageRows(rows);setLineageTotal(memberGroups.reduce((sum,group)=>sum+group.total,0));setOriginalLineageByOrdinal(originalByOrdinal);setLineageMultiplicity(new Map(rows.map(row=>{const imported=Number(row.values.duplicate_count);const count=counts?.[row.record.ordinal]||(Number.isFinite(imported)&&imported>0?imported:1);return [row.record.ordinal,Math.max(1,Math.floor(count))] as const;})));
@@ -1157,9 +1160,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
 
   function overlayRefinedCalls(row: { ordinal: number; values: Record<string,string> }) {
     if (!alleleRefinement || !alleleApplied) return;
-    const v = refinedCall(alleleRefinement, "V", row.ordinal, alleleApplyMinimumPosterior);
-    const d = refinedCall(alleleRefinement, "D", row.ordinal, alleleApplyMinimumPosterior);
-    const j = refinedCall(alleleRefinement, "J", row.ordinal, alleleApplyMinimumPosterior);
+    const v = refinedCall(alleleRefinement, "V", row.ordinal, alleleReassignmentPolicy, alleleApplyMinimumPosterior);
+    const d = refinedCall(alleleRefinement, "D", row.ordinal, alleleReassignmentPolicy, alleleApplyMinimumPosterior);
+    const j = refinedCall(alleleRefinement, "J", row.ordinal, alleleReassignmentPolicy, alleleApplyMinimumPosterior);
     if (v) row.values.v_call = v;
     if (d) row.values.d_call = d;
     if (j) row.values.j_call = j;
@@ -1232,7 +1235,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
 
   async function applyAlleleRefinement() {
     if (!alleleRefinement) return;
-    const result = await operation("Applying repertoire posterior calls to downstream analyses", () => runtime.setRepertoireCallOverrides(alleleRefinement, alleleApplyMinimumPosterior));
+    const result = await operation("Applying repertoire posterior calls to downstream analyses", () => runtime.setRepertoireCallOverrides(alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior));
     if (!result) return;
     setAlleleApplied(true);
     invalidateAssignmentDependentAnalyses();
@@ -1260,7 +1263,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     try {
       const mask = await runtime.activeMask();
       const extension = tableExtension(exportFormat);
-      await saveStream(`${baseName(inputName)}.repertoire-allele-posteriors${extension}`, "Sparse per-record repertoire allele posterior", extension, (writer) => writeRefinementSidecar(store, alleleRefinement, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined));
+      await saveStream(`${baseName(inputName)}.repertoire-allele-posteriors${extension}`, "Sparse per-record repertoire allele posterior", extension, (writer) => writeRefinementSidecar(store, alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined));
     } catch (operationError) { setError(operationError instanceof Error ? operationError.message : String(operationError)); }
     finally { setBusy(""); }
   }
@@ -1272,7 +1275,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     try {
       const mask = await runtime.activeMask();
       const extension = tableExtension(exportFormat);
-      await saveStream(`${baseName(inputName)}.repertoire-refined.airr${extension}`, "AIRR table with thresholded repertoire allele calls", extension, (writer) => writeRefinedAirr(store, alleleRefinement, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined));
+      await saveStream(`${baseName(inputName)}.repertoire-refined.airr${extension}`, "AIRR table with policy-selected repertoire allele calls", extension, (writer) => writeRefinedAirr(store, alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined));
     } catch (operationError) { setError(operationError instanceof Error ? operationError.message : String(operationError)); }
     finally { setBusy(""); }
   }
@@ -1409,7 +1412,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const limitPerLineage = lineageIds.length === 1 ? 500 : Math.max(20, Math.floor(1_000 / lineageIds.length));
       const memberGroups = await runtime.lineageMembersMany(lineageIds, limitPerLineage);
       const ordinals = memberGroups.flatMap((group) => group.ordinals);
-      const rows = refineDetailRows(await store.detailMany(ordinals), alleleRefinement, alleleApplyMinimumPosterior, alleleApplied);
+      const rows = refineDetailRows(await store.detailMany(ordinals), alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, alleleApplied);
       const lineageByOrdinal = new Map<number, number>();
       memberGroups.forEach((group) => group.ordinals.forEach((ordinal) => lineageByOrdinal.set(ordinal, group.lineageId)));
       const deduplicationApplied = workingStages.some((stage) => stage.id === "dedup");
@@ -1509,7 +1512,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         }
         // Cheap representative-level exact scoring removes weak MinHash hits;
         // only the best shortlist needs multi-member germline reconstruction.
-        const representativeRows = refineDetailRows(await store.detailMany([...screens.values()].map((entry) => entry.screen.representativeOrdinal)), alleleRefinement, alleleApplyMinimumPosterior, alleleApplied);
+        const representativeRows = refineDetailRows(await store.detailMany([...screens.values()].map((entry) => entry.screen.representativeOrdinal)), alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, alleleApplied);
         const representativeByOrdinal = new Map(representativeRows.map((row) => [row.record.ordinal, row]));
         const ranked = [...screens.values()].map((entry) => {
           const representative = representativeByOrdinal.get(entry.screen.representativeOrdinal);
@@ -1520,7 +1523,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           .slice(0, Math.min(400, Math.max(100, neighbourLimit * 6)));
         const memberGroups = await runtime.lineageMembersMany(ranked.map((value) => value.entry.screen.lineageId), 250);
         const memberByLineage = new Map(memberGroups.map((group) => [group.lineageId, group]));
-        const candidateRows = refineDetailRows(await store.detailMany(memberGroups.flatMap((group) => group.ordinals)), alleleRefinement, alleleApplyMinimumPosterior, alleleApplied);
+        const candidateRows = refineDetailRows(await store.detailMany(memberGroups.flatMap((group) => group.ordinals)), alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, alleleApplied);
         const rowsByLineage = new Map<number, AirrDetailRow[]>();
         for (const row of candidateRows) {
           const lineageId = assignments[row.record.ordinal];
@@ -2246,7 +2249,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
 
     <section className={moduleClass("alleles","post-module allele-refinement-module")}>
       <header><div className="module-number amber">04</div><div><span className="section-kicker">Optional repertoire-level assignment model</span><h3>Resolve ambiguous germline calls by pooling repertoire evidence</h3><p>Fit independent sparse Dirichlet mixtures within the selected study boundary and locus. Literal co-optimal calls begin equally; retained alternatives and nearby reference alleles receive local evidence before repertoire usage updates each record posterior.</p></div><a href="REPERTOIRE_ALLELE_REFINEMENT.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("alleles")} onClick={()=>toggleModule("alleles")}>{openModules.has("alleles")?"Collapse ↑":"Expand ↓"}</button></header>
-      <AlleleRefinementPanel references={references} options={alleleOptions} onOptionsChange={(next)=>{setAlleleOptions(next);setAlleleRefinement(null);setAlleleApplied(false);void runtime.setRepertoireCallOverrides(null).catch(()=>undefined);invalidateAssignmentDependentAnalyses();}} result={alleleRefinement} applied={alleleApplied} applyMinimumPosterior={alleleApplyMinimumPosterior} onApplyMinimumPosteriorChange={(value)=>{setAlleleApplyMinimumPosterior(Math.max(0,Math.min(1,value)));if(alleleApplied){setAlleleApplied(false);void runtime.setRepertoireCallOverrides(null).catch(()=>undefined);invalidateAssignmentDependentAnalyses();}}} busy={Boolean(busy)} progress={alleleProgress} onRun={()=>void runAlleleRefinement()} onApply={()=>void applyAlleleRefinement()} onReset={()=>void resetAlleleRefinement()} onDownloadModel={downloadAlleleModel} onDownloadSidecar={()=>void downloadAlleleSidecar()} onDownloadAirr={()=>void downloadRefinedAirr()} />
+      <AlleleRefinementPanel references={references} options={alleleOptions} onOptionsChange={(next)=>{setAlleleOptions(next);setAlleleRefinement(null);setAlleleApplied(false);void runtime.setRepertoireCallOverrides(null).catch(()=>undefined);invalidateAssignmentDependentAnalyses();}} result={alleleRefinement} applied={alleleApplied} reassignmentPolicy={alleleReassignmentPolicy} onReassignmentPolicyChange={(policy)=>{setAlleleReassignmentPolicy(policy);if(alleleApplied){setAlleleApplied(false);void runtime.setRepertoireCallOverrides(null).catch(()=>undefined);invalidateAssignmentDependentAnalyses();}}} applyMinimumPosterior={alleleApplyMinimumPosterior} onApplyMinimumPosteriorChange={(value)=>{setAlleleApplyMinimumPosterior(Math.max(0,Math.min(1,value)));if(alleleApplied){setAlleleApplied(false);void runtime.setRepertoireCallOverrides(null).catch(()=>undefined);invalidateAssignmentDependentAnalyses();}}} busy={Boolean(busy)} progress={alleleProgress} onRun={()=>void runAlleleRefinement()} onApply={()=>void applyAlleleRefinement()} onReset={()=>void resetAlleleRefinement()} onDownloadModel={downloadAlleleModel} onDownloadSidecar={()=>void downloadAlleleSidecar()} onDownloadAirr={()=>void downloadRefinedAirr()} />
     </section>
 
     <section className={moduleClass("lineage","post-module lineage-module")}>

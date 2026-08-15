@@ -1,6 +1,7 @@
 import type { DatasetScope } from "../study-design.ts";
 
 export type RefinementSegment = "V" | "D" | "J";
+export type AlleleReassignmentPolicy = "best" | "confidence";
 export type RefinementWeighting = "unique" | "abundance";
 
 export interface AlleleRefinementOptions {
@@ -143,6 +144,10 @@ export interface SegmentRefinementResult {
   posteriorEntropy: Float32Array;
   localTopNode: Int32Array;
   localTopProbability: Float32Array;
+  /** Fitted-model index for every AIRR ordinal; -1 means the row was not modelled. */
+  modelIndex?: Int32Array;
+  /** Unique-record or duplicate_count weight used by the fitted model. */
+  assignmentWeight?: Float32Array;
   models: RefinementModelSummary[];
   modeledRows: number;
   changedMapRows: number;
@@ -170,6 +175,8 @@ export interface SavedSegmentRefinement {
   posteriorEntropy: { type: "f32"; length: number; base64: string };
   localTopNode: { type: "i32"; length: number; base64: string };
   localTopProbability: { type: "f32"; length: number; base64: string };
+  modelIndex?: { type: "i32"; length: number; base64: string };
+  assignmentWeight?: { type: "f32"; length: number; base64: string };
   models: RefinementModelSummary[];
   modeledRows: number;
   changedMapRows: number;
@@ -188,5 +195,6 @@ export interface SavedAlleleRefinement {
   runAt: string;
   warnings: string[];
   applied: boolean;
+  reassignmentPolicy?: AlleleReassignmentPolicy;
   applyMinimumPosterior: number;
 }

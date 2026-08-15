@@ -102,20 +102,26 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(css, /\.post-analysis-heading \{ display: none !important; \}/);
 });
 
-test("allele pooling exposes parameter-responsive reference and pre/post assignment diagnostics", () => {
+test("allele pooling exposes parameter-responsive reference and hard assignment diagnostics", () => {
   const panel = fs.readFileSync(new URL("../src/allele-refinement/panel.tsx", import.meta.url), "utf8");
   const views = fs.readFileSync(new URL("../src/allele-refinement/diagnostic-views.tsx", import.meta.url), "utf8");
   const diagnostics = fs.readFileSync(new URL("../src/allele-refinement/diagnostics.ts", import.meta.url), "utf8");
   assert.match(panel, /ReferenceKernelInspector references=\{references\} options=\{options\}/);
-  assert.match(panel, /AlleleAssignmentShiftChart models=\{models\}/);
+  assert.match(panel, /AlleleAssignmentShiftChart results=\{segmentResults\}/);
+  assert.match(panel, /Best posterior if confidence passes/);
+  assert.match(panel, /Best posterior for every modeled record/);
+  assert.doesNotMatch(panel, /allele-model-table/);
+  assert.doesNotMatch(panel, /model\.alleles\.slice\(0,8\)/);
   assert.match(views, /label="Reference allele"/);
   assert.match(views, />Differences<\/button>/);
   assert.match(views, /row\.primary \? <small>bar omitted<\/small>/);
-  assert.match(views, /Allele frequencies before and after repertoire pooling/);
-  assert.match(views, /models\.map\(\(candidate\)/);
+  assert.match(views, /Best-match allele counts before and after reassignment/);
+  assert.match(views, /Vanished alleles only/);
+  assert.match(views, /local_best_count/);
   assert.match(views, /SVG ↓/);
   assert.match(diagnostics, /unstripped\.some\(\(row\) => row\.sequence\[column\] !== "-"\)/);
-  assert.match(diagnostics, /sort\(\(left, right\) => right\.after - left\.after/);
+  assert.match(diagnostics, /export function hardAssignmentShiftData/);
+  assert.match(diagnostics, /vanishes: beforeCount > 0 && afterCount === 0/);
 });
 
 test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligned HMM tracks", () => {
@@ -123,7 +129,9 @@ test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligne
   const glyphs = fs.readFileSync(new URL("../src/logo-glyphs.ts", import.meta.url), "utf8");
   const panel = fs.readFileSync(new URL("../src/phylo-uca/panel.tsx", import.meta.url), "utf8");
   const annotation = fs.readFileSync(new URL("../src/phylo-uca/hmm-annotation.tsx", import.meta.url), "utf8");
+  const annotationModel = fs.readFileSync(new URL("../src/phylo-uca/hmm-annotation-model.ts", import.meta.url), "utf8");
   const hmm = fs.readFileSync(new URL("../src/phylo-uca/hmm.ts", import.meta.url), "utf8");
+  const styles = fs.readFileSync(new URL("../src/globals.css", import.meta.url), "utf8");
   assert.match(component, /LOGO_MONOSPACE_FONT/);
   assert.match(component, /logoGlyphRun/);
   assert.match(component, /<path/);
@@ -140,12 +148,23 @@ test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligne
   assert.match(panel, />Best path</);
   assert.match(panel, />Marginalized</);
   assert.match(panel, /PhyloUcaHmmAnnotationTracks/);
+  assert.match(panel, /collapseAndOrderHmmAnnotationTracks/);
+  assert.match(panel, /labelOffset=\{annotationScrollLeft\}/);
+  assert.match(panel, /Reset all UCA settings to defaults/);
+  assert.match(panel, /Additional-D probability[\s\S]{0,500}?max="1"/);
+  assert.doesNotMatch(panel, /Additional-D probability[\s\S]{0,500}?max="0\.5"/);
   assert.match(panel, /position \* logoColumnWidth \/ 3/);
   assert.match(panel, />Codon</);
   assert.match(panel, /Amino acid/);
   assert.match(panel, /does not multiply nucleotide marginals/);
-  assert.match(annotation, /total glyph height is the posterior track occupancy/);
+  assert.match(annotation, /total glyph height is the posterior track occupancy/i);
   assert.match(annotation, /FittedLogoGlyph/);
+  assert.match(annotation, /nucleotide mass/);
+  assert.match(annotation, /phylo-uca-track-label-panel/);
+  assert.match(annotationModel, /combinedTrack\(`display\|\$\{key\}`/);
+  assert.match(annotationModel, /weightedCenter/);
+  assert.match(styles, /\.phylo-uca-track-legend \.v/);
+  assert.match(styles, /\.phylo-uca-track-label-panel/);
   assert.match(hmm, /alignment site minus D-reference position/);
   assert.match(hmm, /Exact P\(x_i,x_\{i\+1\},x_\{i\+2\}/);
 

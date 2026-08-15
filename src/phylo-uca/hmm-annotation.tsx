@@ -1,11 +1,12 @@
-import { useId, useMemo } from "react";
+import { useMemo } from "react";
 
 import {
   FittedLogoGlyph,
   LOGO_MONOSPACE_FONT,
 } from "../probability-logo.tsx";
 import { probabilityLogoColor } from "../probability-logo.ts";
-import type { PhyloUcaHmmAnnotationTrack, PhyloUcaSegmentKind } from "./types.ts";
+import type { PhyloUcaHmmDisplayTrack } from "./hmm-annotation-model.ts";
+import type { PhyloUcaSegmentKind } from "./types.ts";
 
 export interface PhyloUcaAnnotationColumnLayout {
   alignmentColumn: number;
@@ -14,15 +15,16 @@ export interface PhyloUcaAnnotationColumnLayout {
 }
 
 interface Props {
-  tracks: readonly PhyloUcaHmmAnnotationTrack[];
+  tracks: readonly PhyloUcaHmmDisplayTrack[];
   columns: readonly PhyloUcaAnnotationColumnLayout[];
   leftInset: number;
   contentWidth: number;
   title: string;
+  labelOffset: number;
 }
 
 const CHARACTERS = ["A", "C", "G", "T", "-"] as const;
-const TRACK_HEIGHT = 12;
+const TRACK_HEIGHT = 16;
 
 function kindColor(kind: PhyloUcaSegmentKind): string {
   if (kind === "V") return "#4ba996";
@@ -32,35 +34,58 @@ function kindColor(kind: PhyloUcaSegmentKind): string {
   return "#6f7a76";
 }
 
-function pointTitle(track: PhyloUcaHmmAnnotationTrack, alignmentColumn: number, probabilities: readonly number[]): string {
+function kindBackground(kind: PhyloUcaSegmentKind): string {
+  if (kind === "V") return "#e8f6f1";
+  if (kind === "D") return "#fff5d8";
+  if (kind === "J") return "#ffede8";
+  if (kind === "N") return "#eef2f1";
+  return "#f4f5f4";
+}
+
+function signed(value: number): string {
+  return value >= 0 ? `+${value}` : String(value);
+}
+
+function trackTitle(track: PhyloUcaHmmDisplayTrack): string {
+  const details = [
+    `${track.label}; maximum source occupancy ${(track.maximumWeight * 100).toFixed(3)}%`,
+    `weighted center column ${track.weightedCenter.toFixed(2)}`,
+    `${track.sourceTrackCount} underlying HMM route/register track${track.sourceTrackCount === 1 ? "" : "s"}`,
+  ];
+  if (track.sourceDOrdinals.length) details.push(`D-use ordinal${track.sourceDOrdinals.length === 1 ? "" : "s"}: ${track.sourceDOrdinals.join(", ")}`);
+  if (track.sourceRegistrationOffsets.length) details.push(`alignment register${track.sourceRegistrationOffsets.length === 1 ? "" : "s"}: ${track.sourceRegistrationOffsets.map(signed).join(", ")}`);
+  if (track.sourceLabels.length > 1) details.push(`combined rows: ${track.sourceLabels.join("; ")}`);
+  return details.join(" · ");
+}
+
+function pointTitle(track: PhyloUcaHmmDisplayTrack, alignmentColumn: number, probabilities: readonly number[]): string {
   const total = probabilities.reduce((sum, value) => sum + value, 0);
-  const detail = probabilities.map((value, index) => value > 1e-5 ? `${CHARACTERS[index]} ${(value * 100).toFixed(3)}%` : "").filter(Boolean).join(", ");
-  return `${track.label} · column ${alignmentColumn} · source weight ${(total * 100).toFixed(3)}%${detail ? ` · ${detail}` : ""}`;
+  const detail = probabilities.map((value, index) => value > 1e-7
+    ? `${CHARACTERS[index]} ${(value * 100).toFixed(3)}% overall / ${total > 0 ? (value / total * 100).toFixed(2) : "0.00"}% within track`
+    : "").filter(Boolean).join("; ");
+  return `${track.label} · alignment column ${alignmentColumn} · source occupancy ${(total * 100).toFixed(3)}%${detail ? ` · nucleotide mass: ${detail}` : ""}`;
 }
 
 /**
  * Compact HMM-source rows on the exact same x grid as the posterior logo.
- * Pure template rows draw one reference character per occupied column. Mixed
- * N/unresolved rows stack conditional characters to their unnormalized source
- * mass, so total glyph height is the posterior track occupancy.
+ * Each display row stacks characters to its unnormalized source mass. A
+ * template allele normally draws one character per occupied column; when
+ * collapsed routes/registers disagree, their characters form a visible
+ * mixture. Total glyph height is the posterior track occupancy.
  */
-export function PhyloUcaHmmAnnotationTracks({ tracks, columns, leftInset, contentWidth, title }: Props) {
-  const clipId = `phylo-uca-track-label-${useId().replaceAll(":", "")}`;
+export function PhyloUcaHmmAnnotationTracks({ tracks, columns, leftInset, contentWidth, title, labelOffset }: Props) {
   const layoutByColumn = useMemo(() => new Map(columns.map((column) => [column.alignmentColumn, column])), [columns]);
   const width = Math.max(1, leftInset + contentWidth);
   const height = Math.max(1, tracks.length * TRACK_HEIGHT);
   return <svg className="phylo-uca-annotation-svg" xmlns="http://www.w3.org/2000/svg" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}>
     <title>{title}</title>
-    <desc>Allele rows are pure template tracks. N and unresolved rows are nucleotide mixtures. Letter height is posterior source occupancy.</desc>
-    <defs><clipPath id={clipId}><rect x="5" y="0" width={Math.max(1, leftInset - 48)} height={height} /></clipPath></defs>
+    <desc>Rows combine equivalent HMM routes and D-alignment registers. Conflicting template registrations and non-templated tracks are nucleotide mixtures. Letter height is posterior source occupancy.</desc>
     <rect width={width} height={height} fill="#ffffff" />
     {tracks.map((track, trackIndex) => {
       const rowY = trackIndex * TRACK_HEIGHT;
       return <g key={track.id}>
-        <title>{track.label} · maximum column weight {(track.maximumWeight * 100).toFixed(3)}%</title>
-        <rect x="0" y={rowY} width="3" height={TRACK_HEIGHT} fill={kindColor(track.kind)} />
-        <text x="6" y={rowY + 8.5} clipPath={`url(#${clipId})`} fill="#26332f" fontFamily={LOGO_MONOSPACE_FONT} fontSize="7.5" fontWeight="700">{track.label}</text>
-        <text x={leftInset - 4} y={rowY + 8.5} textAnchor="end" fill="#66736e" fontFamily={LOGO_MONOSPACE_FONT} fontSize="7">{(track.maximumWeight * 100).toFixed(track.maximumWeight >= 0.1 ? 1 : 2)}%</text>
+        <title>{trackTitle(track)}</title>
+        <rect x="0" y={rowY} width={width} height={TRACK_HEIGHT} fill={kindBackground(track.kind)} />
         <line x1="0" x2={width} y1={rowY + TRACK_HEIGHT - 0.25} y2={rowY + TRACK_HEIGHT - 0.25} stroke="#e1e6e3" strokeWidth="0.5" />
         {track.points.flatMap((point) => {
           const layout = layoutByColumn.get(point.alignmentColumn);
@@ -69,7 +94,8 @@ export function PhyloUcaHmmAnnotationTracks({ tracks, columns, leftInset, conten
           const total = ordered.reduce((sum, entry) => sum + entry.probability, 0);
           let remaining = Math.min(1, total) * TRACK_HEIGHT;
           let stackBottom = rowY + TRACK_HEIGHT;
-          return [<g key={`${track.id}-${point.alignmentColumn}`}><title>{pointTitle(track, point.alignmentColumn, point.probabilities)}</title>{ordered.map((entry, entryIndex) => {
+          const tooltip = pointTitle(track, point.alignmentColumn, point.probabilities);
+          return [<g key={`${track.id}-${point.alignmentColumn}`} aria-label={tooltip}><title>{tooltip}</title>{ordered.map((entry, entryIndex) => {
             const glyphHeight = entryIndex === ordered.length - 1 ? remaining : Math.min(remaining, entry.probability * TRACK_HEIGHT);
             const glyphY = stackBottom - glyphHeight;
             remaining -= glyphHeight;
@@ -89,5 +115,21 @@ export function PhyloUcaHmmAnnotationTracks({ tracks, columns, leftInset, conten
         })}
       </g>;
     })}
+    <g className="phylo-uca-track-label-panel" transform={`translate(${Math.max(0, Math.min(contentWidth, labelOffset))} 0)`}>
+      {tracks.map((track, trackIndex) => {
+        const rowY = trackIndex * TRACK_HEIGHT;
+        const shownLabel = track.label.length > 30 ? `${track.label.slice(0, 28)}…` : track.label;
+        const tooltip = trackTitle(track);
+        return <g key={`label-${track.id}`} aria-label={tooltip}>
+          <title>{tooltip}</title>
+          <rect x="0" y={rowY} width={leftInset} height={TRACK_HEIGHT} fill={kindBackground(track.kind)} />
+          <rect x="0" y={rowY} width="4" height={TRACK_HEIGHT} fill={kindColor(track.kind)} />
+          <text x="8" y={rowY + 11} fill="#26332f" fontFamily={LOGO_MONOSPACE_FONT} fontSize="8" fontWeight="700">{shownLabel}</text>
+          <text x={leftInset - 7} y={rowY + 11} textAnchor="end" fill="#66736e" fontFamily={LOGO_MONOSPACE_FONT} fontSize="7.5">{(track.maximumWeight * 100).toFixed(track.maximumWeight >= 0.1 ? 1 : 2)}%</text>
+          <line x1="0" x2={leftInset} y1={rowY + TRACK_HEIGHT - 0.25} y2={rowY + TRACK_HEIGHT - 0.25} stroke="#d9dfdc" strokeWidth="0.5" />
+        </g>;
+      })}
+      <line x1={leftInset - 0.5} x2={leftInset - 0.5} y1="0" y2={height} stroke="#aebbb5" strokeWidth="1" />
+    </g>
   </svg>;
 }

@@ -4,7 +4,7 @@ import { CommitNumberInput } from "../commit-number-input.tsx";
 import type { CompiledReferences } from "../reference-pack.ts";
 import { DATASET_SCOPE_LABELS, type DatasetScope } from "../study-design.ts";
 import { AlleleAssignmentShiftChart, ReferenceKernelInspector } from "./diagnostic-views.tsx";
-import type { AlleleRefinementOptions, AlleleRefinementResult, RefinementSegment } from "./types.ts";
+import type { AlleleReassignmentPolicy, AlleleRefinementOptions, AlleleRefinementResult, RefinementSegment, SegmentRefinementResult } from "./types.ts";
 import { adaptiveNeighbourOdds } from "./evidence.ts";
 
 interface Props {
@@ -13,6 +13,8 @@ interface Props {
   onOptionsChange: (options: AlleleRefinementOptions) => void;
   result: AlleleRefinementResult | null;
   applied: boolean;
+  reassignmentPolicy: AlleleReassignmentPolicy;
+  onReassignmentPolicyChange: (policy: AlleleReassignmentPolicy) => void;
   applyMinimumPosterior: number;
   onApplyMinimumPosteriorChange: (value: number) => void;
   busy: boolean;
@@ -32,8 +34,8 @@ const SEGMENT_LABELS: Record<RefinementSegment, string> = {
 };
 
 export function AlleleRefinementPanel({
-  references, options, onOptionsChange, result, applied, applyMinimumPosterior,
-  onApplyMinimumPosteriorChange, busy, progress, onRun, onApply, onReset,
+  references, options, onOptionsChange, result, applied, reassignmentPolicy, onReassignmentPolicyChange,
+  applyMinimumPosterior, onApplyMinimumPosteriorChange, busy, progress, onRun, onApply, onReset,
   onDownloadModel, onDownloadSidecar, onDownloadAirr,
 }: Props) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -44,17 +46,11 @@ export function AlleleRefinementPanel({
       : [...options.segments, segment];
     update("segments", selected);
   };
-  const segmentResults = Object.values(result?.segments ?? {}).filter(Boolean);
-  const modeledRows = segmentResults.reduce((sum, segment) => sum + segment!.modeledRows, 0);
-  const changedRows = segmentResults.reduce((sum, segment) => sum + segment!.changedMapRows, 0);
-  const nonZeros = segmentResults.reduce((sum, segment) => sum + segment!.matrixNonZeros, 0);
-  const models = segmentResults.flatMap((segment) => segment!.models);
-  const topAlleles = models.flatMap((model) => model.alleles.slice(0, 8).map((allele) => ({ model, allele })))
-    .sort((left, right) => left.model.scopeValue.localeCompare(right.model.scopeValue)
-      || left.model.locus.localeCompare(right.model.locus)
-      || left.model.segment.localeCompare(right.model.segment)
-      || right.allele.posteriorMean - left.allele.posteriorMean)
-    .slice(0, 250);
+  const segmentResults = Object.values(result?.segments ?? {}).filter((segment): segment is SegmentRefinementResult => Boolean(segment));
+  const modeledRows = segmentResults.reduce((sum, segment) => sum + segment.modeledRows, 0);
+  const changedRows = segmentResults.reduce((sum, segment) => sum + segment.changedMapRows, 0);
+  const nonZeros = segmentResults.reduce((sum, segment) => sum + segment.matrixNonZeros, 0);
+  const models = segmentResults.flatMap((segment) => segment.models);
   const progressFraction = progress ? Math.max(0, Math.min(1, progress.processed / Math.max(1, progress.total))) : 0;
   const leakageExamples = [0, 0.05, 0.1].map((shm) => {
     const odds = adaptiveNeighbourOdds(shm, options);
@@ -86,13 +82,10 @@ export function AlleleRefinementPanel({
     {progress && <div className="allele-refinement-progress" role="status"><div><strong>{progress.phase}</strong><span>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()}</span></div><progress max="1" value={progressFraction} /></div>}
     {result && <div className="allele-refinement-results">
       <div className="post-stat-grid"><article><span>Independent models</span><strong>{models.length.toLocaleString()}</strong></article><article><span>Modeled segment-rows</span><strong>{modeledRows.toLocaleString()}</strong></article><article><span>Repertoire MAP differs</span><strong>{changedRows.toLocaleString()}</strong></article><article><span>Sparse nonzeros</span><strong>{nonZeros.toLocaleString()}</strong></article></div>
-      <div className="allele-apply-row"><div><strong>{applied ? "Posterior MAP calls are active for downstream lineage analysis" : "Original AIRR calls remain active downstream"}</strong><small>Only MAP calls at or above the selected posterior threshold replace enabled segment calls. Original calls remain in the AIRR source and all refined exports.</small></div><label title="Calls below this posterior probability remain unchanged when refinement is applied."><span>Apply at posterior ≥</span><CommitNumberInput min="0" max="1" step="0.01" value={applyMinimumPosterior} onCommit={onApplyMinimumPosteriorChange} /></label><button type="button" className="post-primary" disabled={busy} onClick={onApply}>Apply to downstream calls</button>{applied && <button type="button" disabled={busy} onClick={onReset}>Restore original calls</button>}</div>
+      <div className="allele-apply-row"><div><strong>{applied ? "The selected reassignment policy is active downstream" : "Original AIRR calls remain active downstream"}</strong><small>{reassignmentPolicy === "best" ? "Best posterior: every modeled record receives its posterior MAP allele; unmodeled records retain their immutable original call." : `Confidence gated: a modeled record receives its posterior MAP allele only at ≥ ${(applyMinimumPosterior * 100).toFixed(0)}% posterior confidence; otherwise its immutable original AIRR call is retained.`}</small></div><label title="Choose whether every modeled record receives its posterior MAP call or whether low-confidence records retain their original AIRR call."><span>Reassignment policy</span><select value={reassignmentPolicy} onChange={(event) => onReassignmentPolicyChange(event.target.value as AlleleReassignmentPolicy)}><option value="confidence">Best posterior if confidence passes · default</option><option value="best">Best posterior for every modeled record</option></select></label>{reassignmentPolicy === "confidence" && <label title="The maximum per-record posterior probability required before its MAP allele replaces the original AIRR call."><span>Minimum MAP confidence</span><CommitNumberInput min="0" max="1" step="0.01" value={applyMinimumPosterior} onCommit={onApplyMinimumPosteriorChange} /></label>}<button type="button" className="post-primary" disabled={busy} onClick={onApply}>{reassignmentPolicy === "best" ? "Apply best posterior calls" : "Apply confidence-gated calls"}</button>{applied && <button type="button" disabled={busy} onClick={onReset}>Restore original calls</button>}</div>
       {result.warnings.map((warning) => <p className="scientific-note warning" key={warning}><span>!</span>{warning}</p>)}
-      <div className="result-actions"><button type="button" onClick={onDownloadModel}>Model summary</button><button type="button" onClick={onDownloadSidecar}>Full sparse posterior sidecar</button><button type="button" onClick={onDownloadAirr}>AIRR with thresholded refined calls</button></div>
-      {models.length > 0 && <AlleleAssignmentShiftChart models={models} />}
-      <div className="allele-model-table"><table><thead><tr><th>Pool</th><th>Locus</th><th>Segment</th><th>Reference allele / identical class</th><th>Posterior use</th><th>Expected assignments</th><th>Local evidence</th></tr></thead><tbody>{topAlleles.map(({ model, allele }) => <tr key={`${model.key}-${allele.nodeIndex}`}><td>{model.scopeValue}</td><td>{model.locus}</td><td>{model.segment}</td><td><code>{allele.names.join(", ")}</code></td><td>{(allele.posteriorMean * 100).toFixed(3)}%</td><td>{allele.expectedAssignments.toFixed(2)}</td><td>{allele.localEvidenceAssignments.toFixed(2)}</td></tr>)}</tbody></table></div>
-      <p className="scientific-note"><span>i</span>Posterior-use denominators include every locus-matched database node. Prior-only nodes absent from all sparse read neighbourhoods remain implicit; their counts are included in the model-summary export.</p>
-      {topAlleles.length >= 250 && <p className="scientific-note"><span>i</span>The interactive table is limited to 250 entries. The model-summary export contains every modeled reference node.</p>}
+      <div className="result-actions"><button type="button" onClick={onDownloadModel}>Model summary</button><button type="button" onClick={onDownloadSidecar}>Full sparse posterior sidecar</button><button type="button" onClick={onDownloadAirr}>AIRR with policy-selected calls</button></div>
+      {models.length > 0 && <AlleleAssignmentShiftChart results={segmentResults} reassignmentPolicy={reassignmentPolicy} minimumPosterior={applyMinimumPosterior} weighting={options.weighting} />}
     </div>}
   </>;
 }

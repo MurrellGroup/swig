@@ -23,6 +23,7 @@ import {
 } from "./post-analysis-core";
 import type { DatasetScope } from "./study-design";
 import { applyCallOverrides } from "./allele-refinement/apply";
+import type { AlleleReassignmentPolicy } from "./allele-refinement/types";
 
 interface IngestRow {
   ordinal: number;
@@ -57,7 +58,7 @@ type Request =
   | { id: number; type: "applyDedupFilter" }
   | { id: number; type: "setActiveMask"; mask: Uint8Array | null }
   | { id: number; type: "activeMask" }
-  | { id: number; type: "setCallOverrides"; minimumPosterior: number; v?: { labels: string[]; mapNode: Int32Array; probability: Float32Array }; j?: { labels: string[]; mapNode: Int32Array; probability: Float32Array } }
+  | { id: number; type: "setCallOverrides"; reassignmentPolicy: AlleleReassignmentPolicy; minimumPosterior: number; v?: { labels: string[]; mapNode: Int32Array; probability: Float32Array }; j?: { labels: string[]; mapNode: Int32Array; probability: Float32Array } }
   | { id: number; type: "lineages"; options: LineageOptions; useDedup: boolean }
   | { id: number; type: "query"; queries: string[]; options: QueryOptions }
   | { id: number; type: "expand"; seedOrdinals: number[]; options: ExpansionOptions }
@@ -231,7 +232,7 @@ worker.onmessage = (event: MessageEvent<Request>) => {
     } else if (request.type === "activeMask") {
       result = { mask: currentActiveMask?.slice() ?? null };
     } else if (request.type === "setCallOverrides") {
-      const applied = applyCallOverrides(records, request.v, request.j, request.minimumPosterior, intern);
+      const applied = applyCallOverrides(records, request.v, request.j, request.reassignmentPolicy, request.minimumPosterior, intern);
       currentLineages = undefined;
       result = applied;
     } else if (request.type === "lineages") {

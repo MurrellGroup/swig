@@ -6,15 +6,17 @@ import type { CompiledReferences } from "../reference-pack.ts";
 import { sequenceColor } from "../sequence-colors.tsx";
 import {
   alignReferenceKernelInspection,
-  assignmentShiftData,
+  hardAssignmentShiftData,
   inspectReferenceEvidenceKernel,
 } from "./diagnostics.ts";
 import { adaptiveNeighbourOdds } from "./evidence.ts";
 import { buildReferenceAlleleGraph } from "./reference-graph.ts";
 import type {
+  AlleleReassignmentPolicy,
   AlleleRefinementOptions,
   RefinementModelSummary,
   RefinementSegment,
+  SegmentRefinementResult,
 } from "./types.ts";
 
 const SEGMENTS: RefinementSegment[] = ["V", "D", "J"];
@@ -41,7 +43,7 @@ function safeName(value: string): string {
   return value.replace(/[^a-z0-9_.-]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 120) || "allele-pool";
 }
 
-function csvCell(value: string | number): string {
+function csvCell(value: string | number | boolean): string {
   const text = String(value);
   return /[\n\r,"]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
@@ -143,27 +145,45 @@ function modelLabel(model: RefinementModelSummary): string {
   return `${model.scopeValue || "all data"} · ${model.locus || "unknown locus"} · ${model.segment} · ${model.rows.toLocaleString()} rows`;
 }
 
-function niceFrequencyMaximum(value: number): number {
-  if (value <= 0.01) return 0.01;
-  if (value <= 0.025) return 0.025;
-  if (value <= 0.05) return 0.05;
-  if (value <= 0.1) return 0.1;
-  if (value <= 0.25) return 0.25;
-  if (value <= 0.5) return 0.5;
-  return 1;
+function niceCountMaximum(value: number): number {
+  if (!(value > 0)) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const scaled = value / magnitude;
+  return (scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10) * magnitude;
 }
 
-export function AlleleAssignmentShiftChart({ models }: { models: RefinementModelSummary[] }) {
-  const [modelKey, setModelKey] = useState(models[0]?.key ?? "");
+function formatAssignmentCount(value: number): string {
+  if (Math.abs(value - Math.round(value)) < 1e-6) return Math.round(value).toLocaleString();
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+type HardAssignmentFilter = "all" | "changed" | "vanished";
+
+export function AlleleAssignmentShiftChart({
+  results,
+  reassignmentPolicy,
+  minimumPosterior,
+  weighting,
+}: {
+  results: SegmentRefinementResult[];
+  reassignmentPolicy: AlleleReassignmentPolicy;
+  minimumPosterior: number;
+  weighting: AlleleRefinementOptions["weighting"];
+}) {
+  const models = useMemo(() => results.flatMap((result) => result.models.map((model, modelIndex) => ({ result, model, modelIndex }))), [results]);
+  const [modelKey, setModelKey] = useState(models[0]?.model.key ?? "");
   const [allelesShown, setAllelesShown] = useState(20);
+  const [filter, setFilter] = useState<HardAssignmentFilter>("all");
   const svgRef = useRef<SVGSVGElement>(null);
   useEffect(() => {
-    if (!models.some((model) => model.key === modelKey)) setModelKey(models[0]?.key ?? "");
+    if (!models.some((entry) => entry.model.key === modelKey)) setModelKey(models[0]?.model.key ?? "");
   }, [modelKey, models]);
-  const model = models.find((candidate) => candidate.key === modelKey) ?? models[0];
-  const allRows = useMemo(() => model ? assignmentShiftData(model) : [], [model]);
-  const visible = allRows.slice(0, Math.max(1, Math.floor(allelesShown)));
-  const maximum = niceFrequencyMaximum(Math.max(0, ...visible.flatMap((row) => [row.before, row.after])));
+  const selected = models.find((entry) => entry.model.key === modelKey) ?? models[0];
+  const shift = useMemo(() => selected ? hardAssignmentShiftData(selected.result, selected.modelIndex, reassignmentPolicy, minimumPosterior) : null, [minimumPosterior, reassignmentPolicy, selected]);
+  const allRows = shift?.rows ?? [];
+  const filtered = allRows.filter((row) => filter === "all" || (filter === "changed" ? row.before !== row.after : row.vanishes));
+  const visible = filtered.slice(0, Math.max(1, Math.floor(allelesShown)));
+  const maximum = niceCountMaximum(Math.max(0, ...visible.flatMap((row) => [row.before, row.after])));
   const width = 920;
   const labelWidth = 250;
   const plotWidth = 500;
@@ -171,7 +191,9 @@ export function AlleleAssignmentShiftChart({ models }: { models: RefinementModel
   const top = 66;
   const rowHeight = 40;
   const height = Math.max(180, top + visible.length * rowHeight + 28);
-  const exportStem = safeName(`${model?.scopeValue ?? "pool"}-${model?.locus ?? "locus"}-${model?.segment ?? "segment"}-assignment-shift`);
+  const model = selected?.model;
+  const effectiveMinimumPosterior = Math.max(0, Math.min(1, minimumPosterior));
+  const exportStem = safeName(`${model?.scopeValue ?? "pool"}-${model?.locus ?? "locus"}-${model?.segment ?? "segment"}-hard-assignment-shift`);
 
   if (!model) return null;
   const saveSvg = () => {
@@ -183,45 +205,47 @@ export function AlleleAssignmentShiftChart({ models }: { models: RefinementModel
     download(`<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}`, `${exportStem}.svg`, "image/svg+xml;charset=utf-8");
   };
   const saveCsv = () => {
-    const header = ["pool", "locus", "segment", "allele", "before_frequency", "after_frequency", "delta", "before_expected_assignments", "after_expected_assignments"];
-    const rows = allRows.map((row) => [model.scopeValue, model.locus, model.segment, row.label, row.before, row.after, row.delta, row.beforeAssignments, row.afterAssignments]);
+    const header = ["pool", "locus", "segment", "allele", "local_best_count", "after_policy_count", "delta", "vanishes", "appears", "record_weighting", "reassignment_policy", "minimum_posterior"];
+    const rows = allRows.map((row) => [model.scopeValue, model.locus, model.segment, row.label, row.before, row.after, row.delta, row.vanishes, row.appears, weighting, reassignmentPolicy, reassignmentPolicy === "confidence" ? effectiveMinimumPosterior : ""]);
     download([header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n") + "\n", `${exportStem}.csv`, "text/csv;charset=utf-8");
   };
+  const policyLabel = reassignmentPolicy === "best" ? "posterior MAP for every modeled record" : `posterior MAP at ≥ ${(effectiveMinimumPosterior * 100).toFixed(0)}% confidence, otherwise local best`;
 
   return <article className="allele-shift-chart">
     <header>
-      <div><span className="section-kicker">Assignment redistribution</span><h4>Allele frequencies before and after repertoire pooling</h4><p>Before uses normalized local evidence. After uses normalized fitted assignment responsibilities. Dirichlet prior-only mass is excluded from both series.</p></div>
-      <div className="result-actions"><button type="button" onClick={saveCsv}>Data CSV ↓</button><button type="button" onClick={saveSvg}>SVG ↓</button></div>
+      <div><span className="section-kicker">Hard assignment projection</span><h4>Best-match allele counts before and after reassignment</h4><p>Each modeled record contributes its complete configured weight to one allele. Local best is the pre-pooling evidence argmax; after policy applies {policyLabel}. The fitted Dirichlet model itself is unchanged.</p></div>
+      <div className="result-actions"><button type="button" disabled={!shift} onClick={saveCsv}>Data CSV ↓</button><button type="button" disabled={!shift} onClick={saveSvg}>SVG ↓</button></div>
     </header>
     <div className="allele-shift-controls">
-      <label title="Each donor/study-boundary, locus, and reference segment is fitted independently. Choose the fitted pool to display."><span>Fitted pool</span><select value={model.key} onChange={(event) => setModelKey(event.target.value)}>{models.map((candidate) => <option key={candidate.key} value={candidate.key}>{modelLabel(candidate)}</option>)}</select></label>
-      <label title="The chart is sorted by post-pooling frequency. Increase this display limit to include more of the fitted allele tail; CSV export always contains every modeled allele."><span>Alleles shown</span><CommitNumberInput min="1" max="500" step="1" value={allelesShown} onCommit={(value) => setAllelesShown(Math.max(1, Math.floor(value)))} /></label>
-      <div className="allele-shift-legend" aria-label="Chart series"><span><i className="before" />Before</span><span><i className="after" />After</span></div>
+      <label title="Each donor/study-boundary, locus, and reference segment is fitted independently. Choose the fitted pool to display."><span>Fitted pool</span><select value={model.key} onChange={(event) => setModelKey(event.target.value)}>{models.map((entry) => <option key={entry.model.key} value={entry.model.key}>{modelLabel(entry.model)}</option>)}</select></label>
+      <label title="Restrict the display without changing the model or CSV export."><span>Show</span><select value={filter} onChange={(event) => setFilter(event.target.value as HardAssignmentFilter)}><option value="all">All hard-assigned alleles</option><option value="changed">Changed counts only</option><option value="vanished">Vanished alleles only</option></select></label>
+      <label title="Increase this display limit to include more rows; CSV export always contains every hard-assigned allele in the selected pool."><span>Alleles shown</span><CommitNumberInput min="1" max="500" step="1" value={allelesShown} onCommit={(value) => setAllelesShown(Math.max(1, Math.floor(value)))} /></label>
+      <div className="allele-shift-legend" aria-label="Chart series"><span><i className="before" />Local best</span><span><i className="after" />After policy</span></div>
     </div>
-    <div className="allele-shift-scroll"><svg ref={svgRef} role="img" aria-label={`Allele assignment frequency before and after repertoire pooling for ${modelLabel(model)}`} width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+    {!shift ? <p className="scientific-note warning"><span>!</span>This saved result predates hard-assignment tracking. Refit the repertoire allele model to generate the count projection.</p> : <div className="allele-shift-scroll"><svg ref={svgRef} role="img" aria-label={`Hard best-match allele counts before and after reassignment for ${modelLabel(model)}`} width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
       <rect width={width} height={height} fill="#fffdf8" />
       {[0, 0.5, 1].map((fraction) => {
         const x = labelWidth + fraction * plotWidth;
-        return <g key={fraction}><line x1={x} x2={x} y1="42" y2={height - 12} stroke={fraction === 0 ? "#84918c" : "#dfe4e0"} strokeWidth={fraction === 0 ? 1.2 : 1} /><text x={x} y="32" textAnchor={fraction === 0 ? "start" : fraction === 1 ? "end" : "middle"} fontFamily="Inter, Arial, sans-serif" fontSize="11" fill="#68746f">{formatProbability(maximum * fraction)}</text></g>;
+        return <g key={fraction}><line x1={x} x2={x} y1="42" y2={height - 12} stroke={fraction === 0 ? "#84918c" : "#dfe4e0"} strokeWidth={fraction === 0 ? 1.2 : 1} /><text x={x} y="32" textAnchor={fraction === 0 ? "start" : fraction === 1 ? "end" : "middle"} fontFamily="Inter, Arial, sans-serif" fontSize="11" fill="#68746f">{formatAssignmentCount(maximum * fraction)}</text></g>;
       })}
-      <g transform="translate(620 15)"><rect width="12" height="8" rx="2" fill="#aeb8b2" /><text x="18" y="8" fontFamily="Inter, Arial, sans-serif" fontSize="11" fill="#46534e">Before</text><rect x="76" width="12" height="8" rx="2" fill="#2f7767" /><text x="94" y="8" fontFamily="Inter, Arial, sans-serif" fontSize="11" fill="#46534e">After</text></g>
+      <g transform="translate(590 15)"><rect width="12" height="8" rx="2" fill="#aeb8b2" /><text x="18" y="8" fontFamily="Inter, Arial, sans-serif" fontSize="11" fill="#46534e">Local best</text><rect x="104" width="12" height="8" rx="2" fill="#2f7767" /><text x="122" y="8" fontFamily="Inter, Arial, sans-serif" fontSize="11" fill="#46534e">After policy</text></g>
       {visible.map((row, index) => {
         const y = top + index * rowHeight;
         const beforeWidth = row.before / maximum * plotWidth;
         const afterWidth = row.after / maximum * plotWidth;
         const shownLabel = row.label.length > 34 ? `${row.label.slice(0, 32)}…` : row.label;
         return <g key={row.nodeIndex}>
-          <title>{`${row.label}\nBefore ${formatProbability(row.before)} (${row.beforeAssignments.toFixed(3)} expected assignments)\nAfter ${formatProbability(row.after)} (${row.afterAssignments.toFixed(3)} expected assignments)\nChange ${row.delta >= 0 ? "+" : ""}${formatProbability(row.delta)}`}</title>
-          <text x="10" y={y + 14} fontFamily="Inter, Arial, sans-serif" fontSize="11" fontWeight="600" fill="#26332f">{shownLabel}</text>
+          <title>{`${row.label}\nLocal best ${formatAssignmentCount(row.before)}\nAfter policy ${formatAssignmentCount(row.after)}\nChange ${row.delta >= 0 ? "+" : ""}${formatAssignmentCount(row.delta)}${row.vanishes ? "\nVanishes from this hard-assigned pool" : row.appears ? "\nAppears after reassignment" : ""}`}</title>
+          <text x="10" y={y + 14} fontFamily="Inter, Arial, sans-serif" fontSize="11" fontWeight="600" fill={row.vanishes ? "#a33b32" : "#26332f"}>{shownLabel}</text>
           <rect x={labelWidth} y={y + 2} width={Math.max(0, beforeWidth)} height="9" rx="2" fill="#aeb8b2" />
           <rect x={labelWidth} y={y + 16} width={Math.max(0, afterWidth)} height="9" rx="2" fill="#2f7767" />
-          <text x={valueX} y={y + 10} fontFamily="Inter, Arial, sans-serif" fontSize="10" fill="#596661">{formatProbability(row.before)}</text>
-          <text x={valueX} y={y + 24} fontFamily="Inter, Arial, sans-serif" fontSize="10" fontWeight="700" fill="#245f53">{formatProbability(row.after)}</text>
+          <text x={valueX} y={y + 10} fontFamily="Inter, Arial, sans-serif" fontSize="10" fill="#596661">{formatAssignmentCount(row.before)}</text>
+          <text x={valueX} y={y + 24} fontFamily="Inter, Arial, sans-serif" fontSize="10" fontWeight="700" fill={row.vanishes ? "#a33b32" : "#245f53"}>{row.vanishes ? "0 · vanishes" : formatAssignmentCount(row.after)}</text>
           <line x1="8" x2="864" y1={y + 32} y2={y + 32} stroke="#edf0ed" />
         </g>;
       })}
-      {!visible.length && <text x={width / 2} y="110" textAnchor="middle" fontFamily="Inter, Arial, sans-serif" fontSize="13" fill="#68746f">No modeled alleles in this pool</text>}
-    </svg></div>
-    <p className="scientific-note"><span>i</span>Rows are sorted by post-pooling assignment frequency. {allRows.length > visible.length ? `${(allRows.length - visible.length).toLocaleString()} lower-frequency modeled alleles are omitted from the figure but retained in the CSV.` : "Every modeled allele in this pool is shown."}</p>
+      {!visible.length && <text x={width / 2} y="110" textAnchor="middle" fontFamily="Inter, Arial, sans-serif" fontSize="13" fill="#68746f">No alleles match this display filter</text>}
+    </svg></div>}
+    {shift && <p className="scientific-note"><span>i</span>{formatAssignmentCount(shift.totalAssignments)} {weighting === "abundance" ? "duplicate-count-weighted" : "unique-record"} hard assignments in this pool; {formatAssignmentCount(shift.changedAssignments)} change under this policy. {reassignmentPolicy === "confidence" ? `${formatAssignmentCount(shift.heldBelowConfidence)} differing posterior MAP assignments are held below confidence and remain at local best in this projection; the applied AIRR overlay preserves their original call strings.` : "Every modeled record is projected to its posterior MAP."} {shift.vanishedAlleles.toLocaleString()} allele class{shift.vanishedAlleles === 1 ? "" : "es"} vanish and {shift.appearedAlleles.toLocaleString()} appear. {filtered.length > visible.length ? `${(filtered.length - visible.length).toLocaleString()} matching rows are omitted from the figure but retained in the CSV.` : "Every matching row is shown."}</p>}
   </article>;
 }

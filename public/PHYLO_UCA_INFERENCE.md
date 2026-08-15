@@ -227,7 +227,7 @@ The user can switch between two estimands.
 
 - A V, D, or J row displays the fixed reference character belonging to the chosen template state. It is deliberately not replaced with the UCA MAP character; the track describes source annotation, while the logo below describes UCA character uncertainty.
 - An N or uncertain trimming-boundary row has no fixed template character. It displays `q_i(c | h)` as a nucleotide stack at the chosen state.
-- Exactly one source row has total height one at each alignment column, apart from floating-point tolerance.
+- Before display aggregation, exactly one source row has total height one at each alignment column, apart from floating-point tolerance.
 
 ### Marginalized
 
@@ -243,9 +243,18 @@ That mass is drawn as the one reference character fixed by track `r` at column `
 
 Therefore the total height of the N stack is exactly its source occupancy, `sum_c W_(n,i,c)`, rather than a separately normalized logo.
 
-V and J candidates have one fixed projection and therefore one pure row per allele. D start/trim uncertainty can align different positions of one allele to the same alignment column. To prevent that uncertainty from creating a mixed "allele" row, Swig keys D rows by allele, D ordinal, and alignment register (`alignment column - D-reference position`). Multiple registers of the same D allele may consequently appear as separate compact rows. Every allele/register row is tested to contain at most one nonzero template character per column.
+The inference sidecar deliberately keeps route-specific rows. In particular, D start/trim uncertainty is keyed by allele, D-use ordinal, and alignment register (`alignment column - D-reference position`). Those were the repeated same-allele rows shown by earlier versions: they represented alternative registers or D-use routes, not distinct copies of the allele and not repeated calls in the input.
 
-An allele group is shown when its combined occupancy reaches 1% in at least one column. Within a retained D group, registers reaching 0.1% are shown; if none does, the strongest register is retained. N and uncertain-boundary rows reaching 0.1% are retained. The result reports how many subthreshold rows were omitted. This threshold affects only the visualization and serialized track sidecar, never the HMM likelihood, UCA posterior, Viterbi path, or exported sequence.
+The interactive display now performs a visualization-only aggregation over that sidecar:
+
+- all V, D, or J rows with the same segment kind and allele call are summed into one display row;
+- if different routes/registers place different reference nucleotides at one column, the combined row shows their nucleotide mixture rather than choosing one registration;
+- N states and unresolved V-trim/J-entry boundary mass are summed into spatial `NT1`, `NT2`, and later junction rows;
+- template rows are ordered by their posterior-weighted horizontal center. The intended order is V, then the NT preceding each D-use block, that block's D alternatives, the next NT, and finally J. If one collapsed D allele carries mass in multiple D-use blocks, it is placed with the block carrying most of its integrated weight, so perfect ordering is not always possible.
+
+V, NT, D, and J rows have distinct background colors. The label rail counter-scrolls so it remains visible while the posterior is scrolled horizontally. Hovering a label reports the complete allele/track text, maximum occupancy, weighted center, underlying route/register count, D-use ordinals, and alignment-register offsets. Hovering an occupied nucleotide cell reports its alignment column, total source occupancy, each `A/C/G/T/gap` mass as a percentage of the complete posterior, and the corresponding composition conditional on that display row.
+
+An allele group enters the serialized sidecar when its combined occupancy reaches 1% in at least one column. Within a retained D group, raw registers reaching 0.1% are retained; if none does, the strongest register is retained. Raw N and uncertain-boundary rows reaching 0.1% are retained. Display aggregation happens only after these existing sidecar thresholds. The result reports how many subthreshold raw rows were omitted. Neither thresholding nor display aggregation changes the HMM likelihood, UCA posterior, Viterbi path, or exported sequence.
 
 ## Placement and branch-length search
 
@@ -282,7 +291,7 @@ The placed Newick is rooted at the inferred UCA. The named `phylo_UCA` sequence 
 | Candidate screen | maximum V / J candidates | 48 / 24 |
 | HMM | maximum D segments | 3 |
 | HMM | minimum D match | 5 nt |
-| HMM | additional-D weight | 0.015 |
+| HMM | additional-D route weight | 0.015 |
 | HMM | mean N length | 5 nt |
 | HMM | template leakage | 0.003 |
 | HMM | junction gap probability, GTR5 only | 0.015 |
@@ -291,7 +300,7 @@ The placed Newick is rooted at the inferred UCA. The named `phylo_UCA` sequence 
 | Search | exponential branch-prior mean | 0.06 |
 | Search | local posterior points | 12 |
 
-These are fixed regularizing values, not fitted biological recombination rates. They are exposed in the attached advanced panel so sensitivity analyses are possible. A result JSON stores the complete option set and model provenance.
+These are fixed regularizing values, not fitted biological recombination rates. They are exposed in the attached advanced panel so sensitivity analyses are possible. The Additional-D control accepts the complete probability interval from 0 through 1; routing weights are normalized with the competing N/J routes inside the unchanged HMM. A dedicated reset button restores every UCA option in all four advanced groups to these defaults. A result JSON stores the complete option set and model provenance.
 
 ## Complexity and implementation details
 
@@ -299,7 +308,7 @@ For `n` observed tips and `L` alignment columns, directed tree messages cost `O(
 
 If `S` is the number of HMM profile states, a marginal placement evaluation is approximately `O(L S)`. D-repeat transitions do not add `O(S^2)` cost. Full posterior inference stores one forward table for each local placement as it is processed; coarse search uses rolling rows. Exact codon marginalization branches over the character alphabet for two transitions per codon: `4 + 16` sparse HMM advances under GTR4 or `5 + 25` under GTR5, followed by a terminal contraction for all 64 or 125 triples. It remains linear in `L` and `S`, with a larger constant than the single-site posterior, and never constructs a dense `S x S` matrix.
 
-HMM-source visualization is accumulated during the same backward pass. V/J tracks use their fixed projections; D tracks use sparse allele/register keys; N tracks retain five character masses. Track construction does not rerun placement search or allocate a dense track-by-column-by-state tensor.
+HMM-source sidecar data is accumulated during the same backward pass. V/J tracks use their fixed projections; D tracks use sparse allele/register keys; N tracks retain five character masses. The display then sums those sparse rows by allele and spatial NT slot. Neither stage reruns placement search or allocates a dense track-by-column-by-state tensor.
 
 The whole inference runs in a dedicated browser worker. Progress distinguishes observed-tree inference, message construction, edge screening, full-HMM search, joint nucleotide/codon posterior integration, and finalization.
 

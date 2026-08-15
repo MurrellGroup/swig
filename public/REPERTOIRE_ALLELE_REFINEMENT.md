@@ -92,14 +92,18 @@ The symmetric prior covers every locus-matched reference node in the selected se
 
 This resembles sparse variational machinery used for LDA, but the biological model is a finite mixture with one latent germline node per read, not a document containing multiple topics.
 
-### Before/after assignment-frequency figure
+### Before/after hard-assignment figure
 
-After fitting, Swig displays paired horizontal bars for every modeled allele in a selected donor/study-boundary, locus, and segment pool. Rows are sorted by post-pooling assignment frequency.
+After fitting, Swig displays paired horizontal count bars for every allele receiving at least one hard assignment in a selected donor/study-boundary, locus, and segment pool. Each modeled record contributes its complete configured weight to exactly one reference node in each series:
 
-- **Before** is the normalized sum of local evidence responsibilities, \(\sum_r w_r E_{ra}\), over materialized candidates.
-- **After** is the normalized sum of fitted variational responsibilities, \(\sum_r w_r q(z_r=a)\).
+- **Local best** is the argmax of that record's normalized sparse local-evidence row before repertoire pooling.
+- **After policy** is the fitted posterior MAP node. Under the confidence-gated policy, a MAP node below the selected confidence threshold is held at the local-best node in this hard-count projection.
 
-Both denominators describe assignment mass over observed records. Dirichlet prior-only mass is intentionally excluded, so the figure isolates redistribution of assignments rather than conflating it with the usage prior. The model table still reports the full posterior usage mean, which includes the complete reference-set prior denominator. The interactive display has a configurable row limit; CSV export always includes every modeled allele in the selected pool, and the complete paired-bar figure is exportable as SVG.
+With unique-record weighting, a bar value is a record count. With abundance weighting, it is a `duplicate_count`-weighted assignment count. The bars are therefore neither Dirichlet posterior means nor sums of variational responsibilities. Sequence-identical reference labels remain one unresolved node and are displayed together.
+
+The figure can show all hard-assigned alleles, only alleles whose counts change, or only alleles whose local-best count falls to zero after the selected policy. The latter is the exact “vanishes” set for the hard projection. CSV export includes every row and explicit `vanishes`/`appears` flags even when the on-screen row limit is smaller; the visible figure exports as SVG. The compact fitted-model summary remains available as a download rather than a truncated table in the page.
+
+For confidence-gated application, the actual AIRR overlay retains the immutable original call string below threshold. An original string may contain multiple co-optimal alleles, so it is deliberately not represented as a single hard-count bar. The chart uses the local-evidence argmax there to keep the projection one-record/one-allele; the note below the chart states this distinction.
 
 ## Sparse browser implementation
 
@@ -113,14 +117,15 @@ For \(N\) modeled records and average sparse width \(K\), iterative work is prop
 
 ## Applying and exporting results
 
-Fitting never changes downstream calls. The user must explicitly choose **Apply to downstream calls** and a minimum posterior threshold.
+Fitting never changes downstream calls. The user explicitly chooses a reassignment policy before applying:
 
-- A V or J MAP call at or above the threshold replaces that call for subsequent lineage assignment, query constraints, lineage alignment construction, SHM stratification, and missing-allele screening.
-- A call below threshold remains as originally reported.
+- **Best posterior for every modeled record** replaces each modeled V or J call with its posterior MAP node, regardless of its maximum probability.
+- **Best posterior if confidence passes** replaces a modeled V or J call only when its maximum posterior reaches the configurable threshold (80% by default). A call below threshold remains exactly as originally reported.
+- A record not modeled for that segment always retains its original call.
 - Reset restores immutable original calls.
 - Existing lineage-dependent results are invalidated when the overlay changes.
 
-Exports include a complete model summary, a long-form sparse per-record posterior sidecar, a refined AIRR table, paired-frequency chart data as CSV, and the paired-frequency figure as SVG. The sidecar reconstructs every nonzero candidate responsibility from the saved mixture parameters while streaming the AIRR input, so the complete reads-by-candidate posterior is available without retaining a second large matrix in interactive memory. The refined table places threshold-passing calls in the ordinary call columns while `swig_original_*` and `swig_repertoire_*` columns retain provenance. Options, compact MAP/entropy vectors, mixture summaries, threshold, and apply/reset state are included in Swig sessions.
+Exports include a complete model summary, a long-form sparse per-record posterior sidecar, a refined AIRR table, paired hard-count chart data as CSV, and the paired hard-count figure as SVG. The sidecar reconstructs every nonzero candidate responsibility from the saved mixture parameters while streaming the AIRR input, so the complete reads-by-candidate posterior is available without retaining a second large matrix in interactive memory. It records the selected reassignment policy, confidence threshold when applicable, and whether each MAP row is selected by that policy. The refined table places policy-selected calls in the ordinary call columns while `swig_original_*` and `swig_repertoire_*` columns retain provenance. Options, compact MAP/entropy and hard-projection vectors, mixture summaries, policy, threshold, and apply/reset state are included in Swig sessions.
 
 ## Interpretation and limitations
 

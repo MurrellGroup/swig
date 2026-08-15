@@ -4,13 +4,60 @@ import test from "node:test";
 import { defaultPhyloUcaOptions } from "../src/phylo-uca/defaults.ts";
 import { compileGtr, HS5F_REVERSIBLE_GTR5 } from "../src/phylo-uca/gtr.ts";
 import { phyloUcaHmmPosterior } from "../src/phylo-uca/hmm.ts";
+import { collapseAndOrderHmmAnnotationTracks } from "../src/phylo-uca/hmm-annotation-model.ts";
 import { inferPhyloUca } from "../src/phylo-uca/inference.ts";
 import { prepareObservedOnlyAlignment, type PreparedPhyloUcaReferences } from "../src/phylo-uca/references.ts";
 import { alignmentGapSemantics, observedAlignedCharacterPartial, PhyloUcaTreeMessages, type ConditionalLikelihoodSurface } from "../src/phylo-uca/tree-messages.ts";
 import { aminoAcidUcaLogoColumns, codonUcaLogoColumns, nucleotideUcaLogoColumns } from "../src/phylo-uca/logo.ts";
 import { PHYLO_UCA_CODON_SYMBOLS, phyloUcaCodonStateIndex } from "../src/phylo-uca/codons.ts";
 import { normalizeProbabilityVector } from "../src/probability-logo.ts";
-import type { PhyloUcaCodonPosterior, PhyloUcaSitePosterior } from "../src/phylo-uca/types.ts";
+import type { PhyloUcaCodonPosterior, PhyloUcaHmmAnnotationTrack, PhyloUcaSitePosterior, PhyloUcaSegmentKind } from "../src/phylo-uca/types.ts";
+
+function annotationTrack(
+  id: string,
+  kind: PhyloUcaSegmentKind,
+  label: string,
+  alignmentColumn: number,
+  probabilities: [number, number, number, number, number],
+  details: Partial<Pick<PhyloUcaHmmAnnotationTrack, "call" | "dOrdinal" | "registrationOffset">> = {},
+): PhyloUcaHmmAnnotationTrack {
+  return { id, kind, label, ...details, pure: probabilities.filter((value) => value > 0).length <= 1, points: [{ alignmentColumn, probabilities }], maximumWeight: probabilities.reduce((sum, value) => sum + value, 0) };
+}
+
+test("HMM annotation display collapses duplicate D registers into one mixed allele row", () => {
+  const raw = [
+    annotationTrack("V|IGHV1*01", "V", "V · IGHV1*01", 1, [1, 0, 0, 0, 0], { call: "IGHV1*01" }),
+    annotationTrack("N0", "N", "N0", 2, [0.1, 0.2, 0.3, 0.4, 0]),
+    annotationTrack("D|1|IGHD1*01|+2", "D", "D1 · IGHD1*01 · register +2", 3, [0.55, 0, 0, 0, 0], { call: "IGHD1*01", dOrdinal: 1, registrationOffset: 2 }),
+    annotationTrack("D|1|IGHD1*01|+3", "D", "D1 · IGHD1*01 · register +3", 3, [0, 0.45, 0, 0, 0], { call: "IGHD1*01", dOrdinal: 1, registrationOffset: 3 }),
+    annotationTrack("N1", "N", "N1", 4, [0, 0, 0, 1, 0]),
+    annotationTrack("J|IGHJ1*01", "J", "J · IGHJ1*01", 5, [0, 1, 0, 0, 0], { call: "IGHJ1*01" }),
+  ];
+  const display = collapseAndOrderHmmAnnotationTracks(raw);
+  assert.deepEqual(display.map((track) => track.label), ["V · IGHV1*01", "NT1", "D · IGHD1*01", "NT2", "J · IGHJ1*01"]);
+  const d = display.find((track) => track.kind === "D");
+  assert.ok(d);
+  assert.equal(d.sourceTrackCount, 2);
+  assert.deepEqual(d.sourceRegistrationOffsets, [2, 3]);
+  assert.equal(d.pure, false);
+  assert.deepEqual(d.points[0].probabilities, [0.55, 0.45, 0, 0, 0]);
+});
+
+test("HMM annotation display follows weighted V, NT, D-block, NT, J order", () => {
+  const raw = [
+    annotationTrack("J", "J", "J · J1", 10, [0, 1, 0, 0, 0], { call: "J1" }),
+    annotationTrack("D2", "D", "D2 · D2", 7, [0, 0, 1, 0, 0], { call: "D2", dOrdinal: 2, registrationOffset: 5 }),
+    annotationTrack("N2", "N", "N2", 8, [0, 0, 0, 1, 0]),
+    annotationTrack("D1b", "D", "D1 · D1b", 5, [0, 1, 0, 0, 0], { call: "D1b", dOrdinal: 1, registrationOffset: 4 }),
+    annotationTrack("N0", "N", "N0", 2, [1, 0, 0, 0, 0]),
+    annotationTrack("D1a", "D", "D1 · D1a", 4, [1, 0, 0, 0, 0], { call: "D1a", dOrdinal: 1, registrationOffset: 3 }),
+    annotationTrack("V", "V", "V · V1", 1, [1, 0, 0, 0, 0], { call: "V1" }),
+    annotationTrack("N1", "N", "N1", 6, [0, 0, 0, 1, 0]),
+  ];
+  const display = collapseAndOrderHmmAnnotationTracks(raw);
+  assert.deepEqual(display.map((track) => track.label), ["V · V1", "NT1", "D · D1a", "D · D1b", "NT2", "D · D2", "NT3", "J · J1"]);
+  assert.deepEqual(display.map((track) => track.weightedCenter), [1, 2, 4, 5, 6, 7, 8, 10]);
+});
 
 test("GTR4 and gap-aware GTR5 transition matrices are stochastic and reversible", () => {
   for (const includeGap of [false, true]) {

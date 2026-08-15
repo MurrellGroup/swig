@@ -1,6 +1,7 @@
 import { tableHeader, tableRow, type TableExportFormat } from "../export-formats.ts";
 import type { AirrDetailRow, AirrResultStore } from "../result-store.ts";
-import type { AlleleRefinementResult, RefinementSegment, SegmentRefinementResult } from "./types.ts";
+import { posteriorMapPassesPolicy } from "./apply.ts";
+import type { AlleleReassignmentPolicy, AlleleRefinementResult, RefinementSegment, SegmentRefinementResult } from "./types.ts";
 import { buildReferenceAlleleGraph } from "./reference-graph.ts";
 import { buildSparseEvidenceRow, parseAlternativeEvidence } from "./evidence.ts";
 import { refinementInputFields, toRefinementInputRow } from "./input.ts";
@@ -26,23 +27,25 @@ export function refinedCall(
   result: AlleleRefinementResult | null,
   segment: RefinementSegment,
   ordinal: number,
+  policy: AlleleReassignmentPolicy,
   minimumPosterior: number,
 ): string | null {
   const value = assignment(result?.segments[segment], ordinal);
-  return value && value.probability >= minimumPosterior ? value.call : null;
+  return value && posteriorMapPassesPolicy(policy, value.probability, minimumPosterior) ? value.call : null;
 }
 
 export function refineDetailRows(
   rows: AirrDetailRow[],
   result: AlleleRefinementResult | null,
+  policy: AlleleReassignmentPolicy,
   minimumPosterior: number,
   applied: boolean,
 ): AirrDetailRow[] {
   if (!result || !applied) return rows;
   return rows.map((row) => {
-    const v = refinedCall(result, "V", row.record.ordinal, minimumPosterior);
-    const d = refinedCall(result, "D", row.record.ordinal, minimumPosterior);
-    const j = refinedCall(result, "J", row.record.ordinal, minimumPosterior);
+    const v = refinedCall(result, "V", row.record.ordinal, policy, minimumPosterior);
+    const d = refinedCall(result, "D", row.record.ordinal, policy, minimumPosterior);
+    const j = refinedCall(result, "J", row.record.ordinal, policy, minimumPosterior);
     if (!v && !d && !j) return row;
     const values = { ...row.values };
     if (v) { values.swig_original_v_call = values.v_call ?? ""; values.swig_repertoire_v_call = v; values.v_call = v; }
@@ -64,7 +67,7 @@ export const REFINEMENT_SIDECAR_FIELDS = [
   "sequence_id", "swig_dataset_id", "sample_id", "subject_id", "locus", "segment",
   "original_call", "candidate_call", "candidate_source", "local_evidence",
   "repertoire_posterior", "pool_posterior_mean", "is_map", "map_probability",
-  "posterior_entropy", "passes_apply_threshold",
+  "posterior_entropy", "reassignment_policy", "minimum_posterior", "map_selected_by_policy",
 ];
 
 function resultGraph(result: SegmentRefinementResult, radius: number) {
@@ -90,6 +93,7 @@ function expectedLogByModel(result: SegmentRefinementResult, alpha: number) {
 export async function writeRefinementSidecar(
   store: AirrResultStore,
   result: AlleleRefinementResult,
+  policy: AlleleReassignmentPolicy,
   minimumPosterior: number,
   format: TableExportFormat,
   write: (part: string | Blob | Uint8Array) => Promise<void>,
@@ -128,7 +132,10 @@ export async function writeRefinementSidecar(
             is_map: segmentResult.mapNode[row.ordinal] === entry.node,
             map_probability: segmentResult.mapProbability[row.ordinal] ?? 0,
             posterior_entropy: segmentResult.posteriorEntropy[row.ordinal] ?? 0,
-            passes_apply_threshold: segmentResult.mapNode[row.ordinal] === entry.node && (segmentResult.mapProbability[row.ordinal] ?? 0) >= minimumPosterior,
+            reassignment_policy: policy,
+            minimum_posterior: policy === "confidence" ? Math.max(0, Math.min(1, minimumPosterior)) : "",
+            map_selected_by_policy: segmentResult.mapNode[row.ordinal] === entry.node
+              && posteriorMapPassesPolicy(policy, segmentResult.mapProbability[row.ordinal] ?? 0, minimumPosterior),
           }, format);
         }
       }
@@ -140,15 +147,16 @@ export async function writeRefinementSidecar(
 export async function writeRefinedAirr(
   store: AirrResultStore,
   result: AlleleRefinementResult,
+  policy: AlleleReassignmentPolicy,
   minimumPosterior: number,
   format: TableExportFormat,
   write: (part: string | Blob | Uint8Array) => Promise<void>,
   includeMask?: Uint8Array,
 ) {
-  const custom = SEGMENTS.flatMap((segment) => {
+  const custom = ["swig_reassignment_policy", "swig_reassignment_minimum_posterior", ...SEGMENTS.flatMap((segment) => {
     const lower = segment.toLowerCase();
     return [`swig_original_${lower}_call`, `swig_repertoire_${lower}_call`, `swig_repertoire_${lower}_probability`, `swig_repertoire_${lower}_entropy`];
-  });
+  })];
   const fields = [...store.airrHeaders, ...custom.filter((field) => !store.airrHeaders.includes(field))];
   const header = tableHeader(fields, format);
   if (header) await write(header);
@@ -156,6 +164,8 @@ export async function writeRefinedAirr(
     let body = "";
     for (const row of rows) {
       const values: Record<string, string | number> = { ...row.values };
+      values.swig_reassignment_policy = policy;
+      values.swig_reassignment_minimum_posterior = policy === "confidence" ? Math.max(0, Math.min(1, minimumPosterior)) : "";
       for (const segment of SEGMENTS) {
         const lower = segment.toLowerCase();
         const value = assignment(result.segments[segment], row.ordinal);
@@ -164,7 +174,7 @@ export async function writeRefinedAirr(
         values[`swig_repertoire_${lower}_call`] = value.call;
         values[`swig_repertoire_${lower}_probability`] = value.probability;
         values[`swig_repertoire_${lower}_entropy`] = value.entropy;
-        if (value.probability >= minimumPosterior) values[`${lower}_call`] = value.call;
+        if (posteriorMapPassesPolicy(policy, value.probability, minimumPosterior)) values[`${lower}_call`] = value.call;
       }
       body += tableRow(fields, values, format);
     }

@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { adaptiveNeighbourOdds, buildSparseEvidenceRow, sparseEvidenceMatrix } from "../src/allele-refinement/evidence.ts";
-import { alignReferenceKernelInspection, assignmentShiftData, inspectReferenceEvidenceKernel } from "../src/allele-refinement/diagnostics.ts";
+import { alignReferenceKernelInspection, hardAssignmentShiftData, inspectReferenceEvidenceKernel } from "../src/allele-refinement/diagnostics.ts";
 import { fitSparseAlleleModel } from "../src/allele-refinement/model.ts";
 import { buildReferenceAlleleGraph, boundedReferenceDistance } from "../src/allele-refinement/reference-graph.ts";
-import { DEFAULT_ALLELE_REFINEMENT_OPTIONS, type RefinementInputRow } from "../src/allele-refinement/types.ts";
+import { DEFAULT_ALLELE_REFINEMENT_OPTIONS, type RefinementInputRow, type SegmentRefinementResult } from "../src/allele-refinement/types.ts";
 import { applyCallOverrides } from "../src/allele-refinement/apply.ts";
 import { restoreAlleleRefinement, saveAlleleRefinement } from "../src/allele-refinement/serialization.ts";
 import { modelSummaryTable, writeRefinementSidecar } from "../src/allele-refinement/export.ts";
@@ -86,30 +86,48 @@ test("the interactive error-model diagnostic uses the fitted sparse kernel and e
   }
 });
 
-test("before/after assignment frequencies exclude prior mass and sort on post-pooling frequency", () => {
-  const shifts = assignmentShiftData({
-    key: "donor_1\u0000IGH\u0000V",
-    scopeValue: "donor_1",
-    locus: "IGH",
+test("hard assignment projection counts MAP reassignments and exposes vanished alleles", () => {
+  const result: SegmentRefinementResult = {
     segment: "V",
-    rows: 100,
-    effectiveRows: 100,
-    nonZeros: 200,
-    databaseNodes: 2,
-    inactivePriorNodes: 0,
-    iterations: 5,
-    converged: true,
-    finalMaximumChange: 1e-7,
-    alleles: [
-      { nodeIndex: 0, names: ["IGHV1*01"], sequenceLength: 10, posteriorMean: 0.4, posteriorSd: 0.01, localEvidenceAssignments: 80, expectedAssignments: 35 },
-      { nodeIndex: 1, names: ["IGHV1*02"], sequenceLength: 10, posteriorMean: 0.6, posteriorSd: 0.01, localEvidenceAssignments: 20, expectedAssignments: 65 },
+    nodes: [
+      { index: 0, segment: "V", locus: "IGH", names: ["IGHV1*01"], sequence: "AAAA" },
+      { index: 1, segment: "V", locus: "IGH", names: ["IGHV1*02"], sequence: "AAAT" },
     ],
-  });
-  assert.equal(shifts[0].label, "IGHV1*02");
-  assert.equal(shifts[0].before, 0.2);
-  assert.equal(shifts[0].after, 0.65);
-  assert.ok(Math.abs(shifts.reduce((sum, value) => sum + value.before, 0) - 1) < 1e-12);
-  assert.ok(Math.abs(shifts.reduce((sum, value) => sum + value.after, 0) - 1) < 1e-12);
+    mapNode: Int32Array.of(1, 1, 1),
+    mapProbability: Float32Array.of(0.95, 0.7, 0.9),
+    posteriorEntropy: Float32Array.of(0.1, 0.5, 0.2),
+    localTopNode: Int32Array.of(0, 0, 1),
+    localTopProbability: Float32Array.of(0.8, 0.8, 0.9),
+    modelIndex: Int32Array.of(0, 0, 0),
+    assignmentWeight: Float32Array.of(1, 1, 1),
+    models: [{
+      key: "donor_1\u0000IGH\u0000V", scopeValue: "donor_1", locus: "IGH", segment: "V",
+      rows: 3, effectiveRows: 3, nonZeros: 6, databaseNodes: 2, inactivePriorNodes: 0,
+      iterations: 5, converged: true, finalMaximumChange: 1e-7,
+      alleles: [
+        { nodeIndex: 0, names: ["IGHV1*01"], sequenceLength: 4, posteriorMean: 0.25, posteriorSd: 0.1, localEvidenceAssignments: 2, expectedAssignments: 0.5 },
+        { nodeIndex: 1, names: ["IGHV1*02"], sequenceLength: 4, posteriorMean: 0.75, posteriorSd: 0.1, localEvidenceAssignments: 1, expectedAssignments: 2.5 },
+      ],
+    }],
+    modeledRows: 3, changedMapRows: 2, skippedRows: 0, matrixNonZeros: 6,
+    truncatedRows: 0, exactDuplicateLabels: 0,
+  };
+  const best = hardAssignmentShiftData(result, 0, "best", 0.8)!;
+  const bestFirst = best.rows.find((value) => value.label === "IGHV1*01")!;
+  const bestSecond = best.rows.find((value) => value.label === "IGHV1*02")!;
+  assert.deepEqual([bestFirst.before, bestFirst.after, bestFirst.vanishes], [2, 0, true]);
+  assert.deepEqual([bestSecond.before, bestSecond.after], [1, 3]);
+  assert.equal(best.changedAssignments, 2);
+  assert.equal(best.vanishedAlleles, 1);
+
+  const confidence = hardAssignmentShiftData(result, 0, "confidence", 0.8)!;
+  assert.deepEqual(confidence.rows.map((value) => [value.label, value.before, value.after]), [
+    ["IGHV1*02", 1, 2],
+    ["IGHV1*01", 2, 1],
+  ]);
+  assert.equal(confidence.changedAssignments, 1);
+  assert.equal(confidence.heldBelowConfidence, 1);
+  assert.equal(confidence.vanishedAlleles, 0);
 });
 
 test("literal co-optimal calls begin equal and graph neighbours receive geometric non-zero evidence", () => {
@@ -174,17 +192,21 @@ test("Dirichlet normalization retains implicit prior mass for every locus-matche
   assert.match(exported, /\t3\t2\t/);
 });
 
-test("thresholded posterior calls are explicit and resetting restores the immutable AIRR calls", () => {
+test("posterior call policies are explicit and resetting restores the immutable AIRR calls", () => {
   const records = [
     { ordinal: 0, vCall: "IGHV1*01,IGHV1*02", jCall: "IGHJ4*01", originalVCall: "IGHV1*01,IGHV1*02", originalJCall: "IGHJ4*01" },
     { ordinal: 1, vCall: "IGHV1*01", jCall: "IGHJ4*01", originalVCall: "IGHV1*01", originalJCall: "IGHJ4*01" },
   ];
   const v = { labels: ["IGHV1*01", "IGHV1*02"], mapNode: Int32Array.of(1, 1), probability: Float32Array.of(0.95, 0.7) };
-  const applied = applyCallOverrides(records, v, undefined, 0.8);
+  const applied = applyCallOverrides(records, v, undefined, "confidence", 0.8);
   assert.equal(applied.changedV, 1);
+  assert.equal(applied.policy, "confidence");
   assert.equal(records[0].vCall, "IGHV1*02");
   assert.equal(records[1].vCall, "IGHV1*01");
-  applyCallOverrides(records, undefined, undefined, 0.8);
+  const everyMap = applyCallOverrides(records, v, undefined, "best", 0.8);
+  assert.equal(everyMap.changedV, 2);
+  assert.equal(records[1].vCall, "IGHV1*02");
+  applyCallOverrides(records, undefined, undefined, "confidence", 0.8);
   assert.equal(records[0].vCall, "IGHV1*01,IGHV1*02");
 });
 
@@ -194,11 +216,14 @@ test("saved sessions round-trip sparse posterior vectors and apply state", () =>
     .map((value) => buildSparseEvidenceRow(value, graph, options)!).filter(Boolean);
   const segment = fitSparseAlleleModel(sparseEvidenceMatrix(evidenceRows), graph, options, 2);
   const original = { version: 1 as const, options, totalRecords: 2, activeRecords: 2, segments: { V: segment }, runAt: "2026-08-15T00:00:00.000Z", warnings: [] };
-  const saved = saveAlleleRefinement(original, true, 0.83);
+  const saved = saveAlleleRefinement(original, true, "confidence", 0.83);
   const restored = restoreAlleleRefinement(saved);
   assert.deepEqual([...restored.segments.V!.mapNode], [...segment.mapNode]);
   assert.deepEqual([...restored.segments.V!.mapProbability], [...segment.mapProbability]);
+  assert.deepEqual([...restored.segments.V!.modelIndex!], [...segment.modelIndex!]);
+  assert.deepEqual([...restored.segments.V!.assignmentWeight!], [...segment.assignmentWeight!]);
   assert.equal(saved.applied, true);
+  assert.equal(saved.reassignmentPolicy, "confidence");
   assert.equal(saved.applyMinimumPosterior, 0.83);
 });
 
@@ -219,12 +244,14 @@ test("posterior sidecar streams the complete sparse responsibility vector", asyn
     }))),
   } as unknown as AirrResultStore;
   let output = "";
-  await writeRefinementSidecar(store, result, 0.8, "tsv", async (part) => { output += typeof part === "string" ? part : ""; });
+  await writeRefinementSidecar(store, result, "confidence", 0.8, "tsv", async (part) => { output += typeof part === "string" ? part : ""; });
   const lines = output.trim().split("\n");
   const headers = lines[0].split("\t");
   const sequence = headers.indexOf("sequence_id");
   const posterior = headers.indexOf("repertoire_posterior");
   const candidate = headers.indexOf("candidate_call");
+  assert.ok(headers.includes("reassignment_policy"));
+  assert.ok(headers.includes("map_selected_by_policy"));
   const rows = lines.slice(1).map((line) => line.split("\t"));
   for (const id of ["r0", "r1"]) {
     const selected = rows.filter((values) => values[sequence] === id);

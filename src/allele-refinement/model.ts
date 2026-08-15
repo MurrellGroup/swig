@@ -177,6 +177,9 @@ export function fitSparseAlleleModel(
   const mapProbability = new Float32Array(totalRecords);
   const localTopProbability = new Float32Array(totalRecords);
   const posteriorEntropy = new Float32Array(totalRecords);
+  const modelIndex = new Int32Array(totalRecords);
+  modelIndex.fill(-1);
+  const assignmentWeight = new Float32Array(totalRecords);
   const rowsByGroup = matrix.groupKeys.map(() => [] as number[]);
   for (let row = 0; row < matrix.ordinals.length; row += 1) rowsByGroup[matrix.rowGroups[row]].push(row);
   const models: RefinementModelSummary[] = [];
@@ -187,6 +190,8 @@ export function fitSparseAlleleModel(
     const local = new Map(fit.nodes.map((node, index) => [node, index] as const));
     fit.rowIndices.forEach((row) => {
       const ordinal = matrix.ordinals[row];
+      modelIndex[ordinal] = group;
+      assignmentWeight[ordinal] = matrix.weights[row];
       const begin = matrix.rowOffsets[row];
       let topNode = -1;
       let topProbability = -1;
@@ -221,6 +226,8 @@ export function fitSparseAlleleModel(
     posteriorEntropy,
     localTopNode,
     localTopProbability,
+    modelIndex,
+    assignmentWeight,
     models,
     modeledRows: matrix.ordinals.length,
     changedMapRows,

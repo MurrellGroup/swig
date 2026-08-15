@@ -1,10 +1,13 @@
 import { buildSparseEvidenceRow } from "./evidence.ts";
+import { posteriorMapPassesPolicy } from "./apply.ts";
 import type {
+  AlleleReassignmentPolicy,
   AlleleRefinementOptions,
   ReferenceAlleleGraph,
   ReferenceAlleleNode,
   RefinementInputRow,
   RefinementModelSummary,
+  SegmentRefinementResult,
 } from "./types.ts";
 
 export interface ReferenceKernelAlternative {
@@ -47,8 +50,17 @@ export interface AssignmentShiftDatum {
   before: number;
   after: number;
   delta: number;
-  beforeAssignments: number;
-  afterAssignments: number;
+  vanishes: boolean;
+  appears: boolean;
+}
+
+export interface HardAssignmentShift {
+  rows: AssignmentShiftDatum[];
+  totalAssignments: number;
+  changedAssignments: number;
+  heldBelowConfidence: number;
+  vanishedAlleles: number;
+  appearedAlleles: number;
 }
 
 function inspectionRow(node: ReferenceAlleleNode, assumedShm: number): RefinementInputRow {
@@ -266,24 +278,67 @@ export function alignReferenceKernelInspection(inspection: ReferenceKernelInspec
   };
 }
 
-/** Frequencies before and after repertoire pooling, excluding Dirichlet prior mass. */
-export function assignmentShiftData(model: RefinementModelSummary): AssignmentShiftDatum[] {
-  const beforeTotal = model.alleles.reduce((sum, allele) => sum + Math.max(0, allele.localEvidenceAssignments), 0);
-  const afterTotal = model.alleles.reduce((sum, allele) => sum + Math.max(0, allele.expectedAssignments), 0);
-  return model.alleles.map((allele) => {
-    const before = beforeTotal > 0 ? Math.max(0, allele.localEvidenceAssignments) / beforeTotal : 0;
-    const after = afterTotal > 0 ? Math.max(0, allele.expectedAssignments) / afterTotal : 0;
+/**
+ * Weighted hard argmax counts for one fitted pool. The model itself remains
+ * soft; this is a projection of its saved pre-pooling and posterior MAP state.
+ */
+export function hardAssignmentShiftData(
+  result: SegmentRefinementResult,
+  selectedModelIndex: number,
+  policy: AlleleReassignmentPolicy,
+  minimumPosterior: number,
+): HardAssignmentShift | null {
+  const model = result.models[selectedModelIndex];
+  if (!model || !result.modelIndex || !result.assignmentWeight) return null;
+  const rowByNode = new Map(model.alleles.map((allele, index) => [allele.nodeIndex, index] as const));
+  const before = new Float64Array(model.alleles.length);
+  const after = new Float64Array(model.alleles.length);
+  let totalAssignments = 0;
+  let changedAssignments = 0;
+  let heldBelowConfidence = 0;
+  for (let ordinal = 0; ordinal < result.modelIndex.length; ordinal += 1) {
+    if (result.modelIndex[ordinal] !== selectedModelIndex) continue;
+    const weight = Math.max(0, result.assignmentWeight[ordinal] ?? 0);
+    if (!(weight > 0)) continue;
+    const localNode = result.localTopNode[ordinal] ?? -1;
+    const localRow = rowByNode.get(localNode);
+    if (localRow === undefined) continue;
+    before[localRow] += weight;
+    totalAssignments += weight;
+    const posteriorNode = result.mapNode[ordinal] ?? -1;
+    const posteriorRow = rowByNode.get(posteriorNode);
+    const passes = posteriorRow !== undefined && posteriorMapPassesPolicy(policy, result.mapProbability[ordinal] ?? 0, minimumPosterior);
+    const appliedRow = passes ? posteriorRow : localRow;
+    after[appliedRow] += weight;
+    if (posteriorRow !== undefined && posteriorNode !== localNode) {
+      if (passes) changedAssignments += weight;
+      else heldBelowConfidence += weight;
+    }
+  }
+  const rows = model.alleles.map((allele, index) => {
+    const beforeCount = before[index];
+    const afterCount = after[index];
     return {
       nodeIndex: allele.nodeIndex,
       label: allele.names.join(", "),
       names: [...allele.names],
-      before,
-      after,
-      delta: after - before,
-      beforeAssignments: Math.max(0, allele.localEvidenceAssignments),
-      afterAssignments: Math.max(0, allele.expectedAssignments),
+      before: beforeCount,
+      after: afterCount,
+      delta: afterCount - beforeCount,
+      vanishes: beforeCount > 0 && afterCount === 0,
+      appears: beforeCount === 0 && afterCount > 0,
     };
-  }).sort((left, right) => right.after - left.after
-    || right.before - left.before
-    || left.label.localeCompare(right.label, undefined, { numeric: true }));
+  }).filter((row) => row.before > 0 || row.after > 0)
+    .sort((left, right) => Math.max(right.before, right.after) - Math.max(left.before, left.after)
+      || right.after - left.after
+      || right.before - left.before
+      || left.label.localeCompare(right.label, undefined, { numeric: true }));
+  return {
+    rows,
+    totalAssignments,
+    changedAssignments,
+    heldBelowConfidence,
+    vanishedAlleles: rows.reduce((sum, row) => sum + Number(row.vanishes), 0),
+    appearedAlleles: rows.reduce((sum, row) => sum + Number(row.appears), 0),
+  };
 }

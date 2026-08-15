@@ -65,6 +65,8 @@ export interface PipelinePlan {
     weighting: "unique" | "abundance";
     baselineNeighbourOdds: number;
     shmLeakageSensitivity: number;
+    /** Apply every posterior MAP call, or retain original calls below a confidence gate. */
+    reassignmentPolicy: "best" | "confidence";
     applyMinimumPosterior: number;
   };
   lineage: {
@@ -130,6 +132,7 @@ export const DEFAULT_PIPELINE_PLAN: PipelinePlan = {
     weighting: "unique",
     baselineNeighbourOdds: 0.01,
     shmLeakageSensitivity: 1,
+    reassignmentPolicy: "confidence",
     applyMinimumPosterior: 0.8,
   },
   lineage: {

@@ -21,6 +21,8 @@ function saveSegment(result: SegmentRefinementResult): SavedSegmentRefinement {
     posteriorEntropy: packed(result.posteriorEntropy, "f32"),
     localTopNode: packed(result.localTopNode, "i32"),
     localTopProbability: packed(result.localTopProbability, "f32"),
+    modelIndex: result.modelIndex ? packed(result.modelIndex, "i32") : undefined,
+    assignmentWeight: result.assignmentWeight ? packed(result.assignmentWeight, "f32") : undefined,
   };
 }
 
@@ -30,17 +32,22 @@ function restoreSegment(result: SavedSegmentRefinement): SegmentRefinementResult
   const posteriorEntropy = unpackSessionVector(result.posteriorEntropy);
   const localTopNode = unpackSessionVector(result.localTopNode);
   const localTopProbability = unpackSessionVector(result.localTopProbability);
+  const modelIndex = result.modelIndex ? unpackSessionVector(result.modelIndex) : undefined;
+  const assignmentWeight = result.assignmentWeight ? unpackSessionVector(result.assignmentWeight) : undefined;
   if (!(mapNode instanceof Int32Array) || !(mapProbability instanceof Float32Array)
     || !(posteriorEntropy instanceof Float32Array) || !(localTopNode instanceof Int32Array)
-    || !(localTopProbability instanceof Float32Array)) {
+    || !(localTopProbability instanceof Float32Array)
+    || (modelIndex !== undefined && !(modelIndex instanceof Int32Array))
+    || (assignmentWeight !== undefined && !(assignmentWeight instanceof Float32Array))) {
     throw new Error("The saved repertoire-level allele result has incompatible vector types.");
   }
-  return { ...result, mapNode, mapProbability, posteriorEntropy, localTopNode, localTopProbability };
+  return { ...result, mapNode, mapProbability, posteriorEntropy, localTopNode, localTopProbability, modelIndex, assignmentWeight };
 }
 
 export function saveAlleleRefinement(
   result: AlleleRefinementResult,
   applied: boolean,
+  reassignmentPolicy: SavedAlleleRefinement["reassignmentPolicy"],
   applyMinimumPosterior: number,
 ): SavedAlleleRefinement {
   const segments: SavedAlleleRefinement["segments"] = {};
@@ -48,7 +55,7 @@ export function saveAlleleRefinement(
     const value = result.segments[segment];
     if (value) segments[segment] = saveSegment(value);
   }
-  return { ...result, segments, applied, applyMinimumPosterior };
+  return { ...result, segments, applied, reassignmentPolicy, applyMinimumPosterior };
 }
 
 export function restoreAlleleRefinement(saved: SavedAlleleRefinement): AlleleRefinementResult {
