@@ -193,9 +193,9 @@ test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligne
   assert.match(panel, /PhyloUcaPlacementMap/);
   assert.match(panel, /V\/J nucleotide mixture · default/);
   assert.match(panel, /"Full-HMM edges"[\s\S]{0,120}?\(0 = all\)/);
-  assert.match(panel, /Conditional ML · fast default/);
+  assert.match(panel, /Conditional ML · fastest/);
   assert.match(panel, /Explicit grid marginalization/);
-  assert.match(panel, /Gibbs\/MH · continuous placement/);
+  assert.match(panel, /Gibbs\/MH · default · continuous placement/);
   assert.match(panel, /Exact pendant-length grid/);
   assert.match(panel, /does not use the grid settings/);
   assert.match(panel, /Gibbs\/MH mixing/);

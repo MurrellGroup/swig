@@ -269,7 +269,7 @@ All three inference routes evaluate branch interiors rather than restricting att
 
 ## Three inference routes
 
-### Conditional maximum likelihood (default)
+### Conditional maximum likelihood
 
 For every admitted edge, Swig alternates continuous one-dimensional optimization of attachment fraction and UCA pendant length. Every objective call is the **complete recombination-HMM marginal likelihood**. A fourth-power transformed pendant coordinate concentrates optimizer evaluations near zero without discretizing the parameter. Placement and branch priors do not affect this conditional-ML optimum, and there is no marginalization over placement or length.
 
@@ -277,7 +277,7 @@ For every admitted edge, Swig alternates continuous one-dimensional optimization
 
 The attachment grid is linear in within-edge fraction. The pendant grid contains exact zero followed by user-configurable logarithmically spaced positive values between `minimumPositiveUcaBranchLength` and the maximum. The complete list is shown in the settings before a run and stored in the result. Every grid point receives the full-HMM marginal likelihood. Trapezoid/Voronoi cell widths, the selected edge prior, and the exponential pendant prior provide quadrature weights. The leading user-configured number of quadrature points receive exact nucleotide, codon, and HMM-track posterior calculations; the result warns with their cumulative quadrature mass when lower-mass points are omitted.
 
-### Continuous Metropolis-within-Gibbs
+### Continuous Metropolis-within-Gibbs (default)
 
 One iteration consists of:
 
@@ -311,12 +311,12 @@ The placed Newick is rooted at the inferred UCA. The named `phylo_UCA` sequence 
 | HMM | minimum D match | 5 nt |
 | HMM | additional-D route weight | 0.015 |
 | HMM | mean N length | 5 nt |
-| HMM | template leakage | 0.003 |
+| HMM | template leakage | 0 (evaluated at a 1e-9 numerical floor) |
 | HMM | junction gap probability, GTR5 only | 0.015 |
 | Search | starting-position screen | independent V/J nucleotide mixture |
 | Search | screen points per edge | 5 |
 | Search | full-HMM edges | 6 |
-| Search | inference route | conditional maximum likelihood |
+| Search | inference route | continuous Gibbs/MH |
 | Conditional ML | coordinate rounds / unit tolerance | 2 / 0.002 |
 | Grid | attachment / pendant points | 3 / 13 |
 | Grid | smallest positive pendant length | 0.00001 |

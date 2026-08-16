@@ -25,6 +25,12 @@ function annotationTrack(
   return { id, kind, label, ...details, pure: probabilities.filter((value) => value > 0).length <= 1, points: [{ alignmentColumn, probabilities }], maximumWeight: probabilities.reduce((sum, value) => sum + value, 0) };
 }
 
+test("phylogenetic UCA defaults use zero leakage and continuous Gibbs/MH", () => {
+  const options = defaultPhyloUcaOptions();
+  assert.equal(options.hmm.templateMismatchProbability, 0);
+  assert.equal(options.search.inferenceMode, "gibbs-mh");
+});
+
 test("HMM annotation display collapses duplicate D registers into one mixed allele row", () => {
   const raw = [
     annotationTrack("V|IGHV1*01", "V", "V · IGHV1*01", 1, [1, 0, 0, 0, 0], { call: "IGHV1*01" }),
