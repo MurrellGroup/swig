@@ -17,7 +17,7 @@ interface WorkerResult {
 interface ChmmClient {
   worker: Worker;
   request: <T>(message: Record<string, unknown>) => Promise<T>;
-  terminate: () => void;
+  terminate: (reason?: Error) => void;
 }
 
 export interface ChmmRunOptions extends ChmmOptions {
@@ -102,7 +102,11 @@ function makeClient(): ChmmClient {
         worker.postMessage({ id, ...message });
       });
     },
-    terminate: () => worker.terminate(),
+    terminate: (reason = new Error("The CHMMAIRRa worker was closed.")) => {
+      worker.terminate();
+      pending.forEach((request) => request.reject(reason));
+      pending.clear();
+    },
   };
 }
 
@@ -208,7 +212,8 @@ export async function runChmmairra(
       dfr,
     };
   } finally {
-    clients.forEach((client) => client.terminate());
+    const reason = signal?.aborted ? new DOMException("CHMMAIRRa was cancelled.", "AbortError") : undefined;
+    clients.forEach((client) => client.terminate(reason));
   }
 }
 
@@ -217,12 +222,16 @@ export async function runChmmairraDetail(
   msa: string,
   options: ChmmRunOptions,
   ordinal: number,
+  signal?: AbortSignal,
 ): Promise<ChmmDetail> {
+  if (signal?.aborted) throw new DOMException("CHMMAIRRa detail reconstruction was cancelled.", "AbortError");
   const [detail] = await store.detailMany([ordinal]);
   if (!detail) throw new Error("That CHMMAIRRa record is no longer present in the local result index.");
   const prefix = options.segment.toLowerCase();
   const call = detail.values[`${prefix}_call`] ?? "";
   const client = makeClient();
+  const abort = () => client.terminate(new DOMException("CHMMAIRRa detail reconstruction was cancelled.", "AbortError"));
+  signal?.addEventListener("abort", abort, { once: true });
   try {
     await client.request({ type: "init", msa, options: modelOptions(options), minDfr: options.minDfr });
     const result = await client.request<Omit<ChmmDetail, "sequenceId" | "segment" | "call">>({
@@ -234,6 +243,7 @@ export async function runChmmairraDetail(
         germlineAlignment: detail.values[`${prefix}_germline_alignment`] ?? "",
       },
     });
+    if (signal?.aborted) throw new DOMException("CHMMAIRRa detail reconstruction was cancelled.", "AbortError");
     return {
       ...result,
       sequenceId: detail.values.sequence_id || detail.record.sequenceId,
@@ -241,6 +251,7 @@ export async function runChmmairraDetail(
       call,
     };
   } finally {
+    signal?.removeEventListener("abort", abort);
     client.terminate();
   }
 }
@@ -249,8 +260,9 @@ export async function writeChmmairraTsv(
   store: AirrResultStore,
   dashboard: ChmmDashboard,
   writable: Pick<AirrOutputWritable, "write">,
+  signal?: AbortSignal,
 ): Promise<void> {
-  return writeChmmairra(store, dashboard, "tsv", writable);
+  return writeChmmairra(store, dashboard, "tsv", writable, signal);
 }
 
 export async function writeChmmairra(
@@ -258,6 +270,7 @@ export async function writeChmmairra(
   dashboard: ChmmDashboard,
   format: TableExportFormat,
   writable: Pick<AirrOutputWritable, "write">,
+  signal?: AbortSignal,
 ): Promise<void> {
   const segment = dashboard.segment.toLowerCase();
   const fields = ["sequence_id", `${segment}_chimera_probability`, `${segment}_chimeric`, `${segment}_distance_from_reference`];
@@ -275,5 +288,5 @@ export async function writeChmmairra(
       }, format);
     }
     await writable.write(body);
-  });
+  }, { signal });
 }

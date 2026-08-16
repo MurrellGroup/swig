@@ -223,11 +223,12 @@ export function databasesForCell(
 export async function loadCollectionSegment(
   collection: ReferenceCollection,
   segment: SegmentKey,
+  signal?: AbortSignal,
 ): Promise<string> {
   const source = collection.segments[segment];
   if (!source) throw new Error(`${collection.name} does not contain a ${segment} set.`);
   const url = source.local ? `${import.meta.env.BASE_URL}${source.url}` : source.url;
-  const response = await fetch(url, { headers: source.headers });
+  const response = await fetch(url, { headers: source.headers, signal });
   if (!response.ok) throw new Error(`${collection.name} ${segment} download failed (HTTP ${response.status}).`);
   const text = await response.text();
   if (!text.trimStart().startsWith(">")) throw new Error(`${collection.name} returned data that are not FASTA.`);

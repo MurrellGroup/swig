@@ -8,7 +8,8 @@ import {
   type ReactNode,
 } from "react";
 
-import { runCodonAwareKalign, runFastTree, runKalign, type FastTreeRun } from "./biowasm-runtime";
+import type { FastTreeRun } from "./biowasm-runtime";
+import { runCodonAwareKalignTask, runFastTreeTask, runKalignTask } from "./biowasm-task-runtime";
 import {
   ALIVIBE_SOURCE_REVISION,
   assertAlivibeInitialLoad,
@@ -120,7 +121,7 @@ interface Props {
 }
 
 export interface PostAnalysisSessionHandle {
-  snapshot: () => Promise<PostAnalysisSessionSnapshot>;
+  snapshot: (signal?: AbortSignal) => Promise<PostAnalysisSessionSnapshot>;
 }
 
 interface SaveFileHandle {
@@ -405,16 +406,24 @@ function parseQueries(text: string): string[] {
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).map((line) => line.replace(/\s/g, ""));
 }
 
+function isAbortError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error && (error as { name?: unknown }).name === "AbortError";
+}
+
 export function PostAnalysisWorkbench({ store, references, scope, loci, resultFacets, inputName, workers, callingProfile, assignerStrategy, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", doubleDCount = 0, autoPipeline, sidebarTools, onInspect, onSessionChange, sessionHandleRef, initialSession }: Props) {
   const runtime = useMemo(() => new PostAnalysisRuntime(store), [store]);
   const alleleRuntime = useMemo(() => new AlleleRefinementRuntime(), [store]);
   const postLockAbortRef = useRef<AbortController | null>(null);
+  const cancellationRecoveryRef = useRef<Promise<void> | null>(null);
+  const pipelineActiveRef = useRef(false);
+  const postRestoreActiveRef = useRef(false);
   useEffect(() => () => {
     postLockAbortRef.current?.abort();
     runtime.terminate();
     alleleRuntime.terminate();
   }, [alleleRuntime, runtime]);
   const [busy, setBusy] = useState("");
+  const [cancelling, setCancelling] = useState(false);
   const [postLockState, setPostLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
   const [progress, setProgress] = useState<{ processed: number; total: number; unit?: string }>({ processed: 0, total: store.count });
   const [error, setError] = useState("");
@@ -696,12 +705,14 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     pipelineRunRef.current = true;
     void (async () => {
       const report: string[] = [];
+      pipelineActiveRef.current = true;
+      runtime.beginTransaction();
       setError("");
       setPipelineReport([]);
       try {
         await runInActiveLock(async () => {
           setBusy("Pipeline · indexing AIRR records");
-          await runtime.ensureIndexed((processed, total) => setProgress({ processed, total }));
+          await runtime.ensureIndexed((processed, total) => setProgress({ processed, total }), postLockAbortRef.current?.signal);
           let activeMask: Uint8Array | null = null;
           let collapseResult: DedupDashboard | null = null;
           const stages: WorkingSetStage[] = [];
@@ -778,7 +789,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
                 const stage = phase === "variants" ? "indexed variant denoising" : phase === "finalize" ? "representative materialization" : "streaming VDJ sequences";
                 setBusy(`Pipeline · ${autoPipeline.collapse.mode} denoising · ${stage}`);
                 setProgress({ processed, total, unit: phase === "variants" ? "unique sequence variants processed" : phase === "finalize" ? "representative-state operations completed" : "AIRR records streamed into the denoising index" });
-              });
+              }, postLockAbortRef.current?.signal);
             setDedup(collapseResult);
             const applied = await runtime.applyDedupFilter();
             activeMask = applied.mask;
@@ -798,7 +809,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             setChmmSegment(segment);
             setBusy(autoPipeline.chimera.msaSource === "upload" ? `Pipeline · validating loaded ${segment} reference MSA` : `Pipeline · building ${segment} reference MSA`);
             const referenceSource = autoPipeline.chimera.msaSource === "upload" ? autoPipeline.chimera.uploadedMsa : references[segment];
-            const msa = autoPipeline.chimera.msaSource === "upload" ? referenceSource : await runKalign(referenceSource);
+            const msa = autoPipeline.chimera.msaSource === "upload" ? referenceSource : await runKalignTask(referenceSource, postLockAbortRef.current?.signal);
             prepareReferenceMsa(msa);
             setPreparedMsa(msa);
             const tcr = scope === "TCR" || String(scope).startsWith("TR");
@@ -820,7 +831,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             setChmmFilterThreshold(autoPipeline.chimera.posteriorThreshold);
             setRetainUnevaluated(autoPipeline.chimera.retainUnevaluated);
             setBusy(`Pipeline · CHMMAIRRa ${segment}`);
-            const dashboard = await runChmmairra(store, msa, options, activeMask ?? undefined, (processed, total) => setProgress({ processed, total }));
+            const dashboard = await runChmmairra(store, msa, options, activeMask ?? undefined, (processed, total) => setProgress({ processed, total }), postLockAbortRef.current?.signal);
             setChmm(dashboard);
             setChmmRun({ msa, options, inputMask: activeMask });
             const next = new Uint8Array(store.count);
@@ -863,7 +874,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
               doubleD: autoPipeline.selection.doubleD,
             };
             const baseMask = activeMask?.slice() ?? null;
-            const selected = await selectRepertoire(store, selectionOptions, activeMask ?? undefined, (processed) => setProgress({ processed, total: activeMask ? activeMask.reduce((sum, value) => sum + value, 0) : store.count }));
+            const selected = await selectRepertoire(store, selectionOptions, activeMask ?? undefined, (processed) => setProgress({ processed, total: activeMask ? activeMask.reduce((sum, value) => sum + value, 0) : store.count }), postLockAbortRef.current?.signal);
             await runtime.setActiveMask(selected.mask);
             activeMask = selected.mask;
             setSelectionDraft(selectionOptions);
@@ -903,7 +914,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             const counts = collapseResult ? await runtime.dedupCounts() : null;
             const accumulator = new ShmAccumulator({ metric: autoPipeline.shm.metric, maxSamplesPerLineage: 2000 });
             const fields = ["sequence_id","v_call","j_call","locus","isotype","sample_id","subject_id","swig_cohort","swig_timepoint","swig_compartment","duplicate_count","v_sequence_alignment","v_germline_alignment","sequence_alignment","germline_alignment","v_sequence_start","sequence_frame","v_frame","cdr1_start","cdr1_end","cdr2_start","cdr2_end","fwr1_start","fwr1_end","fwr2_start","fwr2_end","fwr3_start","fwr3_end"];
-            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) { overlayPipelineAlleleCalls(row); if (counts?.[row.ordinal]) row.values.duplicate_count = String(counts[row.ordinal]); accumulator.add(row.values, row.ordinal, assignments?.[row.ordinal] ?? 0, "All selected"); } }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed, total }) });
+            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) { overlayPipelineAlleleCalls(row); if (counts?.[row.ordinal]) row.values.duplicate_count = String(counts[row.ordinal]); accumulator.add(row.values, row.ordinal, assignments?.[row.ordinal] ?? 0, "All selected"); } }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed, total }), signal: postLockAbortRef.current?.signal });
             const dashboard = accumulator.finish();
             setShmDashboard(dashboard);
             report.push(`SHM summarized ${dashboard.analyzedRecords.toLocaleString()} records.`);
@@ -915,10 +926,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             const assignments = await runtime.lineageAssignments();
             const accumulator = new MissingAlleleAccumulator(DEFAULT_MISSING_ALLELE_OPTIONS);
             const fields = ["subject_id","v_call","j_call","cdr3","junction","v_germline_start","v_sequence_alignment","v_germline_alignment"];
-            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) { overlayPipelineAlleleCalls(row); accumulator.add(row.values, row.ordinal, assignments[row.ordinal] ?? 0); } }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed, total: total * 2 }) });
+            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) { overlayPipelineAlleleCalls(row); accumulator.add(row.values, row.ordinal, assignments[row.ordinal] ?? 0); } }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed, total: total * 2 }), signal: postLockAbortRef.current?.signal });
             setBusy("Pipeline · screening every lineage member (pass 2 of 2)");
             const validator = accumulator.prepareValidation(references.V);
-            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) { overlayPipelineAlleleCalls(row); validator.add(row.values, row.ordinal, assignments[row.ordinal] ?? 0); } }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed: total + processed, total: total * 2 }) });
+            await store.scanAirrRows(fields, async (rows) => { for (const row of rows) { overlayPipelineAlleleCalls(row); validator.add(row.values, row.ordinal, assignments[row.ordinal] ?? 0); } }, { batchSize: 1500, includeMask: activeMask ?? undefined, onProgress: (processed, total) => setProgress({ processed: total + processed, total: total * 2 }), signal: postLockAbortRef.current?.signal });
             const dashboard = validator.finish();
             setMissingAlleles(dashboard);
             setSelectedMissingAlleleIds(new Set());
@@ -928,22 +939,33 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           setWorkingMask(activeMask);
           setWorkingStages(stages);
         });
+        runtime.commitTransaction();
+        pipelineActiveRef.current = false;
         setPipelineReport(report.length ? report : ["Annotation completed; no automatic post-analysis stage was selected."]);
       } catch (pipelineError) {
-        setError(pipelineError instanceof Error ? pipelineError.message : String(pipelineError));
-        setPipelineReport([...report, "Pipeline stopped before all selected stages completed."]);
+        if (!cancellationRecoveryRef.current) {
+          if (runtime.requiresRecoveryForCancellation()) await runtime.rollbackTransaction((processed, total) => setProgress({ processed, total, unit: "AIRR records restored" }));
+          else runtime.commitTransaction();
+          setError(pipelineError instanceof Error ? pipelineError.message : String(pipelineError));
+          setPipelineReport([...report, "Pipeline stopped before all selected stages completed."]);
+        }
       } finally {
-        setBusy("");
+        if (!cancellationRecoveryRef.current) setBusy("");
+        pipelineActiveRef.current = false;
       }
     })();
   }, [alleleRuntime, autoPipeline, initialSession, references, runtime, scope, store, workers]);
 
   useEffect(() => {
     if(!sessionHandleRef)return;
-    const handle:PostAnalysisSessionHandle={snapshot:async()=>{
+    const handle:PostAnalysisSessionHandle={snapshot:async(signal)=>{
+      if(signal?.aborted)throw new DOMException("Session saving was cancelled.","AbortError");
       const activeMask=await runtime.activeMask();
+      if(signal?.aborted)throw new DOMException("Session saving was cancelled.","AbortError");
       const collapse=dedup?await (async()=>{const state=await runtime.dedupState();return {mode:dedup.mode,options:{dedupKey,collapseMode,collapseScope,respectConstantCall,denoiseErrorRate,denoiseAlpha,denoiseResolution,denoiseAmbiguity,minimumParentCount,denoiseAmbiguousPolicy,denoiseUnresolvedPolicy,fadNeighborThreshold,fadMethod,expectedZeroErrorFraction,maximumDenoiseDistance,maximumEditDistance,minimumIndelParentRatio,denoiseCandidateCap},counts:packSessionVector(state.counts),representatives:packSessionVector(state.representatives),dashboard:{...dedup}};})():undefined;
+      if(signal?.aborted)throw new DOMException("Session saving was cancelled.","AbortError");
       const lineage=lineages?{options:{identity,resolution,ambiguity,productiveOnly,candidateCap,lineageScope},assignments:packSessionVector(await runtime.lineageAssignments()),dashboard:{...lineages}}:undefined;
+      if(signal?.aborted)throw new DOMException("Session saving was cancelled.","AbortError");
       const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
       return {workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,alleleRefinement:alleleRefinement?saveAlleleRefinement(alleleRefinement,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior):undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
         alignmentFrameOffset,
@@ -974,7 +996,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     if(!initialSession||restoredSessionRef.current)return;restoredSessionRef.current=true;
     void (async()=>{
       setBusy("Restoring saved post-analysis state");setError("");
+      postRestoreActiveRef.current=true;runtime.beginTransaction();
       try{
+        await runInActiveLock(async(signal)=>{
         const active=initialSession.activeMask?unpackSessionVector(initialSession.activeMask) as Uint8Array:null;
         if(initialSession.lineageGermlineMethod==="closest"||initialSession.lineageGermlineMethod==="consensus")setLineageGermlineMethod(initialSession.lineageGermlineMethod);
         const collapse=initialSession.collapse;const lineage=initialSession.lineage;
@@ -1019,41 +1043,89 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           else if(initialSession.tree?.run&&typeof initialSession.tree.run.alignmentFasta==="string")installAlignment(initialSession.tree.run.alignmentFasta,initialSession.tree.source||"Saved tree input",false,restoredSelectedIds,validAlignmentFrameOffset(initialSession.tree.run.frameOffset)??savedFrameOffset);
         }
         if(initialSession.tree?.run)setTreeRun(initialSession.tree.run as unknown as TreeSnapshot);if(initialSession.phyloUca)setPhyloUcaState(initialSession.phyloUca);
-      }catch(restoreError){setError(restoreError instanceof Error?restoreError.message:String(restoreError));}finally{setBusy("");}
+        if(signal.aborted)throw new DOMException("Session restoration was cancelled.","AbortError");
+        });runtime.commitTransaction();postRestoreActiveRef.current=false;
+      }catch(restoreError){if(!cancellationRecoveryRef.current){if(runtime.requiresRecoveryForCancellation())await runtime.rollbackTransaction((processed,total)=>setProgress({processed,total,unit:"AIRR records restored"}));else runtime.commitTransaction();setError(restoreError instanceof Error?restoreError.message:String(restoreError));}}finally{if(!cancellationRecoveryRef.current)setBusy("");postRestoreActiveRef.current=false;}
     })();
   },[initialSession,runtime,store.count]);
 
-  async function runInActiveLock<T>(action: () => Promise<T>): Promise<T> {
+  async function cancelActiveOperation() {
+    const controller = postLockAbortRef.current;
+    if (!controller || cancellationRecoveryRef.current) return;
+    const recoverRuntime = runtime.requiresRecoveryForCancellation();
+    const cancelledPipeline = pipelineActiveRef.current;
+    const cancelledRestore = postRestoreActiveRef.current;
+    setCancelling(true);
+    setBusy(recoverRuntime ? "Cancelling · restoring the last committed analysis state" : "Cancelling active computation");
+    setError("");
+    const recovery = (async () => {
+      controller.abort();
+      alleleRuntime.cancel();
+      if (recoverRuntime) {
+        await runtime.cancelAndRestore((processed, total) => setProgress({ processed, total, unit: "AIRR records restored" }), true);
+      } else {
+        runtime.commitTransaction();
+      }
+      if (cancelledPipeline || cancelledRestore) {
+        setAlleleRefinement(null);
+        setAlleleApplied(false);
+        clearDownstreamStageState();
+        invalidateAssignmentDependentAnalyses();
+        if (cancelledPipeline) setPipelineReport(["Pipeline cancelled. No pipeline result or working-set change was committed."]);
+      }
+    })();
+    cancellationRecoveryRef.current = recovery;
+    try {
+      await recovery;
+    } catch (recoveryError) {
+      setError(`Cancellation succeeded, but restoring the previous worker state failed: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`);
+    } finally {
+      if (cancellationRecoveryRef.current === recovery) cancellationRecoveryRef.current = null;
+      setCancelling(false);
+      setBusy("");
+    }
+  }
+
+  async function runInActiveLock<T>(action: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const controller = new AbortController();
     postLockAbortRef.current = controller;
     try {
-      return await withAnalysisWebLock(controller.signal, setPostLockState, action);
+      return await withAnalysisWebLock(controller.signal, setPostLockState, () => action(controller.signal));
     } finally {
       if (postLockAbortRef.current === controller) postLockAbortRef.current = null;
       setPostLockState("unsupported");
     }
   }
 
-  async function operation<T>(label: string, action: () => Promise<T>): Promise<T | undefined> {
+  async function operation<T>(label: string, action: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
+    runtime.beginTransaction();
     setBusy(label);
     setError("");
     try {
-      return await runInActiveLock(async () => {
-        await runtime.ensureIndexed((processed, total) => setProgress({ processed, total }));
-        return action();
+      const result = await runInActiveLock(async (signal) => {
+        await runtime.ensureIndexed((processed, total) => setProgress({ processed, total }), signal);
+        return action(signal);
       });
+      runtime.commitTransaction();
+      return result;
     } catch (operationError) {
-      if (!(operationError instanceof DOMException && operationError.name === "AbortError")) setError(operationError instanceof Error ? operationError.message : String(operationError));
+      if (!cancellationRecoveryRef.current) {
+        if (runtime.requiresRecoveryForCancellation()) {
+          setBusy("Restoring the last committed analysis state");
+          await runtime.rollbackTransaction((processed, total) => setProgress({ processed, total, unit: "AIRR records restored" }));
+        } else runtime.commitTransaction();
+      }
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
       return undefined;
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
   async function runDedup() {
     setProgress({ processed: 0, total: store.count });
     const label = collapseMode === "exact" ? "Deduplicating AIRR records" : collapseMode === "fad" ? "Running FAD-compatible denoising" : collapseMode === "indel" ? "Running indel-aware denoising" : "Running conservative error-model denoising";
-    const result = await operation(label, async () => {
+    const result = await operation(label, async (signal) => {
       // Repertoire allele pooling is the upstream assignment stage. Collapse
       // therefore uses whichever policy-selected calls are currently applied.
       return collapseMode === "exact" ? runtime.deduplicate(dedupKey, denoiseUnresolvedPolicy, collapseScope, respectConstantCall) : runtime.denoise({
@@ -1078,7 +1150,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const stage = phase === "variants" ? "Denoising indexed sequence variants" : phase === "finalize" ? "Materializing representatives and multiplicities" : "Streaming VDJ sequences into the denoising index";
       setBusy(stage);
       setProgress({ processed, total, unit: phase === "variants" ? "unique sequence variants processed" : phase === "finalize" ? "representative-state operations completed" : "AIRR records streamed into the denoising index" });
-      });
+      }, signal);
     });
     if (result) {
       setDedup(result);
@@ -1192,11 +1264,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   async function previewSelection() {
     const validation = validateRepertoireSelection(selectionDraft);
     if (validation.length) { setError(validation.join(" ")); return; }
-    const result = await operation("Previewing the repertoire selection", async () => {
+    const result = await operation("Previewing the repertoire selection", async (signal) => {
       const current = await runtime.activeMask();
       const base = selectionApplied ? selectionBaseMask : current;
       const snapshot = base ? base.slice() : null;
-      const preview = await selectRepertoire(store, selectionDraft, snapshot ?? undefined, (processed) => setProgress({ processed, total: snapshot ? snapshot.reduce((sum, value) => sum + value, 0) : store.count }));
+      const preview = await selectRepertoire(store, selectionDraft, snapshot ?? undefined, (processed) => setProgress({ processed, total: snapshot ? snapshot.reduce((sum, value) => sum + value, 0) : store.count }), signal);
       return { preview, base: snapshot };
     });
     if (!result) return;
@@ -1297,11 +1369,13 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setBusy("Writing per-record repertoire allele posterior sidecar");
     setError("");
     try {
-      const mask = await runtime.activeMask();
-      const extension = tableExtension(exportFormat);
-      await saveStream(`${baseName(inputName)}.repertoire-allele-posteriors${extension}`, "Sparse per-record repertoire allele posterior", extension, (writer) => writeRefinementSidecar(store, alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined));
-    } catch (operationError) { setError(operationError instanceof Error ? operationError.message : String(operationError)); }
-    finally { setBusy(""); }
+      await runInActiveLock(async (signal) => {
+        const mask = await runtime.activeMask();
+        const extension = tableExtension(exportFormat);
+        await saveStream(`${baseName(inputName)}.repertoire-allele-posteriors${extension}`, "Sparse per-record repertoire allele posterior", extension, (writer) => writeRefinementSidecar(store, alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined, signal));
+      });
+    } catch (operationError) { if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError)); }
+    finally { if (!cancellationRecoveryRef.current) setBusy(""); }
   }
 
   async function downloadRefinedAirr() {
@@ -1309,25 +1383,27 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setBusy("Writing AIRR table with repertoire-refined germline calls");
     setError("");
     try {
-      const mask = await runtime.activeMask();
-      const extension = tableExtension(exportFormat);
-      await saveStream(`${baseName(inputName)}.repertoire-refined.airr${extension}`, "AIRR table with policy-selected repertoire allele calls", extension, (writer) => writeRefinedAirr(store, alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined));
-    } catch (operationError) { setError(operationError instanceof Error ? operationError.message : String(operationError)); }
-    finally { setBusy(""); }
+      await runInActiveLock(async (signal) => {
+        const mask = await runtime.activeMask();
+        const extension = tableExtension(exportFormat);
+        await saveStream(`${baseName(inputName)}.repertoire-refined.airr${extension}`, "AIRR table with policy-selected repertoire allele calls", extension, (writer) => writeRefinedAirr(store, alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined, signal));
+      });
+    } catch (operationError) { if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError)); }
+    finally { if (!cancellationRecoveryRef.current) setBusy(""); }
   }
 
   async function downloadActivePopulation() {
     setBusy("Writing the current selected population");setError("");
-    try { const mask=await runtime.activeMask();const extension=tableExtension(exportFormat);await saveStream(`${baseName(inputName)}.selected.airr${extension}`,"Selected AIRR population",extension,(writer)=>store.writeAirrFormat(exportFormat,writer.write,mask??undefined)); }
-    catch(operationError){setError(operationError instanceof Error?operationError.message:String(operationError));}finally{setBusy("");}
+    try { await runInActiveLock(async(signal)=>{const mask=await runtime.activeMask();const extension=tableExtension(exportFormat);await saveStream(`${baseName(inputName)}.selected.airr${extension}`,"Selected AIRR population",extension,(writer)=>store.writeAirrFormat(exportFormat,writer.write,mask??undefined,signal));}); }
+    catch(operationError){if(!isAbortError(operationError))setError(operationError instanceof Error?operationError.message:String(operationError));}finally{if(!cancellationRecoveryRef.current)setBusy("");}
   }
 
   async function runShmAnalysis() {
-    const result=await operation("Calculating somatic hypermutation on the current working set",async()=>{
+    const result=await operation("Calculating somatic hypermutation on the current working set",async(signal)=>{
       const mask=await runtime.activeMask();const assignments=lineages?await analysisLineageAssignments():null;const counts=workingStages.some((stage)=>stage.id==="dedup")?await runtime.dedupCounts():null;
       const accumulator=new ShmAccumulator({metric:shmMetric,maxSamplesPerLineage:shmSampleCap});
       const fields=["sequence_id","v_call","j_call","locus","isotype","sample_id","subject_id","swig_cohort","swig_timepoint","swig_compartment","duplicate_count","v_sequence_alignment","v_germline_alignment","sequence_alignment","germline_alignment","v_sequence_start","sequence_frame","v_frame","cdr1_start","cdr1_end","cdr2_start","cdr2_end","fwr1_start","fwr1_end","fwr2_start","fwr2_end","fwr3_start","fwr3_end"];
-      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){overlayRefinedCalls(row);if(counts?.[row.ordinal])row.values.duplicate_count=String(counts[row.ordinal]);const stratum=shmStratum==="all"?"All selected":row.values[shmStratum]||"Unassigned";accumulator.add(row.values,row.ordinal,assignments?.[row.ordinal]??0,stratum);}}, {batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total})});
+      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){overlayRefinedCalls(row);if(counts?.[row.ordinal])row.values.duplicate_count=String(counts[row.ordinal]);const stratum=shmStratum==="all"?"All selected":row.values[shmStratum]||"Unassigned";accumulator.add(row.values,row.ordinal,assignments?.[row.ordinal]??0,stratum);}}, {batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total}),signal});
       return accumulator.finish();
     });
     if(result)setShmDashboard(result);
@@ -1335,14 +1411,14 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
 
   async function runMissingAlleleAnalysis() {
     if(!lineages){setError("Missing-V screening requires lineage assignments on the current selected population. Assign lineages first so clonal descendants cannot count as independent evidence.");return;}
-    const result=await operation("Two-pass screening for linked V germline discrepancies",async()=>{
+    const result=await operation("Two-pass screening for linked V germline discrepancies",async(signal)=>{
       const mask=await runtime.activeMask();const assignments=await analysisLineageAssignments();const accumulator=new MissingAlleleAccumulator(missingAlleleOptions);
       const fields=["subject_id","v_call","j_call","cdr3","junction","v_germline_start","v_sequence_alignment","v_germline_alignment"];
       setBusy("Missing-V screen · discovery representatives (pass 1 of 2)");
-      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){overlayRefinedCalls(row);accumulator.add(row.values,row.ordinal,assignments[row.ordinal]??0);}},{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total:total*2})});
+      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){overlayRefinedCalls(row);accumulator.add(row.values,row.ordinal,assignments[row.ordinal]??0);}},{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total:total*2}),signal});
       const validator=accumulator.prepareValidation(references.V);
       setBusy("Missing-V screen · all-member reference veto (pass 2 of 2)");
-      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){overlayRefinedCalls(row);validator.add(row.values,row.ordinal,assignments[row.ordinal]??0);}},{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed:total+processed,total:total*2})});
+      await store.scanAirrRows(fields,async(rows)=>{for(const row of rows){overlayRefinedCalls(row);validator.add(row.values,row.ordinal,assignments[row.ordinal]??0);}},{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed:total+processed,total:total*2}),signal});
       return validator.finish();
     });
     if(result){setMissingAlleles(result);setSelectedMissingAlleleIds(new Set());}
@@ -1352,14 +1428,16 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setBusy("Writing deduplicated AIRR table");
     setError("");
     try {
-      const counts = await runtime.dedupCounts();
-      const suffix = dedup?.mode === "exact" ? "deduplicated" : "denoised";
-      const extension = tableExtension(exportFormat);
-      await saveStream(`${baseName(inputName)}.${suffix}.airr${extension}`, "Collapsed AIRR rearrangement table with multiplicity", extension, async (writer) => store.writeDeduplicatedAirrFormat(counts, exportFormat, writer.write));
+      await runInActiveLock(async (signal) => {
+        const counts = await runtime.dedupCounts();
+        const suffix = dedup?.mode === "exact" ? "deduplicated" : "denoised";
+        const extension = tableExtension(exportFormat);
+        await saveStream(`${baseName(inputName)}.${suffix}.airr${extension}`, "Collapsed AIRR rearrangement table with multiplicity", extension, async (writer) => store.writeDeduplicatedAirrFormat(counts, exportFormat, writer.write, signal));
+      });
     } catch (operationError) {
-      setError(operationError instanceof Error ? operationError.message : String(operationError));
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
@@ -1397,13 +1475,15 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setBusy("Writing AIRR table with clone identifiers");
     setError("");
     try {
-      const assignments = await runtime.lineageAssignments();
-      const extension = tableExtension(exportFormat);
-      await saveStream(`${baseName(inputName)}.lineages.airr${extension}`, "AIRR rearrangement table with original and merged lineage identifiers", extension, async (writer) => store.writeLineageAirrFormat(assignments, exportFormat, writer.write, mergedIdByOriginal));
+      await runInActiveLock(async (signal) => {
+        const assignments = await runtime.lineageAssignments();
+        const extension = tableExtension(exportFormat);
+        await saveStream(`${baseName(inputName)}.lineages.airr${extension}`, "AIRR rearrangement table with original and merged lineage identifiers", extension, async (writer) => store.writeLineageAirrFormat(assignments, exportFormat, writer.write, mergedIdByOriginal, signal));
+      });
     } catch (operationError) {
-      setError(operationError instanceof Error ? operationError.message : String(operationError));
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
@@ -1445,25 +1525,29 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setBusy(lineageIds.length === 1 ? `Loading lineage ${lineageIds[0]}` : `Loading ${lineageIds.length} lineages together`);
     setError("");
     try {
-      const limitPerLineage = lineageIds.length === 1 ? 500 : Math.max(20, Math.floor(1_000 / lineageIds.length));
-      const memberGroups = await runtime.lineageMembersMany(lineageIds, limitPerLineage);
-      const ordinals = memberGroups.flatMap((group) => group.ordinals);
-      const rows = refineDetailRows(await store.detailMany(ordinals), alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, alleleApplied);
-      const lineageByOrdinal = new Map<number, number>();
-      memberGroups.forEach((group) => group.ordinals.forEach((ordinal) => lineageByOrdinal.set(ordinal, group.lineageId)));
-      const deduplicationApplied = workingStages.some((stage) => stage.id === "dedup");
-      const counts = deduplicationApplied ? await runtime.dedupCounts() : null;
-      const multiplicity = new Map(rows.map((row) => {
-        const imported = Number(row.values.duplicate_count);
-        const value = counts?.[row.record.ordinal] || (Number.isFinite(imported) && imported > 0 ? imported : 1);
-        return [row.record.ordinal, Math.max(1, Math.floor(value))] as const;
-      }));
+      const loaded = await runInActiveLock(async (signal) => {
+        const limitPerLineage = lineageIds.length === 1 ? 500 : Math.max(20, Math.floor(1_000 / lineageIds.length));
+        const memberGroups = await runtime.lineageMembersMany(lineageIds, limitPerLineage);
+        const ordinals = memberGroups.flatMap((group) => group.ordinals);
+        const rows = refineDetailRows(await store.detailMany(ordinals), alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, alleleApplied);
+        const lineageByOrdinal = new Map<number, number>();
+        memberGroups.forEach((group) => group.ordinals.forEach((ordinal) => lineageByOrdinal.set(ordinal, group.lineageId)));
+        const deduplicationApplied = workingStages.some((stage) => stage.id === "dedup");
+        const counts = deduplicationApplied ? await runtime.dedupCounts() : null;
+        if (signal.aborted) throw new DOMException("Lineage loading was cancelled.", "AbortError");
+        const multiplicity = new Map(rows.map((row) => {
+          const imported = Number(row.values.duplicate_count);
+          const value = counts?.[row.record.ordinal] || (Number.isFinite(imported) && imported > 0 ? imported : 1);
+          return [row.record.ordinal, Math.max(1, Math.floor(value))] as const;
+        }));
+        return { memberGroups, rows, lineageByOrdinal, multiplicity };
+      });
       setSelectedLineage(summary);
       setSelectedLineageIds(lineageIds);
-      setLineageRows(rows);
-      setOriginalLineageByOrdinal(lineageByOrdinal);
-      setLineageMultiplicity(multiplicity);
-      setLineageTotal(memberGroups.reduce((sum, group) => sum + group.total, 0));
+      setLineageRows(loaded.rows);
+      setOriginalLineageByOrdinal(loaded.lineageByOrdinal);
+      setLineageMultiplicity(loaded.multiplicity);
+      setLineageTotal(loaded.memberGroups.reduce((sum, group) => sum + group.total, 0));
       clearAlignmentArtifacts();
       const restored = editedAlignments.get(lineageGroupKey(lineageIds));
       if (restored) installAlignment(restored.fasta, restored.source, true, restored.lineageIds, restored.frameOffset);
@@ -1473,9 +1557,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       openModule("workbench");
       window.requestAnimationFrame(() => workbenchRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     } catch (operationError) {
-      setError(operationError instanceof Error ? operationError.message : String(operationError));
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
@@ -1495,8 +1579,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     if (!lineages || !selectedLineage || !selectedLineageIds.length) return;
     setBusy("Searching for neighbouring lineages");
     setError("");
-    setSelectedNeighbourIds(new Set());
     try {
+      await runInActiveLock(async (signal) => {
+      let nextNeighbourResult: LineageNeighbourResult | null = null;
+      let nextGermlineScores: GermlineNeighbourScore[] = [];
+      let nextSketchIndex = germlineSketchIndex;
       if (neighbourMethod === "cdr3" || neighbourMethod === "either") {
         const cdr3 = await runtime.lineageNeighbours({
           identity,
@@ -1510,17 +1597,17 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           minimumIdentity: neighbourCdr3Identity,
           maximumResults: Math.max(neighbourLimit * 5, 100),
         }, workingStages.some((stage) => stage.id === "dedup"));
-        setNeighbourResult(cdr3);
-      } else setNeighbourResult(null);
+        nextNeighbourResult = cdr3;
+      }
 
       if (neighbourMethod === "germline" || neighbourMethod === "either") {
         const assignments = await runtime.lineageAssignments();
         const activeMask = await runtime.activeMask();
-        let index = germlineSketchIndex;
+        let index = nextSketchIndex;
         if (!index) {
           setBusy("Indexing one compact germline sketch per lineage");
-          index = await buildLineageGermlineSketchIndex(store, assignments, lineages.lineageCount, neighbourScope, activeMask, (processed, total) => setProgress({ processed, total }));
-          setGermlineSketchIndex(index);
+          index = await buildLineageGermlineSketchIndex(store, assignments, lineages.lineageCount, neighbourScope, activeMask, (processed, total) => setProgress({ processed, total }), signal);
+          nextSketchIndex = index;
         }
         const sourceGroups = new Map<string, { lineageId: number; studyGroup: string; rows: AirrDetailRow[] }>();
         for (const row of lineageRows) {
@@ -1575,12 +1662,18 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           if (score) exact.push(score);
         }
         exact.sort((left, right) => right.germlineIdentity - left.germlineIdentity || right.sketchSimilarity - left.sketchSimilarity || left.lineageId - right.lineageId);
-        setGermlineNeighbourScores(exact.slice(0, Math.max(neighbourLimit * 3, neighbourLimit)));
-      } else setGermlineNeighbourScores([]);
+        nextGermlineScores = exact.slice(0, Math.max(neighbourLimit * 3, neighbourLimit));
+      }
+      if (signal.aborted) throw new DOMException("Neighbour searching was cancelled.", "AbortError");
+      setNeighbourResult(nextNeighbourResult);
+      setGermlineNeighbourScores(nextGermlineScores);
+      setSelectedNeighbourIds(new Set());
+      if (nextSketchIndex !== germlineSketchIndex) setGermlineSketchIndex(nextSketchIndex);
+      });
     } catch (operationError) {
-      setError(operationError instanceof Error ? operationError.message : String(operationError));
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
@@ -1625,7 +1718,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setBusy(alignmentMethod === "quick" ? "Preparing AIRR-anchored alignment" : alignmentMethod === "codon" ? "Running codon-aware Kalign WASM" : "Running Kalign WASM");
     setError("");
     try {
-      const next = await runInActiveLock(async () => {
+      const next = await runInActiveLock(async (signal) => {
         const rows = stratifiedLineageRows(lineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
         const input = lineageInputFasta(rows, lineageGermlineMethod);
         if (alignmentMethod === "quick") {
@@ -1635,9 +1728,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           return { fasta, frameOffset: input.alignmentFrameOffset };
         }
         if (alignmentMethod === "codon") {
-          return { fasta: await runCodonAwareKalign(input.fasta, input.frames), frameOffset: 0 as AlignmentFrameOffset };
+          return { fasta: await runCodonAwareKalignTask(input.fasta, input.frames, signal), frameOffset: 0 as AlignmentFrameOffset };
         }
-        const fasta = await runKalign(input.fasta);
+        const fasta = await runKalignTask(input.fasta, signal);
         const anchor = parseFasta(fasta, true).find((record) => record.name === input.frameAnchorName);
         const derivedFrame = anchor
           ? alignedSequenceFrameOffset(anchor.sequence, input.frameAnchorUngappedOffset)
@@ -1648,9 +1741,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       setAlignmentEditorStatus("");
       setAlignmentEditorError("");
     } catch (operationError) {
-      setError(operationError instanceof Error ? operationError.message : String(operationError));
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
@@ -1662,7 +1755,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     const alignmentSnapshot = alignment;
     const sourceSnapshot = alignmentSource;
     try {
-      const execution = await runInActiveLock(() => runFastTree(alignmentSnapshot, treeModel, treeFast));
+      const execution = await runInActiveLock((signal) => runFastTreeTask(alignmentSnapshot, treeModel, treeFast, signal));
       if (revision !== alignmentRevisionRef.current) throw new Error("The alignment changed while FastTree was running. Run the tree again on the current alignment.");
       const rooted = rootOnOutgroup(parseNewick(execution.newick), GERMLINE_OUTGROUP);
       const canonicalRooted = canonicalizeTree(rooted);
@@ -1679,10 +1772,12 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       setTreeViewMode("rooted");
       window.requestAnimationFrame(() => treeResultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     } catch (operationError) {
-      setTreeError(operationError instanceof Error ? operationError.message : String(operationError));
-      window.requestAnimationFrame(() => treeResultRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
+      if (!isAbortError(operationError)) {
+        setTreeError(operationError instanceof Error ? operationError.message : String(operationError));
+        window.requestAnimationFrame(() => treeResultRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
+      }
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
@@ -1851,12 +1946,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setBusy(chmmSource === "selected" ? `Building ${chmmSegment} reference MSA with Kalign WASM` : "Validating loaded reference MSA");
     setError("");
     try {
-      await runInActiveLock(async () => {
+      await runInActiveLock(async (signal) => {
         const referenceSource = chmmSource === "upload" ? uploadedMsa : references[chmmSegment];
         let msa = chmmSource === "upload" ? referenceSource : preparedMsa;
-        if (!msa) msa = await runKalign(referenceSource);
+        if (!msa) msa = await runKalignTask(referenceSource, signal);
         prepareReferenceMsa(msa);
-        setPreparedMsa(msa);
         setBusy(`Running CHMMAIRRa ${chmmSegment} model with ${Math.min(workers, 16)} workers`);
         const rates = mutationRates.split(/[\s,;]+/).map(Number).filter((value) => Number.isFinite(value) && value >= 0 && value < 1);
         if (chmmMethod === "DB" && !rates.length) throw new Error("Provide at least one mutation-rate state for the discretized Bayesian model.");
@@ -1875,16 +1969,17 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         // The worker owns the canonical cumulative filter. Reading it here avoids
         // launching an HMM scan from a stale React render after a filter commit.
         const inputMask = await runtime.activeMask();
-        const result = await runChmmairra(store, msa, options, inputMask ?? undefined, (processed, total) => setProgress({ processed, total }));
+        const result = await runChmmairra(store, msa, options, inputMask ?? undefined, (processed, total) => setProgress({ processed, total }), signal);
+        setPreparedMsa(msa);
         setChmm(result);
         setChmmRun({ msa, options, inputMask });
         setChmmFilterThreshold(chmmThreshold);
         setChimeraDetail(null);
       });
     } catch (operationError) {
-      setError(operationError instanceof Error ? operationError.message : String(operationError));
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
@@ -1926,13 +2021,13 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setBusy("Running the selected record's detailed CHMMAIRRa Viterbi path");
     setError("");
     try {
-      const detail = await runChmmairraDetail(store, chmmRun.msa, chmmRun.options, ordinal);
+      const detail = await runInActiveLock((signal) => runChmmairraDetail(store, chmmRun.msa, chmmRun.options, ordinal, signal));
       setChimeraDetail(detail);
       window.requestAnimationFrame(() => chimeraDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     } catch (operationError) {
-      setError(operationError instanceof Error ? operationError.message : String(operationError));
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
@@ -1940,12 +2035,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     if (!chmm) return;
     setBusy("Writing CHMMAIRRa result table");
     try {
-      const extension=tableExtension(exportFormat);
-      await saveStream(`${baseName(inputName)}.chmmairra-${chmm.segment.toLowerCase()}${extension}`, "CHMMAIRRa result table", extension, (writer) => writeChmmairra(store, chmm, exportFormat, writer));
+      await runInActiveLock(async(signal)=>{const extension=tableExtension(exportFormat);await saveStream(`${baseName(inputName)}.chmmairra-${chmm.segment.toLowerCase()}${extension}`, "CHMMAIRRa result table", extension, (writer) => writeChmmairra(store, chmm, exportFormat, writer, signal));});
     } catch (operationError) {
-      setError(operationError instanceof Error ? operationError.message : String(operationError));
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
@@ -1957,12 +2051,13 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     }
     if(queryResultMode==="lineages"&&!lineages){setError("Lineage result mode requires lineage assignments on the current working set. Assign lineages first, then run this search.");return;}
     const metric = queryTarget === "trimmed" ? "sketch" : queryMetric;
-    const hits = await operation(queryConstraintMode === "infer" ? "Assigning query V/J calls with SwiftIG, then searching" : "Searching the assigned repertoire", async () => {
+    const response = await operation(queryConstraintMode === "infer" ? "Assigning query V/J calls with SwiftIG, then searching" : "Searching the assigned repertoire", async (signal) => {
       let searchQueries = queries;
       let queryConstraints: QueryConstraint[] | undefined;
+      let inferredAssignments: InferredQueryAssignment[] = [];
       if (queryConstraintMode === "infer") {
-        const inferred = await inferQueryAssignments(queries, queryTarget, references, callingProfile, assignerStrategy, minimumIdentity, strand, workers);
-        setQueryInference(inferred);
+        const inferred = await inferQueryAssignments(queries, queryTarget, references, callingProfile, assignerStrategy, minimumIdentity, strand, workers, signal);
+        inferredAssignments = inferred;
         const usable = inferred.filter((assignment) => assignment.searchSequence && (queryV || assignment.vCall) && (queryJ || assignment.jCall));
         if (!usable.length) {
           throw new Error("SwiftIG could not infer both V and J for any query. Use complete rearranged nucleotide sequences, lower the main identity floor in a new run, or provide manual V/J overrides.");
@@ -1973,10 +2068,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           vCall: queryV || assignment.vCall || undefined,
           jCall: queryJ || assignment.jCall || undefined,
         }));
-      } else {
-        setQueryInference([]);
       }
-      return runtime.query(searchQueries, {
+      const hits = await runtime.query(searchQueries, {
         target: queryTarget,
         metric,
         identity: queryIdentity,
@@ -1990,8 +2083,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         productiveOnly,
         resultMode: queryResultMode,
       });
+      return { hits, inferredAssignments };
     });
-    if (!hits) return;
+    if (!response) return;
+    const { hits, inferredAssignments } = response;
+    setQueryInference(inferredAssignments);
     setQueryHits(hits);
     setExpanded(null);
     if(queryResultMode==="lineages"){
@@ -2022,11 +2118,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setBusy("Assigning seed V/J calls with the main SwiftIG configuration");
     setError("");
     try {
-      setQueryInference(await runInActiveLock(() => inferQueryAssignments(queries, queryTarget, references, callingProfile, assignerStrategy, minimumIdentity, strand, workers)));
+      setQueryInference(await runInActiveLock((signal) => inferQueryAssignments(queries, queryTarget, references, callingProfile, assignerStrategy, minimumIdentity, strand, workers, signal)));
     } catch (operationError) {
-      setError(operationError instanceof Error ? operationError.message : String(operationError));
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
-      setBusy("");
+      if (!cancellationRecoveryRef.current) setBusy("");
     }
   }
 
@@ -2134,7 +2230,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const jChart = lineages?.jUsage.slice(0, topGenes).map((item) => ({ label: item.call, value: item[geneMetric] })) ?? [];
 
   return <section className="post-analysis-shell">
-    <header className="post-analysis-heading"><div><span className="section-kicker">Post-assignment analyses</span><h2>Repertoire structure and lineage analysis</h2><p>Exact collapse or denoising and chimera exclusion modify an explicit cumulative working set. CHMMAIRRa, lineage assignment, repertoire querying, and expansion consume that set; alignment and tree inference consume the selected lineage.</p></div><div className="local-method-note"><span>Data handling</span><strong>Browser-local</strong><small>Input, germlines, and results are not submitted to an analysis server.</small></div></header>
+    <header className="post-analysis-heading"><div><span className="section-kicker">Post-assignment analyses</span><h2>Repertoire structure and lineage analysis</h2><p>Exact collapse or denoising and chimera exclusion modify an explicit cumulative working set. CHMMAIRRa, lineage assignment, repertoire querying, and expansion consume that set; alignment and tree inference consume the selected lineage.</p><a href="./METHODS_INDEX.md" target="_blank" rel="noreferrer">Complete methods index ↗</a></div><div className="local-method-note"><span>Data handling</span><strong>Browser-local</strong><small>Input, germlines, and results are not submitted to an analysis server.</small></div></header>
 
     <div className="post-context-workspace contextual-workspace">
       <nav className="context-rail post-context-rail" aria-label="Post-analysis sections">
@@ -2169,11 +2265,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     <section className="post-export-center"><div><span className="section-kicker">Export center</span><h3>Machine-readable analysis outputs</h3><p>The selected table is streamed from browser storage. CSV and JSONL do not require building the complete output in memory.</p></div><label><span>Tabular format</span><select value={exportFormat} onChange={(event)=>setExportFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button type="button" disabled={Boolean(busy)} onClick={()=>void downloadActivePopulation()}>Download current population</button></section>
     </section>}
 
-    {busy && <div className="post-progress" role="status"><div><span>{busy}</span><strong>{progress.total ? `${Math.min(100, progress.processed / progress.total * 100).toFixed(1)}%` : "working"}</strong></div><progress max={Math.max(1, progress.total)} value={progress.processed} /><small>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()} {progress.unit ?? "AIRR records indexed or scanned"} · {postLockState === "held" ? "background-run lock held" : postLockState === "waiting" ? "waiting for another Swig tab" : "Web Locks unavailable"}</small></div>}
+    {busy && <div className="post-progress" role="status"><div><span>{busy}</span><span className="post-progress-actions"><strong>{progress.total ? `${Math.min(100, progress.processed / progress.total * 100).toFixed(1)}%` : "working"}</strong><button type="button" disabled={cancelling || !postLockAbortRef.current} onClick={()=>void cancelActiveOperation()}>{cancelling ? "Restoring…" : "Cancel"}</button></span></div><progress max={Math.max(1, progress.total)} value={progress.processed} /><small>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()} {progress.unit ?? "AIRR records indexed or scanned"} · {postLockState === "held" ? "background-run lock held" : postLockState === "waiting" ? "waiting for another Swig tab" : "Web Locks unavailable"}</small></div>}
     {error && <div className="post-error" role="alert"><strong>Post-analysis stopped</strong><span>{error}</span><button type="button" onClick={() => setError("")}>Dismiss</button></div>}
 
     <section className={moduleClass("dedup","post-module dedup-module")}>
-      <header><div className="module-number">02</div><div><span className="section-kicker">Abundance preservation after optional call reassignment</span><h3>Collapse exact duplicates or denoise read errors</h3><p>When allele pooling is applied, rearrangement-key partitions use the policy-selected V/D/J calls. Every retained representative carries the sum of its source multiplicities in <code>duplicate_count</code>.</p></div><a href="https://academic.oup.com/nar/article/47/18/e104/5550323" target="_blank" rel="noreferrer">FAD paper ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("dedup")} onClick={()=>toggleModule("dedup")}>{openModules.has("dedup")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number">02</div><div><span className="section-kicker">Abundance preservation after optional call reassignment</span><h3>Collapse exact duplicates or denoise read errors</h3><p>When allele pooling is applied, rearrangement-key partitions use the policy-selected V/D/J calls. Every retained representative carries the sum of its source multiplicities in <code>duplicate_count</code>.</p></div><a href="./methods/06_COLLAPSE_AND_DENOISING.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("dedup")} onClick={()=>toggleModule("dedup")}>{openModules.has("dedup")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="collapse-mode-grid" role="radiogroup" aria-label="Collapse method">
         <button type="button" role="radio" aria-checked={collapseMode === "exact"} className={collapseMode === "exact" ? "selected" : ""} onClick={() => { setCollapseMode("exact"); setDedup(null); }}><b>A</b><span><strong>Exact deduplication</strong><small>Collapse identical keys only. No error model.</small></span></button>
         <button type="button" role="radio" aria-checked={collapseMode === "fad"} className={collapseMode === "fad" ? "selected" : ""} onClick={() => { setCollapseMode("fad"); setDenoiseAmbiguousPolicy("exclude"); setDedup(null); }}><b>B</b><span><strong>FAD-compatible denoising</strong><small>Published 6-mer distance and abundance/Poisson rule.</small></span></button>
@@ -2219,7 +2315,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("chimera","post-module chmm-module")}>
-      <header><div className="module-number amber">03</div><div><span className="section-kicker">Optional PCR-chimera model</span><h3>CHMMAIRRa after V(D)J assignment</h3><p>The browser port threads each AIRR local V or J alignment onto a reference MSA, then evaluates the CHMMera posterior. V is the manuscript default; D is not modeled.</p></div><a href="https://github.com/MurrellGroup/CHMMAIRRa.jl" target="_blank" rel="noreferrer">Method source ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("chimera")} onClick={()=>toggleModule("chimera")}>{openModules.has("chimera")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number amber">03</div><div><span className="section-kicker">Optional PCR-chimera model</span><h3>CHMMAIRRa after V(D)J assignment</h3><p>The browser port threads each AIRR local V or J alignment onto a reference MSA, then evaluates the CHMMera posterior. V is the manuscript default; D is not modeled.</p></div><a href="./methods/07_CHIMERA_INFERENCE.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("chimera")} onClick={()=>toggleModule("chimera")}>{openModules.has("chimera")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="chmm-grid">
         <div className="chmm-config">
           <div className="control-grid three"><label><span>Segment</span><select value={chmmSegment} onChange={(event) => { setChmmSegment(event.target.value as ChmmSegment); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }}><option value="V">V (recommended)</option><option value="J">J (optional)</option></select></label><label><span>Model</span><select value={chmmMethod} onChange={(event) => setChmmMethod(event.target.value as "BW" | "DB")}><option value="BW">Baum–Welch · IG default</option><option value="DB">Discretized Bayesian · TCR default</option></select></label><label><span>Posterior threshold</span><CommitNumberInput min="0" max="1" step="0.01" value={chmmThreshold} onCommit={setChmmThreshold} /></label></div>
@@ -2247,7 +2343,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("selection","post-module selection-module")}>
-      <header><div className="module-number dark">04</div><div><span className="section-kicker">Composable repertoire population</span><h3>Select the records used downstream</h3><p>Combine assignment, CDR3, motif, quality, SHM, and double-D evidence filters. Preview is read-only; nothing changes until the retained count is explicitly committed.</p></div><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("selection")} onClick={()=>toggleModule("selection")}>{openModules.has("selection")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number dark">04</div><div><span className="section-kicker">Composable repertoire population</span><h3>Select the records used downstream</h3><p>Combine assignment, CDR3, motif, quality, SHM, and double-D evidence filters. Preview is read-only; nothing changes until the retained count is explicitly committed.</p></div><a href="./methods/05_STORAGE_DASHBOARD_SELECTION.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("selection")} onClick={()=>toggleModule("selection")}>{openModules.has("selection")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="control-grid four selection-call-grid selection-common-grid">
         <label><span>Sequence ID contains</span><CommitTextInput value={selectionDraft.sequenceId} onCommit={(sequenceId)=>{setSelectionDraft(value=>({...value,sequenceId}));setSelectionPreview(null);}} placeholder="one or more IDs" /></label>
         {selectionFacets.samples.length>0&&<FacetPicker label="Sample" value={selectionDraft.sampleId} items={selectionFacets.samples} multiple placeholder="Any sample" onChange={(sampleId)=>{setSelectionDraft(value=>({...value,sampleId}));setSelectionPreview(null);}}/>}
@@ -2284,12 +2380,12 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("alleles","post-module allele-refinement-module")}>
-      <header><div className="module-number amber">01</div><div><span className="section-kicker">Optional first-stage repertoire assignment model</span><h3>Resolve ambiguous germline calls by pooling repertoire evidence</h3><p>Choose the continuous Dirichlet mixture or the fast exact-zero hurdle model before collapse or filtering, so policy-selected V/D/J calls define every downstream partition. The default is one independent fit per donor, combining that donor's samples without crossing participant IDs.</p></div><a href="REPERTOIRE_ALLELE_REFINEMENT.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("alleles")} onClick={()=>toggleModule("alleles")}>{openModules.has("alleles")?"Collapse ↑":"Expand ↓"}</button></header>
-      <AlleleRefinementPanel references={references} options={alleleOptions} onOptionsChange={(next)=>{setAlleleOptions(next);setAlleleRefinement(null);discardAppliedAllelePolicy();}} result={alleleRefinement} applied={alleleApplied} reassignmentPolicy={alleleReassignmentPolicy} onReassignmentPolicyChange={(policy)=>{setAlleleReassignmentPolicy(policy);discardAppliedAllelePolicy();}} applyMinimumPosterior={alleleApplyMinimumPosterior} onApplyMinimumPosteriorChange={(value)=>{setAlleleApplyMinimumPosterior(Math.max(0,Math.min(1,value)));discardAppliedAllelePolicy();}} busy={Boolean(busy)} progress={alleleProgress} onRun={()=>void runAlleleRefinement()} onApply={()=>void applyAlleleRefinement()} onReset={()=>void resetAlleleRefinement()} onDownloadModel={downloadAlleleModel} onDownloadSidecar={()=>void downloadAlleleSidecar()} onDownloadAirr={()=>void downloadRefinedAirr()} />
+      <header><div className="module-number amber">01</div><div><span className="section-kicker">Optional first-stage repertoire assignment model</span><h3>Resolve ambiguous germline calls by pooling repertoire evidence</h3><p>Choose the continuous Dirichlet mixture or the fast exact-zero hurdle model before collapse or filtering, so policy-selected V/D/J calls define every downstream partition. The default is one independent fit per donor, combining that donor's samples without crossing participant IDs.</p></div><a href="./REPERTOIRE_ALLELE_REFINEMENT.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("alleles")} onClick={()=>toggleModule("alleles")}>{openModules.has("alleles")?"Collapse ↑":"Expand ↓"}</button></header>
+      <AlleleRefinementPanel references={references} options={alleleOptions} onOptionsChange={(next)=>{setAlleleOptions(next);setAlleleRefinement(null);discardAppliedAllelePolicy();}} result={alleleRefinement} applied={alleleApplied} reassignmentPolicy={alleleReassignmentPolicy} onReassignmentPolicyChange={(policy)=>{setAlleleReassignmentPolicy(policy);discardAppliedAllelePolicy();}} applyMinimumPosterior={alleleApplyMinimumPosterior} onApplyMinimumPosteriorChange={(value)=>{setAlleleApplyMinimumPosterior(Math.max(0,Math.min(1,value)));discardAppliedAllelePolicy();}} busy={Boolean(busy)} progress={alleleProgress} onRun={()=>void runAlleleRefinement()} onCancel={()=>void cancelActiveOperation()} onApply={()=>void applyAlleleRefinement()} onReset={()=>void resetAlleleRefinement()} onDownloadModel={downloadAlleleModel} onDownloadSidecar={()=>void downloadAlleleSidecar()} onDownloadAirr={()=>void downloadRefinedAirr()} />
     </section>
 
     <section className={moduleClass("lineage","post-module lineage-module")}>
-      <header><div className="module-number">05</div><div><span className="section-kicker">Repertoire-scale clonal grouping</span><h3>Assign lineages from CDR3 nucleotide distance</h3><p>Default: same locus, overlapping V/J gene assignments, exact CDR3 nucleotide length, and single-linkage at ≥85% identity. The threshold is a starting point and remains dataset-adjustable.</p></div><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC5340603/" target="_blank" rel="noreferrer">Clonal threshold literature ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("lineage")} onClick={()=>toggleModule("lineage")}>{openModules.has("lineage")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number">05</div><div><span className="section-kicker">Repertoire-scale clonal grouping</span><h3>Assign lineages from CDR3 nucleotide distance</h3><p>Default: same locus, overlapping V/J gene assignments, exact CDR3 nucleotide length, and single-linkage at ≥85% identity. The threshold is a starting point and remains dataset-adjustable.</p></div><a href="./methods/08_LINEAGE_ASSIGNMENT.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("lineage")} onClick={()=>toggleModule("lineage")}>{openModules.has("lineage")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="lineage-config">
         <div className="control-grid three"><label><span>Study boundary</span><select value={lineageScope} onChange={(event)=>{setLineageScope(event.target.value as DatasetScope);setLineages(null);}}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><label><span>CDR3 identity</span><div className="range-number"><input type="range" min="0.7" max="1" step="0.01" value={identity} onChange={(event) => setIdentity(Number(event.target.value))} /><b>{Math.round(identity * 100)}%</b></div></label><label className="check-line"><input type="checkbox" checked={productiveOnly} onChange={(event) => setProductiveOnly(event.target.checked)} /><span>Productive only</span></label></div>
         <details className="post-advanced"><summary>Advanced call matching and performance settings</summary><div className="control-grid three"><label><span>Call level</span><select value={resolution} onChange={(event) => setResolution(event.target.value as CallResolution)}><option value="gene">Gene</option><option value="allele">Allele</option></select></label><label><span>Ambiguous calls</span><select value={ambiguity} onChange={(event) => setAmbiguity(event.target.value as AmbiguityPolicy)}><option value="overlap">Any assignment overlaps</option><option value="top">Top call only</option><option value="strict">Exact call sets</option></select></label><label><span>Candidate cap / record</span><CommitNumberInput min="100" max="1000000" step="1000" value={candidateCap} onCommit={setCandidateCap} /></label></div><div className="algorithm-note"><strong>Exact accelerated single-linkage · {DATASET_SCOPE_LABELS[lineageScope]}</strong><span>Partition by study boundary → locus → V/J calls → CDR3 length → d+1 exact blocks → verify normalized Hamming distance → union-find components.</span></div></details>
@@ -2373,7 +2469,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("diagnostics","post-module downstream-viz-module")}>
-      <header><div className="module-number amber">06</div><div><span className="section-kicker">Selected-population diagnostics</span><h3>Somatic hypermutation and reference-set evidence</h3><p>Both analyses inherit the committed population above. SHM summaries retain collapsed abundance; missing-V screening tests linked nucleotide haplotypes across independent lineages and then checks every retained member of each lineage.</p></div><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC5187446/" target="_blank" rel="noreferrer">IgDiscover method ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("diagnostics")} onClick={()=>toggleModule("diagnostics")}>{openModules.has("diagnostics")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number amber">06</div><div><span className="section-kicker">Selected-population diagnostics</span><h3>Somatic hypermutation and reference-set evidence</h3><p>Both analyses inherit the committed population above. SHM summaries retain collapsed abundance; missing-V screening tests linked nucleotide haplotypes across independent lineages and then checks every retained member of each lineage.</p></div><a href="./methods/09_SHM_AND_GERMLINE_DIAGNOSTICS.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("diagnostics")} onClick={()=>toggleModule("diagnostics")}>{openModules.has("diagnostics")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="diagnostic-grid">
         <article><span className="section-kicker">SHM</span><h4>Mutation distributions</h4><div className="control-grid two"><label><span>Measure</span><select value={shmMetric} onChange={(event)=>{setShmMetric(event.target.value as ShmMetricKey);setShmDashboard(null);}}><option value="vNtRate">V nucleotide rate</option><option value="vNtMutations">V nucleotide count</option><option value="vAaRate">V amino-acid replacement rate</option><option value="vAaReplacements">V amino-acid replacement count</option><option value="synonymous">Synonymous codon count</option><option value="cdrNtRate">CDR1/2 nucleotide rate</option><option value="frameworkNtRate">Framework nucleotide rate</option></select></label><label><span>Stratify by</span><select value={shmStratum} onChange={(event)=>{setShmStratum(event.target.value as typeof shmStratum);setShmDashboard(null);}}><option value="all">No additional stratum</option><option value="sample_id">Sample</option><option value="subject_id">Donor / subject</option><option value="swig_cohort">Cohort</option><option value="swig_timepoint">Timepoint</option><option value="swig_compartment">Compartment / tissue</option><option value="locus">Locus</option><option value="v_call">V call</option><option value="isotype">Isotype</option></select></label></div><details className="post-advanced"><summary>Advanced plot sampling</summary><div className="control-grid"><label><span>Plot sample / lineage</span><CommitNumberInput min="50" max="10000" step="50" value={shmSampleCap} onCommit={(value)=>{setShmSampleCap(value);setShmDashboard(null);}} /></label></div></details><button className={guidedClass("run-shm")} type="button" disabled={Boolean(busy)} onClick={()=>void runShmAnalysis()}>Calculate SHM on {workingCount.toLocaleString()} records</button><p>Plot memory is bounded per lineage; scalar counts still cover every selected row.</p></article>
         <article><span className="section-kicker">Reference warning</span><h4>Possible missing V alleles</h4>
@@ -2403,7 +2499,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("query","post-module query-module")}>
-      <header><div className="module-number dark">08</div><div><span className="section-kicker">Targeted repertoire search</span><h3>Query sequences, then expand the matched set</h3><p>Paste one or more sequences or FASTA records. V/J constraints can be supplied directly or inferred per seed with the same references, assignment strategy, and calling profile as the main analysis.</p></div><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("query")} onClick={()=>toggleModule("query")}>{openModules.has("query")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number dark">08</div><div><span className="section-kicker">Targeted repertoire search</span><h3>Query sequences, then expand the matched set</h3><p>Paste one or more sequences or FASTA records. V/J constraints can be supplied directly or inferred per seed with the same references, assignment strategy, and calling profile as the main analysis.</p></div><a href="./methods/10_RETRIEVAL_AND_NEIGHBOURS.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("query")} onClick={()=>toggleModule("query")}>{openModules.has("query")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="query-layout">
         <div className="query-input">
           <label><span>Query sequence(s) or FASTA</span><CommitTextarea value={queryText} onCommit={setQueryText} placeholder=">seed_1\nTGTGCGAGAGAT…\n>seed_2\nTGTGCGAGGGAT…" /></label>
@@ -2428,7 +2524,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     {selectedLineage && <section ref={workbenchRef} className={moduleClass("workbench","post-module lineage-workbench")} tabIndex={-1}>
-      <header><div className="module-number dark">07</div><div><span className="section-kicker">{selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>Lineage neighbours, alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · {selectedLineage.locus} · original assignments {selectedLineageIds.map((id) => `L${id}`).join(", ")}</p></div><button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number dark">07</div><div><span className="section-kicker">{selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>Lineage neighbours, alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · {selectedLineage.locus} · original assignments {selectedLineageIds.map((id) => `L${id}`).join(", ")}</p></div><a href="./methods/11_ALIGNMENT_AND_PHYLOGENY.md" target="_blank" rel="noreferrer">Method details ↗</a><button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `${lineageRows.length} stratified members loaded from ${lineageTotal.toLocaleString()}; analysis remains bounded` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => {const sample=row.values.sample_id||row.record.sampleId||"";const original=originalLineageByOrdinal.get(row.record.ordinal);const cdr3=row.values.cdr3_aa||row.values.cdr3||"CDR3 —";return <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)} title={`${sample||"sample unassigned"}${original?` · original lineage ${original}`:""} · ${cdr3}`}><i style={{background:sampleColor(sample,sampleColors)}}/><span><b>{row.record.sequenceId}</b><small>{cdr3}</small></span></button>;})}</div></div>
       <div className="lineage-neighbour-explorer">
         <header><div><span className="section-kicker">Exploratory boundary review</span><h4>Lineage neighbours</h4><p>Find separate assigned lineages with CDR3 links below the clustering cutoff, similar inferred lineage germlines, or either criterion. Search is read-only until you explicitly merge.</p></div><span className="neighbour-source-chip">Source {selectedLineageIds.map((id)=>`L${id}`).join(" + ")}</span></header>

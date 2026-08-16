@@ -67,6 +67,7 @@ export async function buildLineageGermlineSketchIndex(
   scope: DatasetScope,
   activeMask?: Uint8Array | null,
   onProgress?: (processed: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<LineageGermlineSketchIndex> {
   if (assignments.length < store.count) throw new Error("Lineage assignments do not cover the AIRR table.");
   const sketches = new Uint32Array((lineageCount + 1) * 8);
@@ -99,7 +100,7 @@ export async function buildLineageGermlineSketchIndex(
         }, scope);
       }
     },
-    { batchSize: 2_000, includeMask: activeMask ?? undefined, onProgress },
+    { batchSize: 2_000, includeMask: activeMask ?? undefined, onProgress, signal },
   );
   let representedLineages = 0;
   for (let lineageId = 1; lineageId <= lineageCount; lineageId += 1) if (representativeOrdinals[lineageId] >= 0) representedLineages += 1;

@@ -57,6 +57,38 @@ test("session restoration applies saved metadata during the first index pass", (
   assert.doesNotMatch(restore, /Applying saved study metadata to local indexes/);
 });
 
+test("analysis-scale running states expose cancellation and every interface family has a method document", () => {
+  const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
+  const post = fs.readFileSync(new URL("../src/post-analysis.tsx", import.meta.url), "utf8");
+  const uca = fs.readFileSync(new URL("../src/phylo-uca/panel.tsx", import.meta.url), "utf8");
+  assert.match(app, /Cancel analysis/);
+  assert.match(app, /Cancel reference preparation/);
+  assert.match(app, /Cancel inspection/);
+  assert.match(app, /Cancel re-indexing/);
+  assert.match(app, /Cancel results export/);
+  assert.match(app, /Cancel session save/);
+  assert.match(app, /Cancel search/);
+  assert.match(app, /cancelSessionRestore/);
+  assert.match(post, /runtime\.beginTransaction\(\)/);
+  assert.match(post, /runtime\.cancelAndRestore/);
+  assert.match(post, /Restoring…/);
+  assert.match(uca, /abortRef\.current\?\.abort\(\)/);
+
+  const index = fs.readFileSync(new URL("../public/METHODS_INDEX.md", import.meta.url), "utf8");
+  for (const document of [
+    "01_INPUT_QC_AND_STUDY.md", "02_REFERENCE_PREPARATION.md", "03_VDJ_ASSIGNMENT.md",
+    "04_DOUBLE_D_SCREEN.md", "05_STORAGE_DASHBOARD_SELECTION.md", "06_COLLAPSE_AND_DENOISING.md",
+    "07_CHIMERA_INFERENCE.md", "08_LINEAGE_ASSIGNMENT.md", "09_SHM_AND_GERMLINE_DIAGNOSTICS.md",
+    "10_RETRIEVAL_AND_NEIGHBOURS.md", "11_ALIGNMENT_AND_PHYLOGENY.md",
+    "12_EXECUTION_PERSISTENCE_CANCELLATION.md",
+  ]) {
+    assert.match(index, new RegExp(document.replaceAll(".", "\\.")));
+    assert.equal(fs.existsSync(new URL(`../public/methods/${document}`, import.meta.url)), true, `missing ${document}`);
+  }
+  assert.match(index, /REPERTOIRE_ALLELE_REFINEMENT\.md/);
+  assert.match(index, /PHYLO_UCA_INFERENCE\.md/);
+});
+
 test("assignment is one progressive action page while independent result tools remain contextual", () => {
   const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const repertoire = fs.readFileSync(new URL("../src/repertoire-charts.tsx", import.meta.url), "utf8");

@@ -142,12 +142,34 @@ export function validateSession(value: unknown): SwigSession {
   return session as SwigSession;
 }
 
-export async function encodeSession(session: SwigSession): Promise<Blob> {
+function sessionAbortError(): DOMException {
+  return new DOMException("Session saving was cancelled.", "AbortError");
+}
+
+export async function encodeSession(session: SwigSession, signal?: AbortSignal): Promise<Blob> {
+  if (signal?.aborted) throw sessionAbortError();
   const json = new TextEncoder().encode(JSON.stringify(session));
+  if (signal?.aborted) throw sessionAbortError();
   if ("CompressionStream" in globalThis) {
-    const compressed = await new Response(new Blob([json]).stream().pipeThrough(new CompressionStream("gzip"))).blob();
-    return new Blob([compressed], { type: "application/gzip" });
+    const reader = new Blob([json]).stream().pipeThrough(new CompressionStream("gzip")).getReader();
+    const chunks: BlobPart[] = [];
+    const abort = () => { void reader.cancel(sessionAbortError()); };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      while (true) {
+        if (signal?.aborted) throw sessionAbortError();
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer);
+      }
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      reader.releaseLock();
+    }
+    if (signal?.aborted) throw sessionAbortError();
+    return new Blob(chunks, { type: "application/gzip" });
   }
+  if (signal?.aborted) throw sessionAbortError();
   return new Blob([json], { type: "application/json" });
 }
 

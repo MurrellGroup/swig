@@ -20,6 +20,7 @@ interface Props {
   busy: boolean;
   progress: { processed: number; total: number; phase: string } | null;
   onRun: () => void;
+  onCancel: () => void;
   onApply: () => void;
   onReset: () => void;
   onDownloadModel: () => void;
@@ -35,7 +36,7 @@ const SEGMENT_LABELS: Record<RefinementSegment, string> = {
 
 export function AlleleRefinementPanel({
   references, options, onOptionsChange, result, applied, reassignmentPolicy, onReassignmentPolicyChange,
-  applyMinimumPosterior, onApplyMinimumPosteriorChange, busy, progress, onRun, onApply, onReset,
+  applyMinimumPosterior, onApplyMinimumPosteriorChange, busy, progress, onRun, onCancel, onApply, onReset,
   onDownloadModel, onDownloadSidecar, onDownloadAirr,
 }: Props) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -66,7 +67,7 @@ export function AlleleRefinementPanel({
         <label title="Unique weighting prevents expanded clones or PCR abundance from acting as independent genotype evidence. Abundance weighting is available for deliberate usage estimation."><span>Record weighting</span><select value={options.weighting} onChange={(event) => update("weighting", event.target.value as AlleleRefinementOptions["weighting"])}><option value="unique">One vote per active record · default</option><option value="abundance">Weight by duplicate_count</option></select></label>
       </div>
       <p className={`allele-pooling-boundary-note ${options.scope === "cohort" || options.scope === "global" ? "override" : ""}`}><span>{options.scope === "cohort" || options.scope === "global" ? "Cross-donor override" : "Participant-safe default"}</span>{options.scope === "subject" ? "Each donor is fitted independently; all samples, timepoints, and compartments carrying that donor ID contribute to the same fit. Evidence never crosses participants." : options.scope === "cohort" || options.scope === "global" ? "This setting deliberately pools evidence across participant IDs. Use it only when that is scientifically intended." : "Fits are narrower than donor level and therefore cannot cross participant IDs."}</p>
-      <div className="allele-refinement-action"><div><strong>{result ? `${result.activeRecords.toLocaleString()} active records modeled` : "No repertoire posterior fitted"}</strong><small>{options.model === "active-set" ? "The hurdle fit assigns exact zero usage to excluded alleles; retained alleles use the same sparse evidence kernel and per-record posterior projection." : "The original continuous Dirichlet mixture is selected. Explicit co-optimal calls enter with equal local weight."}</small></div><button className="post-primary" type="button" disabled={busy || !options.segments.length} onClick={onRun}>{result ? "Refit repertoire allele model" : "Fit repertoire allele model"}</button></div>
+      <div className="allele-refinement-action"><div><strong>{result ? `${result.activeRecords.toLocaleString()} active records modeled` : "No repertoire posterior fitted"}</strong><small>{options.model === "active-set" ? "The hurdle fit assigns exact zero usage to excluded alleles; retained alleles use the same sparse evidence kernel and per-record posterior projection." : "The original continuous Dirichlet mixture is selected. Explicit co-optimal calls enter with equal local weight."}</small></div>{progress && busy ? <button className="post-cancel" type="button" onClick={onCancel}>Cancel fit</button> : <button className="post-primary" type="button" disabled={busy || !options.segments.length} onClick={onRun}>{result ? "Refit repertoire allele model" : "Fit repertoire allele model"}</button>}</div>
       <details className="post-advanced" onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}><summary>Advanced evidence-kernel and model settings</summary><div><div className="control-grid four allele-refinement-advanced">
         <label title="Irreducible relative evidence odds for a one-nucleotide reference neighbour when estimated SHM is zero. This is an assignment-model leakage term, not a sequencing-error estimate."><span>Zero-SHM neighbour odds</span><CommitNumberInput min="0" max="0.5" step="0.001" value={options.baselineNeighbourOdds} onCommit={(value) => update("baselineNeighbourOdds", value)} /></label>
         <label title="Multiplier on the mechanistic mu/[3(1-mu)] contribution for a specific nucleotide substitution at a diagnostic allele position. Set to zero for SHM-independent leakage."><span>SHM sensitivity</span><CommitNumberInput min="0" max="10" step="0.1" value={options.shmLeakageSensitivity} onCommit={(value) => update("shmLeakageSensitivity", value)} /></label>

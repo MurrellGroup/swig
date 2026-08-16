@@ -22,12 +22,21 @@ interface Pending {
 }
 
 export class AlleleRefinementRuntime {
-  private readonly worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+  private worker!: Worker;
   private readonly pending = new Map<number, Pending>();
   private nextId = 1;
+  private generation = 0;
+  private closed = false;
 
   constructor() {
+    this.installWorker();
+  }
+
+  private installWorker() {
+    const generation = this.generation;
+    this.worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
     this.worker.onmessage = (event: MessageEvent<{ id: number; result?: unknown; error?: string; progress?: Progress }>) => {
+      if (generation !== this.generation) return;
       const pending = this.pending.get(event.data.id);
       if (!pending) return;
       if (event.data.progress) {
@@ -39,6 +48,7 @@ export class AlleleRefinementRuntime {
       else pending.resolve(event.data.result);
     };
     this.worker.onerror = (event) => {
+      if (generation !== this.generation) return;
       const error = new Error(event.message || "The repertoire-level allele worker stopped unexpectedly.");
       this.pending.forEach((pending) => pending.reject(error));
       this.pending.clear();
@@ -46,11 +56,22 @@ export class AlleleRefinementRuntime {
   }
 
   private request<T>(message: Record<string, unknown>, onProgress?: (progress: Progress) => void): Promise<T> {
+    if (this.closed) return Promise.reject(new Error("The repertoire-level allele runtime is closed."));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, onProgress });
       this.worker.postMessage({ id, ...message });
     });
+  }
+
+  cancel() {
+    if (this.closed) return;
+    this.generation += 1;
+    this.worker.terminate();
+    const error = new DOMException("Allele refinement was cancelled.", "AbortError");
+    this.pending.forEach((pending) => pending.reject(error));
+    this.pending.clear();
+    this.installWorker();
   }
 
   async run(
@@ -98,6 +119,8 @@ export class AlleleRefinementRuntime {
   }
 
   terminate() {
+    this.closed = true;
+    this.generation += 1;
     this.worker.terminate();
     const error = new Error("The repertoire-level allele worker was closed.");
     this.pending.forEach((pending) => pending.reject(error));

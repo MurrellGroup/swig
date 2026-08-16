@@ -108,6 +108,7 @@ export async function writeRefinementSidecar(
   format: TableExportFormat,
   write: (part: string | Blob | Uint8Array) => Promise<void>,
   includeMask?: Uint8Array,
+  signal?: AbortSignal,
 ) {
   const header = tableHeader(REFINEMENT_SIDECAR_FIELDS, format);
   if (header) await write(header);
@@ -153,7 +154,7 @@ export async function writeRefinementSidecar(
         }
       }
       if (body) await write(body);
-    }, { batchSize: 250, includeMask });
+    }, { batchSize: 250, includeMask, signal });
   }
 }
 
@@ -165,6 +166,7 @@ export async function writeRefinedAirr(
   format: TableExportFormat,
   write: (part: string | Blob | Uint8Array) => Promise<void>,
   includeMask?: Uint8Array,
+  signal?: AbortSignal,
 ) {
   const custom = ["swig_reassignment_policy", "swig_reassignment_minimum_posterior", ...SEGMENTS.flatMap((segment) => {
     const lower = segment.toLowerCase();
@@ -192,7 +194,7 @@ export async function writeRefinedAirr(
       body += tableRow(fields, values, format);
     }
     if (body) await write(body);
-  }, { batchSize: 2_000, includeMask });
+  }, { batchSize: 2_000, includeMask, signal });
 }
 
 export function modelSummaryTable(result: AlleleRefinementResult, format: TableExportFormat): string {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { runFastTree } from "../biowasm-runtime.ts";
+import { runFastTreeTask } from "../biowasm-task-runtime.ts";
 import { CommitNumberInput } from "../commit-number-input.tsx";
 import { inspectAlignment } from "../alignment-provenance.ts";
 import { GERMLINE_OUTGROUP } from "../lineage-alignment.ts";
@@ -230,10 +230,9 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
     setTreeStage(true);
     setProgress(null);
     setError("");
-    setResult(null);
     try {
       const observed = prepareObservedOnlyAlignment(alignment, GERMLINE_OUTGROUP);
-      const observedTree = await runFastTree(observed.fasta, "gtr", false);
+      const observedTree = await runFastTreeTask(observed.fasta, "gtr", false, controller.signal);
       if (controller.signal.aborted) throw new DOMException("Cancelled", "AbortError");
       setTreeStage(false);
       const inference = await runPhyloUca({

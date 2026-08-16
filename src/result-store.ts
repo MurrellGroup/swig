@@ -600,7 +600,9 @@ export class AirrResultStore {
   async updateStudyMetadata(
     datasets: readonly DatasetManifestEntry[],
     onProgress?: (processed: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<ResultFacets> {
+    if (signal?.aborted) throw new DOMException("Study-metadata re-indexing was cancelled.", "AbortError");
     const byDataset = normalizedStudyMetadata(datasets);
     const nextSamples = new Map<string, number>();
     const nextSubjects = new Map<string, number>();
@@ -609,12 +611,19 @@ export class AirrResultStore {
     const nextCompartments = new Map<string, number>();
     const database = await this.database;
     const transaction = database.transaction("records", "readwrite");
+    const abort = () => transaction.abort();
+    signal?.addEventListener("abort", abort, { once: true });
     const records = transaction.objectStore("records");
     let processed = 0;
-    await new Promise<void>((resolve, reject) => {
+    try {
+      const scan = new Promise<void>((resolve, reject) => {
       const request = records.openCursor();
       request.onerror = () => reject(request.error ?? new Error("Could not update study metadata in the local index."));
       request.onsuccess = () => {
+        if (signal?.aborted) {
+          transaction.abort();
+          return;
+        }
         const cursor = request.result;
         if (!cursor) {
           resolve();
@@ -637,11 +646,22 @@ export class AirrResultStore {
         bump(nextTimepoints, updated.timepoint);
         bump(nextCompartments, updated.compartment);
         processed += 1;
-        if (processed % 2_500 === 0) onProgress?.(processed, this.count);
+        if (processed % 500 === 0) onProgress?.(processed, this.count);
+        if (signal?.aborted) return;
         cursor.continue();
       };
-    });
-    await transactionDone(transaction);
+      });
+      // Wait for both cursor exhaustion and the transaction commit. On an
+      // explicit abort some IndexedDB implementations do not dispatch a
+      // cursor error, so transactionDone must be observed concurrently rather
+      // than only after the cursor promise resolves.
+      await Promise.all([scan, transactionDone(transaction)]);
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException("Study-metadata re-indexing was cancelled.", "AbortError");
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
     this.studyMetadataOverrides = byDataset;
     this.facetMaps.samples.clear();
     this.facetMaps.subjects.clear();
@@ -1167,19 +1187,29 @@ export class AirrResultStore {
     return url.href;
   }
 
-  async airrBlob(): Promise<Blob> {
-    if (this.directOutput && !this.studyMetadataOverrides.size) return this.directOutput.handle.getFile();
+  async airrBlob(signal?: AbortSignal): Promise<Blob> {
+    if (signal?.aborted) throw new DOMException("AIRR export was cancelled.", "AbortError");
+    if (this.directOutput && !this.studyMetadataOverrides.size) {
+      const file = await this.directOutput.handle.getFile();
+      if (signal?.aborted) throw new DOMException("AIRR export was cancelled.", "AbortError");
+      return file;
+    }
     if (this.outputByteCount > MAX_FALLBACK_BLOB_BYTES) {
       throw new Error("This AIRR table is too large for a memory-backed download. Enable the streaming download worker or re-run with direct-to-disk output.");
     }
     const parts: BlobPart[] = [];
-    await this.writeAirr(async (part) => { parts.push(part instanceof Uint8Array ? part.slice().buffer : part); });
+    await this.writeAirr(async (part) => { parts.push(part instanceof Uint8Array ? part.slice().buffer : part); }, signal);
     return new Blob(parts, { type: "text/tab-separated-values;charset=utf-8" });
   }
 
-  async writeAirr(write: (part: string | Blob | Uint8Array) => Promise<void>): Promise<void> {
+  async writeAirr(
+    write: (part: string | Blob | Uint8Array) => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (signal?.aborted) throw new DOMException("AIRR export was cancelled.", "AbortError");
     if (this.directOutput && !this.studyMetadataOverrides.size) {
       await write(await this.directOutput.handle.getFile());
+      if (signal?.aborted) throw new DOMException("AIRR export was cancelled.", "AbortError");
       return;
     }
     if (this.studyMetadataOverrides.size) {
@@ -1188,12 +1218,13 @@ export class AirrResultStore {
         let body = "";
         for (const row of rows) body += tableRow(this.headers, row.values, "tsv");
         if (body) await write(body);
-      }, { batchSize: 2_000 });
+      }, { batchSize: 2_000, signal });
       return;
     }
     await write(`${this.headerLine}\n`);
     const database = await this.database;
     for (let index = 0; index < this.nextChunk; index += 1) {
+      if (signal?.aborted) throw new DOMException("AIRR export was cancelled.", "AbortError");
       const transaction = database.transaction("chunks", "readonly");
       const chunk = await requestResult(transaction.objectStore("chunks").get(index)) as ChunkRecord | undefined;
       if (chunk) await write(await this.chunkBlob(chunk));
@@ -1204,8 +1235,9 @@ export class AirrResultStore {
     format: TableExportFormat,
     write: (part: string | Blob | Uint8Array) => Promise<void>,
     includeMask?: Uint8Array,
+    signal?: AbortSignal,
   ): Promise<void> {
-    if (format === "tsv" && !includeMask) return this.writeAirr(write);
+    if (format === "tsv" && !includeMask) return this.writeAirr(write, signal);
     if (includeMask && includeMask.length !== this.count) throw new Error("The export mask does not match the result-store record count.");
     const header = tableHeader(this.headers, format);
     if (header) await write(header);
@@ -1213,14 +1245,16 @@ export class AirrResultStore {
       let body = "";
       for (const row of rows) body += tableRow(this.headers, row.values, format);
       if (body) await write(body);
-    }, { batchSize: 2000, includeMask });
+    }, { batchSize: 2000, includeMask, signal });
   }
 
-  async doubleDRecords(): Promise<DoubleDEvidenceRecord[]> {
+  async doubleDRecords(signal?: AbortSignal): Promise<DoubleDEvidenceRecord[]> {
     if (!this.doubleDRecordCount) return [];
+    if (signal?.aborted) throw new DOMException("Double-D export was cancelled.", "AbortError");
     const database = await this.database;
     const transaction = database.transaction("doubleD", "readonly");
     const records = await requestResult(transaction.objectStore("doubleD").getAll()) as DoubleDEvidenceRecord[];
+    if (signal?.aborted) throw new DOMException("Double-D export was cancelled.", "AbortError");
     if (!this.studyMetadataOverrides.size) return records;
     return records.map((record) => ({ ...record, values: this.overlayStudyMetadata(record.values) }));
   }
@@ -1261,6 +1295,7 @@ export class AirrResultStore {
   async writeDoubleDFormat(
     format: TableExportFormat,
     write: (part: string | Blob | Uint8Array) => Promise<void>,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!this.doubleDHeaderLine || !this.doubleDRecordCount) {
       throw new Error("This analysis has no supported double-D calls to export.");
@@ -1269,13 +1304,15 @@ export class AirrResultStore {
     const fields = ["swig_airr_ordinal", ...exportedHeaders];
     const header = tableHeader(fields, format);
     if (header) await write(header);
-    const records = await this.doubleDRecords();
+    const records = await this.doubleDRecords(signal);
     let body = "";
     for (const record of records) {
+      if (signal?.aborted) throw new DOMException("Double-D export was cancelled.", "AbortError");
       body += tableRow(fields, { swig_airr_ordinal: record.ordinal + 1, ...record.values }, format);
       if (body.length >= 1_000_000) {
         await write(body);
         body = "";
+        await cooperativeYield();
       }
     }
     if (body) await write(body);
@@ -1298,6 +1335,7 @@ export class AirrResultStore {
     counts: Uint32Array,
     format: TableExportFormat,
     write: (part: string | Blob | Uint8Array) => Promise<void>,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (counts.length < this.count) throw new Error("The duplicate-count vector does not cover every AIRR record.");
     const fields = [...this.headers, "duplicate_count"];
@@ -1307,7 +1345,7 @@ export class AirrResultStore {
       let body = "";
       for (const row of rows) if (counts[row.ordinal]) body += tableRow(fields, { ...row.values, duplicate_count: counts[row.ordinal] }, format);
       if (body) await write(body);
-    }, { batchSize: 2000 });
+    }, { batchSize: 2000, signal });
   }
 
   async writeLineageAirr(
@@ -1322,6 +1360,7 @@ export class AirrResultStore {
     format: TableExportFormat,
     write: (part: string | Blob | Uint8Array) => Promise<void>,
     mergedLineageByOriginal?: ReadonlyMap<number, string>,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (assignments.length < this.count) throw new Error("The lineage-assignment vector does not cover every AIRR record.");
     const clonePosition = this.headers.indexOf("clone_id");
@@ -1338,7 +1377,7 @@ export class AirrResultStore {
         body += tableRow(fields, { ...row.values, clone_id: cloneId, swig_merged_lineage_id: mergedLineageId }, format);
       }
       if (body) await write(body);
-    }, { batchSize: 2000 });
+    }, { batchSize: 2000, signal });
   }
 
   async clear(): Promise<void> {

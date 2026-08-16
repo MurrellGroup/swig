@@ -199,6 +199,7 @@ export async function selectRepertoire(
   options: RepertoireSelectionOptions,
   baseMask?: Uint8Array,
   onProgress?: (processed: number, retained: number) => void,
+  signal?: AbortSignal,
 ): Promise<RepertoireSelectionResult> {
   const errors = validateRepertoireSelection(options);
   if (errors.length) throw new Error(errors.join(" "));
@@ -211,6 +212,7 @@ export async function selectRepertoire(
   if (options.doubleD === "positive") {
     const eligible = evidence.filter((record) => !baseMask || baseMask[record.ordinal]);
     for (let offset = 0; offset < eligible.length; offset += 1000) {
+      if (signal?.aborted) throw new DOMException("Repertoire selection was cancelled.", "AbortError");
       const batch = eligible.slice(offset, offset + 1000);
       const details = await store.detailMany(batch.map((record) => record.ordinal));
       for (const detail of details) if (repertoireRowMatches(detail.values, options, byOrdinal.get(detail.record.ordinal))) mask[detail.record.ordinal] = 1;
@@ -226,7 +228,7 @@ export async function selectRepertoire(
           if (repertoireRowMatches(row.values, options, byOrdinal.get(row.ordinal))) { mask[row.ordinal] = 1; retained += 1; }
         }
       },
-      { batchSize: 2500, includeMask: baseMask, onProgress: (processed) => onProgress?.(processed, retained) },
+      { batchSize: 2500, includeMask: baseMask, onProgress: (processed) => onProgress?.(processed, retained), signal },
     );
   }
   const retainedRecords = countMask(mask, store.count);

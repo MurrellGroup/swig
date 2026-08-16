@@ -149,6 +149,25 @@ test("study metadata is indexed for dataset, sample, donor, cohort, timepoint, a
   await store.clear();
 });
 
+test("cancelling metadata re-indexing aborts the transaction and retains the previous index", async () => {
+  const store = new AirrResultStore();
+  const studyHeader = `${header}\tswig_dataset_id\tsample_id\tsubject_id\tswig_cohort\tswig_timepoint\tswig_compartment`;
+  const sourceRows = new TextDecoder().decode(makeBody(0, 600)).trimEnd().split("\n");
+  const body = `${sourceRows.map((row) => `${row}\tdataset_1\told_sample\told_donor\told_cohort\tday_0\tblood`).join("\n")}\n`;
+  await store.appendBatch(studyHeader, body);
+  await store.finalize();
+  const controller = new AbortController();
+  await assert.rejects(store.updateStudyMetadata([
+    { datasetId: "dataset_1", inputName: "study.tsv", sampleId: "new_sample", subjectId: "new_donor", cohort: "new_cohort", timepoint: "day_1", compartment: "node" },
+  ], (processed) => { if (processed >= 500) controller.abort(); }, controller.signal), (error: unknown) => error instanceof DOMException && error.name === "AbortError");
+  assert.equal(store.facets().samples.find((item) => item.value === "old_sample")?.count, 600);
+  assert.equal(store.facets().samples.some((item) => item.value === "new_sample"), false);
+  const [detail] = await store.detailMany([599]);
+  assert.equal(detail.values.sample_id, "old_sample");
+  assert.equal(detail.values.subject_id, "old_donor");
+  await store.clear();
+});
+
 test("saved study metadata is materialized during the first import without changing the AIRR fingerprint", async () => {
   const studyHeader = `${header}\tswig_dataset_id\tsample_id\tsubject_id\tswig_cohort\tswig_timepoint\tswig_compartment`;
   const baseRows = new TextDecoder().decode(makeBody(0, 3)).trimEnd().split("\n");

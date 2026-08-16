@@ -35,6 +35,7 @@ export async function inferQueryAssignments(
   minimumIdentity: number,
   strand: 0 | 1 | 2,
   workers: number,
+  signal?: AbortSignal,
 ): Promise<InferredQueryAssignment[]> {
   const store = new AirrResultStore();
   try {
@@ -48,6 +49,7 @@ export async function inferQueryAssignments(
       strand,
       workers: Math.max(1, Math.min(workers, queries.length, 8)),
       countHint: queries.length,
+      signal,
       onBatch: (batch) => store.appendBatch(batch.header, batch.body),
     });
     await store.finalize();

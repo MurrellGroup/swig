@@ -29,9 +29,10 @@ function gzipDecoder(): TransformStream<Uint8Array, Uint8Array> {
   return new DecompressionStream("gzip") as TransformStream<Uint8Array, Uint8Array>;
 }
 
-async function fixedHeaderCandidates(file: File): Promise<number[]> {
+async function fixedHeaderCandidates(file: File, signal?: AbortSignal): Promise<number[]> {
   const candidates = new Set<number>();
   for (let offset = 0; offset < file.size; offset += SCAN_CHUNK_BYTES) {
+    if (signal?.aborted) throw new DOMException("Gzip inspection was cancelled.", "AbortError");
     const start = Math.max(0, offset - 3);
     const end = Math.min(file.size, offset + SCAN_CHUNK_BYTES);
     const bytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
@@ -114,13 +115,18 @@ async function inspectMember(
   header: ParsedGzipHeader,
   end: number,
   format: SequenceFormat,
+  signal?: AbortSignal,
 ): Promise<GzipMemberInspection> {
+  if (signal?.aborted) throw new DOMException("Gzip inspection was cancelled.", "AbortError");
   const reader = file.slice(header.offset, end).stream().pipeThrough(gzipDecoder()).getReader();
+  const abort = () => { void reader.cancel().catch(() => undefined); };
+  signal?.addEventListener("abort", abort, { once: true });
   const preview: Uint8Array[] = [];
   let previewLength = 0;
   let uncompressedBytes = 0;
   try {
     while (true) {
+      if (signal?.aborted) throw new DOMException("Gzip inspection was cancelled.", "AbortError");
       const { done, value } = await reader.read();
       if (done) break;
       uncompressedBytes += value.byteLength;
@@ -131,8 +137,10 @@ async function inspectMember(
       }
     }
   } finally {
+    signal?.removeEventListener("abort", abort);
     reader.releaseLock();
   }
+  if (signal?.aborted) throw new DOMException("Gzip inspection was cancelled.", "AbortError");
 
   const prefix = new Uint8Array(previewLength);
   let position = 0;
@@ -161,8 +169,9 @@ async function inspectMember(
 export async function inspectGzipMembers(
   file: File,
   format: SequenceFormat,
+  signal?: AbortSignal,
 ): Promise<GzipMemberInspection[]> {
-  const fixedCandidates = await fixedHeaderCandidates(file);
+  const fixedCandidates = await fixedHeaderCandidates(file, signal);
   const parsed = (await Promise.all(fixedCandidates.map((offset) => parseGzipHeader(file, offset))))
     .filter((header): header is ParsedGzipHeader => header !== null);
   if (!parsed.length || parsed[0].offset !== 0) {
@@ -187,15 +196,17 @@ export async function inspectGzipMembers(
   let start = 0;
   let lastError: unknown;
   while (start < file.size) {
+    if (signal?.aborted) throw new DOMException("Gzip inspection was cancelled.", "AbortError");
     const header = headerByOffset.get(start);
     if (!header) throw new Error(`Could not validate the gzip member beginning at byte ${start.toLocaleString()}.`);
     let accepted: GzipMemberInspection | null = null;
     for (const end of candidateEnds) {
       if (end <= start) continue;
       try {
-        accepted = await inspectMember(file, header, end, format);
+        accepted = await inspectMember(file, header, end, format, signal);
         break;
       } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") throw error;
         lastError = error;
       }
     }
