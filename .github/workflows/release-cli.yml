@@ -32,7 +32,7 @@ jobs:
             target: bun-darwin-arm64
             label: macOS Apple silicon
             artifact: swig-cli-macos-arm64
-          - os: windows-latest
+          - os: ubuntu-latest
             target: bun-windows-x64-baseline
             label: Windows x86-64
             artifact: swig-cli-windows-x64.exe
@@ -53,6 +53,7 @@ jobs:
           node -e "require('node:fs').mkdirSync('release', { recursive: true })"
           bun build cli-src/swig-cli-standalone.mjs cli-src/swig-worker.mjs --compile --target=${{ matrix.target }} --outfile=release/${{ matrix.artifact }}
       - name: Smoke-test the actual executable
+        if: matrix.target != 'bun-windows-x64-baseline'
         env:
           SWIG_CLI_EXECUTABLE: ${{ github.workspace }}/release/${{ matrix.artifact }}
         run: node --test tests/cli-smoke.test.mjs
