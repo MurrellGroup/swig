@@ -4120,7 +4120,7 @@ var ShmAccumulator = class {
 };
 //#endregion
 //#region cli-src/swig-cli.mjs
-const VERSION = "0.29.0";
+const VERSION = "0.29.1";
 const CLI_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 function defaultCliAssets() {
 	const directory = join(CLI_DIRECTORY, "assets");
@@ -4272,7 +4272,7 @@ var WasmPool = class {
 	async start() {
 		for (let index = 0; index < this.size; index += 1) {
 			const webWorker = Boolean(process.versions.bun && globalThis.Worker);
-			const worker = webWorker ? new globalThis.Worker(new URL("./swig-worker.mjs", import.meta.url)) : new Worker(new URL("./swig-worker.mjs", import.meta.url));
+			const worker = webWorker ? new globalThis.Worker(new URL("./swig-worker.js", import.meta.url)) : new Worker(new URL("./swig-worker.mjs", import.meta.url));
 			const receive = (message) => {
 				const pending = this.pending.get(message.id);
 				if (!pending) return;

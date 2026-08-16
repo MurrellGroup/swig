@@ -30,7 +30,7 @@ import { compileReferences } from "../src/reference-pack.ts";
 import { repertoireRowMatches, validateRepertoireSelection } from "../src/repertoire-selection.ts";
 import { ShmAccumulator } from "../src/shm-analysis.ts";
 
-const VERSION="0.29.0";
+const VERSION="0.29.1";
 const CLI_DIRECTORY=dirname(fileURLToPath(import.meta.url));
 
 export function defaultCliAssets(){
@@ -119,7 +119,7 @@ class WasmPool {
   async start(){
     for(let index=0;index<this.size;index+=1){
       const webWorker=Boolean(process.versions.bun&&globalThis.Worker);
-      const worker=webWorker?new globalThis.Worker(new URL("./swig-worker.mjs",import.meta.url)):new NodeWorker(new URL("./swig-worker.mjs",import.meta.url));
+      const worker=webWorker?new globalThis.Worker(new URL("./swig-worker.js",import.meta.url)):new NodeWorker(new URL("./swig-worker.mjs",import.meta.url));
       const receive=(message)=>{const pending=this.pending.get(message.id);if(!pending)return;this.pending.delete(message.id);if(message.error)pending.reject(new Error(message.error));else pending.resolve(message.result);};
       const fail=(error)=>{for(const [id,pending] of this.pending){if(pending.worker===worker){this.pending.delete(id);pending.reject(error instanceof Error?error:new Error(error?.message??String(error)));}}};
       if(webWorker){worker.addEventListener("message",(event)=>receive(event.data));worker.addEventListener("error",fail);}
