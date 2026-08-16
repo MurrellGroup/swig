@@ -19,7 +19,8 @@ import { PHYLO_UCA_CODON_SYMBOLS, translatePhyloUcaCodonState } from "./codons.t
 import { prepareObservedOnlyAlignment } from "./references.ts";
 import { runPhyloUca } from "./runtime.ts";
 import { PhyloUcaPlacementMap } from "./placement-map.tsx";
-import type { PhyloUcaOptions, PhyloUcaProgress, PhyloUcaResult, PhyloUcaSavedState } from "./types.ts";
+import { phyloUcaBranchLengthGrid } from "./search-grid.ts";
+import type { PhyloUcaMcmcDiagnostics, PhyloUcaOptions, PhyloUcaProgress, PhyloUcaResult, PhyloUcaSavedState } from "./types.ts";
 
 export type PhyloUcaPanelState = PhyloUcaSavedState;
 
@@ -53,6 +54,19 @@ function stem(name: string): string {
   return name.replace(/(?:\.airr)?\.(?:tsv|csv|txt|fasta|fastq)(?:\.gz)?$/i, "") || "swig";
 }
 
+function completePhyloUcaOptions(saved?: PhyloUcaOptions): PhyloUcaOptions {
+  const defaults = defaultPhyloUcaOptions();
+  if (!saved) return defaults;
+  return {
+    ...defaults,
+    ...saved,
+    model: { ...defaults.model, ...saved.model },
+    candidates: { ...defaults.candidates, ...saved.candidates },
+    hmm: { ...defaults.hmm, ...saved.hmm },
+    search: { ...defaults.search, ...saved.search },
+  };
+}
+
 function phaseLabel(progress: PhyloUcaProgress | null): string {
   if (!progress) return "";
   const labels: Record<PhyloUcaProgress["phase"], string> = {
@@ -60,6 +74,7 @@ function phaseLabel(progress: PhyloUcaProgress | null): string {
     "tree-messages": "Tree messages",
     "edge-screen": "Edge screen",
     "hmm-search": "Placement + HMM search",
+    mcmc: "Gibbs/MH posterior sampling",
     posterior: "UCA posterior",
     finalize: "Finalizing",
   };
@@ -85,11 +100,49 @@ function codonPosteriorTsv(result: PhyloUcaResult): string {
   return [header, ...rows].map((row) => row.join("\t")).join("\n") + "\n";
 }
 
+function acceptance(accepted: number, proposed: number): string {
+  return proposed ? `${(100 * accepted / proposed).toFixed(1)}%` : "—";
+}
+
+function tracePath(values: readonly number[], left: number, top: number, width: number, height: number): string {
+  if (!values.length) return "";
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const span = Math.max(1e-12, maximum - minimum);
+  return values.map((value, index) => `${index ? "L" : "M"} ${left + width * index / Math.max(1, values.length - 1)} ${top + height * (1 - (value - minimum) / span)}`).join(" ");
+}
+
+function PhyloUcaMcmcMixing({ diagnostics }: { diagnostics: PhyloUcaMcmcDiagnostics }) {
+  const trace = diagnostics.trace;
+  if (!trace.length) return null;
+  const branchValues = trace.map((point) => point.ucaBranchLength);
+  const marginalValues = trace.map((point) => point.logMarginalLikelihood);
+  const width = 920;
+  const left = 46;
+  const plotWidth = width - left - 18;
+  const burnX = left + plotWidth * Math.max(0, diagnostics.burnIn - 1) / Math.max(1, trace.length - 1);
+  return <section className="phylo-uca-mcmc">
+    <header><div><span className="section-kicker">Sampler diagnostics</span><h5>Gibbs/MH mixing</h5><p>Every iteration draws one exact joint recombination path and UCA sequence, then updates continuous attachment fraction and continuous pendant length. The vertical line marks burn-in.</p></div><div className="phylo-uca-mcmc-stats"><span>Branch MH <b>{acceptance(diagnostics.branchAccepted, diagnostics.branchProposals)}</b></span><span>Position MH <b>{acceptance(diagnostics.positionAccepted, diagnostics.positionProposals)}</b></span><span>Global jumps <b>{acceptance(diagnostics.globalAccepted, diagnostics.globalProposals)}</b></span><span>Edge switches <b>{diagnostics.edgeSwitches}</b></span><span>Branch ESS <b>{diagnostics.branchEffectiveSampleSize.toFixed(1)} / {diagnostics.retainedSamples}</b></span><span>Log-target ESS <b>{diagnostics.logTargetEffectiveSampleSize.toFixed(1)} / {diagnostics.retainedSamples}</b></span></div></header>
+    <div className="phylo-uca-mcmc-chart"><svg viewBox={`0 0 ${width} 214`} role="img" aria-label="MCMC branch-length and full-HMM marginal-likelihood traces">
+      <title>Continuous Gibbs/MH trace; branch length above and full-HMM marginal likelihood below</title>
+      <rect x={left} y="16" width={plotWidth} height="78" fill="#f5f8f6" />
+      <rect x={left} y="116" width={plotWidth} height="78" fill="#f5f8f6" />
+      <line x1={burnX} x2={burnX} y1="10" y2="200" stroke="#d36d3f" strokeDasharray="4 3" />
+      <path d={tracePath(branchValues, left, 20, plotWidth, 70)} fill="none" stroke="#08796f" strokeWidth="1.4" />
+      <path d={tracePath(marginalValues, left, 120, plotWidth, 70)} fill="none" stroke="#845a9e" strokeWidth="1.4" />
+      <text x="7" y="55">branch</text><text x="7" y="66">length</text>
+      <text x="7" y="153">full-HMM</text><text x="7" y="164">log L</text>
+      <text x={left} y="210">1</text><text x={left + plotWidth} y="210" textAnchor="end">{trace.length}</text>
+      <text x={Math.min(left + plotWidth - 4, burnX + 4)} y="14" fill="#a14b2d">burn-in</text>
+    </svg></div>
+  </section>;
+}
+
 export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel, locus, references, inputName, frameOffset, isTcr, sampleColors, multiplicityByOrdinal, lineageByOrdinal, initialState, onStateChange }: Props) {
   const fingerprint = useMemo(() => inspectAlignment(alignment).fingerprint, [alignment]);
   const initialFrame = initialState?.frameOffset ?? initialState?.result?.frameOffset ?? 0;
   const matchingInitial = initialState?.alignmentFingerprint === fingerprint && initialState.lineageIds.join(",") === lineageIds.join(",") && initialFrame === frameOffset ? initialState : null;
-  const [options, setOptions] = useState<PhyloUcaOptions>(() => matchingInitial?.options ?? defaultPhyloUcaOptions());
+  const [options, setOptions] = useState<PhyloUcaOptions>(() => completePhyloUcaOptions(matchingInitial?.options));
   const [result, setResult] = useState<PhyloUcaResult | null>(() => matchingInitial?.result ?? null);
   const [progress, setProgress] = useState<PhyloUcaProgress | null>(null);
   const [treeStage, setTreeStage] = useState(false);
@@ -116,7 +169,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
     const restoredFrame = initialState?.frameOffset ?? initialState?.result?.frameOffset ?? 0;
     const restored = initialState?.alignmentFingerprint === fingerprint && initialState.lineageIds.join(",") === lineageIds.join(",") && restoredFrame === frameOffset ? initialState : null;
     adoptedResultSnapshotRef.current = restored?.result?.generatedAt ?? null;
-    setOptions(restored?.options ?? defaultPhyloUcaOptions());
+    setOptions(completePhyloUcaOptions(restored?.options));
     setResult(restored?.result ?? null);
     setProgress(null);
     setError("");
@@ -127,7 +180,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
     const incomingGeneratedAt = incoming.result.generatedAt;
     if (adoptedResultSnapshotRef.current === incomingGeneratedAt) return;
     adoptedResultSnapshotRef.current = incomingGeneratedAt;
-    setOptions(incoming.options);
+    setOptions(completePhyloUcaOptions(incoming.options));
     setResult(incoming.result);
   }, [matchingInitial]);
   useEffect(() => {
@@ -262,13 +315,15 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
     return spans;
   }, [alignment, lineageRows, logoMode, result]);
   const logoContentWidth = logoColumns.length * logoColumnWidth;
+  const displayedBranchGrid = useMemo(() => phyloUcaBranchLengthGrid(options.search), [options.search.branchGridPoints, options.search.maximumUcaBranchLength, options.search.minimumPositiveUcaBranchLength]);
+  const resultInferenceMode = result?.options.search.inferenceMode ?? (result?.options.search.marginalizeLocally ? "grid-marginalization" : "maximum-likelihood");
   return <section className="phylo-uca-panel">
     <header>
       <div><span className="section-kicker">Fixed-tree empirical Bayes</span><h4>Phylogenetic UCA inference</h4><p>Infer the UCA attachment, pendant length, recombination path, and nucleotide posterior from the exact curated lineage alignment. The ordinary germline guide is removed before the observed tree is inferred.</p></div>
       <a href="./PHYLO_UCA_INFERENCE.md" target="_blank" rel="noreferrer">Method details ↗</a>
     </header>
     <div className="phylo-uca-run-row">
-      <div><strong>{options.characterMode === "auto" ? "Automatic GTR4 / internal-gap GTR5" : options.characterMode === "nucleotide-gtr4" ? "Forced nucleotide GTR4" : "Forced gap-aware GTR5"}</strong><span>Terminal tip gaps are missing coverage · broad V/J hypotheses · all {references.counts.D.toLocaleString()} active D records · up to {options.hmm.maximumDSegments} D segments · local placement marginalization {options.search.marginalizeLocally ? "on" : "off"}</span></div>
+      <div><strong>{options.characterMode === "auto" ? "Automatic GTR4 / internal-gap GTR5" : options.characterMode === "nucleotide-gtr4" ? "Forced nucleotide GTR4" : "Forced gap-aware GTR5"}</strong><span>Terminal tip gaps are missing coverage · broad V/J hypotheses · all {references.counts.D.toLocaleString()} active D records · up to {options.hmm.maximumDSegments} D segments · {options.search.inferenceMode === "maximum-likelihood" ? "conditional ML placement" : options.search.inferenceMode === "grid-marginalization" ? "explicit grid marginalization" : "continuous Gibbs/MH"}</span></div>
       {!running ? <button className="post-primary dark" type="button" onClick={() => void run()}>Infer phylogenetic UCA</button> : <button type="button" onClick={() => abortRef.current?.abort()}>Cancel</button>}
     </div>
     <details className="post-advanced phylo-uca-advanced">
@@ -276,18 +331,40 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
       <div className="phylo-uca-advanced-body">
         <fieldset><legend>Character model</legend><label title="Auto uses four states unless a gap occurs between a tip's first and last observed nucleotide. Leading and trailing gap padding is always missing data."><span>Alignment character model</span><select value={options.characterMode} onChange={(event) => { setOptions((current) => ({ ...current, characterMode: event.target.value as PhyloUcaOptions["characterMode"] })); setResult(null); }}><option value="auto">Automatic · GTR4 unless internal gaps occur</option><option value="nucleotide-gtr4">Force nucleotide GTR4 · all gaps missing</option><option value="gap-aware-gtr5">Force GTR5 · internal gaps only</option></select></label><label title="Stationary frequency of the explicit internal alignment-gap character. Leading and trailing tip gaps remain missing. Ignored by GTR4."><span>Gap equilibrium frequency</span><CommitNumberInput min="0.0001" max="0.5" step="0.005" value={options.model.frequencies[4]} onCommit={(value) => { setOptions((current) => ({ ...current, model: { ...current.model, frequencies: [current.model.frequencies[0], current.model.frequencies[1], current.model.frequencies[2], current.model.frequencies[3], value] } })); setResult(null); }} /></label></fieldset>
         <fieldset><legend>Candidate hypotheses</legend><label title="Retain V alleles no more than this many fixed-alignment differences beyond the best candidate, in addition to every observed call hypothesis."><span>V extra-difference window</span><CommitNumberInput min="0" max="30" value={options.candidates.vMaximumExtraDifferences} onCommit={(value) => updateCandidates("vMaximumExtraDifferences", value)} /></label><label title="Equivalent broad-screen window for J candidates."><span>J extra-difference window</span><CommitNumberInput min="0" max="20" value={options.candidates.jMaximumExtraDifferences} onCommit={(value) => updateCandidates("jMaximumExtraDifferences", value)} /></label><label title="Computational guard after observed V hypotheses have been retained."><span>Maximum V candidates</span><CommitNumberInput min="1" max="250" value={options.candidates.maximumVCandidates} onCommit={(value) => updateCandidates("maximumVCandidates", value)} /></label><label title="Computational guard after observed J hypotheses have been retained."><span>Maximum J candidates</span><CommitNumberInput min="1" max="100" value={options.candidates.maximumJCandidates} onCommit={(value) => updateCandidates("maximumJCandidates", value)} /></label></fieldset>
-        <fieldset><legend>Recombination HMM</legend><label title="The automaton can use zero through this many D segments. Values above one admit rare VDDJ and higher-order hypotheses."><span>Maximum D segments</span><CommitNumberInput min="0" max="5" value={options.hmm.maximumDSegments} onCommit={(value) => updateHmm("maximumDSegments", value)} /></label><label title="Minimum number of consecutive templated D nucleotides before a D path may exit."><span>Minimum D match</span><CommitNumberInput min="1" max="12" value={options.hmm.minimumDMatch} onCommit={(value) => updateHmm("minimumDMatch", value)} /></label><label title="Prior probability weight for entering another D after one D has ended. Any probability from 0 through 1 is accepted; the default is 0.015."><span>Additional-D probability</span><CommitNumberInput min="0" max="1" step="0.005" value={options.hmm.additionalDProbability} onCommit={(value) => updateHmm("additionalDProbability", value)} /></label><label title="Expected run length of non-templated nucleotides before another transition is attempted."><span>Mean N length</span><CommitNumberInput min="0" max="40" step="0.5" value={options.hmm.meanNLength} onCommit={(value) => updateHmm("meanNLength", value)} /></label><label title="Small leakage probability away from a deterministic reference nucleotide; this is not an SHM context model."><span>Template leakage</span><CommitNumberInput min="0.000001" max="0.25" step="0.001" value={options.hmm.templateMismatchProbability} onCommit={(value) => updateHmm("templateMismatchProbability", value)} /></label><label title="Prior gap probability in non-templated junction states; ignored by GTR4."><span>Junction gap probability</span><CommitNumberInput min="0.000001" max="0.5" step="0.005" value={options.hmm.junctionGapProbability} onCommit={(value) => updateHmm("junctionGapProbability", value)} /></label></fieldset>
-        <fieldset><legend>Placement search</legend>
+        <fieldset><legend>Recombination HMM</legend><label title="The automaton can use zero through this many D segments. Values above one admit rare VDDJ and higher-order hypotheses."><span>Maximum D segments</span><CommitNumberInput min="0" max="5" value={options.hmm.maximumDSegments} onCommit={(value) => updateHmm("maximumDSegments", value)} /></label><label title="Minimum number of consecutive templated D nucleotides before a D path may exit."><span>Minimum D match</span><CommitNumberInput min="1" max="12" value={options.hmm.minimumDMatch} onCommit={(value) => updateHmm("minimumDMatch", value)} /></label><label title="Prior probability weight for entering another D after one D has ended. Any probability from 0 through 1 is accepted; the default is 0.015."><span>Additional-D probability</span><CommitNumberInput min="0" max="1" step="0.005" value={options.hmm.additionalDProbability} onCommit={(value) => updateHmm("additionalDProbability", value)} /></label><label title="Expected run length of non-templated nucleotides before another transition is attempted."><span>Mean N length</span><CommitNumberInput min="0" max="40" step="0.5" value={options.hmm.meanNLength} onCommit={(value) => updateHmm("meanNLength", value)} /></label><label title="Small leakage probability away from a deterministic reference nucleotide; this is not an SHM context model. Zero is accepted and evaluated at a 1e-9 numerical floor."><span>Template leakage</span><CommitNumberInput min="0" max="0.25" step="0.001" value={options.hmm.templateMismatchProbability} onCommit={(value) => updateHmm("templateMismatchProbability", value)} /></label><label title="Prior gap probability in non-templated junction states; ignored by GTR4."><span>Junction gap probability</span><CommitNumberInput min="0.000001" max="0.5" step="0.005" value={options.hmm.junctionGapProbability} onCommit={(value) => updateHmm("junctionGapProbability", value)} /></label></fieldset>
+        <fieldset className="phylo-uca-placement-settings"><legend>Placement inference</legend>
+          <label title="Conditional ML is the fast default. Grid mode explicitly integrates a displayed branch-length grid. Gibbs/MH samples placement uncertainty with continuous—not discretized—branch lengths."><span>Inference route</span><select value={options.search.inferenceMode} onChange={(event) => updateSearch("inferenceMode", event.target.value as PhyloUcaOptions["search"]["inferenceMode"])}><option value="maximum-likelihood">Conditional ML · fast default</option><option value="grid-marginalization">Explicit grid marginalization</option><option value="gibbs-mh">Gibbs/MH · continuous placement</option></select></label>
           <label title="The default independently mixes retained V/J allele nucleotides at each fixed-alignment column. This is only a fast starting-position screen; retained points are always recomputed with the complete recombination HMM."><span>Starting-position screen</span><select value={options.search.screenMode ?? "vj-mixture"} onChange={(event) => updateSearch("screenMode", event.target.value as PhyloUcaOptions["search"]["screenMode"])}><option value="vj-mixture">V/J nucleotide mixture · default</option><option value="germline-guide">Single N-masked germline guide</option></select></label>
           <label title="Number of attachment positions screened along every observed-tree edge before full-HMM refinement. Endpoints and at least one branch-interior point are always included."><span>Screen points / edge</span><CommitNumberInput min="3" max="101" value={options.search.screenEdgeGridPoints ?? 5} onCommit={(value) => updateSearch("screenEdgeGridPoints", Math.max(3, Math.floor(value)))} /></label>
-          <label title="Top screen-ranked edges receiving the full recombination HMM. Set to zero to search every edge."><span>Full-HMM edges (0 = all)</span><CommitNumberInput min="0" max="10000" value={options.search.fullHmmEdges} onCommit={(value) => updateSearch("fullHmmEdges", Math.max(0, Math.floor(value)))} /></label>
-          <label title="Full-HMM attachment grid size on each retained edge. Endpoints and at least one interior branch point are always included."><span>Full-HMM points / edge</span><CommitNumberInput min="3" max="101" value={options.search.edgeGridPoints} onCommit={(value) => updateSearch("edgeGridPoints", Math.max(3, Math.floor(value)))} /></label>
-          <label title="Full-HMM grid size for the UCA pendant branch length."><span>UCA branch grid points</span><CommitNumberInput min="2" max="101" value={options.search.branchGridPoints} onCommit={(value) => updateSearch("branchGridPoints", Math.max(2, Math.floor(value)))} /></label>
-          <label title="Full-HMM local refinement rounds around the leading placement points."><span>Full-HMM refinement rounds</span><CommitNumberInput min="0" max="10" value={options.search.localRefinementRounds} onCommit={(value) => updateSearch("localRefinementRounds", Math.max(0, Math.floor(value)))} /></label>
+          <label title={options.search.inferenceMode === "gibbs-mh" ? "Number of leading V/J-screen candidates refined for initialization; zero refines every edge. Global MH proposals can still visit every edge." : "Top screen-ranked edges receiving the full recombination HMM. Set to zero to search every edge."}><span>{options.search.inferenceMode === "gibbs-mh" ? "Refined initializer edges" : "Full-HMM edges"} (0 = all)</span><CommitNumberInput min="0" max="10000" value={options.search.fullHmmEdges} onCommit={(value) => updateSearch("fullHmmEdges", Math.max(0, Math.floor(value)))} /></label>
           <label title="Maximum UCA-to-observed-tree branch length in expected substitutions per character."><span>Maximum UCA branch</span><CommitNumberInput min="0.001" max="3" step="0.01" value={options.search.maximumUcaBranchLength} onCommit={(value) => updateSearch("maximumUcaBranchLength", value)} /></label>
-          <label title="Mean of the fixed exponential prior on UCA pendant length."><span>Branch-prior mean</span><CommitNumberInput min="0.0001" max="2" step="0.01" value={options.search.branchPriorMean} onCommit={(value) => updateSearch("branchPriorMean", value)} /></label>
-          <label title="Number of high-scoring full-HMM branch points integrated in the reported marginal nucleotide probabilities."><span>Local posterior points</span><CommitNumberInput min="1" max="500" value={options.search.localPosteriorPoints} onCommit={(value) => updateSearch("localPosteriorPoints", Math.max(1, Math.floor(value)))} /></label>
-          <label className="check-line" title="Average nucleotide probabilities over nearby attachment/length hypotheses rather than conditioning only on the optimum."><input type="checkbox" checked={options.search.marginalizeLocally} onChange={(event) => updateSearch("marginalizeLocally", event.target.checked)} /><span>Marginalize nearby full-HMM placements</span></label>
+          {options.search.inferenceMode === "maximum-likelihood" && <>
+            <label title="Alternating scalar optimizations of continuous pendant length and continuous within-edge attachment position under the full HMM."><span>ML coordinate rounds</span><CommitNumberInput min="1" max="10" value={options.search.mlOptimizationRounds} onCommit={(value) => updateSearch("mlOptimizationRounds", Math.max(1, Math.floor(value)))} /></label>
+            <label title="Stopping tolerance in the transformed unit coordinate. Pendant length itself remains continuous and is concentrated near zero by a fourth-power coordinate transform."><span>ML search tolerance</span><CommitNumberInput min="0.00001" max="0.1" step="0.0005" value={options.search.mlOptimizationTolerance} onCommit={(value) => updateSearch("mlOptimizationTolerance", value)} /></label>
+            <p className="phylo-uca-setting-note">The V/J approximation only selects starting edges. The reported point maximizes the complete HMM marginal likelihood; neither attachment nor branch length is marginalized.</p>
+          </>}
+          {options.search.inferenceMode === "grid-marginalization" && <>
+            <label title="Attachment fractions evaluated on each retained edge. Endpoints and interior positions are included."><span>Attachment points / edge</span><CommitNumberInput min="3" max="101" value={options.search.edgeGridPoints} onCommit={(value) => updateSearch("edgeGridPoints", Math.max(3, Math.floor(value)))} /></label>
+            <label title="Number of points in the explicit zero-plus-logarithmic pendant-length grid."><span>UCA branch grid points</span><CommitNumberInput min="2" max="101" value={options.search.branchGridPoints} onCommit={(value) => updateSearch("branchGridPoints", Math.max(2, Math.floor(value)))} /></label>
+            <label title="Smallest positive pendant length in the explicit logarithmic grid; zero is always included separately."><span>Smallest positive branch</span><CommitNumberInput min="0.000000001" max={String(options.search.maximumUcaBranchLength)} step="0.00001" value={options.search.minimumPositiveUcaBranchLength} onCommit={(value) => updateSearch("minimumPositiveUcaBranchLength", value)} /></label>
+            <label title="Number of highest-mass quadrature points receiving exact nucleotide, codon, and HMM-track posterior calculations."><span>Retained posterior points</span><CommitNumberInput min="1" max="10000" value={options.search.localPosteriorPoints} onCommit={(value) => updateSearch("localPosteriorPoints", Math.max(1, Math.floor(value)))} /></label>
+            <div className="phylo-uca-grid-list"><strong>Exact pendant-length grid</strong><code>{displayedBranchGrid.map((value) => value.toPrecision(6)).join(", ")}</code></div>
+          </>}
+          {options.search.inferenceMode === "gibbs-mh" && <>
+            <label title="Total exact HMM Gibbs updates, including burn-in."><span>MCMC iterations</span><CommitNumberInput min="2" max="100000" value={options.search.mcmcIterations} onCommit={(value) => updateSearch("mcmcIterations", Math.max(2, Math.floor(value)))} /></label>
+            <label title="Initial Gibbs/MH iterations discarded from posterior output."><span>Burn-in iterations</span><CommitNumberInput min="0" max={String(Math.max(0, options.search.mcmcIterations - 1))} value={options.search.mcmcBurnIn} onCommit={(value) => updateSearch("mcmcBurnIn", Math.max(0, Math.floor(value)))} /></label>
+            <label title="Retain one joint HMM/UCA draw after this many post-burn-in iterations."><span>Thinning interval</span><CommitNumberInput min="1" max="1000" value={options.search.mcmcThin} onCommit={(value) => updateSearch("mcmcThin", Math.max(1, Math.floor(value)))} /></label>
+            <label title="Cheap continuous placement/length MH updates after each exact HMM Gibbs draw."><span>MH steps / Gibbs draw</span><CommitNumberInput min="1" max="100" value={options.search.mcmcMhStepsPerIteration} onCommit={(value) => updateSearch("mcmcMhStepsPerIteration", Math.max(1, Math.floor(value)))} /></label>
+            <label title="Half-width of the reflected continuous pendant-length random-walk proposal, in substitutions/site."><span>Branch proposal scale</span><CommitNumberInput min="0.0000001" max="1" step="0.001" value={options.search.mcmcBranchProposalScale} onCommit={(value) => updateSearch("mcmcBranchProposalScale", value)} /></label>
+            <label title="Half-width of the reflected continuous within-edge attachment-fraction proposal."><span>Position proposal scale</span><CommitNumberInput min="0.000001" max="1" step="0.01" value={options.search.mcmcPositionProposalScale} onCommit={(value) => updateSearch("mcmcPositionProposalScale", value)} /></label>
+            <label title="Probability that an MH step proposes an attachment on another edge. Candidate probabilities use the V/J-only screen, with a nonzero floor for every edge."><span>Global-jump probability</span><CommitNumberInput min="0" max="1" step="0.01" value={options.search.mcmcGlobalJumpProbability} onCommit={(value) => updateSearch("mcmcGlobalJumpProbability", value)} /></label>
+            <label title="Fixed 32-bit seed for a reproducible chain."><span>MCMC seed</span><CommitNumberInput min="0" max="4294967295" value={options.search.mcmcSeed} onCommit={(value) => updateSearch("mcmcSeed", Math.max(0, Math.floor(value)))} /></label>
+            <p className="phylo-uca-setting-note">Pendant length and within-edge position are continuous floating-point states. The sampler does not use the grid settings above; each proposal evaluates the exact GTR transition against cached directed tree messages.</p>
+          </>}
+          {options.search.inferenceMode !== "maximum-likelihood" && <>
+            <label title="Mean of the exponential prior on UCA pendant length."><span>Branch-prior mean</span><CommitNumberInput min="0.0001" max="2" step="0.01" value={options.search.branchPriorMean} onCommit={(value) => updateSearch("branchPriorMean", value)} /></label>
+            <label title="Uniform-length gives branches prior mass proportional to length; uniform-edge gives every observed-tree edge equal prior mass."><span>Attachment prior</span><select value={options.search.edgePrior} onChange={(event) => updateSearch("edgePrior", event.target.value as PhyloUcaOptions["search"]["edgePrior"])}><option value="uniform-length">Uniform over tree length</option><option value="uniform-edge">Uniform over edges</option></select></label>
+          </>}
         </fieldset>
       </div>
       <div className="phylo-uca-default-reset"><div><strong>Restore calibrated starting values</strong><span>Resets every UCA character, candidate, HMM, and placement option; it does not alter the curated alignment.</span></div><button type="button" onClick={resetOptions}>Reset all UCA settings to defaults</button></div>
@@ -295,9 +372,10 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
     {running && <div className="phylo-uca-progress" role="status"><div><strong>{treeStage ? "Observed-only FastTree" : phaseLabel(progress)}</strong><span>{treeStage ? "Removing the germline guide and inferring the fixed tree" : progress?.detail}</span></div><progress max="1" value={progressFraction} /><b>{treeStage ? "tree" : progress?.total ? `${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}` : "working"}</b></div>}
     {error && <div className="inline-method-error" role="alert"><strong>Phylogenetic UCA inference stopped</strong><span>{error}</span><button type="button" onClick={() => setError("")}>Dismiss</button></div>}
     {result && <div ref={resultRef} className="phylo-uca-results">
-      <div className="phylo-uca-result-head"><div><span className="section-kicker">Maximum joint path + exact marginal characters</span><h4>{result.mapVCall || "V?"} · {result.mapDCalls.length ? result.mapDCalls.join(" → ") : "no D"} · {result.mapJCall || "J?"}</h4><p>{result.characterModel === "nucleotide-gtr4" ? "Four-state nucleotide GTR" : "Five-state A/C/G/T/gap GTR"} · edge {result.bestPlacement.endpointA} ↔ {result.bestPlacement.endpointB} at {(result.bestPlacement.edgeFraction * 100).toFixed(1)}% · UCA branch {result.bestPlacement.ucaBranchLength.toFixed(5)} · effective local placements {result.effectivePlacementCount.toFixed(2)}</p></div><div className="result-actions"><button type="button" onClick={() => download(`>phylo_UCA_joint_MAP_aligned\n${result.mapAlignedSequence}\n>phylo_UCA_marginal_consensus_aligned\n${result.posteriorConsensusAligned}\n`, `${base}.fasta`)}>UCA FASTA ↓</button><button type="button" onClick={() => download(posteriorTsv(result), `${base}.nucleotide-posterior.tsv`)}>Nucleotide TSV ↓</button>{Boolean(result.codonPosterior?.length) && <button type="button" onClick={() => download(codonPosteriorTsv(result), `${base}.codon-posterior.tsv`)}>Codon TSV ↓</button>}<button type="button" onClick={() => download(result.placedTreeNewick, `${base}.placed-tree.nwk`)}>Placed tree ↓</button><button type="button" onClick={() => download(JSON.stringify(result, null, 2), `${base}.json`, "application/json")}>Complete JSON ↓</button></div></div>
-      <div className="phylo-uca-stats"><article><span>Observed tree</span><strong>{result.observedAlignmentFasta.split("\n>").length.toLocaleString()} tips</strong></article><article><span>Candidate set</span><strong>{result.candidateReport.v.length} V · {result.candidateReport.d.length} D · {result.candidateReport.j.length} J</strong></article><article><span>Placement log marginal</span><strong>{result.logMarginalLikelihood.toFixed(2)}</strong></article><article><span>Runtime</span><strong>{(result.elapsedMs / 1000).toFixed(2)} s</strong></article></div>
-      <PhyloUcaPlacementMap newick={result.observedTreeNewick} placements={result.placements} title={`${lineageLabel} UCA local placement likelihood surface`} />
+      <div className="phylo-uca-result-head"><div><span className="section-kicker">{resultInferenceMode === "maximum-likelihood" ? "Conditional-ML placement + exact HMM posterior" : resultInferenceMode === "grid-marginalization" ? "Grid-marginalized placement + exact HMM posterior" : "Continuous Gibbs/MH placement + sampled HMM posterior"}</span><h4>{result.mapVCall || "V?"} · {result.mapDCalls.length ? result.mapDCalls.join(" → ") : "no D"} · {result.mapJCall || "J?"}</h4><p>{result.characterModel === "nucleotide-gtr4" ? "Four-state nucleotide GTR" : "Five-state A/C/G/T/gap GTR"} · edge {result.bestPlacement.endpointA} ↔ {result.bestPlacement.endpointB} at {(result.bestPlacement.edgeFraction * 100).toFixed(1)}% · UCA branch {result.bestPlacement.ucaBranchLength.toFixed(6)} · {resultInferenceMode === "maximum-likelihood" ? "no placement marginalization" : resultInferenceMode === "gibbs-mh" ? `${result.mcmcDiagnostics?.retainedSamples ?? result.placements.length} retained MCMC draws` : `effective grid points ${result.effectivePlacementCount.toFixed(2)}`}</p></div><div className="result-actions"><button type="button" onClick={() => download(`>phylo_UCA_joint_MAP_aligned\n${result.mapAlignedSequence}\n>phylo_UCA_marginal_consensus_aligned\n${result.posteriorConsensusAligned}\n`, `${base}.fasta`)}>UCA FASTA ↓</button><button type="button" onClick={() => download(posteriorTsv(result), `${base}.nucleotide-posterior.tsv`)}>Nucleotide TSV ↓</button>{Boolean(result.codonPosterior?.length) && <button type="button" onClick={() => download(codonPosteriorTsv(result), `${base}.codon-posterior.tsv`)}>Codon TSV ↓</button>}<button type="button" onClick={() => download(result.placedTreeNewick, `${base}.placed-tree.nwk`)}>Placed tree ↓</button><button type="button" onClick={() => download(JSON.stringify(result, null, 2), `${base}.json`, "application/json")}>Complete JSON ↓</button></div></div>
+      <div className="phylo-uca-stats"><article><span>Inference route</span><strong>{resultInferenceMode === "maximum-likelihood" ? "Conditional ML" : resultInferenceMode === "grid-marginalization" ? "Grid marginalization" : "Continuous Gibbs/MH"}</strong></article><article><span>Candidate set</span><strong>{result.candidateReport.v.length} V · {result.candidateReport.d.length} D · {result.candidateReport.j.length} J</strong></article><article><span>Placement log marginal</span><strong>{result.logMarginalLikelihood.toFixed(2)}</strong></article><article><span>Runtime</span><strong>{(result.elapsedMs / 1000).toFixed(2)} s</strong></article></div>
+      {result.mcmcDiagnostics && <PhyloUcaMcmcMixing diagnostics={result.mcmcDiagnostics} />}
+      <PhyloUcaPlacementMap newick={result.observedTreeNewick} placements={result.placements} inferenceMode={resultInferenceMode} title={`${lineageLabel} UCA placement likelihood surface`} />
       <div className="phylo-uca-sequence"><strong>Joint MAP aligned UCA</strong><code>{result.mapAlignedSequence}</code><strong>Marginal consensus</strong><code>{result.posteriorConsensusAligned}</code></div>
       <section className="phylo-uca-logo">
         <header><div><span className="section-kicker">Marginal character probabilities</span><h5>UCA posterior frequency logo</h5><p>Every stack has height 1. Letter height is posterior frequency; entropy does not rescale the column.</p></div><div><div className="mode-toggle"><button className={logoMode === "nt" ? "active" : ""} type="button" onClick={() => setLogoMode("nt")}>Nucleotide</button><button className={logoMode === "codon" ? "active" : ""} type="button" disabled={!result.codonPosterior?.length} onClick={() => setLogoMode("codon")}>Codon</button><button className={logoMode === "aa" ? "active" : ""} type="button" disabled={!result.codonPosterior?.length} onClick={() => setLogoMode("aa")}>Amino acid</button></div><button type="button" onClick={() => logoRef.current && download(serializeProbabilityLogoSvg(logoRef.current), `${base}.${logoMode}-posterior-logo.svg`, "image/svg+xml;charset=utf-8")}>Logo SVG ↓</button></div></header>

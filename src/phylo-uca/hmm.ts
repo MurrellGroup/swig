@@ -63,6 +63,23 @@ export interface PhyloUcaHmmPosterior {
   mapJCall: string;
 }
 
+export interface PhyloUcaHmmGibbsDraw {
+  /** Exact forward marginal at the placement used for this Gibbs update. */
+  logMarginalLikelihood: number;
+  /** One joint draw of UCA characters and the recombination-HMM path. */
+  alignedSequence: string;
+  characterStates: Int8Array;
+  stateKinds: PhyloUcaSegmentKind[];
+  stateCalls: Array<string | undefined>;
+  stateDOrdinals: Array<number | undefined>;
+  path: PhyloUcaPathSegment[];
+  /** One-hot source occupancy for this draw, in the ordinary track schema. */
+  tracks: PhyloUcaHmmAnnotationTrack[];
+  mapVCall: string;
+  mapDCalls: string[];
+  mapJCall: string;
+}
+
 function clampProbability(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(1e-9, Math.min(1 - 1e-9, value));
@@ -443,6 +460,156 @@ function initialize(catalog: StateCatalog, emissions: EmissionCache): Float64Arr
 
 function terminalLogLikelihood(values: Float64Array, catalog: StateCatalog): number {
   return logSum(catalog.j.map((state) => values[state]));
+}
+
+function sampleLogCategorical(logWeights: ArrayLike<number>, random: () => number): number {
+  let maximum = NEGATIVE_INFINITY;
+  for (let index = 0; index < logWeights.length; index += 1) maximum = Math.max(maximum, logWeights[index]);
+  if (!Number.isFinite(maximum)) throw new Error("The UCA Gibbs sampler encountered an empty conditional distribution.");
+  let total = 0;
+  for (let index = 0; index < logWeights.length; index += 1) if (Number.isFinite(logWeights[index])) total += Math.exp(logWeights[index] - maximum);
+  let threshold = Math.max(0, Math.min(1 - Number.EPSILON, random())) * total;
+  for (let index = 0; index < logWeights.length; index += 1) {
+    if (!Number.isFinite(logWeights[index])) continue;
+    threshold -= Math.exp(logWeights[index] - maximum);
+    if (threshold <= 0) return index;
+  }
+  for (let index = logWeights.length - 1; index >= 0; index -= 1) if (Number.isFinite(logWeights[index])) return index;
+  throw new Error("The UCA Gibbs sampler could not draw a finite state.");
+}
+
+/**
+ * Reusable exact FFBS sampler for p(HMM path, UCA characters | placement, tree).
+ * The large D-state catalog is constructed once. Each draw performs one
+ * backward HMM pass, samples one coherent path, and samples UCA characters
+ * from the tree/template conditional at the visited states.
+ */
+export class PhyloUcaHmmGibbsSampler {
+  private readonly catalog: StateCatalog;
+  private readonly references: PreparedPhyloUcaReferences;
+  private readonly options: PhyloUcaHmmOptions;
+
+  constructor(
+    references: PreparedPhyloUcaReferences,
+    options: PhyloUcaHmmOptions,
+  ) {
+    this.references = references;
+    this.options = options;
+    this.catalog = buildStateCatalog(references, options);
+    if (!this.catalog.v.length || !this.catalog.j.length) throw new Error("The UCA HMM Gibbs sampler requires at least one V and one J candidate.");
+  }
+
+  draw(surface: ConditionalLikelihoodSurface, random: () => number = Math.random): PhyloUcaHmmGibbsDraw {
+    const { catalog, references, options } = this;
+    const emissions = buildEmissionCache(surface, catalog, references, options);
+    const stateTotal = catalog.states.length;
+    const context = { catalog, references, options, window: junctionWindow(surface.sites, references, options) };
+    const betaRows = new Float64Array(surface.sites * stateTotal);
+    betaRows.fill(NEGATIVE_INFINITY);
+    const lastOffset = (surface.sites - 1) * stateTotal;
+    for (const state of catalog.j) betaRows[lastOffset + state] = 0;
+    let beta: Float64Array = betaRows.slice(lastOffset, lastOffset + stateTotal);
+    for (let site = surface.sites - 2; site >= 0; site -= 1) {
+      const future = new Float64Array(stateTotal);
+      const emissionOffset = (site + 1) * stateTotal;
+      for (let state = 0; state < stateTotal; state += 1) future[state] = emissions.values[emissionOffset + state] + beta[state];
+      beta = transitionBackward(future, site, context);
+      betaRows.set(beta, site * stateTotal);
+    }
+
+    const initial = initialize(catalog, emissions);
+    const initialConditional = new Float64Array(stateTotal);
+    for (let state = 0; state < stateTotal; state += 1) initialConditional[state] = initial[state] + betaRows[state];
+    const logMarginalLikelihood = logSum(initialConditional) + emissions.siteOffsets.reduce((sum, value) => sum + value, 0);
+    const statePath = new Int32Array(surface.sites);
+    statePath[0] = sampleLogCategorical(initialConditional, random);
+
+    const addDestination = (destinations: number[], weights: number[], target: number, transitionLog: number, site: number) => {
+      if (target < 0 || !Number.isFinite(transitionLog)) return;
+      const future = emissions.values[(site + 1) * stateTotal + target] + betaRows[(site + 1) * stateTotal + target];
+      if (!Number.isFinite(future)) return;
+      destinations.push(target);
+      weights.push(transitionLog + future);
+    };
+
+    for (let site = 0; site < surface.sites - 1; site += 1) {
+      const sourceIndex = statePath[site];
+      const source = catalog.states[sourceIndex];
+      const destinations: number[] = [];
+      const weights: number[] = [];
+      if (source.kind === "V") {
+        const vExit = Math.max(1e-7, Math.min(0.995, sigmoid((site - references.vEndColumn) / Math.max(0.25, options.vTrimScale))));
+        addDestination(destinations, weights, sourceIndex, Math.log1p(-vExit), site);
+        const routes = routingLogs(context, site, "V", 0);
+        const hub = Math.log(vExit);
+        addDestination(destinations, weights, catalog.n[0], hub + routes[0], site);
+        for (const target of catalog.dEntries[1] ?? []) addDestination(destinations, weights, target, hub + routes[1] + catalog.dEntryLogPrior[target], site);
+        const candidateLog = -Math.log(catalog.j.length);
+        for (const target of catalog.j) addDestination(destinations, weights, target, hub + routes[2] + candidateLog, site);
+      } else if (source.kind === "N") {
+        const nStay = Math.max(1e-7, Math.min(0.999, Math.max(0, options.meanNLength) / (Math.max(0, options.meanNLength) + 1)));
+        addDestination(destinations, weights, sourceIndex, Math.log(nStay), site);
+        const routes = routingLogs(context, site, "N", source.dUsed);
+        const hub = Math.log1p(-nStay);
+        for (const target of catalog.dEntries[source.dUsed + 1] ?? []) addDestination(destinations, weights, target, hub + routes[1] + catalog.dEntryLogPrior[target], site);
+        const candidateLog = -Math.log(catalog.j.length);
+        for (const target of catalog.j) addDestination(destinations, weights, target, hub + routes[2] + candidateLog, site);
+      } else if (source.kind === "D") {
+        const next = catalog.dContinue[sourceIndex];
+        if (source.dRun < catalog.minimumDMatch) addDestination(destinations, weights, next, 0, site);
+        else {
+          const configuredDExit = clampProbability(options.dExitProbability, 0.28);
+          const exitProbability = next < 0 || site >= context.window.end ? 1 : configuredDExit;
+          if (next >= 0) addDestination(destinations, weights, next, Math.log1p(-exitProbability), site);
+          const routes = routingLogs(context, site, "D", source.dUsed);
+          const hub = Math.log(exitProbability);
+          addDestination(destinations, weights, catalog.n[source.dUsed], hub + routes[0], site);
+          for (const target of catalog.dEntries[source.dUsed + 1] ?? []) addDestination(destinations, weights, target, hub + routes[1] + catalog.dEntryLogPrior[target], site);
+          const candidateLog = -Math.log(catalog.j.length);
+          for (const target of catalog.j) addDestination(destinations, weights, target, hub + routes[2] + candidateLog, site);
+        }
+      } else addDestination(destinations, weights, sourceIndex, 0, site);
+      const selected = sampleLogCategorical(weights, random);
+      statePath[site + 1] = destinations[selected];
+    }
+
+    const characterStates = new Int8Array(surface.sites);
+    let alignedSequence = "";
+    const stateKinds: PhyloUcaSegmentKind[] = [];
+    const stateCalls: Array<string | undefined> = [];
+    const stateDOrdinals: Array<number | undefined> = [];
+    const trackAccumulator = new Map<string, TrackAccumulator>();
+    const siteTotals = new Float64Array(surface.sites);
+    siteTotals.fill(1);
+    for (let site = 0; site < surface.sites; site += 1) {
+      const stateIndex = statePath[site];
+      const conditional = conditionalCharacterProbabilities(surface, emissions, stateIndex, site);
+      const character = sampleLogCategorical(Float64Array.from(conditional, (probability) => probability > 0 ? Math.log(probability) : NEGATIVE_INFINITY), random);
+      characterStates[site] = character;
+      alignedSequence += CHARACTERS[character];
+      const oneHot = new Float64Array(5);
+      oneHot[character] = 1;
+      addTrackMass(trackAccumulator, catalog.states[stateIndex], site, 1, oneHot);
+      const state = catalog.states[stateIndex];
+      stateKinds.push(state.kind);
+      stateCalls.push(state.call);
+      stateDOrdinals.push(state.dOrdinal);
+    }
+    const path = pathSegments(catalog.states, statePath, alignedSequence);
+    return {
+      logMarginalLikelihood,
+      alignedSequence,
+      characterStates,
+      stateKinds,
+      stateCalls,
+      stateDOrdinals,
+      path,
+      tracks: finalizeTracks(trackAccumulator, siteTotals),
+      mapVCall: path.find((segment) => segment.kind === "V")?.call ?? "",
+      mapDCalls: path.filter((segment) => segment.kind === "D").map((segment) => segment.call ?? ""),
+      mapJCall: path.find((segment) => segment.kind === "J")?.call ?? "",
+    };
+  }
 }
 
 function forward(

@@ -48,7 +48,12 @@ function number(value: number, digits = 4): string {
   return Number.isFinite(value) ? value.toFixed(digits) : "—";
 }
 
-export function PhyloUcaPlacementMap({ newick, placements, title }: { newick: string; placements: readonly PhyloUcaPlacement[]; title: string }) {
+export function PhyloUcaPlacementMap({ newick, placements, inferenceMode, title }: {
+  newick: string;
+  placements: readonly PhyloUcaPlacement[];
+  inferenceMode: "maximum-likelihood" | "grid-marginalization" | "gibbs-mh";
+  title: string;
+}) {
   const model = useMemo(() => {
     const retained = placements.filter((placement) => placement.localPosteriorWeight > 0);
     if (!retained.length) return null;
@@ -77,11 +82,19 @@ export function PhyloUcaPlacementMap({ newick, placements, title }: { newick: st
 
   if (!model) return null;
   const height = model.layout.height + 38;
+  const heading = inferenceMode === "maximum-likelihood" ? "Conditional-ML tree attachment"
+    : inferenceMode === "grid-marginalization" ? "Full-HMM grid marginalization"
+      : "Continuous Gibbs/MH placement samples";
+  const description = inferenceMode === "maximum-likelihood"
+    ? "The marker is the single maximum-likelihood attachment and pendant length after continuous full-HMM optimization."
+    : inferenceMode === "grid-marginalization"
+      ? "Markers are the explicit attachment/pendant-length grid points retained in quadrature marginalization."
+      : "Markers are retained posterior draws. Within-edge attachment fraction and pendant length are continuous; repeated points can occur when an MH proposal is rejected.";
   return <section className="phylo-uca-placement-map">
-    <header><div><span className="section-kicker">Full-HMM local placement marginalization</span><h5>Tree attachment points used in the UCA posterior</h5><p>Markers sit at their evaluated positions along branches, not merely at nodes. Pendant length is proportional to the inferred branch from the attachment to the UCA. Color uses exp(ΔLL) from the best raw full-HMM marginal likelihood: red = 1; near-zero relative likelihood = blue.</p></div><div className="phylo-placement-color-key"><span>≈0</span><i /><span>1</span></div></header>
+    <header><div><span className="section-kicker">{heading}</span><h5>Tree attachment points used in the UCA result</h5><p>{description} Markers sit along branches, not merely at nodes. Pendant length is proportional to the inferred branch from the attachment to the UCA. Color uses exp(ΔLL) from the best raw full-HMM marginal likelihood: red = 1; near-zero relative likelihood = blue.</p></div><div className="phylo-placement-color-key"><span>≈0</span><i /><span>1</span></div></header>
     <div className="phylo-uca-placement-scroll"><svg xmlns="http://www.w3.org/2000/svg" width={model.layout.width} height={height} viewBox={`0 0 ${model.layout.width} ${height}`} role="img" aria-label={title}>
       <title>{title}</title>
-      <desc>Observed phylogeny with every full-HMM attachment and UCA branch-length point retained in local posterior marginalization.</desc>
+      <desc>Observed phylogeny with every full-HMM attachment and UCA branch-length point used by the selected inference route.</desc>
       <rect width={model.layout.width} height={height} fill="#fffdf9" />
       {model.layout.edges.map((edge, index) => <path key={index} d={`M ${edge.parent.x} ${edge.parent.y} V ${edge.child.y} H ${edge.child.x}`} fill="none" stroke="#788681" strokeWidth="1.1" />)}
       {model.layout.nodes.filter((node) => !node.children.length).map((node) => <text key={node.name} x={node.x + 5} y={node.y + 3} fill="#52605b" fontFamily="Inter,Arial,sans-serif" fontSize="8">{node.name.length > 24 ? `${node.name.slice(0, 22)}…` : node.name}</text>)}
@@ -89,7 +102,7 @@ export function PhyloUcaPlacementMap({ newick, placements, title }: { newick: st
         const direction = point.index % 2 ? -1 : 1;
         const endpointY = point.y + direction * point.pendantPixels;
         const tooltip = `Point ${point.index}; ${point.endpointA} ↔ ${point.endpointB}; edge fraction ${(point.edgeFraction * 100).toFixed(3)}%; UCA branch ${number(point.ucaBranchLength, 6)}; log marginal ${number(point.logMarginalLikelihood)}; ΔLL ${number(point.deltaLogLikelihood)}; exp(ΔLL) ${point.relativeLikelihood.toExponential(4)}; local posterior weight ${(point.localPosteriorWeight * 100).toFixed(3)}%`;
-        return <g key={`${point.edgeId}-${point.distanceFromA}-${point.ucaBranchLength}`} aria-label={tooltip}><title>{tooltip}</title>
+        return <g key={`${point.index}-${point.edgeId}-${point.distanceFromA}-${point.ucaBranchLength}`} aria-label={tooltip}><title>{tooltip}</title>
           <circle cx={point.x} cy={point.y} r="2.4" fill="#182722" />
           <line x1={point.x} x2={point.x} y1={point.y} y2={endpointY} stroke={point.color} strokeWidth="1.4" />
           <circle cx={point.x} cy={endpointY} r="5" fill={point.color} stroke="#ffffff" strokeWidth="1.2" />

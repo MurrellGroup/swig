@@ -2,6 +2,7 @@ import { parseFasta } from "../post-analysis-core.ts";
 import {
   PHYLO_UCA_ANNOTATION_ALLELE_MINIMUM_WEIGHT,
   PHYLO_UCA_ANNOTATION_REGISTER_MINIMUM_WEIGHT,
+  PhyloUcaHmmGibbsSampler,
   phyloUcaHmmLogMarginal,
   phyloUcaHmmPosterior,
 } from "./hmm.ts";
@@ -9,6 +10,7 @@ import { preparePhyloUcaReferences } from "./references.ts";
 import { PhyloUcaTreeMessages } from "./tree-messages.ts";
 import { normalizeProbabilityVector } from "../probability-logo.ts";
 import { PHYLO_UCA_CODON_STATE_COUNT, PHYLO_UCA_CODON_SYMBOLS } from "./codons.ts";
+import { gridCellWidths, phyloUcaBranchLengthGrid } from "./search-grid.ts";
 import type {
   PhyloUcaCodonPosterior,
   PhyloUcaHmmAnnotationTrack,
@@ -16,6 +18,7 @@ import type {
   PhyloUcaPlacement,
   PhyloUcaProgress,
   PhyloUcaResult,
+  PhyloUcaMcmcDiagnostics,
   PhyloUcaSitePosterior,
 } from "./types.ts";
 
@@ -140,13 +143,102 @@ function linearGrid(points: number, maximum: number): number[] {
   return Array.from({ length: points }, (_, index) => maximum * index / (points - 1));
 }
 
-function branchGrid(points: number, maximum: number): number[] {
-  if (points <= 1 || !(maximum > 0)) return [0];
-  return Array.from({ length: points }, (_, index) => maximum * Math.pow(index / (points - 1), 2));
-}
-
 function placementKey(edge: number, distance: number, branch: number): string {
   return `${edge}|${distance.toPrecision(11)}|${branch.toPrecision(11)}`;
+}
+
+function maximizeUnitInterval(
+  objective: (value: number) => number,
+  tolerance: number,
+  maximumIterations = 24,
+): { value: number; score: number } {
+  const cache = new Map<string, number>();
+  const evaluate = (value: number) => {
+    const bounded = Math.max(0, Math.min(1, value));
+    const key = bounded.toPrecision(14);
+    const previous = cache.get(key);
+    if (previous !== undefined) return previous;
+    const score = objective(bounded);
+    cache.set(key, score);
+    return score;
+  };
+  const inversePhi = (Math.sqrt(5) - 1) / 2;
+  let left = 0;
+  let right = 1;
+  let middleLeft = right - inversePhi * (right - left);
+  let middleRight = left + inversePhi * (right - left);
+  let leftScore = evaluate(middleLeft);
+  let rightScore = evaluate(middleRight);
+  evaluate(0);
+  evaluate(1);
+  for (let iteration = 0; iteration < maximumIterations && right - left > Math.max(1e-5, tolerance); iteration += 1) {
+    if (leftScore >= rightScore) {
+      right = middleRight;
+      middleRight = middleLeft;
+      rightScore = leftScore;
+      middleLeft = right - inversePhi * (right - left);
+      leftScore = evaluate(middleLeft);
+    } else {
+      left = middleLeft;
+      middleLeft = middleRight;
+      leftScore = rightScore;
+      middleRight = left + inversePhi * (right - left);
+      rightScore = evaluate(middleRight);
+    }
+  }
+  let bestValue = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const [raw, score] of cache) if (score > bestScore) {
+    bestValue = Number(raw);
+    bestScore = score;
+  }
+  return { value: bestValue, score: bestScore };
+}
+
+function seededRandom(rawSeed: number): () => number {
+  let state = (Number.isFinite(rawSeed) ? Math.floor(rawSeed) : 1729) >>> 0;
+  return () => {
+    state += 0x6d2b79f5;
+    let value = state;
+    value = Math.imul(value ^ value >>> 15, value | 1);
+    value ^= value + Math.imul(value ^ value >>> 7, value | 61);
+    return ((value ^ value >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function reflected(value: number, maximum: number): number {
+  if (!(maximum > 0)) return 0;
+  const period = 2 * maximum;
+  const wrapped = ((value % period) + period) % period;
+  return wrapped <= maximum ? wrapped : period - wrapped;
+}
+
+function effectiveSampleSize(values: readonly number[]): number {
+  const count = values.length;
+  if (count < 2) return count;
+  const mean = values.reduce((sum, value) => sum + value, 0) / count;
+  const centered = values.map((value) => value - mean);
+  const variance = centered.reduce((sum, value) => sum + value * value, 0) / count;
+  if (!(variance > 0)) return count;
+  let correlationSum = 0;
+  for (let lag = 1; lag < Math.min(count, 200); lag += 1) {
+    let covariance = 0;
+    for (let index = 0; index + lag < count; index += 1) covariance += centered[index] * centered[index + lag];
+    const correlation = covariance / ((count - lag) * variance);
+    if (!(correlation > 0)) break;
+    correlationSum += correlation;
+  }
+  return Math.max(1, Math.min(count, count / (1 + 2 * correlationSum)));
+}
+
+function fixedUcaLogLikelihood(surface: ReturnType<PhyloUcaTreeMessages["conditionalLikelihoods"]>, characters: Int8Array): number {
+  let total = 0;
+  for (let site = 0; site < surface.sites; site += 1) {
+    const character = characters[site];
+    if (character < 0 || character >= surface.stateCount) continue;
+    total += surface.logLikelihoods[site * surface.stateCount + character];
+  }
+  return total;
 }
 
 /** Equal-weight, independent nucleotide mixtures over retained V and J alleles. */
@@ -206,21 +298,40 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
       ? "The forced four-state model treated internal as well as terminal gaps as missing data."
       : "The observed alignment contains no internal gaps, so the phylogenetic likelihood used ordinary four-state nucleotide GTR; terminal tip gaps, including columns missing at every tip, were missing data.");
 
-  const screenMode = input.options.search.screenMode ?? "vj-mixture";
-  // Endpoints plus at least one branch-interior attachment are always tested.
-  const screenEdgePoints = Math.max(3, Math.floor(input.options.search.screenEdgeGridPoints ?? 5));
-  const guideBranchSamples = uniqueNumbers([0, Math.min(0.02, input.options.search.maximumUcaBranchLength), Math.min(0.08, input.options.search.maximumUcaBranchLength)]);
+  const search = input.options.search;
+  const inferenceMode = search.inferenceMode ?? (search.marginalizeLocally ? "grid-marginalization" : "maximum-likelihood");
+  const screenMode = search.screenMode ?? "vj-mixture";
+  const maximumUcaBranchLength = Math.max(0, Number.isFinite(search.maximumUcaBranchLength) ? search.maximumUcaBranchLength : 0.3);
+  const branchFromUnit = (value: number) => maximumUcaBranchLength * Math.pow(Math.max(0, Math.min(1, value)), 4);
+  const screenEdgePoints = Math.max(3, Math.floor(search.screenEdgeGridPoints ?? 5));
+  const guideBranchSamples = uniqueNumbers([
+    0,
+    Math.min(maximumUcaBranchLength, Math.max(1e-5, search.minimumPositiveUcaBranchLength ?? 1e-5)),
+    Math.min(maximumUcaBranchLength, 0.001),
+    Math.min(maximumUcaBranchLength, 0.004),
+    Math.min(maximumUcaBranchLength, 0.01),
+    Math.min(maximumUcaBranchLength, 0.02),
+    Math.min(maximumUcaBranchLength, 0.08),
+  ]);
   const vjProfile = vjNucleotideMixtureProfile(references);
+  const screenScore = (edge: number, distance: number, branch: number) => {
+    const surface = tree.conditionalLikelihoods(edge, distance, branch);
+    return screenMode === "vj-mixture" ? tree.nucleotideMixtureScore(surface, vjProfile) : tree.guideScore(surface, references.guide);
+  };
   const edgeScores: Array<{ edge: number; guideScore: number; distance: number; branch: number }> = [];
-  progress("edge-screen", 0, tree.edges.length, screenMode === "vj-mixture" ? "Screening every edge with the independent-site V/J nucleotide mixture" : "Screening every edge with the single germline guide");
+  const requestedFullHmmEdges = Math.floor(search.fullHmmEdges);
+  const screenRefinementCount = requestedFullHmmEdges <= 0
+    ? tree.edges.length
+    : Math.min(tree.edges.length, Math.max(requestedFullHmmEdges, 8));
+  const screenTotal = tree.edges.length + screenRefinementCount;
+  progress("edge-screen", 0, screenTotal, screenMode === "vj-mixture" ? "Screening every edge with the independent-site V/J nucleotide mixture" : "Screening every edge with the single germline guide");
   for (let edgeIndex = 0; edgeIndex < tree.edges.length; edgeIndex += 1) {
     const edge = tree.edges[edgeIndex];
     let guideScore = NEGATIVE_INFINITY;
     let bestDistance = edge.length / 2;
     let bestBranch = 0;
     for (const distance of linearGrid(screenEdgePoints, edge.length)) for (const branch of guideBranchSamples) {
-      const surface = tree.conditionalLikelihoods(edgeIndex, distance, branch);
-      const score = screenMode === "vj-mixture" ? tree.nucleotideMixtureScore(surface, vjProfile) : tree.guideScore(surface, references.guide);
+      const score = screenScore(edgeIndex, distance, branch);
       if (score > guideScore) {
         guideScore = score;
         bestDistance = distance;
@@ -228,29 +339,44 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
       }
     }
     edgeScores.push({ edge: edgeIndex, guideScore, distance: bestDistance, branch: bestBranch });
-    progress("edge-screen", edgeIndex + 1, tree.edges.length, `Screened ${edge.id}`);
+    progress("edge-screen", edgeIndex + 1, screenTotal, `Screened ${edge.id}`);
     if ((edgeIndex & 3) === 3) await Promise.resolve();
   }
   edgeScores.sort((left, right) => right.guideScore - left.guideScore);
-  const requestedFullHmmEdges = Math.floor(input.options.search.fullHmmEdges);
+  // Refine the cheap V/J-only surface continuously. This is only an initializer:
+  // every retained ML/grid point is still evaluated with the complete HMM.
+  for (let index = 0; index < screenRefinementCount; index += 1) {
+    const candidate = edgeScores[index];
+    const edge = tree.edges[candidate.edge];
+    let distance = candidate.distance;
+    let branch = candidate.branch;
+    for (let round = 0; round < 2; round += 1) {
+      const branchOptimum = maximizeUnitInterval((coordinate) => screenScore(candidate.edge, distance, branchFromUnit(coordinate)), 0.004, 16);
+      branch = branchFromUnit(branchOptimum.value);
+      const distanceOptimum = maximizeUnitInterval((fraction) => screenScore(candidate.edge, edge.length * fraction, branch), 0.004, 16);
+      distance = edge.length * distanceOptimum.value;
+    }
+    candidate.distance = distance;
+    candidate.branch = branch;
+    candidate.guideScore = screenScore(candidate.edge, distance, branch);
+    progress("edge-screen", tree.edges.length + index + 1, screenTotal, `Refined ${edge.id} with the V/J-only surface`);
+    if ((index & 1) === 1) await Promise.resolve();
+  }
+  edgeScores.sort((left, right) => right.guideScore - left.guideScore);
   const selectedEdges = edgeScores.slice(0, requestedFullHmmEdges <= 0 ? tree.edges.length : Math.max(1, Math.min(tree.edges.length, requestedFullHmmEdges)));
+  const screenByEdge = new Map(edgeScores.map((entry) => [entry.edge, entry]));
   const evaluated = new Map<string, PhyloUcaPlacement>();
   const totalEdgeLength = tree.edges.reduce((sum, edge) => sum + Math.max(1e-12, edge.length), 0);
-  const branchMean = Math.max(1e-5, input.options.search.branchPriorMean);
-  const evaluate = (edgeIndex: number, distance: number, branch: number, guideScore: number): PhyloUcaPlacement => {
+  const branchMean = Math.max(1e-5, Number.isFinite(search.branchPriorMean) ? search.branchPriorMean : 0.06);
+  const edgePriorLog = (edgeIndex: number) => (search.edgePrior ?? "uniform-length") === "uniform-length"
+    ? Math.log(Math.max(1e-12, tree.edges[edgeIndex].length) / Math.max(1e-12, totalEdgeLength))
+    : -Math.log(tree.edges.length);
+  const branchPriorLog = (branch: number) => -branch / branchMean - Math.log(branchMean);
+  const placement = (edgeIndex: number, distance: number, branch: number, guideScore: number, likelihood: number): PhyloUcaPlacement => {
     const edge = tree.edges[edgeIndex];
     const safeDistance = Math.max(0, Math.min(edge.length, distance));
-    const safeBranch = Math.max(0, Math.min(input.options.search.maximumUcaBranchLength, branch));
-    const key = placementKey(edgeIndex, safeDistance, safeBranch);
-    const previous = evaluated.get(key);
-    if (previous) return previous;
-    const surface = tree.conditionalLikelihoods(edgeIndex, safeDistance, safeBranch);
-    const likelihood = phyloUcaHmmLogMarginal(surface, references, input.options.hmm);
-    const edgePrior = input.options.search.edgePrior === "uniform-length"
-      ? Math.log(Math.max(1e-12, edge.length) / Math.max(1e-12, totalEdgeLength))
-      : -Math.log(tree.edges.length);
-    const branchPrior = -safeBranch / branchMean - Math.log(branchMean);
-    const placement: PhyloUcaPlacement = {
+    const safeBranch = Math.max(0, Math.min(maximumUcaBranchLength, branch));
+    return {
       edgeId: edge.id,
       endpointA: edge.endpointA,
       endpointB: edge.endpointB,
@@ -259,86 +385,270 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
       edgeFraction: edge.length > 0 ? safeDistance / edge.length : 0,
       ucaBranchLength: safeBranch,
       logMarginalLikelihood: likelihood,
-      logPosteriorScore: likelihood + edgePrior + branchPrior,
+      logPosteriorScore: likelihood + edgePriorLog(edgeIndex) + branchPriorLog(safeBranch),
       localPosteriorWeight: 0,
       screenScore: guideScore,
       screenMode,
       guideScore,
     };
-    evaluated.set(key, placement);
-    return placement;
+  };
+  const evaluate = (edgeIndex: number, distance: number, branch: number, guideScore = screenByEdge.get(edgeIndex)?.guideScore ?? NEGATIVE_INFINITY): PhyloUcaPlacement => {
+    const edge = tree.edges[edgeIndex];
+    const safeDistance = Math.max(0, Math.min(edge.length, distance));
+    const safeBranch = Math.max(0, Math.min(maximumUcaBranchLength, branch));
+    const key = placementKey(edgeIndex, safeDistance, safeBranch);
+    const previous = evaluated.get(key);
+    if (previous) return previous;
+    const surface = tree.conditionalLikelihoods(edgeIndex, safeDistance, safeBranch);
+    const result = placement(edgeIndex, safeDistance, safeBranch, guideScore, phyloUcaHmmLogMarginal(surface, references, input.options.hmm));
+    evaluated.set(key, result);
+    return result;
   };
 
-  const coarseTasks = selectedEdges.flatMap(({ edge, guideScore, distance: screenDistance, branch: screenBranch }) => {
-    const treeEdge = tree.edges[edge];
-    const uniform = linearGrid(Math.max(3, input.options.search.edgeGridPoints), treeEdge.length).flatMap((distance) =>
-      branchGrid(Math.max(2, input.options.search.branchGridPoints), input.options.search.maximumUcaBranchLength).map((branch) => ({ edge, distance, branch, guideScore }))
-    );
-    return [...uniform, { edge, distance: screenDistance, branch: screenBranch, guideScore }];
-  });
-  progress("hmm-search", 0, coarseTasks.length, "Evaluating the full recombination HMM on screen-ranked branch points");
-  for (let index = 0; index < coarseTasks.length; index += 1) {
-    const task = coarseTasks[index];
-    evaluate(task.edge, task.distance, task.branch, task.guideScore);
-    progress("hmm-search", index + 1, coarseTasks.length, `Full HMM placement ${index + 1} of ${coarseTasks.length}`);
-    if ((index & 1) === 1) await Promise.resolve();
-  }
-  for (let round = 0; round < Math.max(0, input.options.search.localRefinementRounds); round += 1) {
-    const leaders = [...evaluated.values()].sort((left, right) => right.logPosteriorScore - left.logPosteriorScore).slice(0, 2);
-    const tasks: Array<{ edge: number; distance: number; branch: number; guideScore: number }> = [];
-    for (const leader of leaders) {
-      const edge = tree.edges.find((candidate) => candidate.id === leader.edgeId)!;
-      const edgeStep = edge.length / Math.max(2, input.options.search.edgeGridPoints - 1) / Math.pow(2, round + 1);
-      const branchStep = input.options.search.maximumUcaBranchLength / Math.max(2, input.options.search.branchGridPoints - 1) / Math.pow(2, round + 1);
-      const edgeIndex = edge.index;
-      for (const distance of uniqueNumbers([leader.distanceFromA - edgeStep, leader.distanceFromA, leader.distanceFromA + edgeStep])) {
-        for (const branch of uniqueNumbers([leader.ucaBranchLength - branchStep, leader.ucaBranchLength, leader.ucaBranchLength + branchStep])) {
-          if (distance >= 0 && distance <= edge.length && branch >= 0 && branch <= input.options.search.maximumUcaBranchLength) tasks.push({ edge: edgeIndex, distance, branch, guideScore: leader.guideScore });
-        }
-      }
-    }
-    for (let index = 0; index < tasks.length; index += 1) {
-      const task = tasks[index];
-      evaluate(task.edge, task.distance, task.branch, task.guideScore);
-      progress("hmm-search", index + 1, tasks.length, `Local placement refinement ${round + 1}`);
-      if ((index & 1) === 1) await Promise.resolve();
-    }
-  }
-  const placements = [...evaluated.values()].sort((left, right) => right.logPosteriorScore - left.logPosteriorScore);
-  if (!placements.length) throw new Error("No UCA attachment placement could be evaluated.");
-  const localCount = input.options.search.marginalizeLocally ? Math.max(1, Math.min(placements.length, input.options.search.localPosteriorPoints)) : 1;
-  const local = placements.slice(0, localCount);
-  const weights = normalizedWeights(local.map((placement) => placement.logPosteriorScore));
-  local.forEach((placement, index) => { placement.localPosteriorWeight = weights[index]; });
+  let placements: PhyloUcaPlacement[] = [];
+  let local: PhyloUcaPlacement[] = [];
+  let weights: number[] = [];
+  let evaluatedUcaBranchLengths: number[] | undefined;
+  let mcmcDiagnostics: PhyloUcaMcmcDiagnostics | undefined;
   const mixture = Array.from({ length: observedColumns }, () => [0, 0, 0, 0, 0] as [number, number, number, number, number]);
   let codonMixture: Array<{ startSite: number; probabilities: number[] }> = [];
   let bestPosterior: ReturnType<typeof phyloUcaHmmPosterior> | null = null;
   const marginalTrackMixture = new Map<string, AnnotationTrackMixture>();
   const prefilteredMarginalTrackIds = new Set<string>();
   let prefilteredMarginalMaximumWeight = 0;
-  progress("posterior", 0, local.length, "Marginalizing UCA nucleotides and exact codons around the best placement");
-  for (let index = 0; index < local.length; index += 1) {
-    const placement = local[index];
-    const edge = tree.edges.find((candidate) => candidate.id === placement.edgeId)!;
-    const surface = tree.conditionalLikelihoods(edge.index, placement.distanceFromA, placement.ucaBranchLength);
-    const posterior = phyloUcaHmmPosterior(surface, references, input.options.hmm, frameOffset);
-    if (index === 0) bestPosterior = posterior;
-    addAnnotationTrackMixture(marginalTrackMixture, posterior.marginalTracks, weights[index]);
-    for (const id of posterior.omittedMarginalTrackIds) prefilteredMarginalTrackIds.add(id);
-    prefilteredMarginalMaximumWeight = Math.max(prefilteredMarginalMaximumWeight, posterior.omittedMarginalMaximumWeight);
-    for (let site = 0; site < observedColumns; site += 1) for (let character = 0; character < 5; character += 1) mixture[site][character] += weights[index] * posterior.probabilities[site][character];
-    if (!codonMixture.length) codonMixture = posterior.codonPosterior.map((codon) => ({ startSite: codon.startSite, probabilities: Array.from({ length: PHYLO_UCA_CODON_STATE_COUNT }, () => 0) }));
-    if (posterior.codonPosterior.length !== codonMixture.length) throw new Error("Local UCA placements produced incompatible codon posterior dimensions.");
-    for (let codon = 0; codon < codonMixture.length; codon += 1) {
-      const source = posterior.codonPosterior[codon];
-      const destination = codonMixture[codon];
-      if (source.startSite !== destination.startSite || source.probabilities.length !== PHYLO_UCA_CODON_STATE_COUNT) throw new Error("Local UCA placements produced incompatible codon state orderings.");
-      for (let state = 0; state < PHYLO_UCA_CODON_STATE_COUNT; state += 1) destination.probabilities[state] += weights[index] * source.probabilities[state];
+
+  if (inferenceMode === "maximum-likelihood") {
+    const initialTasks = selectedEdges.flatMap((entry) => uniqueNumbers([0, entry.branch]).map((branch) => ({ ...entry, branch })));
+    progress("hmm-search", 0, initialTasks.length, "Evaluating full-HMM starting points for continuous conditional-ML optimization");
+    for (let index = 0; index < initialTasks.length; index += 1) {
+      const task = initialTasks[index];
+      evaluate(task.edge, task.distance, task.branch, task.guideScore);
+      progress("hmm-search", index + 1, initialTasks.length, `Full-HMM ML initializer ${index + 1} of ${initialTasks.length}`);
+      if ((index & 1) === 1) await Promise.resolve();
     }
-    progress("posterior", index + 1, local.length, `Integrated nucleotide and codon posterior for placement ${index + 1} of ${local.length}`);
-    await Promise.resolve();
+    // Once an edge is admitted by the user-controlled screen breadth, optimize
+    // every admitted edge. Dropping edges after one full-HMM initializer can
+    // miss a narrow near-zero pendant optimum—the failure this route exists to
+    // avoid.
+    const refineEdgeIds = new Set(selectedEdges.map((entry) => tree.edges[entry.edge].id));
+    const rounds = Math.max(1, Math.floor(search.mlOptimizationRounds ?? 2));
+    const tolerance = Math.max(1e-5, search.mlOptimizationTolerance ?? 0.002);
+    let refined = 0;
+    for (const edgeId of refineEdgeIds) {
+      const edge = tree.edges.find((candidate) => candidate.id === edgeId)!;
+      let current = [...evaluated.values()].filter((point) => point.edgeId === edgeId).sort((left, right) => right.logMarginalLikelihood - left.logMarginalLikelihood)[0];
+      for (let round = 0; round < rounds; round += 1) {
+        const branchOptimum = maximizeUnitInterval((coordinate) => evaluate(edge.index, current.distanceFromA, branchFromUnit(coordinate)).logMarginalLikelihood, tolerance);
+        current = evaluate(edge.index, current.distanceFromA, branchFromUnit(branchOptimum.value));
+        const distanceOptimum = maximizeUnitInterval((fraction) => evaluate(edge.index, edge.length * fraction, current.ucaBranchLength).logMarginalLikelihood, tolerance);
+        current = evaluate(edge.index, edge.length * distanceOptimum.value, current.ucaBranchLength);
+      }
+      refined += 1;
+      progress("hmm-search", refined, refineEdgeIds.size, `Continuously optimized ${edge.id} under the full HMM`);
+      await Promise.resolve();
+    }
+    placements = [...evaluated.values()].sort((left, right) => right.logMarginalLikelihood - left.logMarginalLikelihood);
+    if (!placements.length) throw new Error("No UCA attachment placement could be evaluated.");
+    local = placements.slice(0, 1);
+    weights = [1];
+    local[0].localPosteriorWeight = 1;
+    warnings.push("Conditional-ML mode reports the single full-HMM likelihood optimum; it does not average over tree attachment or UCA branch length, and placement/branch priors do not affect the optimum.");
+  } else if (inferenceMode === "grid-marginalization") {
+    const branchLengths = phyloUcaBranchLengthGrid(search);
+    evaluatedUcaBranchLengths = branchLengths;
+    const branchWidths = gridCellWidths(branchLengths, 0, maximumUcaBranchLength);
+    const edgeFractions = linearGrid(Math.max(3, Math.floor(search.edgeGridPoints)), 1);
+    const fractionWidths = gridCellWidths(edgeFractions, 0, 1);
+    const tasks = selectedEdges.flatMap((entry) => edgeFractions.flatMap((fraction, fractionIndex) => branchLengths.map((branch, branchIndex) => ({ ...entry, fraction, fractionIndex, branch, branchIndex }))));
+    progress("hmm-search", 0, tasks.length, "Evaluating the explicit full-HMM attachment × pendant-length quadrature grid");
+    for (let index = 0; index < tasks.length; index += 1) {
+      const task = tasks[index];
+      const point = evaluate(task.edge, tree.edges[task.edge].length * task.fraction, task.branch, task.guideScore);
+      point.integrationLogWeight = Math.log(fractionWidths[task.fractionIndex]) + Math.log(branchWidths[task.branchIndex]);
+      progress("hmm-search", index + 1, tasks.length, `Full-HMM grid point ${index + 1} of ${tasks.length}`);
+      if ((index & 1) === 1) await Promise.resolve();
+    }
+    placements = [...evaluated.values()].sort((left, right) =>
+      right.logPosteriorScore + (right.integrationLogWeight ?? 0) - left.logPosteriorScore - (left.integrationLogWeight ?? 0));
+    if (!placements.length) throw new Error("No UCA attachment placement could be evaluated.");
+    const localCount = Math.max(1, Math.min(placements.length, Math.floor(search.localPosteriorPoints ?? 12)));
+    local = placements.slice(0, localCount);
+    weights = normalizedWeights(local.map((point) => point.logPosteriorScore + (point.integrationLogWeight ?? 0)));
+    local.forEach((point, index) => { point.localPosteriorWeight = weights[index]; });
+    if (localCount < placements.length) {
+      const allWeights = normalizedWeights(placements.map((point) => point.logPosteriorScore + (point.integrationLogWeight ?? 0)));
+      const retainedMass = allWeights.slice(0, localCount).reduce((sum, value) => sum + value, 0);
+      warnings.push(`Grid posterior output retained the leading ${localCount.toLocaleString()} of ${placements.length.toLocaleString()} evaluated points (${(100 * retainedMass).toFixed(3)}% of quadrature mass) for character/HMM marginalization.`);
+    }
+  } else {
+    const random = seededRandom(search.mcmcSeed ?? 1729);
+    const iterations = Math.max(2, Math.floor(search.mcmcIterations ?? 160));
+    const burnIn = Math.max(0, Math.min(iterations - 1, Math.floor(search.mcmcBurnIn ?? 40)));
+    const thin = Math.max(1, Math.floor(search.mcmcThin ?? 2));
+    const mhSteps = Math.max(1, Math.floor(search.mcmcMhStepsPerIteration ?? 4));
+    const sampler = new PhyloUcaHmmGibbsSampler(references, input.options.hmm);
+    let currentEdge = edgeScores[0].edge;
+    let currentFraction = tree.edges[currentEdge].length > 0 ? edgeScores[0].distance / tree.edges[currentEdge].length : 0;
+    let currentBranch = edgeScores[0].branch;
+    const maximumScreen = Math.max(...edgeScores.map((entry) => entry.guideScore));
+    const edgeProposalWeights = edgeScores.map((entry) => Math.exp(Math.max(-30, (entry.guideScore - maximumScreen) / 8)) + 1e-12);
+    const edgeProposalTotal = edgeProposalWeights.reduce((sum, value) => sum + value, 0);
+    const proposalProbability = new Map(edgeScores.map((entry, index) => [entry.edge, edgeProposalWeights[index] / edgeProposalTotal]));
+    const sampleGlobalEdge = () => {
+      let threshold = random() * edgeProposalTotal;
+      for (let index = 0; index < edgeScores.length; index += 1) {
+        threshold -= edgeProposalWeights[index];
+        if (threshold <= 0) return edgeScores[index].edge;
+      }
+      return edgeScores.at(-1)!.edge;
+    };
+    const retained: Array<{ point: PhyloUcaPlacement; draw: ReturnType<PhyloUcaHmmGibbsSampler["draw"]> }> = [];
+    const trace: PhyloUcaMcmcDiagnostics["trace"] = [];
+    let branchProposals = 0;
+    let branchAccepted = 0;
+    let positionProposals = 0;
+    let positionAccepted = 0;
+    let globalProposals = 0;
+    let globalAccepted = 0;
+    let edgeSwitches = 0;
+    progress("mcmc", 0, iterations, "Running exact HMM Gibbs draws with continuous tree-position and branch-length MH updates");
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      const currentEdgeObject = tree.edges[currentEdge];
+      let currentSurface = tree.conditionalLikelihoods(currentEdge, currentEdgeObject.length * currentFraction, currentBranch);
+      const draw = sampler.draw(currentSurface, random);
+      let conditionalTarget = fixedUcaLogLikelihood(currentSurface, draw.characterStates) + edgePriorLog(currentEdge) + branchPriorLog(currentBranch);
+      const keep = iteration >= burnIn && (iteration - burnIn) % thin === 0;
+      trace.push({
+        iteration: iteration + 1,
+        edgeId: currentEdgeObject.id,
+        edgeFraction: currentFraction,
+        ucaBranchLength: currentBranch,
+        conditionalLogTarget: conditionalTarget,
+        logMarginalLikelihood: draw.logMarginalLikelihood,
+        retained: keep,
+      });
+      if (keep) retained.push({
+        point: placement(currentEdge, currentEdgeObject.length * currentFraction, currentBranch, screenByEdge.get(currentEdge)?.guideScore ?? NEGATIVE_INFINITY, draw.logMarginalLikelihood),
+        draw,
+      });
+
+      for (let step = 0; step < mhSteps; step += 1) {
+        let proposedEdge = currentEdge;
+        let proposedFraction = currentFraction;
+        let proposedBranch = currentBranch;
+        let logHastings = 0;
+        let proposalKind: "branch" | "position" | "global";
+        if (random() < Math.max(0, Math.min(1, search.mcmcGlobalJumpProbability ?? 0.12))) {
+          proposalKind = "global";
+          globalProposals += 1;
+          proposedEdge = sampleGlobalEdge();
+          proposedFraction = random();
+          logHastings = Math.log(Math.max(1e-300, proposalProbability.get(currentEdge) ?? 1e-300))
+            - Math.log(Math.max(1e-300, proposalProbability.get(proposedEdge) ?? 1e-300));
+        } else if (random() < 0.5) {
+          proposalKind = "branch";
+          branchProposals += 1;
+          const scale = Math.max(1e-9, search.mcmcBranchProposalScale ?? 0.004);
+          proposedBranch = reflected(currentBranch + (2 * random() - 1) * scale, maximumUcaBranchLength);
+        } else {
+          proposalKind = "position";
+          positionProposals += 1;
+          const scale = Math.max(1e-9, search.mcmcPositionProposalScale ?? 0.18);
+          proposedFraction = reflected(currentFraction + (2 * random() - 1) * scale, 1);
+        }
+        const proposedEdgeObject = tree.edges[proposedEdge];
+        const proposedSurface = tree.conditionalLikelihoods(proposedEdge, proposedEdgeObject.length * proposedFraction, proposedBranch);
+        const proposedTarget = fixedUcaLogLikelihood(proposedSurface, draw.characterStates) + edgePriorLog(proposedEdge) + branchPriorLog(proposedBranch);
+        if (Math.log(Math.max(Number.MIN_VALUE, random())) < Math.min(0, proposedTarget - conditionalTarget + logHastings)) {
+          if (proposalKind === "branch") branchAccepted += 1;
+          else if (proposalKind === "position") positionAccepted += 1;
+          else {
+            globalAccepted += 1;
+            if (proposedEdge !== currentEdge) edgeSwitches += 1;
+          }
+          currentEdge = proposedEdge;
+          currentFraction = proposedFraction;
+          currentBranch = proposedBranch;
+          currentSurface = proposedSurface;
+          conditionalTarget = proposedTarget;
+        }
+      }
+      progress("mcmc", iteration + 1, iterations, `MCMC iteration ${iteration + 1} of ${iterations}; ${retained.length} retained draws`);
+      await Promise.resolve();
+    }
+    if (!retained.length) throw new Error("The Gibbs/MH settings retained no posterior draws; reduce burn-in or thinning.");
+    const sampleWeight = 1 / retained.length;
+    for (const sample of retained) {
+      sample.point.localPosteriorWeight = sampleWeight;
+      addAnnotationTrackMixture(marginalTrackMixture, sample.draw.tracks, sampleWeight);
+      for (let site = 0; site < observedColumns; site += 1) mixture[site][sample.draw.characterStates[site]] += sampleWeight;
+      if (!codonMixture.length) for (let startSite = frameOffset; startSite + 2 < observedColumns; startSite += 3) {
+        codonMixture.push({ startSite, probabilities: Array.from({ length: PHYLO_UCA_CODON_STATE_COUNT }, () => 0) });
+      }
+      for (const codon of codonMixture) {
+        const first = sample.draw.characterStates[codon.startSite];
+        const second = sample.draw.characterStates[codon.startSite + 1];
+        const third = sample.draw.characterStates[codon.startSite + 2];
+        codon.probabilities[25 * first + 5 * second + third] += sampleWeight;
+      }
+    }
+    placements = retained.map((sample) => sample.point).sort((left, right) => right.logMarginalLikelihood - left.logMarginalLikelihood);
+    local = [...placements];
+    weights = local.map(() => sampleWeight);
+    const bestPlacement = placements[0];
+    const bestEdge = tree.edges.find((edge) => edge.id === bestPlacement.edgeId)!;
+    bestPosterior = phyloUcaHmmPosterior(tree.conditionalLikelihoods(bestEdge.index, bestPlacement.distanceFromA, bestPlacement.ucaBranchLength), references, input.options.hmm, frameOffset);
+    const retainedTrace = trace.filter((point) => point.retained);
+    const marginalTargets = retainedTrace.map((point) => {
+      const edge = tree.edges.find((candidate) => candidate.id === point.edgeId)!;
+      return point.logMarginalLikelihood + edgePriorLog(edge.index) + branchPriorLog(point.ucaBranchLength);
+    });
+    mcmcDiagnostics = {
+      iterations,
+      burnIn,
+      thin,
+      retainedSamples: retained.length,
+      mhStepsPerIteration: mhSteps,
+      seed: search.mcmcSeed ?? 1729,
+      branchProposals,
+      branchAccepted,
+      positionProposals,
+      positionAccepted,
+      globalProposals,
+      globalAccepted,
+      edgeSwitches,
+      branchEffectiveSampleSize: effectiveSampleSize(retainedTrace.map((point) => point.ucaBranchLength)),
+      logTargetEffectiveSampleSize: effectiveSampleSize(marginalTargets),
+      trace,
+    };
+    warnings.push("Gibbs/MH used continuous pendant lengths and continuous within-edge attachment fractions. No branch-length or attachment grid was used; each MH likelihood used the exact GTR transition at the proposed value and the tree's cached directed half-edge messages.");
   }
-  if (!bestPosterior) throw new Error("The best UCA placement did not produce a posterior sequence.");
+
+  if (inferenceMode !== "gibbs-mh") {
+    progress("posterior", 0, local.length, inferenceMode === "maximum-likelihood" ? "Computing the exact posterior at the conditional-ML placement" : "Marginalizing UCA nucleotides and exact codons over retained grid points");
+    for (let index = 0; index < local.length; index += 1) {
+      const point = local[index];
+      const edge = tree.edges.find((candidate) => candidate.id === point.edgeId)!;
+      const surface = tree.conditionalLikelihoods(edge.index, point.distanceFromA, point.ucaBranchLength);
+      const posterior = phyloUcaHmmPosterior(surface, references, input.options.hmm, frameOffset);
+      if (index === 0) bestPosterior = posterior;
+      addAnnotationTrackMixture(marginalTrackMixture, posterior.marginalTracks, weights[index]);
+      for (const id of posterior.omittedMarginalTrackIds) prefilteredMarginalTrackIds.add(id);
+      prefilteredMarginalMaximumWeight = Math.max(prefilteredMarginalMaximumWeight, posterior.omittedMarginalMaximumWeight);
+      for (let site = 0; site < observedColumns; site += 1) for (let character = 0; character < 5; character += 1) mixture[site][character] += weights[index] * posterior.probabilities[site][character];
+      if (!codonMixture.length) codonMixture = posterior.codonPosterior.map((codon) => ({ startSite: codon.startSite, probabilities: Array.from({ length: PHYLO_UCA_CODON_STATE_COUNT }, () => 0) }));
+      if (posterior.codonPosterior.length !== codonMixture.length) throw new Error("UCA placements produced incompatible codon posterior dimensions.");
+      for (let codon = 0; codon < codonMixture.length; codon += 1) {
+        const source = posterior.codonPosterior[codon];
+        const destination = codonMixture[codon];
+        if (source.startSite !== destination.startSite || source.probabilities.length !== PHYLO_UCA_CODON_STATE_COUNT) throw new Error("UCA placements produced incompatible codon state orderings.");
+        for (let state = 0; state < PHYLO_UCA_CODON_STATE_COUNT; state += 1) destination.probabilities[state] += weights[index] * source.probabilities[state];
+      }
+      progress("posterior", index + 1, local.length, `Integrated nucleotide and codon posterior for placement ${index + 1} of ${local.length}`);
+      await Promise.resolve();
+    }
+  }
+  if (!bestPosterior || !placements.length) throw new Error("The best UCA placement did not produce a posterior sequence.");
   let mapAlignedSequence = "-".repeat(originalColumns);
   let posteriorConsensusAligned = "-".repeat(originalColumns);
   const mapCharacters = [...mapAlignedSequence];
@@ -404,7 +714,7 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   const effectivePlacementCount = Math.exp(-weights.reduce((sum, weight) => weight > 0 ? sum + weight * Math.log(weight) : sum, 0));
   progress("finalize", 1, 1, "Preparing UCA sequence, placement tree, and provenance");
   return {
-    schema: 4,
+    schema: 5,
     method: "fixed-tree-empirical-bayes-phylo-uca",
     lineageLabel: input.lineageLabel,
     generatedAt: new Date().toISOString(),
@@ -420,6 +730,8 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     frameOffset,
     bestPlacement,
     placements,
+    evaluatedUcaBranchLengths,
+    mcmcDiagnostics,
     mapAlignedSequence,
     mapUngappedSequence: mapAlignedSequence.replaceAll("-", ""),
     posteriorConsensusAligned,

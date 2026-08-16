@@ -1922,6 +1922,12 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .phylo-uca-advanced-body label.check-line { display: flex; align-items: center; }
 .phylo-uca-advanced-body input:not([type="checkbox"]),
 .phylo-uca-advanced-body select { width: 100%; min-width: 0; }
+.phylo-uca-placement-settings { grid-column: 1 / -1; }
+.phylo-uca-setting-note,
+.phylo-uca-grid-list { grid-column: 1 / -1; min-width: 0; margin: 0; padding: 9px 10px; border-left: 3px solid #7c9d93; color: var(--muted); background: #f4f7f5; font-size: 7px; line-height: 1.5; }
+.phylo-uca-grid-list { display: grid; gap: 5px; }
+.phylo-uca-grid-list strong { color: var(--ink-2); font-size: 7px; letter-spacing: .04em; text-transform: uppercase; }
+.phylo-uca-grid-list code { max-width: 100%; overflow-x: auto; color: #315f55; font: 7px/1.55 "SFMono-Regular",Consolas,monospace; white-space: nowrap; }
 .phylo-uca-default-reset { display: flex; gap: 18px; margin: 0 14px 14px; padding: 12px 14px; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); background: #f7f8f5; }
 .phylo-uca-default-reset > div { display: grid; gap: 3px; min-width: 0; }
 .phylo-uca-default-reset strong { color: var(--ink-2); font-size: 8px; }
@@ -1941,6 +1947,15 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .phylo-uca-stats article:last-child { border-right: 0; }
 .phylo-uca-stats span { color: var(--muted); font-size: 7px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .phylo-uca-stats strong { overflow-wrap: anywhere; font-size: 11px; }
+.phylo-uca-mcmc { padding: 15px 20px; border-bottom: 1px solid var(--line); background: #fbfaf6; }
+.phylo-uca-mcmc > header { display: flex; gap: 18px; align-items: flex-start; justify-content: space-between; margin-bottom: 10px; }
+.phylo-uca-mcmc h5 { margin: 3px 0 4px; font: 650 14px/1.2 Georgia,"Times New Roman",Times,serif; }
+.phylo-uca-mcmc header p { max-width: 650px; margin: 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
+.phylo-uca-mcmc-stats { display: flex; max-width: 460px; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.phylo-uca-mcmc-stats span { padding: 5px 7px; border: 1px solid #d4ddd9; border-radius: 2px; color: var(--muted); background: #fff; font-size: 7px; }
+.phylo-uca-mcmc-stats b { color: var(--ink-2); }
+.phylo-uca-mcmc-chart { max-width: 100%; overflow-x: auto; border: 1px solid #cbd4d0; background: #fff; }
+.phylo-uca-mcmc-chart svg { display: block; width: 100%; min-width: 680px; font: 7px "SFMono-Regular",Consolas,monospace; fill: var(--muted); }
 .phylo-uca-placement-map { padding: 15px 20px; border-bottom: 1px solid var(--line); background: #fbfaf6; }
 .phylo-uca-placement-map > header { display: flex; gap: 18px; align-items: flex-start; justify-content: space-between; margin-bottom: 9px; }
 .phylo-uca-placement-map h5 { margin: 3px 0 4px; font: 650 14px/1.2 Georgia,"Times New Roman",Times,serif; }

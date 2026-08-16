@@ -3,13 +3,14 @@ import test from "node:test";
 
 import { defaultPhyloUcaOptions } from "../src/phylo-uca/defaults.ts";
 import { compileGtr, HS5F_REVERSIBLE_GTR5 } from "../src/phylo-uca/gtr.ts";
-import { phyloUcaHmmPosterior } from "../src/phylo-uca/hmm.ts";
+import { PhyloUcaHmmGibbsSampler, phyloUcaHmmPosterior } from "../src/phylo-uca/hmm.ts";
 import { collapseAndOrderHmmAnnotationTracks } from "../src/phylo-uca/hmm-annotation-model.ts";
 import { inferPhyloUca, vjNucleotideMixtureProfile } from "../src/phylo-uca/inference.ts";
 import { prepareObservedOnlyAlignment, type PreparedPhyloUcaReferences } from "../src/phylo-uca/references.ts";
 import { alignmentGapSemantics, observedAlignedCharacterPartial, PhyloUcaTreeMessages, type ConditionalLikelihoodSurface } from "../src/phylo-uca/tree-messages.ts";
 import { aminoAcidUcaLogoColumns, codonUcaLogoColumns, nucleotideUcaLogoColumns } from "../src/phylo-uca/logo.ts";
 import { PHYLO_UCA_CODON_SYMBOLS, phyloUcaCodonStateIndex } from "../src/phylo-uca/codons.ts";
+import { phyloUcaBranchLengthGrid } from "../src/phylo-uca/search-grid.ts";
 import { normalizeProbabilityVector } from "../src/probability-logo.ts";
 import type { PhyloUcaCodonPosterior, PhyloUcaHmmAnnotationTrack, PhyloUcaSitePosterior, PhyloUcaSegmentKind } from "../src/phylo-uca/types.ts";
 
@@ -196,6 +197,8 @@ test("factorized HMM returns a complete V-to-J joint path", () => {
   };
   const options = defaultPhyloUcaOptions().hmm;
   const result = phyloUcaHmmPosterior(exactSurface("AAATGGTTTCCC"), references, { ...options, maximumDSegments: 1, minimumDMatch: 2 });
+  const gibbs = new PhyloUcaHmmGibbsSampler(references, { ...options, maximumDSegments: 1, minimumDMatch: 2 }).draw(exactSurface("AAATGGTTTCCC"), () => 0.37);
+  assert.ok(Math.abs(gibbs.logMarginalLikelihood - result.logMarginalLikelihood) < 1e-9, "D-state FFBS backward likelihood must equal the ordinary forward likelihood");
   assert.equal(result.mapVCall, "IGHV1*01");
   assert.equal(result.mapJCall, "IGHJ1*01");
   assert.equal(result.mapAlignedSequence.length, 12);
@@ -269,7 +272,7 @@ test("end-to-end inference roots at a zero-length UCA carrier and preserves the 
   assert.match(result.placedTreeNewick, /phylo_UCA:0(?:\.0+)?(?:[,)]|$)/);
   assert.equal(result.mapAlignedSequence.length, 12);
   assert.equal(result.posterior.length, 12);
-  assert.equal(result.schema, 4);
+  assert.equal(result.schema, 5);
   assert.equal(result.bestPlacement.screenMode, "vj-mixture");
   assert.ok(Number.isFinite(result.bestPlacement.screenScore));
   assert.ok(result.placements.some((placement) => placement.edgeFraction > 0 && placement.edgeFraction < 1));
@@ -298,4 +301,74 @@ test("end-to-end inference roots at a zero-length UCA carrier and preserves the 
     assert.ok(Math.abs(total - 1) < 1e-10, `Viterbi source tracks sum to ${total} at column ${column}`);
   }
   assert.ok(result.bestPlacement.ucaBranchLength >= 0);
+});
+
+test("exact HMM FFBS draws reproduce the forward-backward nucleotide posterior", () => {
+  const candidate = (name: string, projection: string) => ({ name, sequence: projection.slice(0, 3), projection, differences: 0, compared: 3, identity: 1, observedHypothesis: true });
+  const references: PreparedPhyloUcaReferences = {
+    v: [candidate("V_A", "AAANNN"), candidate("V_G", "GGGNNN")],
+    d: [],
+    j: [candidate("J", "NNNCCC")],
+    vEndColumn: 2,
+    jStartColumn: 3,
+    guide: "NNNNNN",
+    report: { locus: "IGH", v: ["V_A", "V_G"], d: [], j: ["J"], totalVReferences: 2, totalDReferences: 0, totalJReferences: 1, observedVHypotheses: [], observedJHypotheses: [], vCutoffDifferences: 0, jCutoffDifferences: 0, truncatedV: false, truncatedJ: false },
+    warnings: [],
+  };
+  const options = { ...defaultPhyloUcaOptions().hmm, maximumDSegments: 0, vTrimScale: 0.25, jTrimScale: 0.25, templateMismatchProbability: 0.02 };
+  const surface: ConditionalLikelihoodSurface = { sites: 6, stateCount: 4, logLikelihoods: Float64Array.from([
+    0, -0.3, -0.6, -0.8, 0, -0.2, -0.7, -0.9, 0, -0.4, -0.1, -0.8,
+    -0.5, -0.6, -0.2, 0, -0.4, -0.2, 0, -0.5, -0.3, -0.4, -0.2, 0,
+  ]) };
+  const exact = phyloUcaHmmPosterior(surface, references, options);
+  const sampler = new PhyloUcaHmmGibbsSampler(references, options);
+  let state = 9137;
+  const random = () => {
+    state = Math.imul(state ^ state >>> 15, 1 | state);
+    state ^= state + Math.imul(state ^ state >>> 7, 61 | state);
+    return ((state ^ state >>> 14) >>> 0) / 4294967296;
+  };
+  const counts = Array.from({ length: 6 }, () => [0, 0, 0, 0, 0]);
+  for (let drawIndex = 0; drawIndex < 5000; drawIndex += 1) {
+    const draw = sampler.draw(surface, random);
+    assert.ok(Math.abs(draw.logMarginalLikelihood - exact.logMarginalLikelihood) < 1e-9);
+    for (let site = 0; site < 6; site += 1) counts[site][draw.characterStates[site]] += 1;
+  }
+  for (let site = 0; site < 6; site += 1) for (let character = 0; character < 4; character += 1) {
+    assert.ok(Math.abs(counts[site][character] / 5000 - exact.probabilities[site][character]) < 0.035, `FFBS mismatch at site ${site}, character ${character}`);
+  }
+});
+
+test("grid inference reports its exact zero-plus-logarithmic pendant grid", async () => {
+  const options = defaultPhyloUcaOptions();
+  options.search = { ...options.search, inferenceMode: "grid-marginalization", fullHmmEdges: 1, edgeGridPoints: 3, branchGridPoints: 5, minimumPositiveUcaBranchLength: 0.00001, maximumUcaBranchLength: 0.05, localPosteriorPoints: 15 };
+  options.hmm = { ...options.hmm, maximumDSegments: 1, minimumDMatch: 2 };
+  const alignment = ">a__1\nAAATGGTTTCCC\n>b__2\nAAATGGCTTCCC\n>c__3\nAAATGGTTACCC\n>__germline_N_masked__\nAAANNNNNNCCC\n";
+  const observed = prepareObservedOnlyAlignment(alignment, "__germline_N_masked__");
+  const row = (ordinal: number, sequenceId: string) => ({ ordinal, sequenceId, locus: "IGH", values: { locus: "IGH", sequence_id: sequenceId, v_call: "IGHV1*01", j_call: "IGHJ1*01", v_sequence_alignment: "AAA", v_germline_alignment: "AAA", j_sequence_alignment: "CCC", j_germline_alignment: "CCC" } });
+  const result = await inferPhyloUca({ curatedAlignmentFasta: alignment, observedTreeNewick: "((a__1:0.01,b__2:0.01):0.01,c__3:0.02);", observedAlignmentFasta: observed.posteriorFasta, retainedColumns: observed.posteriorColumns, germlineGuideName: "__germline_N_masked__", lineageRows: [row(0, "a"), row(1, "b"), row(2, "c")], references: { V: ">IGHV1*01\nAAA\n", D: ">IGHD1*01\nGG\n", J: ">IGHJ1*01\nCCC\n" }, locus: "IGH", lineageLabel: "grid", alignmentFingerprint: "grid", frameOffset: 0, options });
+  assert.deepEqual(result.evaluatedUcaBranchLengths, phyloUcaBranchLengthGrid(options.search));
+  assert.equal(result.placements.length, 15);
+  assert.ok(result.placements.every((point) => result.evaluatedUcaBranchLengths?.includes(point.ucaBranchLength)));
+  assert.equal(result.mcmcDiagnostics, undefined);
+});
+
+test("Gibbs/MH keeps pendant length continuous and emits mixing diagnostics", async () => {
+  const options = defaultPhyloUcaOptions();
+  options.search = { ...options.search, inferenceMode: "gibbs-mh", fullHmmEdges: 1, maximumUcaBranchLength: 0.05, mcmcIterations: 24, mcmcBurnIn: 4, mcmcThin: 2, mcmcMhStepsPerIteration: 3, mcmcBranchProposalScale: 0.009, mcmcPositionProposalScale: 0.23, mcmcGlobalJumpProbability: 0.2, mcmcSeed: 4141 };
+  options.hmm = { ...options.hmm, maximumDSegments: 1, minimumDMatch: 2 };
+  const alignment = ">a__1\nAAATGGTTTCCC\n>b__2\nAAATGGCTTCCC\n>c__3\nAAATGGTTACCC\n>__germline_N_masked__\nAAANNNNNNCCC\n";
+  const observed = prepareObservedOnlyAlignment(alignment, "__germline_N_masked__");
+  const row = (ordinal: number, sequenceId: string) => ({ ordinal, sequenceId, locus: "IGH", values: { locus: "IGH", sequence_id: sequenceId, v_call: "IGHV1*01", j_call: "IGHJ1*01", v_sequence_alignment: "AAA", v_germline_alignment: "AAA", j_sequence_alignment: "CCC", j_germline_alignment: "CCC" } });
+  const result = await inferPhyloUca({ curatedAlignmentFasta: alignment, observedTreeNewick: "((a__1:0.01,b__2:0.01):0.01,c__3:0.02);", observedAlignmentFasta: observed.posteriorFasta, retainedColumns: observed.posteriorColumns, germlineGuideName: "__germline_N_masked__", lineageRows: [row(0, "a"), row(1, "b"), row(2, "c")], references: { V: ">IGHV1*01\nAAA\n", D: ">IGHD1*01\nGG\n", J: ">IGHJ1*01\nCCC\n" }, locus: "IGH", lineageLabel: "mcmc", alignmentFingerprint: "mcmc", frameOffset: 0, options });
+  const diagnostics = result.mcmcDiagnostics;
+  assert.ok(diagnostics);
+  assert.equal(diagnostics.retainedSamples, 10);
+  assert.equal(diagnostics.trace.length, 24);
+  assert.equal(result.evaluatedUcaBranchLengths, undefined);
+  const unrelatedGrid = phyloUcaBranchLengthGrid({ ...options.search, branchGridPoints: 7 });
+  assert.ok(diagnostics.trace.some((point) => unrelatedGrid.every((gridValue) => Math.abs(gridValue - point.ucaBranchLength) > 1e-10)), "continuous MH values must not lie on a branch grid");
+  assert.ok(diagnostics.branchProposals > 0);
+  assert.ok(diagnostics.positionProposals > 0);
+  assert.ok(result.placements.every((point) => point.localPosteriorWeight === 0.1));
 });

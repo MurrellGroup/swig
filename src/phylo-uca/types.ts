@@ -60,6 +60,8 @@ export interface PhyloUcaCandidateOptions {
 }
 
 export interface PhyloUcaSearchOptions {
+  /** How uncertainty in the tree attachment and pendant length is handled. */
+  inferenceMode: "maximum-likelihood" | "grid-marginalization" | "gibbs-mh";
   /** Cheap model used only to rank starting edges; every retained point is re-evaluated by the full HMM. */
   screenMode: "vj-mixture" | "germline-guide";
   /** Interior attachment positions evaluated by the cheap screen on every edge. */
@@ -67,13 +69,34 @@ export interface PhyloUcaSearchOptions {
   /** Number of screen-ranked edges receiving the full recombination HMM; zero means every edge. */
   fullHmmEdges: number;
   edgeGridPoints: number;
+  /** Number of points in the explicit, zero-plus-logarithmic pendant-length grid. */
   branchGridPoints: number;
+  /** Smallest positive point in the explicit pendant-length grid. */
+  minimumPositiveUcaBranchLength: number;
   maximumUcaBranchLength: number;
   branchPriorMean: number;
+  /** Coordinate-ascent rounds for conditional-ML distance/length optimization. */
+  mlOptimizationRounds: number;
+  /** Unit-interval stopping tolerance for conditional-ML scalar searches. */
+  mlOptimizationTolerance: number;
   localRefinementRounds: number;
   marginalizeLocally: boolean;
   localPosteriorPoints: number;
   edgePrior: "uniform-edge" | "uniform-length";
+  /** Metropolis-within-Gibbs iterations, including burn-in. */
+  mcmcIterations: number;
+  mcmcBurnIn: number;
+  mcmcThin: number;
+  /** Cheap placement/length MH updates performed for each exact HMM Gibbs draw. */
+  mcmcMhStepsPerIteration: number;
+  /** Reflected random-walk scale for pendant length, in substitutions/site. */
+  mcmcBranchProposalScale: number;
+  /** Reflected within-edge random-walk scale as a fraction of that edge. */
+  mcmcPositionProposalScale: number;
+  /** Probability that a placement MH update proposes a global edge jump. */
+  mcmcGlobalJumpProbability: number;
+  /** Reproducible 32-bit sampler seed. */
+  mcmcSeed: number;
 }
 
 export interface PhyloUcaOptions {
@@ -122,6 +145,7 @@ export type PhyloUcaProgressPhase =
   | "tree-messages"
   | "edge-screen"
   | "hmm-search"
+  | "mcmc"
   | "posterior"
   | "finalize";
 
@@ -143,11 +167,44 @@ export interface PhyloUcaPlacement {
   logMarginalLikelihood: number;
   logPosteriorScore: number;
   localPosteriorWeight: number;
+  /** Log quadrature mass used only by explicit grid marginalization. */
+  integrationLogWeight?: number;
   /** Cheap edge-screen score. This never substitutes for logMarginalLikelihood. */
   screenScore?: number;
   screenMode?: "vj-mixture" | "germline-guide";
   /** Legacy name retained so schema-1–3 sessions remain readable. */
   guideScore: number;
+}
+
+export interface PhyloUcaMcmcTracePoint {
+  iteration: number;
+  edgeId: string;
+  edgeFraction: number;
+  ucaBranchLength: number;
+  /** Conditional log density for placement/length given the sampled UCA. */
+  conditionalLogTarget: number;
+  /** Full-HMM marginal likelihood at the pre-MH Gibbs state. */
+  logMarginalLikelihood: number;
+  retained: boolean;
+}
+
+export interface PhyloUcaMcmcDiagnostics {
+  iterations: number;
+  burnIn: number;
+  thin: number;
+  retainedSamples: number;
+  mhStepsPerIteration: number;
+  seed: number;
+  branchProposals: number;
+  branchAccepted: number;
+  positionProposals: number;
+  positionAccepted: number;
+  globalProposals: number;
+  globalAccepted: number;
+  edgeSwitches: number;
+  branchEffectiveSampleSize: number;
+  logTargetEffectiveSampleSize: number;
+  trace: PhyloUcaMcmcTracePoint[];
 }
 
 export type PhyloUcaSegmentKind = "V" | "N" | "D" | "J" | "unknown";
@@ -240,7 +297,7 @@ export interface PhyloUcaCandidateReport {
 }
 
 export interface PhyloUcaResult {
-  schema: 1 | 2 | 3 | 4;
+  schema: 1 | 2 | 3 | 4 | 5;
   method: "fixed-tree-empirical-bayes-phylo-uca";
   lineageLabel: string;
   generatedAt: string;
@@ -258,6 +315,10 @@ export interface PhyloUcaResult {
   frameOffset?: PhyloUcaFrameOffset;
   bestPlacement: PhyloUcaPlacement;
   placements: PhyloUcaPlacement[];
+  /** Exact full-HMM pendant-length grid in grid-marginalization mode. */
+  evaluatedUcaBranchLengths?: number[];
+  /** Present only for Metropolis-within-Gibbs inference. */
+  mcmcDiagnostics?: PhyloUcaMcmcDiagnostics;
   mapAlignedSequence: string;
   mapUngappedSequence: string;
   posteriorConsensusAligned: string;

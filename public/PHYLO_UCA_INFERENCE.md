@@ -8,7 +8,7 @@ This module estimates the unmutated common ancestor (UCA) of a selected BCR or T
 2. the length of the branch between the UCA and that attachment point; and
 3. the UCA nucleotide sequence and V(D)J recombination path.
 
-The method is a **fixed-tree empirical-Bayes approximation**. It is not the MCMC phylo-HMM of Dhar et al. and it does not integrate over observed-tree topology or branch-length uncertainty. Swig first infers one tree from the observed sequences, holds it fixed, and then integrates or optimizes the quantities listed above.
+The method is a **fixed-observed-tree approximation**. It is not the joint tree/recombination phylo-HMM of Dhar et al. and it does not integrate over observed-tree topology or the fitted branch lengths inside that tree. Swig first infers one observed tree, holds it fixed, and then offers conditional ML, explicit grid integration, or a Metropolis-within-Gibbs sampler for the UCA attachment, UCA pendant length, recombination path, and sequence.
 
 The implementation is isolated under `src/phylo-uca/`. React is confined to `panel.tsx` and the HMM-annotation renderer; the likelihood, HMM, placement search, worker, and public data contracts are separate modules.
 
@@ -258,28 +258,41 @@ The track toolbar exports either the complete HMM-track canvas or the exact curr
 
 An allele group enters the serialized sidecar when its combined occupancy reaches 1% in at least one column. Within a retained D group, raw registers reaching 0.1% are retained; if none does, the strongest register is retained. Raw N and uncertain-boundary rows reaching 0.1% are retained. Display aggregation happens only after these existing sidecar thresholds. The result reports how many subthreshold raw rows were omitted. Neither thresholding nor display aggregation changes the HMM likelihood, UCA posterior, Viterbi path, or exported sequence.
 
-## Placement and branch-length search
+## Shared starting-position screen
 
-Search is coarse to fine, and it evaluates continuous branch interiors rather than restricting attachment candidates to existing tree nodes.
+All three inference routes evaluate branch interiors rather than restricting attachment candidates to existing tree nodes.
 
-1. Every observed-tree edge is screened at several attachment fractions and several short pendant lengths. By default, the screen uses only the fixed-alignment V and J regions. At each such column it forms one independent nucleotide mixture across the retained V or J allele projections and contracts that mixture with the tree likelihood surface. It does **not** run a separate likelihood for each complete V/J pairing and does not use D or junction states.
-2. The legacy single N-masked germline-guide screen remains selectable for comparison. Either screen is only a cheap computational ranking device; it is never reported as the UCA likelihood.
-3. The top `fullHmmEdges` edges receive the **complete recombination-HMM marginal likelihood**. Setting this control to zero sends every observed-tree edge to the full HMM.
-4. A full-HMM grid spans attachment fraction along each selected edge and a quadratic grid spans UCA pendant length, giving more resolution near zero. The best screen point on each retained edge is also evaluated exactly even when it lies between full-grid points.
-5. The best full-HMM placements are refined locally for the configured number of rounds.
-6. The reported point estimate maximizes full-HMM marginal likelihood plus the fixed placement priors. The cheap V/J or guide score cannot become the reported optimum without this full-HMM refinement.
+1. Every observed-tree edge is screened at several attachment fractions and short pendant lengths. By default, the screen uses only the fixed-alignment V and J regions. At each column it forms one independent nucleotide mixture across retained V or J allele projections and contracts that mixture with the tree likelihood surface. It does **not** evaluate every complete V/J pairing and does not use D or junction states.
+2. The leading V/J-screen edges are refined by alternating continuous attachment-fraction and pendant-length optimizations on that cheap surface. This supplies an initializer only.
+3. The legacy single N-masked germline-guide screen remains selectable. Neither cheap screen can become a reported full-HMM likelihood.
+4. `fullHmmEdges` controls the breadth admitted to conditional ML and grid integration; zero means every observed-tree edge. In Gibbs/MH mode it controls initializer refinement, while global proposals retain nonzero support on every edge.
 
-The default edge prior is proportional to edge length, approximating a uniform prior over location on the continuous tree. A uniform-per-edge alternative is available. Pendant length has an exponential prior with user-configurable mean and a hard user-configurable search maximum.
+## Three inference routes
 
-## Local empirical-Bayes marginalization
+### Conditional maximum likelihood (default)
 
-When enabled, Swig normalizes posterior weights over the best nearby evaluated `(edge, attachment fraction, pendant length)` points and averages both their sitewise nucleotide posteriors and their 125-state **joint codon** posteriors. Thus placement uncertainty is marginalized before codons are translated to amino acids. The result reports the effective number of placements:
+For every admitted edge, Swig alternates continuous one-dimensional optimization of attachment fraction and UCA pendant length. Every objective call is the **complete recombination-HMM marginal likelihood**. A fourth-power transformed pendant coordinate concentrates optimizer evaluations near zero without discretizing the parameter. Placement and branch priors do not affect this conditional-ML optimum, and there is no marginalization over placement or length.
 
-`N_eff = exp[-sum_k w_k log(w_k)]`.
+### Explicit grid marginalization
 
-This represents local uncertainty around the best region of a fixed tree. It is not a continuous quadrature guarantee and does not represent alternative observed-tree topologies. The joint MAP path and placed-tree export remain tied to the single best placement.
+The attachment grid is linear in within-edge fraction. The pendant grid contains exact zero followed by user-configurable logarithmically spaced positive values between `minimumPositiveUcaBranchLength` and the maximum. The complete list is shown in the settings before a run and stored in the result. Every grid point receives the full-HMM marginal likelihood. Trapezoid/Voronoi cell widths, the selected edge prior, and the exponential pendant prior provide quadrature weights. The leading user-configured number of quadrature points receive exact nucleotide, codon, and HMM-track posterior calculations; the result warns with their cumulative quadrature mass when lower-mass points are omitted.
 
-The results panel draws every discrete point actually retained in this local marginalization at its exact fraction along the observed-tree branch. Each marker includes the evaluated UCA pendant length. Marker color is scaled by `exp(LL_k - LL_best)`, using the raw full-HMM marginal log likelihood rather than the placement prior: the best likelihood is red and a relative likelihood approaching zero is blue. Hover text and the adjacent numeric list report the edge, fraction, pendant length, raw log likelihood difference, exponentiated difference, and normalized marginalization weight.
+### Continuous Metropolis-within-Gibbs
+
+One iteration consists of:
+
+1. an exact forward-filter/backward-sample draw of a coherent HMM path and every UCA character conditional on the current attachment and pendant length; and
+2. several MH updates of attachment and length conditional on that sampled UCA.
+
+Within-edge position and pendant length are continuous floating-point states. Reflected random-walk proposals evaluate `P(t)=exp(Qt)` at the proposed pendant length; they do not snap to, index, or interpolate a branch-length grid. Global proposals select an observed-tree edge from a full-support V/J-screen proposal distribution and draw a continuous fraction on it, with the independence-proposal Hastings correction.
+
+Conditional on a sampled UCA, the recombination-path terms cancel from an MH ratio. A proposal therefore needs only the likelihood of that fixed UCA against the two cached directed half-edge messages, plus the attachment/length priors. It does not run another HMM and does not recompute the observed-tree pruning likelihood. The next iteration performs the next exact HMM Gibbs draw.
+
+After burn-in and thinning, retained joint draws estimate nucleotide, exact codon-state, and source-track posteriors. The UI shows branch-length and full-HMM marginal-likelihood traces, burn-in, acceptance rates, edge switches, and simple autocorrelation ESS estimates. The seed and all proposal controls are user-visible.
+
+For grid or Gibbs/MH inference, the default edge prior is proportional to edge length, corresponding to a uniform attachment location over total tree length when the within-edge coordinate is a fraction. A uniform-per-edge alternative is available. Pendant length has an exponential prior with user-configurable mean and a hard maximum.
+
+The results panel draws every retained point or draw at its exact branch fraction and pendant length. Marker color is `exp(LL_k - LL_best)` from the raw full-HMM marginal likelihood: the best likelihood is red and a relative likelihood approaching zero is blue. The adjacent list reports exact coordinates, likelihood difference, relative likelihood, and marginal/sample weight.
 
 ## Rooted-tree export
 
@@ -303,23 +316,29 @@ The placed Newick is rooted at the inferred UCA. The named `phylo_UCA` sequence 
 | Search | starting-position screen | independent V/J nucleotide mixture |
 | Search | screen points per edge | 5 |
 | Search | full-HMM edges | 6 |
-| Search | full-HMM points per retained edge | 3 |
-| Search | UCA branch grid points | 3 |
+| Search | inference route | conditional maximum likelihood |
+| Conditional ML | coordinate rounds / unit tolerance | 2 / 0.002 |
+| Grid | attachment / pendant points | 3 / 13 |
+| Grid | smallest positive pendant length | 0.00001 |
 | Search | maximum UCA branch | 0.30 substitutions/character |
-| Search | exponential branch-prior mean | 0.06 |
-| Search | local posterior points | 12 |
+| Grid / Gibbs-MH | exponential branch-prior mean | 0.06 |
+| Grid | retained posterior points | 12 |
+| Gibbs/MH | iterations / burn-in / thin | 160 / 40 / 2 |
+| Gibbs/MH | MH steps per Gibbs draw | 4 |
+| Gibbs/MH | pendant / position proposal scale | 0.012 / 0.40 |
+| Gibbs/MH | global-jump probability | 0.12 |
 
 These are fixed regularizing values, not fitted biological recombination rates. They are exposed in the attached advanced panel so sensitivity analyses are possible. The Additional-D control accepts the complete probability interval from 0 through 1; routing weights are normalized with the competing N/J routes inside the unchanged HMM. A dedicated reset button restores every UCA option in all four advanced groups to these defaults. A result JSON stores the complete option set and model provenance.
 
 ## Complexity and implementation details
 
-For `n` observed tips and `L` alignment columns, directed tree messages cost `O(n L K^2)` once, where `K` is four or five. Each proposed placement then costs `O(L K^2)` to construct the phylogenetic surface plus one sparse/factorized HMM pass.
+For `n` observed tips and `L` alignment columns, directed tree messages cost `O(n L K^2)` once, where `K` is four or five. They are never recomputed during placement inference. A full marginal-likelihood placement costs `O(L K^2)` to construct the local phylogenetic surface plus one sparse/factorized HMM pass.
 
-If `S` is the number of HMM profile states, a marginal placement evaluation is approximately `O(L S)`. D-repeat transitions do not add `O(S^2)` cost. Full posterior inference stores one forward table for each local placement as it is processed; coarse search uses rolling rows. Exact codon marginalization branches over the character alphabet for two transitions per codon: `4 + 16` sparse HMM advances under GTR4 or `5 + 25` under GTR5, followed by a terminal contraction for all 64 or 125 triples. It remains linear in `L` and `S`, with a larger constant than the single-site posterior, and never constructs a dense `S x S` matrix.
+If `S` is the number of HMM profile states, a marginal placement evaluation is approximately `O(L S)`. D-repeat transitions do not add `O(S^2)` cost. Grid/ML search uses rolling rows. An exact Gibbs draw stores the `L x S` backward table once and samples one path forward; each subsequent conditional placement MH proposal in that iteration costs only `O(L K^2)`. Exact analytic codon marginalization in ML/grid mode remains linear in `L` and `S`, with a larger constant than a single-site posterior, and never constructs a dense `S x S` matrix. Gibbs/MH codon output instead counts the exact joint three-character states in retained joint samples.
 
 HMM-source sidecar data is accumulated during the same backward pass. V/J tracks use their fixed projections; D tracks use sparse allele/register keys; N tracks retain five character masses. The display then sums those sparse rows by allele and spatial NT slot. Neither stage reruns placement search or allocates a dense track-by-column-by-state tensor.
 
-The whole inference runs in a dedicated browser worker. Progress distinguishes observed-tree inference, message construction, edge screening, full-HMM search, joint nucleotide/codon posterior integration, and finalization.
+The whole inference runs in a dedicated browser worker. Progress distinguishes observed-tree inference, message construction, edge screening, full-HMM search or Gibbs/MH sampling, joint nucleotide/codon posterior integration, and finalization.
 
 ## Exports and session behavior
 
@@ -343,7 +362,7 @@ Save session retains the inferred UCA result and all settings because reconstruc
 3. The HS5F-derived GTR is a context-averaged nucleotide approximation. It is not a 5-mer model and does not reproduce full SHM targeting.
 4. The five-character model conditions on user-curated internal alignment gaps and is not a generative indel model; terminal gap padding is missing data.
 5. Candidate reference annotations and fixed projections must be biologically coherent. Results with incomplete or wrongly aligned germlines require inspection.
-6. Local placement marginalization is discrete and local, not full MCMC.
+6. Grid integration remains a finite quadrature approximation. Gibbs/MH samples attachment and pendant uncertainty continuously but still conditions on one fixed observed tree and fixed model parameters.
 7. Fixed transition parameters influence weakly identified junctions. Important UCAs should be rerun across sensible prior settings.
 8. Heavy/light or paired-chain joint UCA inference is not currently performed; each selected locus is modeled separately.
 
@@ -355,4 +374,4 @@ Save session retains the inferred UCA result and all settings because reconstruc
 - Yaari G et al. [Models of somatic hypermutation targeting and substitution based on synonymous mutations from high-throughput immunoglobulin sequencing data](https://pmc.ncbi.nlm.nih.gov/articles/PMC3828525/). *Frontiers in Immunology* (2013).
 - Hoehn KB, Lunter G, Pybus OG. [A phylogenetic codon substitution model for antibody lineages](https://doi.org/10.1534/genetics.116.196303). *Genetics* (2017). HLP17 is relevant antibody-evolution literature but is a codon model, not the four-state GTR used here.
 - Hoehn KB et al. [Repertoire-wide phylogenetic models of B cell molecular evolution reveal evolutionary signatures of aging and vaccination](https://pmc.ncbi.nlm.nih.gov/articles/PMC6842591/). *PNAS* (2019). HLP19 is likewise a codon model.
-- Dhar A, Ralph DK, Minin VN, Matsen FA. [A Bayesian phylogenetic hidden Markov model for B cell receptor sequence analysis](https://doi.org/10.1371/journal.pcbi.1008030). *PLOS Computational Biology* (2020). This is the fuller MCMC formulation that motivates, but is not implemented by, Swig’s current fixed-tree empirical-Bayes approximation.
+- Dhar A, Ralph DK, Minin VN, Matsen FA. [A Bayesian phylogenetic hidden Markov model for B cell receptor sequence analysis](https://doi.org/10.1371/journal.pcbi.1008030). *PLOS Computational Biology* (2020). This is a fuller joint phylogenetic formulation; Swig's optional sampler is limited to UCA placement/length/path/sequence on one fixed observed tree.
