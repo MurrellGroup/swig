@@ -30,7 +30,7 @@ import { compileReferences } from "../src/reference-pack.ts";
 import { repertoireRowMatches, validateRepertoireSelection } from "../src/repertoire-selection.ts";
 import { ShmAccumulator } from "../src/shm-analysis.ts";
 
-const VERSION="0.29.1";
+const VERSION="0.29.2";
 const CLI_DIRECTORY=dirname(fileURLToPath(import.meta.url));
 
 export function defaultCliAssets(){

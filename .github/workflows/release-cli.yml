@@ -49,9 +49,8 @@ jobs:
       - run: npm ci
       - run: npm run check
       - name: Compile one self-contained executable
-        shell: bash
         run: |
-          mkdir -p release
+          node -e "require('node:fs').mkdirSync('release', { recursive: true })"
           bun build cli-src/swig-cli-standalone.mjs cli-src/swig-worker.mjs --compile --target=${{ matrix.target }} --outfile=release/${{ matrix.artifact }}
       - name: Smoke-test the actual executable
         env:

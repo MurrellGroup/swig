@@ -4120,7 +4120,7 @@ var ShmAccumulator = class {
 };
 //#endregion
 //#region cli-src/swig-cli.mjs
-const VERSION = "0.29.1";
+const VERSION = "0.29.2";
 const CLI_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 function defaultCliAssets() {
 	const directory = join(CLI_DIRECTORY, "assets");
