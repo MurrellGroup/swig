@@ -1,5 +1,7 @@
 # Swig 0.26.0
 
+> Historical release record. The 0.26.0 terminal-D explanation was superseded by the biological HMM audit in 0.27.0; see `RELEASE_NOTES_0.27.0.md` and `BENCHMARK_PHYLO_UCA_0.27.0.md`.
+
 ## Phylogenetic UCA placement routes
 
 - Added a fast conditional-maximum-likelihood route, now the default. It continuously optimizes within-edge attachment position and UCA pendant length under the complete recombination-HMM marginal likelihood; it does not apply placement priors or marginalize these coordinates.

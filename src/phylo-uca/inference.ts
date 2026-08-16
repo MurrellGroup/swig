@@ -3,7 +3,6 @@ import {
   PHYLO_UCA_ANNOTATION_ALLELE_MINIMUM_WEIGHT,
   PHYLO_UCA_ANNOTATION_REGISTER_MINIMUM_WEIGHT,
   PhyloUcaHmmGibbsSampler,
-  phyloUcaHmmLogMarginal,
   phyloUcaHmmPosterior,
 } from "./hmm.ts";
 import { preparePhyloUcaReferences } from "./references.ts";
@@ -13,6 +12,7 @@ import { PHYLO_UCA_CODON_STATE_COUNT, PHYLO_UCA_CODON_SYMBOLS } from "./codons.t
 import { gridCellWidths, phyloUcaBranchLengthGrid } from "./search-grid.ts";
 import type {
   PhyloUcaCodonPosterior,
+  PhyloUcaDCountPosteriorPoint,
   PhyloUcaHmmAnnotationTrack,
   PhyloUcaInput,
   PhyloUcaPlacement,
@@ -366,6 +366,10 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   const selectedEdges = edgeScores.slice(0, requestedFullHmmEdges <= 0 ? tree.edges.length : Math.max(1, Math.min(tree.edges.length, requestedFullHmmEdges)));
   const screenByEdge = new Map(edgeScores.map((entry) => [entry.edge, entry]));
   const evaluated = new Map<string, PhyloUcaPlacement>();
+  // The germline/D automaton is invariant across tree placements. Reuse it for
+  // ML, grid, and Gibbs evaluations instead of rebuilding tens of thousands of
+  // states at every proposed point.
+  const reusableHmm = new PhyloUcaHmmGibbsSampler(references, input.options.hmm);
   const totalEdgeLength = tree.edges.reduce((sum, edge) => sum + Math.max(1e-12, edge.length), 0);
   const branchMean = Math.max(1e-5, Number.isFinite(search.branchPriorMean) ? search.branchPriorMean : 0.06);
   const edgePriorLog = (edgeIndex: number) => (search.edgePrior ?? "uniform-length") === "uniform-length"
@@ -400,7 +404,7 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     const previous = evaluated.get(key);
     if (previous) return previous;
     const surface = tree.conditionalLikelihoods(edgeIndex, safeDistance, safeBranch);
-    const result = placement(edgeIndex, safeDistance, safeBranch, guideScore, phyloUcaHmmLogMarginal(surface, references, input.options.hmm));
+    const result = placement(edgeIndex, safeDistance, safeBranch, guideScore, reusableHmm.logMarginal(surface));
     evaluated.set(key, result);
     return result;
   };
@@ -410,6 +414,7 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   let weights: number[] = [];
   let evaluatedUcaBranchLengths: number[] | undefined;
   let mcmcDiagnostics: PhyloUcaMcmcDiagnostics | undefined;
+  let dCountPosterior: PhyloUcaDCountPosteriorPoint[] | undefined;
   const mixture = Array.from({ length: observedColumns }, () => [0, 0, 0, 0, 0] as [number, number, number, number, number]);
   let codonMixture: Array<{ startSite: number; probabilities: number[] }> = [];
   let bestPosterior: ReturnType<typeof phyloUcaHmmPosterior> | null = null;
@@ -486,7 +491,8 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     const burnIn = Math.max(0, Math.min(iterations - 1, Math.floor(search.mcmcBurnIn ?? 40)));
     const thin = Math.max(1, Math.floor(search.mcmcThin ?? 2));
     const mhSteps = Math.max(1, Math.floor(search.mcmcMhStepsPerIteration ?? 4));
-    const sampler = new PhyloUcaHmmGibbsSampler(references, input.options.hmm);
+    const collapsedRefreshInterval = Math.max(0, Math.floor(search.mcmcCollapsedRefreshInterval ?? 3));
+    const sampler = reusableHmm;
     let currentEdge = edgeScores[0].edge;
     let currentFraction = tree.edges[currentEdge].length > 0 ? edgeScores[0].distance / tree.edges[currentEdge].length : 0;
     let currentBranch = edgeScores[0].branch;
@@ -502,6 +508,90 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
       }
       return edgeScores.at(-1)!.edge;
     };
+    const globalPositionMixture = Math.max(0, Math.min(1, search.mcmcGlobalPositionMixture ?? 0.85));
+    const globalPositionScale = Math.max(1e-6, Math.min(0.5, search.mcmcGlobalPositionScale ?? 0.18));
+    const wrappedUnit = (value: number) => ((value % 1) + 1) % 1;
+    const screenFraction = (edgeIndex: number) => {
+      const edge = tree.edges[edgeIndex];
+      return edge.length > 0 ? wrappedUnit((screenByEdge.get(edgeIndex)?.distance ?? edge.length / 2) / edge.length) : 0;
+    };
+    const circularDistance = (left: number, right: number) => {
+      const distance = Math.abs(wrappedUnit(left) - wrappedUnit(right));
+      return Math.min(distance, 1 - distance);
+    };
+    const globalPositionDensity = (edgeIndex: number, fraction: number) => {
+      const focused = circularDistance(fraction, screenFraction(edgeIndex)) <= globalPositionScale ? 1 / (2 * globalPositionScale) : 0;
+      return (1 - globalPositionMixture) + globalPositionMixture * focused;
+    };
+    const sampleGlobalFraction = (edgeIndex: number) => random() < globalPositionMixture
+      ? wrappedUnit(screenFraction(edgeIndex) + (2 * random() - 1) * globalPositionScale)
+      : random();
+    const logProposalDensity = (density: number) => density > 0 && Number.isFinite(density) ? Math.log(density) : NEGATIVE_INFINITY;
+    const globalBranchMixture = Math.max(0, Math.min(1, search.mcmcGlobalBranchMixture ?? 0.9));
+    const globalBranchMaximum = Math.max(1e-9, Math.min(maximumUcaBranchLength, search.mcmcGlobalBranchMaximum ?? 0.03));
+    const sampleGlobalBranch = () => {
+      if (!(maximumUcaBranchLength > 0)) return 0;
+      return random() < globalBranchMixture ? random() * globalBranchMaximum : random() * maximumUcaBranchLength;
+    };
+    const globalBranchDensity = (branch: number) => {
+      if (!(maximumUcaBranchLength > 0) || branch < 0 || branch > maximumUcaBranchLength) return 0;
+      return (1 - globalBranchMixture) / maximumUcaBranchLength
+        + (branch <= globalBranchMaximum ? globalBranchMixture / globalBranchMaximum : 0);
+    };
+    // The V/J screen determines the bounded initializer set, but the actual
+    // starting state is selected under the complete HMM. This avoids spending
+    // burn-in escaping a screen optimum whose junction explanation is poor.
+    progress("hmm-search", 0, selectedEdges.length, "Selecting a Gibbs/MH initializer under the complete recombination HMM");
+    let initializerScore = NEGATIVE_INFINITY;
+    const initializerScores = new Map<number, number>();
+    for (let index = 0; index < selectedEdges.length; index += 1) {
+      const candidate = selectedEdges[index];
+      const edge = tree.edges[candidate.edge];
+      const fraction = edge.length > 0 ? candidate.distance / edge.length : 0;
+      const surface = tree.conditionalLikelihoods(candidate.edge, candidate.distance, candidate.branch);
+      const score = sampler.logMarginal(surface) + edgePriorLog(candidate.edge) + branchPriorLog(candidate.branch);
+      initializerScores.set(candidate.edge, score);
+      if (score > initializerScore) {
+        initializerScore = score;
+        currentEdge = candidate.edge;
+        currentFraction = fraction;
+        currentBranch = candidate.branch;
+      }
+      progress("hmm-search", index + 1, selectedEdges.length, `Full-HMM initializer ${index + 1} of ${selectedEdges.length}`);
+      await Promise.resolve();
+    }
+    // Reuse those full-HMM evaluations to make the exact collapsed refresh a
+    // materially better independence proposal. A residual guide-screen
+    // component keeps every edge reachable, and its exact density enters the
+    // Hastings ratio below; this affects efficiency, never the target model.
+    const initializerMixture = Math.max(0, Math.min(1, search.mcmcCollapsedInitializerMixture ?? 0.95));
+    const finiteInitializerScores = [...initializerScores.values()].filter(Number.isFinite);
+    const maximumInitializerScore = finiteInitializerScores.length ? Math.max(...finiteInitializerScores) : 0;
+    const rawInitializerWeights = new Map<number, number>();
+    let initializerWeightTotal = 0;
+    for (const [edgeIndex, score] of initializerScores) {
+      const weight = Number.isFinite(score) ? Math.exp(Math.max(-60, score - maximumInitializerScore)) : 0;
+      rawInitializerWeights.set(edgeIndex, weight);
+      initializerWeightTotal += weight;
+    }
+    const collapsedProposalProbability = new Map<number, number>();
+    for (const edge of tree.edges) {
+      const broad = proposalProbability.get(edge.index) ?? 0;
+      const informed = initializerWeightTotal > 0 ? (rawInitializerWeights.get(edge.index) ?? 0) / initializerWeightTotal : broad;
+      collapsedProposalProbability.set(edge.index, (1 - initializerMixture) * broad + initializerMixture * informed);
+    }
+    const sampleCollapsedEdge = () => {
+      let threshold = random();
+      for (const edge of tree.edges) {
+        threshold -= collapsedProposalProbability.get(edge.index) ?? 0;
+        if (threshold <= 0) return edge.index;
+      }
+      return tree.edges.at(-1)!.index;
+    };
+    const collapsedProposalLogDensity = (edgeIndex: number, fraction: number, branch: number) =>
+      logProposalDensity(collapsedProposalProbability.get(edgeIndex) ?? 0)
+      + logProposalDensity(globalPositionDensity(edgeIndex, fraction))
+      + logProposalDensity(globalBranchDensity(branch));
     const retained: Array<{ point: PhyloUcaPlacement; draw: ReturnType<PhyloUcaHmmGibbsSampler["draw"]> }> = [];
     const trace: PhyloUcaMcmcDiagnostics["trace"] = [];
     let branchProposals = 0;
@@ -510,12 +600,50 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     let positionAccepted = 0;
     let globalProposals = 0;
     let globalAccepted = 0;
+    let collapsedProposals = 0;
+    let collapsedAccepted = 0;
     let edgeSwitches = 0;
+    let gibbsDraws = 0;
+    let gibbsMilliseconds = 0;
+    let collapsedMarginalMilliseconds = 0;
+    let conditionalMhMilliseconds = 0;
+    let currentEdgeObject = tree.edges[currentEdge];
+    let currentSurface = tree.conditionalLikelihoods(currentEdge, currentEdgeObject.length * currentFraction, currentBranch);
+    const samplingStarted = performance.now();
     progress("mcmc", 0, iterations, "Running exact HMM Gibbs draws with continuous tree-position and branch-length MH updates");
     for (let iteration = 0; iteration < iterations; iteration += 1) {
-      const currentEdgeObject = tree.edges[currentEdge];
-      let currentSurface = tree.conditionalLikelihoods(currentEdge, currentEdgeObject.length * currentFraction, currentBranch);
-      const draw = sampler.draw(currentSurface, random);
+      const gibbsStarted = performance.now();
+      let draw = sampler.draw(currentSurface, random);
+      gibbsMilliseconds += performance.now() - gibbsStarted;
+      gibbsDraws += 1;
+      if (collapsedRefreshInterval > 0 && iteration > 0 && iteration % collapsedRefreshInterval === 0) {
+        collapsedProposals += 1;
+        const proposedEdge = sampleCollapsedEdge();
+        const proposedFraction = sampleGlobalFraction(proposedEdge);
+        const proposedBranch = sampleGlobalBranch();
+        const proposedEdgeObject = tree.edges[proposedEdge];
+        const collapsedStarted = performance.now();
+        const proposedSurface = tree.conditionalLikelihoods(proposedEdge, proposedEdgeObject.length * proposedFraction, proposedBranch);
+        const proposedMarginalLikelihood = sampler.logMarginal(proposedSurface);
+        collapsedMarginalMilliseconds += performance.now() - collapsedStarted;
+        const currentTarget = draw.logMarginalLikelihood + edgePriorLog(currentEdge) + branchPriorLog(currentBranch);
+        const proposedTarget = proposedMarginalLikelihood + edgePriorLog(proposedEdge) + branchPriorLog(proposedBranch);
+        const logHastings = collapsedProposalLogDensity(currentEdge, currentFraction, currentBranch)
+          - collapsedProposalLogDensity(proposedEdge, proposedFraction, proposedBranch);
+        if (Math.log(Math.max(Number.MIN_VALUE, random())) < Math.min(0, proposedTarget - currentTarget + logHastings)) {
+          collapsedAccepted += 1;
+          if (proposedEdge !== currentEdge) edgeSwitches += 1;
+          currentEdge = proposedEdge;
+          currentFraction = proposedFraction;
+          currentBranch = proposedBranch;
+          currentEdgeObject = proposedEdgeObject;
+          currentSurface = proposedSurface;
+          const acceptedGibbsStarted = performance.now();
+          draw = sampler.draw(proposedSurface, random);
+          gibbsMilliseconds += performance.now() - acceptedGibbsStarted;
+          gibbsDraws += 1;
+        }
+      }
       let conditionalTarget = fixedUcaLogLikelihood(currentSurface, draw.characterStates) + edgePriorLog(currentEdge) + branchPriorLog(currentBranch);
       const keep = iteration >= burnIn && (iteration - burnIn) % thin === 0;
       trace.push({
@@ -542,9 +670,11 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
           proposalKind = "global";
           globalProposals += 1;
           proposedEdge = sampleGlobalEdge();
-          proposedFraction = random();
-          logHastings = Math.log(Math.max(1e-300, proposalProbability.get(currentEdge) ?? 1e-300))
-            - Math.log(Math.max(1e-300, proposalProbability.get(proposedEdge) ?? 1e-300));
+          proposedFraction = sampleGlobalFraction(proposedEdge);
+          logHastings = logProposalDensity(proposalProbability.get(currentEdge) ?? 0)
+            + logProposalDensity(globalPositionDensity(currentEdge, currentFraction))
+            - logProposalDensity(proposalProbability.get(proposedEdge) ?? 0)
+            - logProposalDensity(globalPositionDensity(proposedEdge, proposedFraction));
         } else if (random() < 0.5) {
           proposalKind = "branch";
           branchProposals += 1;
@@ -557,8 +687,10 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
           proposedFraction = reflected(currentFraction + (2 * random() - 1) * scale, 1);
         }
         const proposedEdgeObject = tree.edges[proposedEdge];
+        const conditionalStarted = performance.now();
         const proposedSurface = tree.conditionalLikelihoods(proposedEdge, proposedEdgeObject.length * proposedFraction, proposedBranch);
         const proposedTarget = fixedUcaLogLikelihood(proposedSurface, draw.characterStates) + edgePriorLog(proposedEdge) + branchPriorLog(proposedBranch);
+        conditionalMhMilliseconds += performance.now() - conditionalStarted;
         if (Math.log(Math.max(Number.MIN_VALUE, random())) < Math.min(0, proposedTarget - conditionalTarget + logHastings)) {
           if (proposalKind === "branch") branchAccepted += 1;
           else if (proposalKind === "position") positionAccepted += 1;
@@ -569,6 +701,7 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
           currentEdge = proposedEdge;
           currentFraction = proposedFraction;
           currentBranch = proposedBranch;
+          currentEdgeObject = proposedEdgeObject;
           currentSurface = proposedSurface;
           conditionalTarget = proposedTarget;
         }
@@ -576,9 +709,14 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
       progress("mcmc", iteration + 1, iterations, `MCMC iteration ${iteration + 1} of ${iterations}; ${retained.length} retained draws`);
       await Promise.resolve();
     }
+    const samplingMilliseconds = performance.now() - samplingStarted;
     if (!retained.length) throw new Error("The Gibbs/MH settings retained no posterior draws; reduce burn-in or thinning.");
     const sampleWeight = 1 / retained.length;
+    const dCountSamples = Array.from({ length: Math.max(0, Math.floor(input.options.hmm.maximumDSegments)) + 1 }, () => 0);
     for (const sample of retained) {
+      const dCount = sample.draw.path.filter((segment) => segment.kind === "D").length;
+      while (dCountSamples.length <= dCount) dCountSamples.push(0);
+      dCountSamples[dCount] += 1;
       sample.point.localPosteriorWeight = sampleWeight;
       addAnnotationTrackMixture(marginalTrackMixture, sample.draw.tracks, sampleWeight);
       for (let site = 0; site < observedColumns; site += 1) mixture[site][sample.draw.characterStates[site]] += sampleWeight;
@@ -592,6 +730,7 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
         codon.probabilities[25 * first + 5 * second + third] += sampleWeight;
       }
     }
+    dCountPosterior = dCountSamples.map((samples, dCount) => ({ dCount, samples, probability: samples / retained.length }));
     placements = retained.map((sample) => sample.point).sort((left, right) => right.logMarginalLikelihood - left.logMarginalLikelihood);
     local = [...placements];
     weights = local.map(() => sampleWeight);
@@ -603,6 +742,8 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
       const edge = tree.edges.find((candidate) => candidate.id === point.edgeId)!;
       return point.logMarginalLikelihood + edgePriorLog(edge.index) + branchPriorLog(point.ucaBranchLength);
     });
+    const branchEffectiveSampleSize = effectiveSampleSize(retainedTrace.map((point) => point.ucaBranchLength));
+    const logTargetEffectiveSampleSize = effectiveSampleSize(marginalTargets);
     mcmcDiagnostics = {
       iterations,
       burnIn,
@@ -616,12 +757,20 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
       positionAccepted,
       globalProposals,
       globalAccepted,
+      collapsedProposals,
+      collapsedAccepted,
       edgeSwitches,
-      branchEffectiveSampleSize: effectiveSampleSize(retainedTrace.map((point) => point.ucaBranchLength)),
-      logTargetEffectiveSampleSize: effectiveSampleSize(marginalTargets),
+      branchEffectiveSampleSize,
+      logTargetEffectiveSampleSize,
+      samplingMilliseconds,
+      gibbsDraws,
+      gibbsMilliseconds,
+      collapsedMarginalMilliseconds,
+      conditionalMhMilliseconds,
       trace,
     };
-    warnings.push("Gibbs/MH used continuous pendant lengths and continuous within-edge attachment fractions. No branch-length or attachment grid was used; each MH likelihood used the exact GTR transition at the proposed value and the tree's cached directed half-edge messages.");
+    if (Math.min(branchEffectiveSampleSize, logTargetEffectiveSampleSize) < 20) warnings.push(`This Gibbs/MH run retained ${retained.length} draws but at least one placement diagnostic had ESS below 20 (branch ${branchEffectiveSampleSize.toFixed(1)}, log target ${logTargetEffectiveSampleSize.toFixed(1)}). Treat placement-marginal summaries as provisional or increase iterations/collapsed-refresh frequency.`);
+    warnings.push(`Gibbs/MH used continuous pendant lengths and continuous within-edge attachment fractions. No branch-length or attachment grid was used; each MH likelihood used the exact GTR transition at the proposed value and the tree's cached directed half-edge messages. Global jumps used an explicitly Hastings-corrected mixture of V/J-screen-centered and uniform within-edge positions${collapsedRefreshInterval > 0 ? `, with an exact collapsed refresh every ${collapsedRefreshInterval} iterations` : ""}.`);
   }
 
   if (inferenceMode !== "gibbs-mh") {
@@ -714,7 +863,7 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   const effectivePlacementCount = Math.exp(-weights.reduce((sum, weight) => weight > 0 ? sum + weight * Math.log(weight) : sum, 0));
   progress("finalize", 1, 1, "Preparing UCA sequence, placement tree, and provenance");
   return {
-    schema: 5,
+    schema: 6,
     method: "fixed-tree-empirical-bayes-phylo-uca",
     lineageLabel: input.lineageLabel,
     generatedAt: new Date().toISOString(),
@@ -732,6 +881,7 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
     placements,
     evaluatedUcaBranchLengths,
     mcmcDiagnostics,
+    dCountPosterior,
     mapAlignedSequence,
     mapUngappedSequence: mapAlignedSequence.replaceAll("-", ""),
     posteriorConsensusAligned,

@@ -120,25 +120,25 @@ The HMM is a left-to-right automaton over fixed alignment columns. It supplies a
 
 ### V states
 
-There is one V profile state for each candidate allele. Each candidate is pre-aligned to the lineage columns once. A V state normally advances by staying in the same profile while the alignment column moves right. Its exit probability increases smoothly near the AIRR-derived V endpoint; the width of that logistic transition is `vTrimScale`. This represents uncertainty in V trimming without repeatedly realigning every V at every placement.
+There is one V profile state for each candidate allele. Each candidate is pre-aligned to the lineage columns once. A V state advances in that fixed projection and can exit only from a concrete projected nucleotide. The possible exit sites are assigned the finite geometric 3′-deletion distribution controlled by `vThreePrimeTrimContinuation`; the implementation converts those endpoint masses into the corresponding conditional exit hazards. There is no hidden logistic boundary or unresolved junction-emission state.
 
 ### Non-templated states
 
-There is one N state for each number of D segments already used. N emits nucleotides from the configured nucleotide frequencies and has a geometric run-length distribution controlled by `meanNLength`. In GTR5 only, it can emit an alignment gap with `junctionGapProbability`.
+N emits nucleotides from the configured nucleotide frequencies. Its positive duration distribution has an explicit mass `singleNProbability` at length one and a user-selected one-to-four-phase geometric tail whose continuation is solved so the complete positive-run mean is exactly `meanNLength`. The default two-phase tail avoids the excessive one-nucleotide mass of a memoryless geometric run while adding only a few states. There is one copy of these duration states for each number of D segments already used. In GTR5 only, N can emit an alignment gap with `junctionGapProbability`.
 
 Zero N bases are possible because a V or D exit may enter D or J directly. Positive N runs arise by entering and remaining in an N state.
 
 ### D states
 
-Every D gene can be entered at any starting nucleotide that leaves at least `minimumDMatch` templated characters. Entry weights use a geometric 5′-trim prior. A D path advances one reference nucleotide for each alignment column. It cannot exit before the minimum match is reached; after that, `dExitProbability` controls its geometric continuation.
+Every D allele has equal prior mass before trimming and can be entered at any starting nucleotide that leaves at least `minimumDMatch` templated characters. Within an allele, entry weights use the finite geometric 5′-deletion distribution controlled by `dFivePrimeTrimContinuation`. A D path advances one reference nucleotide for each alignment column. It cannot exit before the minimum match is reached. Thereafter the endpoint hazards implement the finite geometric 3′-deletion distribution controlled by `dThreePrimeTrimContinuation`; this is a prior on deleted terminal bases, not a per-retained-base penalty.
 
 After a D exits, the automaton can enter N, enter J, or—at the low configured `additionalDProbability`—enter any D again at any valid start. This loop admits VDDJ, VDDDJ, and higher orders up to `maximumDSegments`. The default maximum is three, but the repeat prior is deliberately small. A direct V-to-J path and a zero-D V-N-J path remain available.
 
-The implementation does not build a dense all-D-to-all-D matrix. It aggregates probability at a D-exit hub and distributes it through normalized D-entry priors. Runtime therefore scales approximately with the number of D profile states, not its square.
+The implementation does not build a dense all-D-to-all-D matrix. It aggregates probability at a D-exit hub and distributes it through normalized D-entry priors. Runtime therefore scales approximately with the number of D profile states, not its square. D states are evaluated only inside the V/J anchor span plus `junctionSearchFlankColumns`; this exposed window is a computational support bound and can be enlarged for unusually deep trimming.
 
 ### J states
 
-There is one pre-aligned profile state for every candidate J. Entry at different alignment columns represents uncertain 5′ J trimming. The probability of entering J rises smoothly around the AIRR-derived J start with width `jTrimScale`. Once entered, the J profile proceeds rightward to the end of the alignment. Reference positions skipped by the fixed projection are represented directly in that profile.
+There is one pre-aligned profile state for every candidate J. Entry at different concrete projected J nucleotides represents uncertain 5′ J trimming and follows the finite geometric distribution controlled by `jFivePrimeTrimContinuation`. A J path cannot enter on an unknown projection and cannot emit a uniform pseudo-NT column before the real J template. Once entered, the J profile proceeds rightward through its fixed nucleotide projection; only alignment padding after the last concrete J nucleotide may use `terminalPaddingGapProbability`.
 
 ### HMM emissions and gaps
 
@@ -146,7 +146,7 @@ At alignment column `i`, HMM state `h` defines a prior `p(c | h,i)` over nucleot
 
 `e_i(h) = sum_c p(c | h,i) L_i(c)`.
 
-Templated V/D/J states put nearly all mass on their reference character, with a small configurable leakage probability. N states use the non-templated base frequencies. A projected templated gap in GTR5 places most mass on the gap character. In GTR4, a projected reference gap is unknown because the observed alignment contains no explicit gap evidence.
+Templated V/D/J states put mass on their reference character, with optional `templateMismatchProbability` leakage. The default is exactly zero; it is not replaced by an arithmetic floor. Zero leakage does **not** forbid a difference between the UCA template base and the sequence favored at the observed tree attachment, because the exact GTR transition along the separately estimated UCA-to-tree branch still models that mutation. N states use the non-templated base frequencies. A projected templated gap in GTR5 places most mass on the gap character. In GTR4, a projected reference gap is unknown because the observed alignment contains no explicit gap evidence.
 
 This distinction is important:
 
@@ -282,13 +282,16 @@ The attachment grid is linear in within-edge fraction. The pendant grid contains
 One iteration consists of:
 
 1. an exact forward-filter/backward-sample draw of a coherent HMM path and every UCA character conditional on the current attachment and pendant length; and
-2. several MH updates of attachment and length conditional on that sampled UCA.
+2. several cheap MH updates of attachment and length conditional on that sampled UCA; and
+3. at the configured interval, an independence proposal that changes edge, continuous within-edge position, and continuous pendant length while marginalizing over the complete HMM.
 
 Within-edge position and pendant length are continuous floating-point states. Reflected random-walk proposals evaluate `P(t)=exp(Qt)` at the proposed pendant length; they do not snap to, index, or interpolate a branch-length grid. Global proposals select an observed-tree edge from a full-support V/J-screen proposal distribution and draw a continuous fraction on it, with the independence-proposal Hastings correction.
 
-Conditional on a sampled UCA, the recombination-path terms cancel from an MH ratio. A proposal therefore needs only the likelihood of that fixed UCA against the two cached directed half-edge messages, plus the attachment/length priors. It does not run another HMM and does not recompute the observed-tree pruning likelihood. The next iteration performs the next exact HMM Gibbs draw.
+Conditional on a sampled UCA, the recombination-path terms cancel from an ordinary MH ratio. Such a proposal therefore needs only the likelihood of that fixed UCA against the two cached directed half-edge messages, plus the attachment/length priors. It does not run another HMM and does not recompute the observed-tree pruning likelihood.
 
-After burn-in and thinning, retained joint draws estimate nucleotide, exact codon-state, and source-track posteriors. The UI shows branch-length and full-HMM marginal-likelihood traces, burn-in, acceptance rates, edge switches, and simple autocorrelation ESS estimates. The seed and all proposal controls are user-visible.
+The occasional **collapsed refresh** is deliberately more expensive. It computes `p(data | attachment)` by summing over all HMM paths and UCA characters at the proposed placement and uses that marginal target in an exact Hastings ratio. The edge proposal is a full-support mixture of the already-computed full-HMM initializer weights and the broad V/J screen; position and branch components likewise retain support across their complete allowed ranges. The proposed HMM path/UCA is sampled only after the placement is accepted. This delayed draw is valid because the acceptance probability contains the marginalized likelihood and no proposed latent state; after acceptance Swig immediately draws the latent state from its conditional posterior at the new placement. It would be invalid to accept a collapsed move and retain the old UCA, which Swig does not do.
+
+After burn-in and thinning, retained joint draws estimate nucleotide, exact codon-state, source-track, and number-of-D-segments posteriors. The D-count summary is a direct count from retained paths and adds no HMM evaluations. The UI shows branch-length and full-HMM marginal-likelihood traces, burn-in, acceptance rates, edge switches, simple autocorrelation ESS estimates, ESS per sampling second, and mean timings for a full-HMM draw, collapsed marginal proposal, and fixed-UCA proposal. The seed and all proposal controls are user-visible. Runs with branch or log-target ESS below 20 carry an explicit warning.
 
 For grid or Gibbs/MH inference, the default edge prior is proportional to edge length, corresponding to a uniform attachment location over total tree length when the within-edge coordinate is a fraction. A uniform-per-edge alternative is available. Pendant length has an exponential prior with user-configurable mean and a hard maximum.
 
@@ -309,10 +312,16 @@ The placed Newick is rooted at the inferred UCA. The named `phylo_UCA` sequence 
 | Candidate screen | maximum V / J candidates | 48 / 24 |
 | HMM | maximum D segments | 3 |
 | HMM | minimum D match | 5 nt |
-| HMM | additional-D route weight | 0.015 |
-| HMM | mean N length | 5 nt |
-| HMM | template leakage | 0 (evaluated at a 1e-9 numerical floor) |
+| HMM | identifiable first-D probability | 0.934 |
+| HMM | additional-D probability | 0.00125 |
+| HMM | non-empty N probability | 0.973 |
+| HMM | V3 / D5 / D3 / J5 deletion-tail ratios | 0.7527 / 0.8574 / 0.8471 / 0.8708 |
+| HMM | positive N mean / one-nt mass / tail phases | 8.8 nt / 0.027 / 2 |
+| HMM | N A/C/G/T weights | 0.203 / 0.288 / 0.304 / 0.205 |
+| HMM | template leakage | exactly 0 |
 | HMM | junction gap probability, GTR5 only | 0.015 |
+| HMM | terminal-padding gap probability | 0.01 |
+| HMM | D-search flank | 16 columns |
 | Search | starting-position screen | independent V/J nucleotide mixture |
 | Search | screen points per edge | 5 |
 | Search | full-HMM edges | 6 |
@@ -323,18 +332,31 @@ The placed Newick is rooted at the inferred UCA. The named `phylo_UCA` sequence 
 | Search | maximum UCA branch | 0.30 substitutions/character |
 | Grid / Gibbs-MH | exponential branch-prior mean | 0.06 |
 | Grid | retained posterior points | 12 |
-| Gibbs/MH | iterations / burn-in / thin | 160 / 40 / 2 |
+| Gibbs/MH | iterations / burn-in / thin | 320 / 80 / 2 |
 | Gibbs/MH | MH steps per Gibbs draw | 4 |
 | Gibbs/MH | pendant / position proposal scale | 0.012 / 0.40 |
 | Gibbs/MH | global-jump probability | 0.12 |
+| Gibbs/MH | focused global-position mixture / half-width | 0.85 / 0.18 |
+| Gibbs/MH | focused collapsed-branch mixture / maximum | 0.90 / 0.03 |
+| Gibbs/MH | full-HMM initializer edge mixture | 0.95 |
+| Gibbs/MH | collapsed-refresh interval | every 3 iterations |
+| Gibbs/MH | reproducible seed | 1729 |
 
-These are fixed regularizing values, not fitted biological recombination rates. They are exposed in the attached advanced panel so sensitivity analyses are possible. The Additional-D control accepts the complete probability interval from 0 through 1; routing weights are normalized with the competing N/J routes inside the unchanged HMM. A dedicated reset button restores every UCA option in all four advanced groups to these defaults. A result JSON stores the complete option set and model provenance.
+The trim means, positive-N mean, one-base N mass, non-empty N mass, and N composition are compact moment matches to the public human-IGH IGoR/OLGA parameter files. The first-D default is the corresponding probability that at least the identifiable minimum survives. The additional-D value is a conservative starting value informed by the reported rarity of V(DD)J rearrangements. The gap probabilities, maximum-D bound, minimum identifiable D match, finite D-search support, and MCMC proposal controls are Swig regularizers or computational defaults rather than literature estimates.
+
+Partis/ham provides a useful warning against overinterpreting the compact trim tails: its empirical work finds reproducible, often non-parametric allele-specific deletion distributions, and uses tiered aggregation when an allele has too few observations. Swig does **not** import those thousands of fitted parameters or change its topology to match partis; the shared tails above remain a fast, visible starting model. Linearham/partis does support the broader design choice of sampling naive sequence under a recombination HMM with concrete germline states rather than allowing an unresolved early-J pseudo-state.
+
+Every HMM value in the table, including all four N-base weights, is exposed in the advanced panel so sensitivity analyses are possible. The Additional-D control accepts the complete probability interval from 0 through 1 and remains editable after a completed run. A dedicated reset button restores every UCA option to these defaults. The panel also runs a deterministic prior-predictive recombination audit against the active D lengths and reports trim, retained-D, N, junction-span, and D-count summaries. A result JSON stores the complete option set and model provenance.
+
+The supplied lineage-40 zero-leakage regression, all three route timings, seed replication, and collapsed-refresh tuning by ESS per second are reported in [`BENCHMARK_PHYLO_UCA_0.27.0.md`](../BENCHMARK_PHYLO_UCA_0.27.0.md).
 
 ## Complexity and implementation details
 
 For `n` observed tips and `L` alignment columns, directed tree messages cost `O(n L K^2)` once, where `K` is four or five. They are never recomputed during placement inference. A full marginal-likelihood placement costs `O(L K^2)` to construct the local phylogenetic surface plus one sparse/factorized HMM pass.
 
-If `S` is the number of HMM profile states, a marginal placement evaluation is approximately `O(L S)`. D-repeat transitions do not add `O(S^2)` cost. Grid/ML search uses rolling rows. An exact Gibbs draw stores the `L x S` backward table once and samples one path forward; each subsequent conditional placement MH proposal in that iteration costs only `O(L K^2)`. Exact analytic codon marginalization in ML/grid mode remains linear in `L` and `S`, with a larger constant than a single-site posterior, and never constructs a dense `S x S` matrix. Gibbs/MH codon output instead counts the exact joint three-character states in retained joint samples.
+If `S` is the number of HMM profile states, a marginal placement evaluation is approximately `O(L S)`. D-repeat transitions do not add `O(S^2)` cost. The immutable V/D/J state catalog, entry priors, endpoint hazards, and fixed D emission categories are constructed once and reused by ML, grid, and Gibbs/MH. D states are inactive outside the exposed junction support, so those framework columns neither scan D-entry registers nor store D backward values.
+
+Grid/ML search uses rolling rows. An exact Gibbs draw stores backward values for all non-D states across the alignment and D values only across the bounded junction window; this typed storage is reused between iterations rather than reallocated. Each subsequent conditional placement MH proposal costs only `O(L K^2)`. A collapsed refresh costs another rolling full-HMM marginal pass, which is why the default frequency was chosen by ESS per wall-clock second rather than steps per second. Exact analytic codon marginalization in ML/grid mode remains linear in `L` and `S`, with a larger constant than a single-site posterior, and never constructs a dense `S x S` matrix. Gibbs/MH codon output instead counts the exact joint three-character states in retained joint samples.
 
 HMM-source sidecar data is accumulated during the same backward pass. V/J tracks use their fixed projections; D tracks use sparse allele/register keys; N tracks retain five character masses. The display then sums those sparse rows by allele and spatial NT slot. Neither stage reruns placement search or allocates a dense track-by-column-by-state tensor.
 
@@ -371,7 +393,11 @@ Save session retains the inferred UCA result and all settings because reconstruc
 - MurrellGroup. [MolecularEvolution.jl](https://github.com/MurrellGroup/MolecularEvolution.jl). Directional `forward!`/`backward!` branch-message conventions and generic likelihood partitions.
 - MurrellGroup. [EvoOnline](https://github.com/MurrellGroup/EvoOnline). Browser-native reversible phylogenetic model and WebAssembly implementation precedents.
 - Matsen FA, Kodner RB, Armbrust EV. [pplacer: linear time maximum-likelihood and Bayesian phylogenetic placement of sequences onto a fixed reference tree](https://doi.org/10.1186/1471-2105-11-538). *BMC Bioinformatics* (2010).
+- Marcou Q, Mora T, Walczak AM. [High-throughput immune repertoire analysis with IGoR](https://doi.org/10.1038/s41467-018-02832-w). *Nature Communications* (2018). Source of the public human-IGH rearrangement model used for compact default moment matching; Swig does not run IGoR inference.
+- Ralph DK, Matsen FA. [Consistency of VDJ rearrangement and substitution parameters enables accurate B cell receptor sequence annotation](https://doi.org/10.1371/journal.pcbi.1004409). *PLOS Computational Biology* (2016). Partis/ham precedent for allele-specific categorical deletion distributions, N-region modeling, multi-sequence HMM inference, and tiered aggregation in small samples.
+- Psathyrella. [ham general-purpose HMM compiler](https://github.com/psathyrella/ham). Software architecture precedent only; Swig contains an independent TypeScript factorized automaton and does not incorporate GPL source.
+- Briney BS et al. [Frequency and genetic characterization of V(DD)J recombinants in the human peripheral blood antibody repertoire](https://doi.org/10.1111/j.1365-2567.2012.03605.x). *Immunology* (2012). Empirical rarity reference for the conservative additional-D starting probability.
 - Yaari G et al. [Models of somatic hypermutation targeting and substitution based on synonymous mutations from high-throughput immunoglobulin sequencing data](https://pmc.ncbi.nlm.nih.gov/articles/PMC3828525/). *Frontiers in Immunology* (2013).
 - Hoehn KB, Lunter G, Pybus OG. [A phylogenetic codon substitution model for antibody lineages](https://doi.org/10.1534/genetics.116.196303). *Genetics* (2017). HLP17 is relevant antibody-evolution literature but is a codon model, not the four-state GTR used here.
 - Hoehn KB et al. [Repertoire-wide phylogenetic models of B cell molecular evolution reveal evolutionary signatures of aging and vaccination](https://pmc.ncbi.nlm.nih.gov/articles/PMC6842591/). *PNAS* (2019). HLP19 is likewise a codon model.
-- Dhar A, Ralph DK, Minin VN, Matsen FA. [A Bayesian phylogenetic hidden Markov model for B cell receptor sequence analysis](https://doi.org/10.1371/journal.pcbi.1008030). *PLOS Computational Biology* (2020). This is a fuller joint phylogenetic formulation; Swig's optional sampler is limited to UCA placement/length/path/sequence on one fixed observed tree.
+- Dhar A, Ralph DK, Minin VN, Matsen FA. [A Bayesian phylogenetic hidden Markov model for B cell receptor sequence analysis](https://doi.org/10.1371/journal.pcbi.1008030). *PLOS Computational Biology* (2020), implemented in linearham. This is a fuller joint phylogenetic formulation using partis rearrangement parameters; Swig's sampler is limited to UCA placement/length/path/sequence on one fixed observed tree.

@@ -166,6 +166,7 @@ test("allele pooling exposes parameter-responsive reference and hard assignment 
 });
 
 test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligned HMM tracks", () => {
+  const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const component = fs.readFileSync(new URL("../src/probability-logo.tsx", import.meta.url), "utf8");
   const glyphs = fs.readFileSync(new URL("../src/logo-glyphs.ts", import.meta.url), "utf8");
   const panel = fs.readFileSync(new URL("../src/phylo-uca/panel.tsx", import.meta.url), "utf8");
@@ -210,6 +211,12 @@ test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligne
   assert.match(panel, /adoptedResultSnapshotRef\.current === incomingGeneratedAt/);
   assert.match(panel, /adoptedResultSnapshotRef\.current = inference\.generatedAt/);
   assert.doesNotMatch(panel, /\[matchingInitial, result\?\.generatedAt\]/);
+  assert.match(app, /addEventListener\("beforeunload", warnBeforeLeaving\)/);
+  assert.match(app, /addEventListener\("popstate", interceptHistoryDeparture\)/);
+  assert.match(app, /setLeavePrompt\(true\)/);
+  assert.match(app, /Stay on this page/);
+  assert.match(app, /Leave anyway/);
+  assert.match(styles, /overscroll-behavior-x:\s*none/);
   assert.match(panel, /position \* logoColumnWidth \/ 3/);
   assert.match(panel, />Codon</);
   assert.match(panel, /Amino acid/);

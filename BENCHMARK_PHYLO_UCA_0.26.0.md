@@ -1,5 +1,7 @@
 # Phylogenetic UCA placement benchmark (0.26.0)
 
+> **Superseded by the 0.27.0 HMM audit.** These historical numbers used the pre-audit automaton, including the unresolved early-J route and the old D-exit parameterization. The attribution of the terminal-D behavior to the branch grid was incomplete, and the occupancy values below must not be used to validate version 0.27.0. See [`BENCHMARK_PHYLO_UCA_0.27.0.md`](BENCHMARK_PHYLO_UCA_0.27.0.md) for the corrected zero-leakage analysis. This file is retained only to make the earlier release record explicit.
+
 ## Reproduction target
 
 - Input: user-supplied `swig-study.lineage-40.fasttree-alignment.fasta`

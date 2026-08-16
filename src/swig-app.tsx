@@ -191,7 +191,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.26.1";
+const APP_VERSION = "0.27.0";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -1455,6 +1455,7 @@ export default function SwigApp() {
   const [sessionLoadError,setSessionLoadError]=useState("");
   const [sessionLoadProgress,setSessionLoadProgress]=useState({records:0,total:0,stage:""});
   const [loadingSession,setLoadingSession]=useState(false);
+  const [leavePrompt,setLeavePrompt]=useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const databaseRequestRef = useRef(0);
   const cellRequestRef = useRef<Record<string, number>>({});
@@ -1463,6 +1464,17 @@ export default function SwigApp() {
   const nextDatasetIdRef = useRef(1);
   const gzipChoiceResolverRef=useRef<((choice:GzipImportChoice)=>void)|null>(null);
   const inputImportBusyRef=useRef(false);
+  const liveWorkRef=useRef(false);
+  const historyGuardInstalledRef=useRef(false);
+  const confirmedLeaveRef=useRef(false);
+
+  const hasLiveWork = running
+    || Boolean(session)
+    || fileInputs.length > 0
+    || pasteText.trim().length > 0
+    || Boolean(projectWorkspace)
+    || Boolean(pendingLoadedSession)
+    || loadingSession;
 
   useEffect(() => {
     loadReferencePack().then(setPack).catch((error) => setPackError(error instanceof Error ? error.message : String(error)));
@@ -1484,15 +1496,48 @@ export default function SwigApp() {
     return () => document.removeEventListener("visibilitychange", updateVisibility);
   }, []);
 
+  useEffect(() => { liveWorkRef.current = hasLiveWork; }, [hasLiveWork]);
+
   useEffect(() => {
-    if (!running) return;
+    if (!hasLiveWork) return;
     const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      if (confirmedLeaveRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", warnBeforeLeaving);
     return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
-  }, [running]);
+  }, [hasLiveWork]);
+
+  useEffect(() => {
+    const interceptHistoryDeparture = () => {
+      if (confirmedLeaveRef.current || !liveWorkRef.current) return;
+      const previous = history.state && typeof history.state === "object" ? history.state : {};
+      history.pushState({ ...previous, swigLeaveGuard: true }, "", location.href);
+      historyGuardInstalledRef.current = true;
+      setLeavePrompt(true);
+    };
+    window.addEventListener("popstate", interceptHistoryDeparture);
+    return () => window.removeEventListener("popstate", interceptHistoryDeparture);
+  }, []);
+
+  useEffect(() => {
+    if (hasLiveWork && !historyGuardInstalledRef.current) {
+      const previous = history.state && typeof history.state === "object" ? history.state : {};
+      history.pushState({ ...previous, swigLeaveGuard: true }, "", location.href);
+      historyGuardInstalledRef.current = true;
+    } else if (!hasLiveWork && historyGuardInstalledRef.current) {
+      historyGuardInstalledRef.current = false;
+      history.back();
+    }
+  }, [hasLiveWork]);
+
+  function confirmPageDeparture() {
+    confirmedLeaveRef.current = true;
+    setLeavePrompt(false);
+    history.go(-2);
+    window.setTimeout(() => { confirmedLeaveRef.current = false; }, 1200);
+  }
 
   useEffect(() => {
     return () => {
@@ -2146,6 +2191,7 @@ export default function SwigApp() {
         return;
       }
     }
+    if (session && !window.confirm("Starting this analysis will replace the current in-browser result. Cancel to save the current session first.")) return;
     const selectedCount = subsampleEnabled ? Math.floor(subsampleSize) : null;
     if(projectWorkspace){void run("browser");return;}
     const wantsDisk = outputStorage === "disk" || (outputStorage === "auto" && activeDatasets.some((input) => likelyLargeInput(input, selectedCount)));
@@ -2551,6 +2597,12 @@ export default function SwigApp() {
       )}
 
       {page === "results" && session && <ResultsPage session={session} onNewAnalysis={() => navigate("analyze")} />}
+      {leavePrompt&&<div className="output-modal-backdrop leave-guard-backdrop" role="presentation"><section className="output-modal leave-guard-modal" role="alertdialog" aria-modal="true" aria-labelledby="leave-guard-title" aria-describedby="leave-guard-description" onKeyDown={(event)=>{if(event.key==="Escape")setLeavePrompt(false);}}>
+        <span className="output-direction">UNSAVED BROWSER STATE</span>
+        <h2 id="leave-guard-title">Leave Swig and lose the current work?</h2>
+        <p id="leave-guard-description">This page still holds loaded data, analysis results, or an active run. Leaving can discard information that has not been exported or saved as a portable session.</p>
+        <div className="output-modal-actions"><button className="output-save-primary" type="button" autoFocus onClick={()=>setLeavePrompt(false)}><span>Stay on this page</span><small>Keep every in-browser result and setting</small><b>Cancel</b></button><button className="leave-guard-confirm" type="button" onClick={confirmPageDeparture}><span>Leave anyway</span><small>Discard unsaved browser state</small></button></div>
+      </section></div>}
       {pendingGzipImport&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal gzip-member-modal" role="dialog" aria-modal="true" aria-labelledby="gzip-member-title">
         <button className="output-modal-close" type="button" onClick={()=>resolveGzipImportChoice("cancel")} aria-label="Cancel this gzip import">×</button>
         <span className="output-direction">CONCATENATED GZIP · SAMPLE STRUCTURE</span>

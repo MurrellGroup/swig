@@ -11,6 +11,8 @@ export interface ProjectedGermlineCandidate {
   name: string;
   sequence: string;
   projection: string;
+  /** Zero-based reference coordinate for each alignment column, or -1. */
+  referencePositions?: number[];
   differences: number;
   compared: number;
   identity: number;
@@ -308,6 +310,7 @@ function projectCandidate(
   }
   const aligned = semiGlobalMap(anchorCharacters.join(""), record.sequence);
   const projection = Array.from({ length: guide.length }, () => "N");
+  const referencePositions = Array.from({ length: guide.length }, () => -1);
   let differences = 0;
   let compared = 0;
   for (let anchor = 0; anchor < anchorColumns.length; anchor += 1) {
@@ -321,14 +324,27 @@ function projectCandidate(
     }
     const character = record.sequence[target] ?? "N";
     projection[column] = /[ACGT]/.test(character) ? character : "N";
+    referencePositions[column] = target;
     if (/[ACGT]/.test(character)) {
       compared += 1;
       if (character !== guide[column]) differences += 1;
     }
   }
+  // Alignment insertions inside a mapped template are explicit gaps, not an
+  // unobserved template that may emit arbitrary nucleotides. This distinction
+  // is what prevents a V/J state from acting like a cost-free N state.
+  const mappedColumns = referencePositions.map((position, column) => position >= 0 ? column : -1).filter((column) => column >= 0);
+  if (mappedColumns.length) {
+    const first = mappedColumns[0];
+    const last = mappedColumns[mappedColumns.length - 1];
+    for (let column = first + 1; column < last; column += 1) {
+      if (referencePositions[column] < 0 && guide[column] === "-") projection[column] = "-";
+    }
+  }
   return {
     ...record,
     projection: projection.join(""),
+    referencePositions,
     differences,
     compared,
     identity: compared ? (compared - differences) / compared : 0,

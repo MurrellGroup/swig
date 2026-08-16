@@ -1,5 +1,7 @@
 # Swig 0.26.1
 
+> Historical release record. Version 0.27.0 removes the numerical leakage floor entirely, audits the HMM topology, and supersedes the earlier benchmark interpretation.
+
 ## UCA default changes
 
 - Changed the phylogenetic-UCA template-leakage default from `0.003` to `0`. For numerical stability, a selected value of zero continues to be evaluated at the existing `1e-9` arithmetic floor.

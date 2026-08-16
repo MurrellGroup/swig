@@ -12,7 +12,6 @@ import { normalizeProbabilityVector } from "../probability-logo.ts";
 import { PHYLO_UCA_CODON_STATE_COUNT, phyloUcaCodonStateIndex } from "./codons.ts";
 
 const NEGATIVE_INFINITY = Number.NEGATIVE_INFINITY;
-const PROBABILITY_FLOOR = 1e-300;
 const CHARACTERS = ["A", "C", "G", "T", "-"] as const;
 export const PHYLO_UCA_ANNOTATION_ALLELE_MINIMUM_WEIGHT = 0.01;
 export const PHYLO_UCA_ANNOTATION_REGISTER_MINIMUM_WEIGHT = 0.001;
@@ -23,20 +22,38 @@ interface HmmState {
   dOrdinal?: number;
   projection?: string;
   character?: string;
+  /** Emission category for a fixed-character state such as D. */
+  fixedCategory?: number;
   dUsed: number;
   dRun: number;
   dPosition: number;
+  nMode?: "single" | "tail";
+  nPhase?: number;
+  templateIndex?: number;
+  templateFirst: number;
+  templateLast: number;
 }
 
 interface StateCatalog {
   states: HmmState[];
   v: number[];
-  n: number[];
+  nSingle: number[];
+  nTail: number[][];
+  nonDStates: number[];
+  dStates: number[];
   dByCount: number[][];
   dEntries: number[][];
   dEntryLogPrior: Float64Array;
   dContinue: Int32Array;
+  dExitProbability: Float64Array;
+  dStayLog: Float64Array;
+  dExitLog: Float64Array;
   j: number[];
+  /** Conditional V-exit hazard, indexed by site × V candidate. */
+  vExitProbability: Float64Array;
+  /** J allele/5'-trim log prior, indexed by site × J candidate. */
+  jEntryLogPrior: Float64Array;
+  sites: number;
   minimumDMatch: number;
 }
 
@@ -80,9 +97,9 @@ export interface PhyloUcaHmmGibbsDraw {
   mapJCall: string;
 }
 
-function clampProbability(value: number, fallback: number): number {
+function boundedProbability(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
-  return Math.max(1e-9, Math.min(1 - 1e-9, value));
+  return Math.max(0, Math.min(1, value));
 }
 
 function logAdd(left: number, right: number): number {
@@ -98,12 +115,6 @@ function logSum(values: Iterable<number>): number {
   return total;
 }
 
-function sigmoid(value: number): number {
-  if (value >= 0) return 1 / (1 + Math.exp(-value));
-  const exponential = Math.exp(value);
-  return exponential / (1 + exponential);
-}
-
 function normalizedLogs(weights: readonly number[]): number[] {
   const safe = weights.map((weight) => Number.isFinite(weight) && weight > 0 ? weight : 0);
   const total = safe.reduce((sum, weight) => sum + weight, 0);
@@ -111,19 +122,48 @@ function normalizedLogs(weights: readonly number[]): number[] {
   return safe.map((weight) => weight > 0 ? Math.log(weight / total) : NEGATIVE_INFINITY);
 }
 
+function normalizedProjectionCharacter(projection: string | undefined, site: number): string {
+  return (projection?.[site] ?? "N").toUpperCase().replace("U", "T").replace(".", "-");
+}
+
+function projectedNucleotideSites(projection: string): number[] {
+  const sites: number[] = [];
+  for (let site = 0; site < projection.length; site += 1) if (/[ACGT]/.test(normalizedProjectionCharacter(projection, site))) sites.push(site);
+  return sites;
+}
+
+function fallbackReferencePositions(projection: string): number[] {
+  const result = Array.from({ length: projection.length }, () => -1);
+  let position = 0;
+  for (let site = 0; site < projection.length; site += 1) {
+    if (!/[ACGT]/.test(normalizedProjectionCharacter(projection, site))) continue;
+    result[site] = position;
+    position += 1;
+  }
+  return result;
+}
+
 function buildStateCatalog(references: PreparedPhyloUcaReferences, options: PhyloUcaHmmOptions): StateCatalog {
   const states: HmmState[] = [];
-  const v = references.v.map((candidate) => {
+  const sites = references.guide.length || references.v[0]?.projection.length || references.j[0]?.projection.length || 0;
+  const v = references.v.map((candidate, templateIndex) => {
     const index = states.length;
-    states.push({ kind: "V", call: candidate.name, projection: candidate.projection, dUsed: 0, dRun: 0, dPosition: -1 });
+    const nucleotideSites = projectedNucleotideSites(candidate.projection);
+    states.push({ kind: "V", call: candidate.name, projection: candidate.projection, dUsed: 0, dRun: 0, dPosition: -1, templateIndex, templateFirst: nucleotideSites[0] ?? 0, templateLast: nucleotideSites.at(-1) ?? -1 });
     return index;
   });
   const maximumD = Math.max(0, Math.min(5, Math.floor(options.maximumDSegments)));
-  const n = Array.from({ length: maximumD + 1 }, (_, dUsed) => {
+  const nSingle = Array.from({ length: maximumD + 1 }, (_, dUsed) => {
     const index = states.length;
-    states.push({ kind: "N", dUsed, dRun: 0, dPosition: -1 });
+    states.push({ kind: "N", dUsed, dRun: 0, dPosition: -1, nMode: "single", nPhase: 0, templateFirst: 0, templateLast: sites - 1 });
     return index;
   });
+  const nPhaseCount = Math.max(1, Math.min(4, Math.floor(options.nLengthPhases ?? 2)));
+  const nTail = Array.from({ length: maximumD + 1 }, (_, dUsed) => Array.from({ length: nPhaseCount }, (_, nPhase) => {
+    const index = states.length;
+    states.push({ kind: "N", dUsed, dRun: 0, dPosition: -1, nMode: "tail", nPhase, templateFirst: 0, templateLast: sites - 1 });
+    return index;
+  }));
   const minimumDMatch = Math.max(1, Math.min(12, Math.floor(options.minimumDMatch)));
   const dByCount = Array.from({ length: maximumD + 1 }, () => [] as number[]);
   const dEntries = Array.from({ length: maximumD + 1 }, () => [] as number[]);
@@ -139,14 +179,19 @@ function buildStateCatalog(references: PreparedPhyloUcaReferences, options: Phyl
           // coalesce into one state: their probabilities have already been summed.
           if (run === minimumDMatch && position < minimumDMatch - 1) continue;
           const index = states.length;
+          const dCharacter = record.sequence[position].toUpperCase().replace("U", "T");
+          const dCategory = CHARACTERS.indexOf(dCharacter as PhyloUcaCharacter);
           states.push({
             kind: "D",
             call: record.name,
             character: record.sequence[position],
+            fixedCategory: dCategory >= 0 ? dCategory : 5,
             dOrdinal: dUsed,
             dUsed,
             dRun: run,
             dPosition: position,
+            templateFirst: 0,
+            templateLast: sites - 1,
           });
           dKeys.set(`${dUsed}|${record.name}|${position}|${run}`, index);
           dByCount[dUsed].push(index);
@@ -155,9 +200,10 @@ function buildStateCatalog(references: PreparedPhyloUcaReferences, options: Phyl
       }
     }
   }
-  const j = references.j.map((candidate) => {
+  const j = references.j.map((candidate, templateIndex) => {
     const index = states.length;
-    states.push({ kind: "J", call: candidate.name, projection: candidate.projection, dUsed: 0, dRun: 0, dPosition: -1 });
+    const nucleotideSites = projectedNucleotideSites(candidate.projection);
+    states.push({ kind: "J", call: candidate.name, projection: candidate.projection, dUsed: 0, dRun: 0, dPosition: -1, templateIndex, templateFirst: nucleotideSites[0] ?? sites, templateLast: nucleotideSites.at(-1) ?? sites - 1 });
     return index;
   });
   const dContinue = new Int32Array(states.length);
@@ -169,18 +215,72 @@ function buildStateCatalog(references: PreparedPhyloUcaReferences, options: Phyl
   }
   const dEntryLogPrior = new Float64Array(states.length);
   dEntryLogPrior.fill(NEGATIVE_INFINITY);
-  const continuation = clampProbability(options.dFivePrimeTrimContinuation, 0.72);
+  const continuation = boundedProbability(options.dFivePrimeTrimContinuation, 0.8574);
+  const eligibleDRecords = references.d.filter((record) => record.sequence.length >= minimumDMatch);
   for (let dUsed = 1; dUsed <= maximumD; dUsed += 1) {
-    const raw = dEntries[dUsed].map((stateIndex) => {
-      const state = states[stateIndex];
-      return Math.pow(continuation, state.dPosition);
-    });
-    const total = raw.reduce((sum, value) => sum + value, 0);
-    dEntries[dUsed].forEach((stateIndex, entry) => {
-      dEntryLogPrior[stateIndex] = Math.log(Math.max(PROBABILITY_FLOOR, raw[entry] / Math.max(PROBABILITY_FLOOR, total)));
-    });
+    for (const record of eligibleDRecords) {
+      const entries = dEntries[dUsed].filter((stateIndex) => states[stateIndex].call === record.name);
+      const raw = entries.map((stateIndex) => Math.pow(continuation, states[stateIndex].dPosition));
+      const total = raw.reduce((sum, value) => sum + value, 0);
+      entries.forEach((stateIndex, entry) => {
+        if (raw[entry] > 0 && total > 0) dEntryLogPrior[stateIndex] = -Math.log(eligibleDRecords.length) + Math.log(raw[entry] / total);
+      });
+    }
   }
-  return { states, v, n, dByCount, dEntries, dEntryLogPrior, dContinue, j, minimumDMatch };
+
+  const dExitProbability = new Float64Array(states.length);
+  const dThreePrimeContinuation = boundedProbability(options.dThreePrimeTrimContinuation ?? (options.dExitProbability === undefined ? 0.8471 : 1 - options.dExitProbability), 0.8471);
+  const dLengths = new Map(references.d.map((record) => [record.name, record.sequence.length]));
+  for (const stateIndex of dByCount.flat()) {
+    const state = states[stateIndex];
+    if (state.dRun < minimumDMatch) continue;
+    const remainingAfterCurrent = Math.max(0, (dLengths.get(state.call ?? "") ?? state.dPosition + 1) - state.dPosition - 1);
+    const currentWeight = Math.pow(dThreePrimeContinuation, remainingAfterCurrent);
+    let remainingWeight = 0;
+    for (let trim = 0; trim <= remainingAfterCurrent; trim += 1) remainingWeight += Math.pow(dThreePrimeContinuation, trim);
+    dExitProbability[stateIndex] = remainingWeight > 0 ? currentWeight / remainingWeight : Number(state.dPosition >= (dLengths.get(state.call ?? "") ?? 1) - 1);
+  }
+  const dStayLog = new Float64Array(states.length);
+  const dExitLog = new Float64Array(states.length);
+  dStayLog.fill(NEGATIVE_INFINITY);
+  dExitLog.fill(NEGATIVE_INFINITY);
+  for (const stateIndex of dByCount.flat()) {
+    const state = states[stateIndex];
+    if (state.dRun < minimumDMatch) continue;
+    const exitProbability = dExitProbability[stateIndex];
+    if (dContinue[stateIndex] >= 0 && exitProbability < 1) dStayLog[stateIndex] = Math.log1p(-exitProbability);
+    if (exitProbability > 0) dExitLog[stateIndex] = Math.log(exitProbability);
+  }
+
+  const vExitProbability = new Float64Array(Math.max(1, sites * Math.max(1, v.length)));
+  const vContinuation = boundedProbability(options.vThreePrimeTrimContinuation, 0.7527);
+  references.v.forEach((candidate, candidateIndex) => {
+    const possibleSites = projectedNucleotideSites(candidate.projection);
+    const referencePositions = candidate.referencePositions?.length === candidate.projection.length ? candidate.referencePositions : fallbackReferencePositions(candidate.projection);
+    const weights = possibleSites.map((site) => Math.pow(vContinuation, Math.max(0, candidate.sequence.length - 1 - referencePositions[site])));
+    let tail = 0;
+    for (let entry = possibleSites.length - 1; entry >= 0; entry -= 1) {
+      tail += weights[entry];
+      if (tail > 0) vExitProbability[possibleSites[entry] * Math.max(1, v.length) + candidateIndex] = weights[entry] / tail;
+    }
+  });
+
+  const jEntryLogPrior = new Float64Array(Math.max(1, sites * Math.max(1, j.length)));
+  jEntryLogPrior.fill(NEGATIVE_INFINITY);
+  const jContinuation = boundedProbability(options.jFivePrimeTrimContinuation, 0.8708);
+  references.j.forEach((candidate, candidateIndex) => {
+    const possibleSites = projectedNucleotideSites(candidate.projection);
+    const referencePositions = candidate.referencePositions?.length === candidate.projection.length ? candidate.referencePositions : fallbackReferencePositions(candidate.projection);
+    const weights = possibleSites.map((site) => Math.pow(jContinuation, Math.max(0, referencePositions[site])));
+    const total = weights.reduce((sum, value) => sum + value, 0);
+    possibleSites.forEach((site, entry) => {
+      if (weights[entry] > 0 && total > 0) jEntryLogPrior[site * Math.max(1, j.length) + candidateIndex] = Math.log(weights[entry] / total);
+    });
+  });
+  const dStates = dByCount.flat();
+  const dStateSet = new Set(dStates);
+  const nonDStates = states.map((_, index) => index).filter((index) => !dStateSet.has(index));
+  return { states, v, nSingle, nTail, nonDStates, dStates, dByCount, dEntries, dEntryLogPrior, dContinue, dExitProbability, dStayLog, dExitLog, j, vExitProbability, jEntryLogPrior, sites, minimumDMatch };
 }
 
 function statePrior(state: HmmState, site: number, stateCount: 4 | 5, options: PhyloUcaHmmOptions): Float64Array {
@@ -191,7 +291,7 @@ function statePrior(state: HmmState, site: number, stateCount: 4 | 5, options: P
   const exact = state.kind === "N" ? "N" : state.kind === "D" ? state.character ?? "N" : state.projection?.[site] ?? "N";
   const normalized = exact.toUpperCase().replace("U", "T").replace(".", "-");
   const exactIndex = CHARACTERS.indexOf(normalized as PhyloUcaCharacter);
-  const mismatch = Math.max(1e-9, Math.min(0.25, options.templateMismatchProbability));
+  const mismatch = Math.max(0, Math.min(0.25, Number.isFinite(options.templateMismatchProbability) ? options.templateMismatchProbability : 0));
   if (exactIndex >= 0 && exactIndex < 4) {
     const gapLeak = stateCount === 5 ? mismatch * 0.02 : 0;
     const nucleotideLeak = mismatch - gapLeak;
@@ -207,11 +307,21 @@ function statePrior(state: HmmState, site: number, stateCount: 4 | 5, options: P
   // In GTR4 a projected reference gap is deliberately treated as unknown: the
   // observed alignment contains no gap character to identify an indel state.
   const gapProbability = stateCount === 5
-    ? Math.max(1e-9, Math.min(0.5, state.kind === "N" ? options.junctionGapProbability : options.unknownTemplateGapProbability))
+    ? Math.max(0, Math.min(0.5, state.kind === "N" ? options.junctionGapProbability : options.terminalPaddingGapProbability ?? options.unknownTemplateGapProbability ?? 0.01))
     : 0;
   for (let index = 0; index < 4; index += 1) result[index] = (1 - gapProbability) * bases[index];
   if (stateCount === 5) result[4] = gapProbability;
   return result;
+}
+
+function stateAllowed(state: HmmState, site: number): boolean {
+  if (state.kind === "N" || state.kind === "D") return true;
+  const character = normalizedProjectionCharacter(state.projection, site);
+  if (/[ACGT-]/.test(character)) return true;
+  // Unknown projection is admitted only as terminal alignment padding. It is
+  // never admitted before J entry or after V exit, so it cannot masquerade as
+  // a uniform-emission junction state.
+  return state.kind === "V" ? site < state.templateFirst : site > state.templateLast;
 }
 
 const TEMPLATE_UNKNOWN_CATEGORY = 5;
@@ -219,20 +329,25 @@ const JUNCTION_CATEGORY = 6;
 
 function stateCategory(state: HmmState, site: number): number {
   if (state.kind === "N") return JUNCTION_CATEGORY;
-  const character = (state.kind === "D" ? state.character : state.projection?.[site])?.toUpperCase().replace("U", "T").replace(".", "-") ?? "N";
+  if (state.fixedCategory !== undefined) return state.fixedCategory;
+  const character = state.kind === "D" ? (state.character ?? "N").toUpperCase().replace("U", "T").replace(".", "-") : normalizedProjectionCharacter(state.projection, site);
   const exact = CHARACTERS.indexOf(character as PhyloUcaCharacter);
   return exact >= 0 ? exact : TEMPLATE_UNKNOWN_CATEGORY;
 }
 
 function categoryPriors(stateCount: 4 | 5, options: PhyloUcaHmmOptions): Float64Array[] {
-  const template = (character: string): HmmState => ({ kind: "D", character, dUsed: 1, dRun: 1, dPosition: 0 });
-  const junction: HmmState = { kind: "N", dUsed: 0, dRun: 0, dPosition: -1 };
+  const template = (character: string): HmmState => ({ kind: "D", character, dUsed: 1, dRun: 1, dPosition: 0, templateFirst: 0, templateLast: 0 });
+  const junction: HmmState = { kind: "N", dUsed: 0, dRun: 0, dPosition: -1, templateFirst: 0, templateLast: 0 };
   return ["A", "C", "G", "T", "-", "N"].map((character) => statePrior(template(character), 0, stateCount, options)).concat([statePrior(junction, 0, stateCount, options)]);
 }
 
 interface EmissionCache {
-  values: Float64Array;
+  /** Site-major emission log likelihoods for A,C,G,T,gap,unknown-template,N. */
+  categoryValues: Float64Array;
+  categoryCount: number;
   siteOffsets: Float64Array;
+  catalog: StateCatalog;
+  window: JunctionWindow;
   prior: (state: number, site: number) => Float64Array;
 }
 
@@ -240,47 +355,48 @@ interface JunctionWindow { start: number; end: number }
 
 function junctionWindow(sites: number, references: PreparedPhyloUcaReferences, options: PhyloUcaHmmOptions): JunctionWindow {
   // D/N uncertainty is local to the V–J junction. Keeping the all-D automaton
-  // inactive elsewhere is exact under the fixed boundary prior up to this
-  // deliberately generous (>4 logistic scale) truncation and avoids scanning
-  // tens of thousands of D states across framework columns.
-  const left = Math.ceil(4 * Math.max(0.25, options.vTrimScale)) + 4;
-  const right = Math.ceil(4 * Math.max(0.25, options.jTrimScale)) + 4;
+  // inactive elsewhere avoids scanning tens of thousands of D states across
+  // framework columns. The exposed flank is a computational search bound, not
+  // a hidden biological prior; increase it for unusually deep V/J trimming.
+  const legacyFlank = Math.ceil(4 * Math.max(0.25, Math.max(options.vTrimScale ?? 2.5, options.jTrimScale ?? 2.5))) + 4;
+  const flank = Math.max(0, Math.min(sites, Math.floor(options.junctionSearchFlankColumns ?? legacyFlank)));
   return {
-    start: Math.max(0, references.vEndColumn - left),
-    end: Math.min(sites - 1, references.jStartColumn + right),
+    start: Math.max(0, references.vEndColumn - flank),
+    end: Math.min(sites - 1, references.jStartColumn + flank),
   };
 }
 
 function buildEmissionCache(surface: ConditionalLikelihoodSurface, catalog: StateCatalog, references: PreparedPhyloUcaReferences, options: PhyloUcaHmmOptions): EmissionCache {
   const stateCount = surface.stateCount;
-  const stateTotal = catalog.states.length;
-  const values = new Float64Array(surface.sites * stateTotal);
-  values.fill(NEGATIVE_INFINITY);
   const siteOffsets = new Float64Array(surface.sites);
   const priors = categoryPriors(stateCount, options);
+  const categoryValues = new Float64Array(surface.sites * priors.length);
+  categoryValues.fill(NEGATIVE_INFINITY);
   const prior = (state: number, site: number) => priors[stateCategory(catalog.states[state], site)];
   const window = junctionWindow(surface.sites, references, options);
-  const dStates = catalog.dByCount.flat();
-  const nonDStates = catalog.states.map((state, index) => state.kind === "D" ? -1 : index).filter((index) => index >= 0);
   for (let site = 0; site < surface.sites; site += 1) {
     const likelihoodOffset = site * stateCount;
     let siteMaximum = NEGATIVE_INFINITY;
     for (let character = 0; character < stateCount; character += 1) siteMaximum = Math.max(siteMaximum, surface.logLikelihoods[likelihoodOffset + character]);
     siteOffsets[site] = siteMaximum;
-    const categoryEmissions = new Float64Array(priors.length);
-    categoryEmissions.fill(NEGATIVE_INFINITY);
     for (let category = 0; category < priors.length; category += 1) {
       const probabilities = priors[category];
       let emission = NEGATIVE_INFINITY;
       for (let character = 0; character < stateCount; character += 1) {
         if (probabilities[character] > 0) emission = logAdd(emission, Math.log(probabilities[character]) + surface.logLikelihoods[likelihoodOffset + character] - siteMaximum);
       }
-      categoryEmissions[category] = emission;
+      categoryValues[site * priors.length + category] = emission;
     }
-    for (const state of nonDStates) values[site * stateTotal + state] = categoryEmissions[stateCategory(catalog.states[state], site)];
-    if (site >= window.start && site <= window.end) for (const state of dStates) values[site * stateTotal + state] = categoryEmissions[stateCategory(catalog.states[state], site)];
   }
-  return { values, siteOffsets, prior };
+  return { categoryValues, categoryCount: priors.length, siteOffsets, catalog, window, prior };
+}
+
+function emissionValue(emissions: EmissionCache, stateIndex: number, site: number): number {
+  const state = emissions.catalog.states[stateIndex];
+  if (state.kind === "D") {
+    if (site < emissions.window.start || site > emissions.window.end) return NEGATIVE_INFINITY;
+  } else if (!stateAllowed(state, site)) return NEGATIVE_INFINITY;
+  return emissions.categoryValues[site * emissions.categoryCount + stateCategory(state, site)];
 }
 
 interface TransitionContext {
@@ -290,17 +406,38 @@ interface TransitionContext {
   window: JunctionWindow;
 }
 
-function routingLogs(context: TransitionContext, site: number, source: "V" | "N" | "D", dUsed: number): [number, number, number] {
-  const { references, options, catalog } = context;
-  const readiness = sigmoid((site - references.jStartColumn) / Math.max(0.25, options.jTrimScale));
-  const canD = site + 1 >= context.window.start && site + 1 <= context.window.end && dUsed < catalog.dEntries.length - 1 && catalog.dEntries[dUsed + 1].length > 0;
-  if (source === "V") return normalizedLogs([0.24, canD ? 0.72 * (1 - 0.65 * readiness) : 0, 0.015 + 1.8 * readiness]) as [number, number, number];
-  if (source === "N") {
-    const dWeight = !canD ? 0 : dUsed === 0 ? 0.8 * (1 - 0.7 * readiness) : options.additionalDProbability * (1.2 - readiness);
-    return normalizedLogs([0, dWeight, 0.08 + 2.2 * readiness]) as [number, number, number];
-  }
-  const dWeight = canD ? options.additionalDProbability * (1.2 - readiness) : 0;
-  return normalizedLogs([0.65, dWeight, 0.1 + 2.1 * readiness]) as [number, number, number];
+function routingLogs(context: TransitionContext, source: "V" | "N" | "D", dUsed: number): [number, number, number] {
+  const { options, catalog } = context;
+  const nProbability = boundedProbability(options.junctionNProbability, 0.973);
+  const dProbability = dUsed === 0
+    ? boundedProbability(options.initialDProbability, 0.934)
+    : boundedProbability(options.additionalDProbability, 0.00125);
+  const canUseAnotherD = dUsed < catalog.dEntries.length - 1 && (catalog.dEntries[dUsed + 1]?.length ?? 0) > 0;
+  const nextDProbability = canUseAnotherD ? dProbability : 0;
+  if (source === "N") return normalizedLogs([0, nextDProbability, 1 - nextDProbability]) as [number, number, number];
+  return normalizedLogs([
+    nProbability,
+    (1 - nProbability) * nextDProbability,
+    (1 - nProbability) * (1 - nextDProbability),
+  ]) as [number, number, number];
+}
+
+function nDurationParameters(options: PhyloUcaHmmOptions): { single: number; tailStay: number } {
+  const single = boundedProbability(options.singleNProbability, 0.027);
+  const phases = Math.max(1, Math.min(4, Math.floor(options.nLengthPhases ?? 2)));
+  const conditionalMean = Math.max(1, Number.isFinite(options.meanNLength) ? options.meanNLength : 8.8);
+  const tailMean = single < 1 ? Math.max(phases, (conditionalMean - single) / (1 - single)) : phases;
+  return { single, tailStay: Math.max(0, Math.min(1 - 1e-9, 1 - phases / tailMean)) };
+}
+
+function vExitProbability(catalog: StateCatalog, state: HmmState, site: number): number {
+  if (state.templateIndex === undefined || !/[ACGT]/.test(normalizedProjectionCharacter(state.projection, site))) return 0;
+  return catalog.vExitProbability[site * Math.max(1, catalog.v.length) + state.templateIndex] ?? 0;
+}
+
+function jEntryLogPrior(catalog: StateCatalog, state: HmmState, site: number): number {
+  if (state.templateIndex === undefined || site < 0 || site >= catalog.sites) return NEGATIVE_INFINITY;
+  return catalog.jEntryLogPrior[site * Math.max(1, catalog.j.length) + state.templateIndex] ?? NEGATIVE_INFINITY;
 }
 
 type CombineMode = "sum" | "max";
@@ -333,42 +470,69 @@ function distributeD(destination: Float64Array, context: TransitionContext, dUse
   }
 }
 
-function distributeJ(destination: Float64Array, context: TransitionContext, score: number, routeLog: number, mode: CombineMode, sources?: Int32Array, source = -1): void {
+function distributeN(destination: Float64Array, context: TransitionContext, dUsed: number, score: number, routeLog: number, mode: CombineMode, sources?: Int32Array, source = -1): void {
+  if (score === NEGATIVE_INFINITY || routeLog === NEGATIVE_INFINITY) return;
+  const duration = nDurationParameters(context.options);
+  if (duration.single > 0) combineDestination(destination, context.catalog.nSingle[dUsed], score + routeLog + Math.log(duration.single), mode, sources, source);
+  if (duration.single < 1) combineDestination(destination, context.catalog.nTail[dUsed][0], score + routeLog + Math.log1p(-duration.single), mode, sources, source);
+}
+
+function nEntryFuture(future: Float64Array, context: TransitionContext, dUsed: number): number {
+  const duration = nDurationParameters(context.options);
+  return logSum([
+    duration.single > 0 ? Math.log(duration.single) + future[context.catalog.nSingle[dUsed]] : NEGATIVE_INFINITY,
+    duration.single < 1 ? Math.log1p(-duration.single) + future[context.catalog.nTail[dUsed][0]] : NEGATIVE_INFINITY,
+  ]);
+}
+
+function distributeJ(destination: Float64Array, context: TransitionContext, targetSite: number, score: number, routeLog: number, mode: CombineMode, sources?: Int32Array, source = -1): void {
   if (score === NEGATIVE_INFINITY || routeLog === NEGATIVE_INFINITY || !context.catalog.j.length) return;
   const candidateLog = -Math.log(context.catalog.j.length);
-  for (const target of context.catalog.j) combineDestination(destination, target, score + routeLog + candidateLog, mode, sources, source);
+  for (const target of context.catalog.j) {
+    const entryLog = jEntryLogPrior(context.catalog, context.catalog.states[target], targetSite);
+    if (entryLog !== NEGATIVE_INFINITY) combineDestination(destination, target, score + routeLog + candidateLog + entryLog, mode, sources, source);
+  }
 }
 
 function transitionForward(sourceValues: Float64Array, site: number, context: TransitionContext, mode: CombineMode, sources?: Int32Array): Float64Array {
-  const { catalog, references, options, window } = context;
+  const { catalog, options, window } = context;
   const destination = new Float64Array(catalog.states.length);
   destination.fill(NEGATIVE_INFINITY);
   sources?.fill(-1);
-  const vExit = Math.max(1e-7, Math.min(0.995, sigmoid((site - references.vEndColumn) / Math.max(0.25, options.vTrimScale))));
   const vHubValues = new Float64Array(catalog.v.length);
   for (let entry = 0; entry < catalog.v.length; entry += 1) {
-    const state = catalog.v[entry];
-    combineDestination(destination, state, sourceValues[state] + Math.log1p(-vExit), mode, sources, state);
-    vHubValues[entry] = sourceValues[state] + Math.log(vExit);
+    const stateIndex = catalog.v[entry];
+    const state = catalog.states[stateIndex];
+    const exitProbability = vExitProbability(catalog, state, site);
+    if (stateAllowed(state, site + 1) && exitProbability < 1) combineDestination(destination, stateIndex, sourceValues[stateIndex] + Math.log1p(-exitProbability), mode, sources, stateIndex);
+    vHubValues[entry] = exitProbability > 0 ? sourceValues[stateIndex] + Math.log(exitProbability) : NEGATIVE_INFINITY;
   }
   const vHub = aggregate(vHubValues, catalog.v.map((_, index) => index), mode);
   const vSource = vHub.source >= 0 ? catalog.v[vHub.source] : -1;
-  const vRoutes = routingLogs(context, site, "V", 0);
-  combineDestination(destination, catalog.n[0], vHub.score + vRoutes[0], mode, sources, vSource);
+  const vRoutes = routingLogs(context, "V", 0);
+  distributeN(destination, context, 0, vHub.score, vRoutes[0], mode, sources, vSource);
   distributeD(destination, context, 1, vHub.score, vRoutes[1], mode, sources, vSource);
-  distributeJ(destination, context, vHub.score, vRoutes[2], mode, sources, vSource);
+  distributeJ(destination, context, site + 1, vHub.score, vRoutes[2], mode, sources, vSource);
 
-  const nStay = Math.max(1e-7, Math.min(0.999, Math.max(0, options.meanNLength) / (Math.max(0, options.meanNLength) + 1)));
-  for (let dUsed = 0; dUsed < catalog.n.length; dUsed += 1) {
-    const state = catalog.n[dUsed];
-    combineDestination(destination, state, sourceValues[state] + Math.log(nStay), mode, sources, state);
-    const routes = routingLogs(context, site, "N", dUsed);
-    const hub = sourceValues[state] + Math.log1p(-nStay);
-    distributeD(destination, context, dUsed + 1, hub, routes[1], mode, sources, state);
-    distributeJ(destination, context, hub, routes[2], mode, sources, state);
+  const nDuration = nDurationParameters(options);
+  for (let dUsed = 0; dUsed < catalog.nTail.length; dUsed += 1) {
+    const routes = routingLogs(context, "N", dUsed);
+    const singleState = catalog.nSingle[dUsed];
+    distributeD(destination, context, dUsed + 1, sourceValues[singleState], routes[1], mode, sources, singleState);
+    distributeJ(destination, context, site + 1, sourceValues[singleState], routes[2], mode, sources, singleState);
+    const phases = catalog.nTail[dUsed];
+    for (let phase = 0; phase < phases.length; phase += 1) {
+      const state = phases[phase];
+      if (nDuration.tailStay > 0) combineDestination(destination, state, sourceValues[state] + Math.log(nDuration.tailStay), mode, sources, state);
+      if (phase + 1 < phases.length) combineDestination(destination, phases[phase + 1], sourceValues[state] + Math.log1p(-nDuration.tailStay), mode, sources, state);
+      else {
+        const hub = sourceValues[state] + Math.log1p(-nDuration.tailStay);
+        distributeD(destination, context, dUsed + 1, hub, routes[1], mode, sources, state);
+        distributeJ(destination, context, site + 1, hub, routes[2], mode, sources, state);
+      }
+    }
   }
 
-  const configuredDExit = clampProbability(options.dExitProbability, 0.28);
   if (site >= window.start && site <= window.end) for (let dUsed = 1; dUsed < catalog.dByCount.length; dUsed += 1) {
     let exitScore = NEGATIVE_INFINITY;
     let exitSource = -1;
@@ -379,21 +543,21 @@ function transitionForward(sourceValues: Float64Array, site: number, context: Tr
         if (next >= 0) combineDestination(destination, next, sourceValues[stateIndex], mode, sources, stateIndex);
         continue;
       }
-      const exitProbability = next < 0 || site >= window.end ? 1 : configuredDExit;
-      if (next >= 0) combineDestination(destination, next, sourceValues[stateIndex] + Math.log1p(-exitProbability), mode, sources, stateIndex);
-      const candidate = sourceValues[stateIndex] + Math.log(exitProbability);
+      const forcedExit = next < 0 || site >= window.end;
+      if (next >= 0) combineDestination(destination, next, sourceValues[stateIndex] + (forcedExit ? NEGATIVE_INFINITY : catalog.dStayLog[stateIndex]), mode, sources, stateIndex);
+      const candidate = sourceValues[stateIndex] + (forcedExit ? 0 : catalog.dExitLog[stateIndex]);
       if (mode === "sum") exitScore = logAdd(exitScore, candidate);
       else if (candidate > exitScore) {
         exitScore = candidate;
         exitSource = stateIndex;
       }
     }
-    const routes = routingLogs(context, site, "D", dUsed);
-    combineDestination(destination, catalog.n[dUsed], exitScore + routes[0], mode, sources, exitSource);
+    const routes = routingLogs(context, "D", dUsed);
+    distributeN(destination, context, dUsed, exitScore, routes[0], mode, sources, exitSource);
     distributeD(destination, context, dUsed + 1, exitScore, routes[1], mode, sources, exitSource);
-    distributeJ(destination, context, exitScore, routes[2], mode, sources, exitSource);
+    distributeJ(destination, context, site + 1, exitScore, routes[2], mode, sources, exitSource);
   }
-  for (const state of catalog.j) combineDestination(destination, state, sourceValues[state], mode, sources, state);
+  for (const state of catalog.j) if (stateAllowed(catalog.states[state], site + 1)) combineDestination(destination, state, sourceValues[state], mode, sources, state);
   return destination;
 }
 
@@ -403,34 +567,50 @@ function weightedDestination(values: Float64Array, indexes: readonly number[], l
   return result;
 }
 
-function transitionBackward(future: Float64Array, site: number, context: TransitionContext): Float64Array {
-  const { catalog, references, options, window } = context;
-  const source = new Float64Array(catalog.states.length);
+function transitionBackward(future: Float64Array, site: number, context: TransitionContext, destination?: Float64Array): Float64Array {
+  const { catalog, options, window } = context;
+  const source = destination ?? new Float64Array(catalog.states.length);
   source.fill(NEGATIVE_INFINITY);
-  const jFuture = weightedDestination(future, catalog.j, () => -Math.log(catalog.j.length));
-  const dFuture = catalog.dEntries.map((entries) => weightedDestination(future, entries, (index) => catalog.dEntryLogPrior[index]));
-  const vExit = Math.max(1e-7, Math.min(0.995, sigmoid((site - references.vEndColumn) / Math.max(0.25, options.vTrimScale))));
-  const vRoutes = routingLogs(context, site, "V", 0);
+  const jFuture = weightedDestination(future, catalog.j, (index) => -Math.log(catalog.j.length) + jEntryLogPrior(catalog, catalog.states[index], site + 1));
+  const dFuture = Array.from({ length: catalog.dEntries.length }, () => NEGATIVE_INFINITY);
+  // D entry is impossible when the destination column is outside the exposed
+  // junction window; skip those otherwise all-negative-infinity register scans.
+  if (site + 1 >= window.start && site + 1 <= window.end) {
+    for (let dUsed = 0; dUsed < catalog.dEntries.length; dUsed += 1) {
+      dFuture[dUsed] = weightedDestination(future, catalog.dEntries[dUsed], (index) => catalog.dEntryLogPrior[index]);
+    }
+  }
+  const vRoutes = routingLogs(context, "V", 0);
   const vHubFuture = logSum([
-    vRoutes[0] + future[catalog.n[0]],
+    vRoutes[0] + nEntryFuture(future, context, 0),
     vRoutes[1] + (dFuture[1] ?? NEGATIVE_INFINITY),
     vRoutes[2] + jFuture,
   ]);
-  for (const state of catalog.v) source[state] = logAdd(Math.log1p(-vExit) + future[state], Math.log(vExit) + vHubFuture);
-
-  const nStay = Math.max(1e-7, Math.min(0.999, Math.max(0, options.meanNLength) / (Math.max(0, options.meanNLength) + 1)));
-  for (let dUsed = 0; dUsed < catalog.n.length; dUsed += 1) {
-    const state = catalog.n[dUsed];
-    const routes = routingLogs(context, site, "N", dUsed);
-    const exitFuture = logSum([routes[1] + (dFuture[dUsed + 1] ?? NEGATIVE_INFINITY), routes[2] + jFuture]);
-    source[state] = logAdd(Math.log(nStay) + future[state], Math.log1p(-nStay) + exitFuture);
+  for (const stateIndex of catalog.v) {
+    const state = catalog.states[stateIndex];
+    const exitProbability = vExitProbability(catalog, state, site);
+    const stay = stateAllowed(state, site + 1) && exitProbability < 1 ? Math.log1p(-exitProbability) + future[stateIndex] : NEGATIVE_INFINITY;
+    const exit = exitProbability > 0 ? Math.log(exitProbability) + vHubFuture : NEGATIVE_INFINITY;
+    source[stateIndex] = logAdd(stay, exit);
   }
 
-  const configuredDExit = clampProbability(options.dExitProbability, 0.28);
+  const nDuration = nDurationParameters(options);
+  for (let dUsed = 0; dUsed < catalog.nTail.length; dUsed += 1) {
+    const routes = routingLogs(context, "N", dUsed);
+    const exitFuture = logSum([routes[1] + (dFuture[dUsed + 1] ?? NEGATIVE_INFINITY), routes[2] + jFuture]);
+    source[catalog.nSingle[dUsed]] = exitFuture;
+    const phases = catalog.nTail[dUsed];
+    for (let phase = 0; phase < phases.length; phase += 1) {
+      const state = phases[phase];
+      const advance = phase + 1 < phases.length ? future[phases[phase + 1]] : exitFuture;
+      source[state] = logAdd(Math.log(nDuration.tailStay) + future[state], Math.log1p(-nDuration.tailStay) + advance);
+    }
+  }
+
   if (site >= window.start && site <= window.end) for (let dUsed = 1; dUsed < catalog.dByCount.length; dUsed += 1) {
-    const routes = routingLogs(context, site, "D", dUsed);
+    const routes = routingLogs(context, "D", dUsed);
     const exitFuture = logSum([
-      routes[0] + future[catalog.n[dUsed]],
+      routes[0] + nEntryFuture(future, context, dUsed),
       routes[1] + (dFuture[dUsed + 1] ?? NEGATIVE_INFINITY),
       routes[2] + jFuture,
     ]);
@@ -439,14 +619,13 @@ function transitionBackward(future: Float64Array, site: number, context: Transit
       const next = catalog.dContinue[stateIndex];
       if (state.dRun < catalog.minimumDMatch) source[stateIndex] = next >= 0 ? future[next] : NEGATIVE_INFINITY;
       else {
-        const exitProbability = next < 0 || site >= window.end ? 1 : configuredDExit;
-        source[stateIndex] = next < 0
+        source[stateIndex] = next < 0 || site >= window.end
           ? exitFuture
-          : logAdd(Math.log1p(-exitProbability) + future[next], Math.log(exitProbability) + exitFuture);
+          : logAdd(catalog.dStayLog[stateIndex] + future[next], catalog.dExitLog[stateIndex] + exitFuture);
       }
     }
   }
-  for (const state of catalog.j) source[state] = future[state];
+  for (const state of catalog.j) source[state] = stateAllowed(catalog.states[state], site + 1) ? future[state] : NEGATIVE_INFINITY;
   return source;
 }
 
@@ -454,7 +633,7 @@ function initialize(catalog: StateCatalog, emissions: EmissionCache): Float64Arr
   const values = new Float64Array(catalog.states.length);
   values.fill(NEGATIVE_INFINITY);
   const prior = -Math.log(catalog.v.length);
-  for (const state of catalog.v) values[state] = prior + emissions.values[state];
+  for (const state of catalog.v) values[state] = prior + emissionValue(emissions, state, 0);
   return values;
 }
 
@@ -479,6 +658,58 @@ function sampleLogCategorical(logWeights: ArrayLike<number>, random: () => numbe
 }
 
 /**
+ * FFBS needs one backward row per site, but D states are possible only in the
+ * bounded junction window. Persisting a dense sites × all-states matrix made
+ * the ordinary framework columns dominate both allocation traffic and memory.
+ * This store is exactly equivalent while retaining D values only where they
+ * can be reached.
+ */
+class SparseBackwardRows {
+  private readonly nonD: Float64Array;
+  private readonly d: Float64Array;
+  private readonly nonDPosition: Int32Array;
+  private readonly dPosition: Int32Array;
+  private readonly nonDStates: number[];
+  private readonly dStates: number[];
+  private readonly window: JunctionWindow;
+  private readonly firstDState: number;
+
+  constructor(catalog: StateCatalog, window: JunctionWindow, sites: number) {
+    this.nonDStates = catalog.nonDStates;
+    this.dStates = catalog.dStates;
+    this.window = window;
+    this.firstDState = this.dStates[0] ?? -1;
+    this.nonD = new Float64Array(sites * this.nonDStates.length);
+    this.d = new Float64Array(Math.max(0, window.end - window.start + 1) * this.dStates.length);
+    this.nonDPosition = new Int32Array(catalog.states.length);
+    this.dPosition = new Int32Array(catalog.states.length);
+    this.nonDPosition.fill(-1);
+    this.dPosition.fill(-1);
+    this.nonDStates.forEach((state, position) => { this.nonDPosition[state] = position; });
+    this.dStates.forEach((state, position) => { this.dPosition[state] = position; });
+    for (let position = 0; position < this.dStates.length; position += 1) {
+      if (this.dStates[position] !== this.firstDState + position) throw new Error("The UCA HMM D-state block is not contiguous.");
+    }
+  }
+
+  set(site: number, values: Float64Array): void {
+    const nonDOffset = site * this.nonDStates.length;
+    for (let position = 0; position < this.nonDStates.length; position += 1) this.nonD[nonDOffset + position] = values[this.nonDStates[position]];
+    if (site < this.window.start || site > this.window.end) return;
+    const dOffset = (site - this.window.start) * this.dStates.length;
+    if (this.dStates.length) this.d.set(values.subarray(this.firstDState, this.firstDState + this.dStates.length), dOffset);
+  }
+
+  get(site: number, state: number): number {
+    const nonDPosition = this.nonDPosition[state];
+    if (nonDPosition >= 0) return this.nonD[site * this.nonDStates.length + nonDPosition];
+    const dPosition = this.dPosition[state];
+    if (dPosition < 0 || site < this.window.start || site > this.window.end) return NEGATIVE_INFINITY;
+    return this.d[(site - this.window.start) * this.dStates.length + dPosition];
+  }
+}
+
+/**
  * Reusable exact FFBS sampler for p(HMM path, UCA characters | placement, tree).
  * The large D-state catalog is constructed once. Each draw performs one
  * backward HMM pass, samples one coherent path, and samples UCA characters
@@ -488,6 +719,7 @@ export class PhyloUcaHmmGibbsSampler {
   private readonly catalog: StateCatalog;
   private readonly references: PreparedPhyloUcaReferences;
   private readonly options: PhyloUcaHmmOptions;
+  private backwardRows?: SparseBackwardRows;
 
   constructor(
     references: PreparedPhyloUcaReferences,
@@ -499,37 +731,75 @@ export class PhyloUcaHmmGibbsSampler {
     if (!this.catalog.v.length || !this.catalog.j.length) throw new Error("The UCA HMM Gibbs sampler requires at least one V and one J candidate.");
   }
 
+  /** Exact full-HMM marginal using the reusable catalog and bounded D window. */
+  logMarginal(surface: ConditionalLikelihoodSurface): number {
+    const { catalog, references, options } = this;
+    const emissions = buildEmissionCache(surface, catalog, references, options);
+    const stateTotal = catalog.states.length;
+    const context = { catalog, references, options, window: junctionWindow(surface.sites, references, options) };
+    let beta: Float64Array<ArrayBufferLike> = new Float64Array(stateTotal);
+    beta.fill(NEGATIVE_INFINITY);
+    for (const state of catalog.j) beta[state] = 0;
+    const future: Float64Array<ArrayBufferLike> = new Float64Array(stateTotal);
+    let nextBeta: Float64Array<ArrayBufferLike> = new Float64Array(stateTotal);
+    for (let site = surface.sites - 2; site >= 0; site -= 1) {
+      future.fill(NEGATIVE_INFINITY);
+      for (const state of catalog.nonDStates) future[state] = emissionValue(emissions, state, site + 1) + beta[state];
+      if (site + 1 >= context.window.start && site + 1 <= context.window.end) {
+        for (const state of catalog.dStates) future[state] = emissionValue(emissions, state, site + 1) + beta[state];
+      }
+      const reusable = beta;
+      beta = transitionBackward(future, site, context, nextBeta);
+      nextBeta = reusable;
+    }
+    const initial = initialize(catalog, emissions);
+    for (let state = 0; state < stateTotal; state += 1) initial[state] += beta[state];
+    return logSum(initial) + emissions.siteOffsets.reduce((sum, value) => sum + value, 0);
+  }
+
   draw(surface: ConditionalLikelihoodSurface, random: () => number = Math.random): PhyloUcaHmmGibbsDraw {
     const { catalog, references, options } = this;
     const emissions = buildEmissionCache(surface, catalog, references, options);
     const stateTotal = catalog.states.length;
     const context = { catalog, references, options, window: junctionWindow(surface.sites, references, options) };
-    const betaRows = new Float64Array(surface.sites * stateTotal);
-    betaRows.fill(NEGATIVE_INFINITY);
-    const lastOffset = (surface.sites - 1) * stateTotal;
-    for (const state of catalog.j) betaRows[lastOffset + state] = 0;
-    let beta: Float64Array = betaRows.slice(lastOffset, lastOffset + stateTotal);
+    if (surface.sites !== catalog.sites) throw new Error("The UCA Gibbs surface length changed after sampler construction.");
+    const betaRows = this.backwardRows ??= new SparseBackwardRows(catalog, context.window, surface.sites);
+    let beta: Float64Array<ArrayBufferLike> = new Float64Array(stateTotal);
+    beta.fill(NEGATIVE_INFINITY);
+    for (const state of catalog.j) beta[state] = 0;
+    betaRows.set(surface.sites - 1, beta);
+    const future: Float64Array<ArrayBufferLike> = new Float64Array(stateTotal);
+    let nextBeta: Float64Array<ArrayBufferLike> = new Float64Array(stateTotal);
     for (let site = surface.sites - 2; site >= 0; site -= 1) {
-      const future = new Float64Array(stateTotal);
-      const emissionOffset = (site + 1) * stateTotal;
-      for (let state = 0; state < stateTotal; state += 1) future[state] = emissions.values[emissionOffset + state] + beta[state];
-      beta = transitionBackward(future, site, context);
-      betaRows.set(beta, site * stateTotal);
+      future.fill(NEGATIVE_INFINITY);
+      for (const state of catalog.nonDStates) future[state] = emissionValue(emissions, state, site + 1) + beta[state];
+      if (site + 1 >= context.window.start && site + 1 <= context.window.end) {
+        for (const state of catalog.dStates) future[state] = emissionValue(emissions, state, site + 1) + beta[state];
+      }
+      const reusable = beta;
+      beta = transitionBackward(future, site, context, nextBeta);
+      nextBeta = reusable;
+      betaRows.set(site, beta);
     }
 
     const initial = initialize(catalog, emissions);
     const initialConditional = new Float64Array(stateTotal);
-    for (let state = 0; state < stateTotal; state += 1) initialConditional[state] = initial[state] + betaRows[state];
+    for (let state = 0; state < stateTotal; state += 1) initialConditional[state] = initial[state] + betaRows.get(0, state);
     const logMarginalLikelihood = logSum(initialConditional) + emissions.siteOffsets.reduce((sum, value) => sum + value, 0);
     const statePath = new Int32Array(surface.sites);
     statePath[0] = sampleLogCategorical(initialConditional, random);
 
     const addDestination = (destinations: number[], weights: number[], target: number, transitionLog: number, site: number) => {
       if (target < 0 || !Number.isFinite(transitionLog)) return;
-      const future = emissions.values[(site + 1) * stateTotal + target] + betaRows[(site + 1) * stateTotal + target];
+      const future = emissionValue(emissions, target, site + 1) + betaRows.get(site + 1, target);
       if (!Number.isFinite(future)) return;
       destinations.push(target);
       weights.push(transitionLog + future);
+    };
+    const addNEntry = (destinations: number[], weights: number[], dUsed: number, transitionLog: number, site: number) => {
+      const duration = nDurationParameters(options);
+      if (duration.single > 0) addDestination(destinations, weights, catalog.nSingle[dUsed], transitionLog + Math.log(duration.single), site);
+      if (duration.single < 1) addDestination(destinations, weights, catalog.nTail[dUsed][0], transitionLog + Math.log1p(-duration.single), site);
     };
 
     for (let site = 0; site < surface.sites - 1; site += 1) {
@@ -538,37 +808,45 @@ export class PhyloUcaHmmGibbsSampler {
       const destinations: number[] = [];
       const weights: number[] = [];
       if (source.kind === "V") {
-        const vExit = Math.max(1e-7, Math.min(0.995, sigmoid((site - references.vEndColumn) / Math.max(0.25, options.vTrimScale))));
-        addDestination(destinations, weights, sourceIndex, Math.log1p(-vExit), site);
-        const routes = routingLogs(context, site, "V", 0);
-        const hub = Math.log(vExit);
-        addDestination(destinations, weights, catalog.n[0], hub + routes[0], site);
+        const exitProbability = vExitProbability(catalog, source, site);
+        if (stateAllowed(source, site + 1) && exitProbability < 1) addDestination(destinations, weights, sourceIndex, Math.log1p(-exitProbability), site);
+        const routes = routingLogs(context, "V", 0);
+        const hub = exitProbability > 0 ? Math.log(exitProbability) : NEGATIVE_INFINITY;
+        addNEntry(destinations, weights, 0, hub + routes[0], site);
         for (const target of catalog.dEntries[1] ?? []) addDestination(destinations, weights, target, hub + routes[1] + catalog.dEntryLogPrior[target], site);
         const candidateLog = -Math.log(catalog.j.length);
-        for (const target of catalog.j) addDestination(destinations, weights, target, hub + routes[2] + candidateLog, site);
+        for (const target of catalog.j) addDestination(destinations, weights, target, hub + routes[2] + candidateLog + jEntryLogPrior(catalog, catalog.states[target], site + 1), site);
       } else if (source.kind === "N") {
-        const nStay = Math.max(1e-7, Math.min(0.999, Math.max(0, options.meanNLength) / (Math.max(0, options.meanNLength) + 1)));
-        addDestination(destinations, weights, sourceIndex, Math.log(nStay), site);
-        const routes = routingLogs(context, site, "N", source.dUsed);
-        const hub = Math.log1p(-nStay);
-        for (const target of catalog.dEntries[source.dUsed + 1] ?? []) addDestination(destinations, weights, target, hub + routes[1] + catalog.dEntryLogPrior[target], site);
-        const candidateLog = -Math.log(catalog.j.length);
-        for (const target of catalog.j) addDestination(destinations, weights, target, hub + routes[2] + candidateLog, site);
+        const routes = routingLogs(context, "N", source.dUsed);
+        let hub = 0;
+        if (source.nMode === "tail") {
+          const duration = nDurationParameters(options);
+          addDestination(destinations, weights, sourceIndex, Math.log(duration.tailStay), site);
+          const phases = catalog.nTail[source.dUsed];
+          const phase = source.nPhase ?? 0;
+          if (phase + 1 < phases.length) addDestination(destinations, weights, phases[phase + 1], Math.log1p(-duration.tailStay), site);
+          else hub = Math.log1p(-duration.tailStay);
+          if (phase + 1 < phases.length) hub = NEGATIVE_INFINITY;
+        }
+        if (hub !== NEGATIVE_INFINITY) {
+          for (const target of catalog.dEntries[source.dUsed + 1] ?? []) addDestination(destinations, weights, target, hub + routes[1] + catalog.dEntryLogPrior[target], site);
+          const candidateLog = -Math.log(catalog.j.length);
+          for (const target of catalog.j) addDestination(destinations, weights, target, hub + routes[2] + candidateLog + jEntryLogPrior(catalog, catalog.states[target], site + 1), site);
+        }
       } else if (source.kind === "D") {
         const next = catalog.dContinue[sourceIndex];
         if (source.dRun < catalog.minimumDMatch) addDestination(destinations, weights, next, 0, site);
         else {
-          const configuredDExit = clampProbability(options.dExitProbability, 0.28);
-          const exitProbability = next < 0 || site >= context.window.end ? 1 : configuredDExit;
-          if (next >= 0) addDestination(destinations, weights, next, Math.log1p(-exitProbability), site);
-          const routes = routingLogs(context, site, "D", source.dUsed);
-          const hub = Math.log(exitProbability);
-          addDestination(destinations, weights, catalog.n[source.dUsed], hub + routes[0], site);
+          const forcedExit = next < 0 || site >= context.window.end;
+          if (next >= 0) addDestination(destinations, weights, next, forcedExit ? NEGATIVE_INFINITY : catalog.dStayLog[sourceIndex], site);
+          const routes = routingLogs(context, "D", source.dUsed);
+          const hub = forcedExit ? 0 : catalog.dExitLog[sourceIndex];
+          addNEntry(destinations, weights, source.dUsed, hub + routes[0], site);
           for (const target of catalog.dEntries[source.dUsed + 1] ?? []) addDestination(destinations, weights, target, hub + routes[1] + catalog.dEntryLogPrior[target], site);
           const candidateLog = -Math.log(catalog.j.length);
-          for (const target of catalog.j) addDestination(destinations, weights, target, hub + routes[2] + candidateLog, site);
+          for (const target of catalog.j) addDestination(destinations, weights, target, hub + routes[2] + candidateLog + jEntryLogPrior(catalog, catalog.states[target], site + 1), site);
         }
-      } else addDestination(destinations, weights, sourceIndex, 0, site);
+      } else if (stateAllowed(source, site + 1)) addDestination(destinations, weights, sourceIndex, 0, site);
       const selected = sampleLogCategorical(weights, random);
       statePath[site + 1] = destinations[selected];
     }
@@ -632,8 +910,7 @@ function forward(
   for (let site = 0; site < surface.sites - 1; site += 1) {
     const sources = mode === "max" ? new Int32Array(stateTotal) : undefined;
     const next = transitionForward(current, site, context, mode, sources);
-    const emissionOffset = (site + 1) * stateTotal;
-    for (let state = 0; state < stateTotal; state += 1) if (next[state] !== NEGATIVE_INFINITY) next[state] += emissions.values[emissionOffset + state];
+    for (let state = 0; state < stateTotal; state += 1) if (next[state] !== NEGATIVE_INFINITY) next[state] += emissionValue(emissions, state, site + 1);
     if (backpointers && sources) backpointers.set(sources, (site + 1) * stateTotal);
     current = next;
     rows?.set(current, (site + 1) * stateTotal);
@@ -710,7 +987,14 @@ function trackDescriptor(state: HmmState, site: number): TrackDescriptor {
   }
   const characterIndex = CHARACTERS.indexOf(normalizedTemplateCharacter(state, site) as PhyloUcaCharacter);
   if (characterIndex < 0) {
-    const boundaryLabel = state.kind === "V" ? "N · V-trim boundary" : state.kind === "J" ? "N · J-entry boundary" : `N · unresolved ${state.kind}${state.dOrdinal ?? ""}`;
+    if (state.kind === "V" || state.kind === "J") return {
+      id: `${state.kind}|${state.call ?? "?"}|terminal-padding`,
+      kind: state.kind,
+      label: `${state.kind} · ${state.call ?? "?"} · terminal alignment padding`,
+      call: state.call,
+      pure: false,
+    };
+    const boundaryLabel = `N · unresolved ${state.kind}${state.dOrdinal ?? ""}`;
     return {
       id: `N|boundary|${state.kind}|${state.dUsed}`,
       kind: "N",
@@ -856,9 +1140,8 @@ function conditionalCharacterLogMatrix(surface: ConditionalLikelihoodSurface, em
 }
 
 function addSiteEmission(values: Float64Array, emissions: EmissionCache, site: number, stateTotal: number): void {
-  const offset = site * stateTotal;
   for (let state = 0; state < stateTotal; state += 1) {
-    if (values[state] !== NEGATIVE_INFINITY) values[state] += emissions.values[offset + state];
+    if (values[state] !== NEGATIVE_INFINITY) values[state] += emissionValue(emissions, state, site);
   }
 }
 
@@ -990,8 +1273,7 @@ export function phyloUcaHmmPosterior(
     }
     if (site > 0) {
       const future = new Float64Array(stateTotal);
-      const emissionOffset = site * stateTotal;
-      for (let state = 0; state < stateTotal; state += 1) future[state] = emissions.values[emissionOffset + state] + beta[state];
+      for (let state = 0; state < stateTotal; state += 1) future[state] = emissionValue(emissions, state, site) + beta[state];
       beta = transitionBackward(future, site - 1, context);
     }
   }
@@ -1022,8 +1304,7 @@ export function phyloUcaHmmPosterior(
     marginalTrackSiteTotals[site] = stateWeightTotal;
     if (site > 0) {
       const future = new Float64Array(stateTotal);
-      const emissionOffset = site * stateTotal;
-      for (let state = 0; state < stateTotal; state += 1) future[state] = emissions.values[emissionOffset + state] + beta[state];
+      for (let state = 0; state < stateTotal; state += 1) future[state] = emissionValue(emissions, state, site) + beta[state];
       beta = transitionBackward(future, site - 1, context);
     }
   }

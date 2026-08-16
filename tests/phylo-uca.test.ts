@@ -11,6 +11,7 @@ import { alignmentGapSemantics, observedAlignedCharacterPartial, PhyloUcaTreeMes
 import { aminoAcidUcaLogoColumns, codonUcaLogoColumns, nucleotideUcaLogoColumns } from "../src/phylo-uca/logo.ts";
 import { PHYLO_UCA_CODON_SYMBOLS, phyloUcaCodonStateIndex } from "../src/phylo-uca/codons.ts";
 import { phyloUcaBranchLengthGrid } from "../src/phylo-uca/search-grid.ts";
+import { phyloUcaPriorPredictiveSummary } from "../src/phylo-uca/prior-predictive.ts";
 import { normalizeProbabilityVector } from "../src/probability-logo.ts";
 import type { PhyloUcaCodonPosterior, PhyloUcaHmmAnnotationTrack, PhyloUcaSitePosterior, PhyloUcaSegmentKind } from "../src/phylo-uca/types.ts";
 
@@ -29,6 +30,10 @@ test("phylogenetic UCA defaults use zero leakage and continuous Gibbs/MH", () =>
   const options = defaultPhyloUcaOptions();
   assert.equal(options.hmm.templateMismatchProbability, 0);
   assert.equal(options.search.inferenceMode, "gibbs-mh");
+  assert.equal(options.search.mcmcCollapsedRefreshInterval, 3);
+  assert.equal(options.search.mcmcCollapsedInitializerMixture, 0.95);
+  assert.equal(options.hmm.initialDProbability, 0.934);
+  assert.equal(options.hmm.junctionNProbability, 0.973);
 });
 
 test("HMM annotation display collapses duplicate D registers into one mixed allele row", () => {
@@ -203,7 +208,10 @@ test("factorized HMM returns a complete V-to-J joint path", () => {
   };
   const options = defaultPhyloUcaOptions().hmm;
   const result = phyloUcaHmmPosterior(exactSurface("AAATGGTTTCCC"), references, { ...options, maximumDSegments: 1, minimumDMatch: 2 });
-  const gibbs = new PhyloUcaHmmGibbsSampler(references, { ...options, maximumDSegments: 1, minimumDMatch: 2 }).draw(exactSurface("AAATGGTTTCCC"), () => 0.37);
+  const sampler = new PhyloUcaHmmGibbsSampler(references, { ...options, maximumDSegments: 1, minimumDMatch: 2 });
+  const surface = exactSurface("AAATGGTTTCCC");
+  const gibbs = sampler.draw(surface, () => 0.37);
+  assert.ok(Math.abs(sampler.logMarginal(surface) - result.logMarginalLikelihood) < 1e-9, "reusable backward marginal must equal the ordinary forward likelihood");
   assert.ok(Math.abs(gibbs.logMarginalLikelihood - result.logMarginalLikelihood) < 1e-9, "D-state FFBS backward likelihood must equal the ordinary forward likelihood");
   assert.equal(result.mapVCall, "IGHV1*01");
   assert.equal(result.mapJCall, "IGHJ1*01");
@@ -243,7 +251,7 @@ test("exact codon posterior retains germline-candidate correlation that site pro
     report: { locus: "IGH", v: ["V_A", "V_G"], d: [], j: ["J"], totalVReferences: 2, totalDReferences: 0, totalJReferences: 1, observedVHypotheses: [], observedJHypotheses: [], vCutoffDifferences: 0, jCutoffDifferences: 0, truncatedV: false, truncatedJ: false },
     warnings: [],
   };
-  const options = { ...defaultPhyloUcaOptions().hmm, maximumDSegments: 0, vTrimScale: 0.25, jTrimScale: 0.25, templateMismatchProbability: 0.001 };
+  const options = { ...defaultPhyloUcaOptions().hmm, maximumDSegments: 0, vThreePrimeTrimContinuation: 0, jFivePrimeTrimContinuation: 0, templateMismatchProbability: 0.001 };
   const result = phyloUcaHmmPosterior(surface, references, options, 0);
   const exact = result.codonPosterior[0].probabilities;
   const aaa = phyloUcaCodonStateIndex(0, 0, 0);
@@ -278,7 +286,7 @@ test("end-to-end inference roots at a zero-length UCA carrier and preserves the 
   assert.match(result.placedTreeNewick, /phylo_UCA:0(?:\.0+)?(?:[,)]|$)/);
   assert.equal(result.mapAlignedSequence.length, 12);
   assert.equal(result.posterior.length, 12);
-  assert.equal(result.schema, 5);
+  assert.equal(result.schema, 6);
   assert.equal(result.bestPlacement.screenMode, "vj-mixture");
   assert.ok(Number.isFinite(result.bestPlacement.screenScore));
   assert.ok(result.placements.some((placement) => placement.edgeFraction > 0 && placement.edgeFraction < 1));
@@ -321,13 +329,14 @@ test("exact HMM FFBS draws reproduce the forward-backward nucleotide posterior",
     report: { locus: "IGH", v: ["V_A", "V_G"], d: [], j: ["J"], totalVReferences: 2, totalDReferences: 0, totalJReferences: 1, observedVHypotheses: [], observedJHypotheses: [], vCutoffDifferences: 0, jCutoffDifferences: 0, truncatedV: false, truncatedJ: false },
     warnings: [],
   };
-  const options = { ...defaultPhyloUcaOptions().hmm, maximumDSegments: 0, vTrimScale: 0.25, jTrimScale: 0.25, templateMismatchProbability: 0.02 };
+  const options = { ...defaultPhyloUcaOptions().hmm, maximumDSegments: 0, vThreePrimeTrimContinuation: 0, jFivePrimeTrimContinuation: 0, templateMismatchProbability: 0.02 };
   const surface: ConditionalLikelihoodSurface = { sites: 6, stateCount: 4, logLikelihoods: Float64Array.from([
     0, -0.3, -0.6, -0.8, 0, -0.2, -0.7, -0.9, 0, -0.4, -0.1, -0.8,
     -0.5, -0.6, -0.2, 0, -0.4, -0.2, 0, -0.5, -0.3, -0.4, -0.2, 0,
   ]) };
   const exact = phyloUcaHmmPosterior(surface, references, options);
   const sampler = new PhyloUcaHmmGibbsSampler(references, options);
+  assert.ok(Math.abs(sampler.logMarginal(surface) - exact.logMarginalLikelihood) < 1e-9);
   let state = 9137;
   const random = () => {
     state = Math.imul(state ^ state >>> 15, 1 | state);
@@ -376,5 +385,73 @@ test("Gibbs/MH keeps pendant length continuous and emits mixing diagnostics", as
   assert.ok(diagnostics.trace.some((point) => unrelatedGrid.every((gridValue) => Math.abs(gridValue - point.ucaBranchLength) > 1e-10)), "continuous MH values must not lie on a branch grid");
   assert.ok(diagnostics.branchProposals > 0);
   assert.ok(diagnostics.positionProposals > 0);
+  assert.equal(diagnostics.gibbsDraws, diagnostics.iterations + diagnostics.collapsedAccepted, "a collapsed proposal may draw a new latent HMM/UCA only after acceptance");
+  assert.ok((diagnostics.samplingMilliseconds ?? -1) >= 0);
+  assert.ok((diagnostics.gibbsMilliseconds ?? -1) >= 0);
+  assert.ok((diagnostics.collapsedMarginalMilliseconds ?? -1) >= 0);
+  assert.ok((diagnostics.conditionalMhMilliseconds ?? -1) >= 0);
   assert.ok(result.placements.every((point) => point.localPosteriorWeight === 0.1));
+  assert.equal(result.dCountPosterior?.reduce((sum, point) => sum + point.samples, 0), 10);
+  assert.ok(Math.abs((result.dCountPosterior?.reduce((sum, point) => sum + point.probability, 0) ?? 0) - 1) < 1e-12);
+});
+
+test("J states can enter only on concrete projected J nucleotides", () => {
+  const candidate = (name: string, sequence: string, projection: string) => ({ name, sequence, projection, differences: 0, compared: sequence.length, identity: 1, observedHypothesis: true });
+  const references: PreparedPhyloUcaReferences = {
+    v: [candidate("V", "AAA", "AAANNNNNN")],
+    d: [],
+    j: [candidate("J", "CCC", "NNNNNNCCC")],
+    vEndColumn: 2,
+    jStartColumn: 6,
+    guide: "AAANNNCCC",
+    report: { locus: "IGH", v: ["V"], d: [], j: ["J"], totalVReferences: 1, totalDReferences: 0, totalJReferences: 1, observedVHypotheses: [], observedJHypotheses: [], vCutoffDifferences: 0, jCutoffDifferences: 0, truncatedV: false, truncatedJ: false },
+    warnings: [],
+  };
+  const result = phyloUcaHmmPosterior(exactSurface("AAATTTCCC"), references, { ...defaultPhyloUcaOptions().hmm, maximumDSegments: 0, vThreePrimeTrimContinuation: 0, jFivePrimeTrimContinuation: 0 });
+  const jPoints = result.marginalTracks.filter((track) => track.kind === "J").flatMap((track) => track.points);
+  assert.ok(jPoints.length > 0);
+  assert.ok(jPoints.every((point) => point.alignmentColumn >= 7), "J occupancy must not leak into the pre-J junction");
+});
+
+test("one UCA-branch mismatch plus six D matches beats an all-NT explanation at zero leakage", () => {
+  const candidate = (name: string, sequence: string, projection: string) => ({ name, sequence, projection, differences: 0, compared: sequence.length, identity: 1, observedHypothesis: true });
+  const references: PreparedPhyloUcaReferences = {
+    v: [candidate("V", "AAA", "AAANNNNNNNNNNNNNCCC")],
+    d: [{ name: "D", sequence: "CCCCCGAAAAAA" }],
+    j: [candidate("J", "CCC", "NNNNNNNNNNNNNNNCCC")],
+    vEndColumn: 2,
+    jStartColumn: 15,
+    guide: "AAANNNNNNNNNNNNNCCC",
+    report: { locus: "IGH", v: ["V"], d: ["D"], j: ["J"], totalVReferences: 1, totalDReferences: 1, totalJReferences: 1, observedVHypotheses: [], observedJHypotheses: [], vCutoffDifferences: 0, jCutoffDifferences: 0, truncatedV: false, truncatedJ: false },
+    warnings: [],
+  };
+  const sequence = "AAACCCCCTAAAAAACCC";
+  const logLikelihoods = new Float64Array(sequence.length * 4);
+  for (let site = 0; site < sequence.length; site += 1) {
+    const demanded = "ACGT".indexOf(sequence[site]);
+    for (let base = 0; base < 4; base += 1) logLikelihoods[site * 4 + base] = base === demanded ? 0 : -10;
+  }
+  // At the first D base the tree favors T over the D-template G by ~212:1,
+  // representing a substitution on the UCA-to-tree branch rather than leakage.
+  logLikelihoods[8 * 4 + 2] = -Math.log(212);
+  const result = phyloUcaHmmPosterior({ sites: sequence.length, stateCount: 4, logLikelihoods }, references, {
+    ...defaultPhyloUcaOptions().hmm,
+    maximumDSegments: 1,
+    minimumDMatch: 5,
+    templateMismatchProbability: 0,
+    vThreePrimeTrimContinuation: 0,
+    jFivePrimeTrimContinuation: 0,
+  });
+  const terminalDWeight = result.marginalTracks.filter((track) => track.kind === "D").flatMap((track) => track.points).filter((point) => point.alignmentColumn === 15).reduce((sum, point) => sum + point.probabilities.reduce((inner, value) => inner + value, 0), 0);
+  assert.ok(terminalDWeight > 0.75, `expected D to beat the one-base N boundary alternative after six matches, observed ${terminalDWeight}`);
+});
+
+test("prior-predictive generator reproduces displayed means and D-count probabilities", () => {
+  const options = defaultPhyloUcaOptions().hmm;
+  const summary = phyloUcaPriorPredictiveSummary(options, [17, 20, 23, 31, 37], 100_000, 9191);
+  const metric = (id: string) => summary.metrics.find((entry) => entry.id === id)!;
+  assert.ok(Math.abs(metric("v3").mean - 3.04) < 0.08);
+  assert.ok(Math.abs(metric("nRun").mean - 8.8) < 0.15);
+  assert.ok(Math.abs(summary.dCountProbabilities[0] - (1 - options.initialDProbability)) < 0.005);
+  assert.ok(summary.dCountProbabilities[2] > 0);
 });

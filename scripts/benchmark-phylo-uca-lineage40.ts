@@ -30,6 +30,11 @@ function summarize(result: PhyloUcaResult, wallMs: number) {
     for (const point of track.points) dOccupancy.set(point.alignmentColumn, (dOccupancy.get(point.alignmentColumn) ?? 0) + point.probabilities.reduce((sum, value) => sum + value, 0));
   }
   const supportedColumns = [...dOccupancy].filter(([, mass]) => mass >= 0.1).map(([column]) => column).sort((left, right) => left - right);
+  const diagnostics = result.mcmcDiagnostics;
+  const samplingSeconds = Math.max(1e-9, (diagnostics?.samplingMilliseconds ?? 0) / 1000);
+  const conditionalProposals = diagnostics
+    ? diagnostics.branchProposals + diagnostics.positionProposals + diagnostics.globalProposals
+    : 0;
   return {
     mode: result.options.search.inferenceMode,
     wallSeconds: wallMs / 1000,
@@ -41,15 +46,28 @@ function summarize(result: PhyloUcaResult, wallMs: number) {
     placementsUsed: result.placements.filter((point) => point.localPosteriorWeight > 0).length,
     d3_3_at_least_10pct: supportedColumns.length ? [supportedColumns[0], supportedColumns.at(-1)] : [],
     d3_3_columns_346_356: Array.from({ length: 11 }, (_, offset) => ({ column: 346 + offset, occupancy: dOccupancy.get(346 + offset) ?? 0 })),
-    mcmc: result.mcmcDiagnostics ? {
-      retained: result.mcmcDiagnostics.retainedSamples,
-      branchAcceptance: result.mcmcDiagnostics.branchAccepted / Math.max(1, result.mcmcDiagnostics.branchProposals),
-      positionAcceptance: result.mcmcDiagnostics.positionAccepted / Math.max(1, result.mcmcDiagnostics.positionProposals),
-      globalAcceptance: result.mcmcDiagnostics.globalAccepted / Math.max(1, result.mcmcDiagnostics.globalProposals),
-      edgeSwitches: result.mcmcDiagnostics.edgeSwitches,
-      branchEss: result.mcmcDiagnostics.branchEffectiveSampleSize,
-      logTargetEss: result.mcmcDiagnostics.logTargetEffectiveSampleSize,
-      distinctPendantLengths: new Set(result.mcmcDiagnostics.trace.map((point) => point.ucaBranchLength.toPrecision(12))).size,
+    d3_3_columns_350_357: Array.from({ length: 8 }, (_, offset) => ({ column: 350 + offset, occupancy: dOccupancy.get(350 + offset) ?? 0 })),
+    dCountPosterior: result.dCountPosterior,
+    mcmc: diagnostics ? {
+      retained: diagnostics.retainedSamples,
+      branchAcceptance: diagnostics.branchAccepted / Math.max(1, diagnostics.branchProposals),
+      positionAcceptance: diagnostics.positionAccepted / Math.max(1, diagnostics.positionProposals),
+      globalAcceptance: diagnostics.globalAccepted / Math.max(1, diagnostics.globalProposals),
+      collapsedAcceptance: diagnostics.collapsedAccepted / Math.max(1, diagnostics.collapsedProposals),
+      collapsedAccepted: diagnostics.collapsedAccepted,
+      collapsedProposals: diagnostics.collapsedProposals,
+      edgeSwitches: diagnostics.edgeSwitches,
+      branchEss: diagnostics.branchEffectiveSampleSize,
+      logTargetEss: diagnostics.logTargetEffectiveSampleSize,
+      samplingSeconds,
+      branchEssPerSecond: diagnostics.branchEffectiveSampleSize / samplingSeconds,
+      logTargetEssPerSecond: diagnostics.logTargetEffectiveSampleSize / samplingSeconds,
+      meanFullHmmDrawMilliseconds: (diagnostics.gibbsMilliseconds ?? 0) / Math.max(1, diagnostics.gibbsDraws ?? 0),
+      meanCollapsedMarginalMilliseconds: (diagnostics.collapsedMarginalMilliseconds ?? 0) / Math.max(1, diagnostics.collapsedProposals),
+      meanFixedUcaProposalMilliseconds: (diagnostics.conditionalMhMilliseconds ?? 0) / Math.max(1, conditionalProposals),
+      gibbsDraws: diagnostics.gibbsDraws,
+      expectedGibbsDraws: diagnostics.iterations + diagnostics.collapsedAccepted,
+      distinctPendantLengths: new Set(diagnostics.trace.map((point) => point.ucaBranchLength.toPrecision(12))).size,
     } : undefined,
     grid: result.evaluatedUcaBranchLengths,
   };

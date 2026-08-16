@@ -25,27 +25,46 @@ export interface PhyloUcaGtrModel {
 export interface PhyloUcaHmmOptions {
   /** Maximum number of D segments admitted by the recombination automaton. */
   maximumDSegments: number;
+  /** Minimum retained D-template run which is treated as identifiable. */
   minimumDMatch: number;
-  /** P(add another D | a D has ended), before column-position normalization. */
+  /** P(use an identifiable first D segment). */
+  initialDProbability: number;
+  /** P(add another D | a D has ended). */
   additionalDProbability: number;
+  /** P(a junction contains at least one non-templated nucleotide). */
+  junctionNProbability: number;
+  /** Geometric tail ratio P(k + 1 trims) / P(k trims) at the V 3' end. */
+  vThreePrimeTrimContinuation: number;
   /** Geometric continuation probability for trimming bases from the 5' D end. */
   dFivePrimeTrimContinuation: number;
-  /** Probability of exiting a D after the minimum emitted length. */
-  dExitProbability: number;
-  /** Expected number of N bases before a transition is attempted. */
+  /** Geometric tail ratio P(k + 1 trims) / P(k trims) at the D 3' end. */
+  dThreePrimeTrimContinuation: number;
+  /** Geometric tail ratio P(k + 1 trims) / P(k trims) at the J 5' end. */
+  jFivePrimeTrimContinuation: number;
+  /** Expected N-run length conditional on a non-empty N run. */
   meanNLength: number;
-  /** Width, in alignment columns, of the V trimming transition. */
-  vTrimScale: number;
-  /** Width, in alignment columns, of the J-entry transition. */
-  jTrimScale: number;
+  /** P(N length = 1 | the N run is non-empty). */
+  singleNProbability: number;
+  /** Number of geometric phases in the positive N-length tail. */
+  nLengthPhases: number;
+  /** Extra alignment columns on each side of the observed V/J anchors in which D states are evaluated. */
+  junctionSearchFlankColumns: number;
   /** Robust leakage away from a deterministic germline nucleotide. */
   templateMismatchProbability: number;
   /** Prior probability that an N/junction alignment column is a gap. */
   junctionGapProbability: number;
-  /** Prior probability of gap at a reference column whose projection is unknown. */
-  unknownTemplateGapProbability: number;
+  /** Gap prior in leading/trailing alignment padding outside a projected V/J template. */
+  terminalPaddingGapProbability: number;
   /** A,C,G,T conditional probabilities inside N regions. */
   nBaseFrequencies: [number, number, number, number];
+  /** Legacy pre-audit alias retained only when reading older sessions. */
+  dExitProbability?: number;
+  /** Legacy pre-audit V-boundary sigmoid width. */
+  vTrimScale?: number;
+  /** Legacy pre-audit J-boundary sigmoid width. */
+  jTrimScale?: number;
+  /** Legacy name for terminalPaddingGapProbability. */
+  unknownTemplateGapProbability?: number;
 }
 
 export interface PhyloUcaCandidateOptions {
@@ -95,6 +114,18 @@ export interface PhyloUcaSearchOptions {
   mcmcPositionProposalScale: number;
   /** Probability that a placement MH update proposes a global edge jump. */
   mcmcGlobalJumpProbability: number;
+  /** Fraction of global jumps centered on each edge's V/J-screen optimum rather than uniform position. */
+  mcmcGlobalPositionMixture: number;
+  /** Circular half-width of the screen-centered component of a global within-edge proposal. */
+  mcmcGlobalPositionScale: number;
+  /** Fraction of collapsed branch proposals drawn from a short-branch interval. */
+  mcmcGlobalBranchMixture: number;
+  /** Upper bound of the short-branch component, in substitutions/site. */
+  mcmcGlobalBranchMaximum: number;
+  /** Fraction of collapsed edge proposals informed by the already-computed full-HMM initializer scores. */
+  mcmcCollapsedInitializerMixture: number;
+  /** Iterations between exact collapsed placement refreshes; zero disables them. */
+  mcmcCollapsedRefreshInterval: number;
   /** Reproducible 32-bit sampler seed. */
   mcmcSeed: number;
 }
@@ -201,10 +232,28 @@ export interface PhyloUcaMcmcDiagnostics {
   positionAccepted: number;
   globalProposals: number;
   globalAccepted: number;
+  collapsedProposals: number;
+  collapsedAccepted: number;
   edgeSwitches: number;
   branchEffectiveSampleSize: number;
   logTargetEffectiveSampleSize: number;
+  /** Wall time spent in the sampling loop, excluding screening and initialization. */
+  samplingMilliseconds?: number;
+  /** Exact HMM conditional draws; each also evaluates the full marginal likelihood. */
+  gibbsDraws?: number;
+  gibbsMilliseconds?: number;
+  /** Proposed collapsed full-HMM marginal evaluations, excluding accepted conditional redraws. */
+  collapsedMarginalMilliseconds?: number;
+  /** Cheap placement proposals evaluated conditional on one sampled UCA/path. */
+  conditionalMhMilliseconds?: number;
   trace: PhyloUcaMcmcTracePoint[];
+}
+
+export interface PhyloUcaDCountPosteriorPoint {
+  dCount: number;
+  probability: number;
+  /** Retained joint Gibbs draws having this D count. */
+  samples: number;
 }
 
 export type PhyloUcaSegmentKind = "V" | "N" | "D" | "J" | "unknown";
@@ -297,7 +346,7 @@ export interface PhyloUcaCandidateReport {
 }
 
 export interface PhyloUcaResult {
-  schema: 1 | 2 | 3 | 4 | 5;
+  schema: 1 | 2 | 3 | 4 | 5 | 6;
   method: "fixed-tree-empirical-bayes-phylo-uca";
   lineageLabel: string;
   generatedAt: string;
@@ -319,6 +368,8 @@ export interface PhyloUcaResult {
   evaluatedUcaBranchLengths?: number[];
   /** Present only for Metropolis-within-Gibbs inference. */
   mcmcDiagnostics?: PhyloUcaMcmcDiagnostics;
+  /** Retained-draw posterior over the number of D segments; schema 6 Gibbs/MH results. */
+  dCountPosterior?: PhyloUcaDCountPosteriorPoint[];
   mapAlignedSequence: string;
   mapUngappedSequence: string;
   posteriorConsensusAligned: string;
