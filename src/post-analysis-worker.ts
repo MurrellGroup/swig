@@ -7,9 +7,7 @@ import {
   expandSingleLinkage,
   findLineageNeighbours,
   minHashSketch,
-  normalizeNt,
   queryRecords,
-  sequenceFingerprint,
   type DedupKey,
   type DedupResult,
   type DenoiseOptions,
@@ -21,6 +19,7 @@ import {
   type PostAnalysisRecord,
   type QueryOptions,
 } from "./post-analysis-core";
+import { airrRowToPostAnalysisRecord } from "./post-analysis-record";
 import type { DatasetScope } from "./study-design";
 import { applyCallOverrides } from "./allele-refinement/apply";
 import type { AlleleReassignmentPolicy } from "./allele-refinement/types";
@@ -158,29 +157,8 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       result = { expected };
     } else if (request.type === "ingest") {
       for (const row of request.rows) {
-        const sequence = normalizeNt(row.sequence);
-        records.push({
-          ordinal: row.ordinal,
-          sequenceId: row.sequence_id,
-          datasetId: intern(row.swig_dataset_id),
-          sampleId: intern(row.sample_id),
-          subjectId: intern(row.subject_id),
-          cohort: intern(row.swig_cohort),
-          timepoint: intern(row.swig_timepoint),
-          compartment: intern(row.swig_compartment),
-          locus: intern(row.locus),
-          vCall: intern(row.v_call),
-          jCall: intern(row.j_call),
-          originalVCall: intern(row.v_call),
-          originalJCall: intern(row.j_call),
-          cCall: intern(row.c_call),
-          cdr3Nt: normalizeNt(row.cdr3),
-          cdr3Aa: row.cdr3_aa.toUpperCase().replace(/[^A-Z*]/g, ""),
-          productive: row.productive === "T" || row.productive.toLowerCase() === "true",
-          sequenceFingerprint: sequenceFingerprint(sequence),
-          trimmedFingerprint: sequenceFingerprint(normalizeNt(row.sequence_alignment || row.sequence)),
-          inputCount: Math.max(1, Math.floor(Number(row.duplicate_count) || 1)),
-        });
+        const {ordinal,...values}=row;
+        records.push(airrRowToPostAnalysisRecord({ordinal,values},intern));
       }
       result = { indexed: records.length, expected };
     } else if (request.type === "initSketches") {

@@ -13,6 +13,7 @@ import type {
 } from "./post-analysis-core";
 import type { DatasetScope } from "./study-design";
 import type { AlleleReassignmentPolicy, AlleleRefinementResult, RefinementSegment } from "./allele-refinement/types";
+import { denoiseVdjSequence } from "./post-analysis-record";
 
 export interface DedupDashboard {
   mode: CollapseMode;
@@ -433,14 +434,4 @@ function toWorkerRow(row: AirrScanRow): WorkerResult {
     productive: row.values.productive,
     duplicate_count: row.values.duplicate_count,
   };
-}
-
-function denoiseVdjSequence(row: AirrScanRow): string {
-  const raw = row.values.sequence ?? "";
-  const start = Math.floor(Number(row.values.v_sequence_start));
-  const end = Math.floor(Number(row.values.j_sequence_end));
-  if (raw && Number.isFinite(start) && Number.isFinite(end) && start >= 1 && end >= start && end <= raw.length) {
-    return raw.slice(start - 1, end);
-  }
-  return row.values.sequence_alignment || raw;
 }

@@ -103,6 +103,8 @@ export interface LineageSummary {
   studyGroup: string;
   /** Study metadata represented among active members of this lineage summary. */
   sampleIds: string[];
+  /** Per-sample unique representatives and duplicate_count-weighted read abundance. */
+  sampleCounts: Array<{ sampleId: string; uniqueMembers: number; abundance: number }>;
   subjectIds: string[];
   timepoints: string[];
   compartments: string[];
@@ -1506,6 +1508,7 @@ export function assignLineages(
       studyScope: options.scope ?? "global",
       studyGroup: datasetScopeValue(representative, options.scope ?? "global"),
       sampleIds: [],
+      sampleCounts: [],
       subjectIds: [],
       timepoints: [],
       compartments: [],
@@ -1518,7 +1521,8 @@ export function assignLineages(
   }
   if (dedup) {
     for (let index = 0; index < dedup.representatives.length; index += 1) {
-      assignments[index] = assignments[dedup.representatives[index]];
+      const representative = dedup.representatives[index];
+      assignments[index] = representative >= 0 ? assignments[representative] : 0;
     }
   }
   // Enrich only the bounded set retained for interactive browsing. This keeps
@@ -1526,6 +1530,7 @@ export function assignLineages(
   // membership for every summary the user can filter or open.
   const summaryById = new Map(top.map((summary) => [summary.id, summary]));
   const samplesById = new Map<number, Set<string>>();
+  const sampleCountsById = new Map<number, Map<string, { representatives: Set<number>; abundance: number }>>();
   const subjectsById = new Map<number, Set<string>>();
   const timepointsById = new Map<number, Set<string>>();
   const compartmentsById = new Map<number, Set<string>>();
@@ -1535,17 +1540,33 @@ export function assignLineages(
     if (values) values.add(value); else map.set(id, new Set([value]));
   };
   for (let index = 0; index < records.length; index += 1) {
-    if (activeMask && !activeMask[index]) continue;
-    const activeWeight = dedup ? dedup.counts[index] : Math.max(1, Math.floor(records[index].inputCount ?? 1));
-    if (!activeWeight) continue;
-    const id = assignments[index];
+    const representative=dedup?dedup.representatives[index]:index;
+    if(representative<0||(activeMask&&!activeMask[representative]))continue;
+    const sourceWeight=Math.max(1,Math.floor(records[index].inputCount??1));
+    const id = assignments[representative];
     if (!id || !summaryById.has(id)) continue;
     const record = records[index];
     addValue(samplesById, id, record.sampleId);
+    if (record.sampleId) {
+      let bySample = sampleCountsById.get(id);
+      if (!bySample) {
+        bySample = new Map();
+        sampleCountsById.set(id, bySample);
+      }
+      const counts = bySample.get(record.sampleId) ?? { representatives: new Set<number>(), abundance: 0 };
+      counts.representatives.add(representative);
+      counts.abundance += sourceWeight;
+      bySample.set(record.sampleId, counts);
+    }
     addValue(subjectsById, id, record.subjectId);
     addValue(timepointsById, id, record.timepoint);
     addValue(compartmentsById, id, record.compartment);
-    if (doubleDMask?.[index]) {
+  }
+  for(let index=0;index<records.length;index+=1){
+    const activeWeight=dedup?dedup.counts[index]:Math.max(1,Math.floor(records[index].inputCount??1));
+    if(!activeWeight||(activeMask&&!activeMask[index])||!doubleDMask?.[index])continue;
+    const id=assignments[index];
+    if(summaryById.has(id)){
       const summary = summaryById.get(id)!;
       summary.doubleDPositiveMembers = (summary.doubleDPositiveMembers ?? 0) + 1;
       summary.doubleDPositiveAbundance = (summary.doubleDPositiveAbundance ?? 0) + activeWeight;
@@ -1553,6 +1574,9 @@ export function assignLineages(
   }
   for (const summary of top) {
     summary.sampleIds = [...(samplesById.get(summary.id) ?? [])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    summary.sampleCounts = [...(sampleCountsById.get(summary.id) ?? [])]
+      .map(([sampleId, counts]) => ({ sampleId, uniqueMembers: counts.representatives.size, abundance: counts.abundance }))
+      .sort((left, right) => right.abundance - left.abundance || left.sampleId.localeCompare(right.sampleId, undefined, { numeric: true }));
     summary.subjectIds = [...(subjectsById.get(summary.id) ?? [])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     summary.timepoints = [...(timepointsById.get(summary.id) ?? [])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     summary.compartments = [...(compartmentsById.get(summary.id) ?? [])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));

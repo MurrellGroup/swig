@@ -26,7 +26,9 @@ This is single linkage: A may link to B and B to C even when A and C are farther
 
 ## Summaries and exports
 
-Each component receives a deterministic numeric ID. Summary abundance is the sum of multiplicities; unique members count active representatives. The interactive table retains the 10,000 largest summaries with exact sample/donor/timepoint/compartment membership, while the assignment vector covers every row. Export writes `clone_id=swig_lineage_N` and an optional separate `swig_merged_lineage_id`.
+Each component receives a deterministic numeric ID. Summary abundance is the sum of multiplicities; unique members count active representatives. For every retained summary, Swig separately stores each sample ID's unique-representative count and `duplicate_count`-weighted read abundance. The explorer can therefore require that a lineage contain reads from one selected sample while still allowing that lineage to contain any number of other samples. This is a membership predicate, not an “only this sample” predicate.
+
+The interactive table retains the 10,000 largest summaries with exact sample/donor/timepoint/compartment membership and displays the read count for every represented sample. After SHM has been calculated, its weighted mean and upper 95% quantile are joined by lineage ID and shown in the same selector. The assignment vector still covers every row, including lineages outside the bounded interactive summary table. Export writes `clone_id=swig_lineage_N` and an optional separate `swig_merged_lineage_id`.
 
 An explicit neighbour review may combine original lineages in the workbench, but a user merge does not rewrite the original assignment vector. Removing a merge recovers the original groups.
 

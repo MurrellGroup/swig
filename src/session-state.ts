@@ -54,6 +54,8 @@ export interface LineageReplayState {
 }
 
 export interface PostAnalysisSessionSnapshot {
+  /** Explicitly bypassed post-analysis cards. Selection is skipped by default for new workspaces. */
+  skippedModules?: Array<"alleles" | "dedup" | "chimera" | "selection" | "lineage" | "diagnostics" | "workbench" | "query">;
   workingStages: Array<{ id: "dedup" | "chimera" | "selection"; label: string; input: number; retained: number; discarded: number; detail: string }>;
   activeMask?: SessionVector;
   collapse?: CollapseReplayState;

@@ -197,6 +197,31 @@ test("allele pooling exposes parameter-responsive reference and hard assignment 
   assert.match(app, /Uses policy-selected V\/D\/J calls/);
 });
 
+test("post-analysis skipping, richer lineage rows, CLI export, and lazy lineage studies remain exposed",()=>{
+  const post=fs.readFileSync(new URL("../src/post-analysis.tsx",import.meta.url),"utf8");
+  const app=fs.readFileSync(new URL("../src/swig-app.tsx",import.meta.url),"utf8");
+  const lineageStudy=fs.readFileSync(new URL("../src/lineage-study-page.tsx",import.meta.url),"utf8");
+  const standalone=fs.readFileSync(new URL("../cli-src/swig-cli-standalone.mjs",import.meta.url),"utf8");
+  const release=fs.readFileSync(new URL("../.github/workflows/release-cli.yml",import.meta.url),"utf8");
+  assert.match(post,/autoPipeline\?\.selection\.enabled\?\[\]:\["selection"\]/);
+  assert.match(post,/Skip step/);
+  assert.match(post,/Include step/);
+  assert.match(post,/Contains reads from sample/);
+  assert.match(post,/Other samples may also occur in the lineage/);
+  assert.match(post,/sample\.sampleId\}: \{sample\.abundance\.toLocaleString\(\)\} read/);
+  assert.match(post,/Mean SHM/);
+  assert.match(post,/SHM upper q95/);
+  assert.match(post,/Post-lineage analysis/);
+  assert.match(app,/Export CLI config/);
+  assert.match(app,/Load lineage study/);
+  assert.match(lineageStudy,/readLineageAirrSlice/);
+  assert.match(lineageStudy,/Samples and read counts/);
+  assert.match(standalone,/with \{ type: "file" \}/);
+  assert.match(standalone,/runCli\(\{wasmPath,referencePackPath\}\)/);
+  for(const target of ["bun-linux-x64-baseline","bun-linux-arm64","bun-darwin-x64","bun-darwin-arm64","bun-windows-x64-baseline"]){assert.match(release,new RegExp(target));}
+  assert.match(release,/Smoke-test the actual executable/);
+});
+
 test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligned HMM tracks", () => {
   const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const component = fs.readFileSync(new URL("../src/probability-logo.tsx", import.meta.url), "utf8");

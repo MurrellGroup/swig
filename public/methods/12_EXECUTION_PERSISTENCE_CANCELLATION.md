@@ -34,6 +34,8 @@ Allele refinement is deliberately first among cross-record stages because a sele
 
 Interactive stages consume the current cumulative mask. Applying or changing an upstream stage clears dependent downstream objects whose partitions could be stale. Merely fitting or previewing a model does not apply it.
 
+Each post-analysis card may be skipped independently. A skipped card is omitted from guided next-step navigation and makes no state transition. Step 04, repertoire selection, is skipped by default; this avoids requiring a no-op selection scan in the ordinary path. Include/skip choices are session state and can be changed later.
+
 ## Browser storage
 
 Large AIRR text is held in chunked IndexedDB storage, with a compact per-record index for filtering and lookup. Sequence payloads needed by repertoire-scale algorithms are streamed in batches instead of constructing a second full in-memory AIRR table. Workers receive typed arrays, compact records, or bounded sequence arenas appropriate to each operation.

@@ -73,6 +73,8 @@ test("collapse scope treats technical libraries as one sample without crossing s
 
 test("lineages can span longitudinal samples within a donor but never cross donors", () => {
   const records = [record(0, "day_0", "donor_A"), record(1, "day_30", "donor_A"), record(2, "day_0", "donor_B")];
+  records[0].inputCount = 7;
+  records[1].inputCount = 3;
   const donorScoped = assignLineages(records, {
     identity: 1,
     callResolution: "gene",
@@ -88,7 +90,24 @@ test("lineages can span longitudinal samples within a donor but never cross dono
   assert.equal(datasetScopeKey(records[0], "subject"), datasetScopeKey(records[1], "subject"));
   const shared=donorScoped.summaries.find((summary)=>summary.id===donorScoped.assignments[0]);
   assert.deepEqual(shared?.sampleIds,["day_0","day_30"]);
+  assert.deepEqual(shared?.sampleCounts,[
+    {sampleId:"day_0",uniqueMembers:1,abundance:7},
+    {sampleId:"day_30",uniqueMembers:1,abundance:3},
+  ]);
   assert.deepEqual(shared?.compartments,["blood","lymph_node"]);
+});
+
+test("per-sample lineage read counts survive an explicit cross-sample collapse",()=>{
+  const records=[record(0,"day_0","donor_A"),record(1,"day_30","donor_A")];
+  records[0].inputCount=7;records[1].inputCount=3;
+  const collapsed=deduplicate(records,"sequence","discard","subject");
+  assert.equal(collapsed.uniqueRecords,1);
+  const result=assignLineages(records,{identity:1,callResolution:"gene",ambiguity:"overlap",productiveOnly:true,requireSameLocus:true,maxCandidateComparisons:1000,scope:"subject"},collapsed);
+  assert.equal(result.summaries[0].abundance,10);
+  assert.deepEqual(result.summaries[0].sampleCounts,[
+    {sampleId:"day_0",uniqueMembers:1,abundance:7},
+    {sampleId:"day_30",uniqueMembers:1,abundance:3},
+  ]);
 });
 
 test("longitudinal/compartmental defaults keep collapse within sample and lineages within donor",()=>{

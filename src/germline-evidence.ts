@@ -85,6 +85,16 @@ export interface MissingAlleleDashboard {
   warnings: string[];
 }
 
+/**
+ * Escalate a possible-missing-allele result when its breadth is large enough
+ * that ordinary downstream interpretation should stop pending a better
+ * reference set or personalized germline discovery.
+ */
+export function requiresCompleteGermlineWarning(dashboard: Pick<MissingAlleleDashboard, "candidates">): boolean {
+  return dashboard.candidates.some((candidate) => candidate.independentUnits > 50)
+    || dashboard.candidates.filter((candidate) => candidate.independentUnits <= 50).length > 5;
+}
+
 interface Mutation {
   position: number;
   reference: string;

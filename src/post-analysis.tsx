@@ -155,6 +155,8 @@ type TreeViewMode = "stable" | "rooted" | "raw";
 type PostModuleId = "dedup" | "chimera" | "selection" | "alleles" | "lineage" | "diagnostics" | "workbench" | "query";
 type PostWorkspaceId = "overview" | PostModuleId;
 
+const POST_MODULE_ORDER: PostModuleId[] = ["alleles", "dedup", "chimera", "selection", "lineage", "diagnostics", "workbench", "query"];
+
 interface EditedAlignmentState {
   key: string;
   lineageIds: number[];
@@ -429,6 +431,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [error, setError] = useState("");
   const [activeWorkspace,setActiveWorkspace]=useState<PostWorkspaceId>("alleles");
   const openModules=useMemo(()=>new Set<PostModuleId>(activeWorkspace === "overview" ? [] : [activeWorkspace]),[activeWorkspace]);
+  const [skippedModules,setSkippedModules]=useState<Set<PostModuleId>>(
+    ()=>new Set(initialSession?.skippedModules ?? (autoPipeline?.selection.enabled?[]:["selection"])),
+  );
 
   const [dedupKey, setDedupKey] = useState<DedupKey>("trimmed");
   const [collapseMode, setCollapseMode] = useState<CollapseMode>("exact");
@@ -497,6 +502,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [lineageSort,setLineageSort]=useState<{key:LineageSortKey;direction:"asc"|"desc"}>({key:"abundance",direction:"desc"});
   const [lineageSearch,setLineageSearch]=useState("");
   const [lineageLocusFilter,setLineageLocusFilter]=useState("");
+  const [lineageSpecificSample,setLineageSpecificSample]=useState("");
   const [lineageSampleFilterMode,setLineageSampleFilterMode]=useState<LineageSampleFilterMode>("any");
   const [lineageDoubleDFilter,setLineageDoubleDFilter]=useState<LineageDoubleDFilter>("any");
   const [lineageSelectedSamples,setLineageSelectedSamples]=useState<Set<string>>(new Set());
@@ -691,10 +697,25 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setLineageSelectedSamples((current)=>new Set([...current].filter((sample)=>currentSamples.includes(sample))));
   },[datasets]);
 
+  const nextUnskippedModule=(from:PostModuleId, skipped=skippedModules):PostWorkspaceId=>{
+    const start=POST_MODULE_ORDER.indexOf(from);
+    for(let index=start+1;index<POST_MODULE_ORDER.length;index+=1){
+      const candidate=POST_MODULE_ORDER[index];
+      if(!skipped.has(candidate)&&(candidate!=="workbench"||selectedLineage))return candidate;
+    }
+    return "overview";
+  };
   const toggleModule=(module:PostModuleId)=>setActiveWorkspace(module);
-  const advanceModule=(_from:PostModuleId,to:PostModuleId)=>setActiveWorkspace(to);
+  const advanceModule=(_from:PostModuleId,to:PostModuleId)=>setActiveWorkspace(skippedModules.has(to)?nextUnskippedModule(to):to);
   const openModule=(module:PostModuleId)=>setActiveWorkspace(module);
-  const moduleClass=(module:PostModuleId,base:string)=>`${base}${openModules.has(module)?" is-open":" is-collapsed"}`;
+  const skipModule=(module:PostModuleId)=>{
+    const next=new Set(skippedModules);next.add(module);setSkippedModules(next);setActiveWorkspace(nextUnskippedModule(module,next));
+  };
+  const includeModule=(module:PostModuleId)=>setSkippedModules((current)=>{const next=new Set(current);next.delete(module);return next;});
+  const skipStepButton=(module:PostModuleId)=>skippedModules.has(module)
+    ? <button className="module-skip-step skipped" type="button" onClick={()=>includeModule(module)}>Include step</button>
+    : <button className="module-skip-step" type="button" onClick={()=>skipModule(module)}>Skip step</button>;
+  const moduleClass=(module:PostModuleId,base:string)=>`${base}${openModules.has(module)?" is-open":" is-collapsed"}${skippedModules.has(module)?" is-skipped":""}`;
   const lineageGermline = useMemo(() => {
     if (!lineageRows.length) return null;
     try { return inferLineageGermline(lineageRows, lineageGermlineMethod); } catch { return null; }
@@ -967,7 +988,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const lineage=lineages?{options:{identity,resolution,ambiguity,productiveOnly,candidateCap,lineageScope},assignments:packSessionVector(await runtime.lineageAssignments()),dashboard:{...lineages}}:undefined;
       if(signal?.aborted)throw new DOMException("Session saving was cancelled.","AbortError");
       const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
-      return {workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,alleleRefinement:alleleRefinement?saveAlleleRefinement(alleleRefinement,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior):undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
+      return {skippedModules:[...skippedModules],workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,alleleRefinement:alleleRefinement?saveAlleleRefinement(alleleRefinement,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior):undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
         alignmentFrameOffset,
         query:{queryText,queryTarget,queryMetric,queryIdentity,queryLimit,queryLocus,queryV,queryJ,queryConstraintMode,queryResultMode,queryInference,queryHits,queryLineageHits,expanded},
         editedAlignments:[...editedAlignments.values()].map((entry)=>({...entry,lineageIds:[...entry.lineageIds]})),
@@ -988,7 +1009,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   },[
     alignment,alignmentFrameOffset,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior,alleleOptions,alleleRefinement,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
     missingAlleleOptions,missingAlleles,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
-    queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,
+    queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,skippedModules,
     selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,phyloUcaState,workingStages,
   ]);
 
@@ -1011,7 +1032,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         if(collapse?.dashboard){setDedup(collapse.dashboard as unknown as DedupDashboard);setCollapseMode(collapse.mode);const o=collapse.options; if(typeof o.dedupKey==="string")setDedupKey(o.dedupKey as DedupKey);if(typeof o.collapseScope==="string")setCollapseScope(o.collapseScope as DatasetScope);if(typeof o.respectConstantCall==="boolean")setRespectConstantCall(o.respectConstantCall);if(typeof o.denoiseUnresolvedPolicy==="string")setDenoiseUnresolvedPolicy(o.denoiseUnresolvedPolicy as "discard"|"retain");}
         if(initialSession.selection){setSelectionDraft({...DEFAULT_REPERTOIRE_SELECTION,...initialSession.selection.options});setSelectionApplied(initialSession.workingStages.some(stage=>stage.id==="selection"));if(initialSession.selection.baseMask)setSelectionBaseMask(unpackSessionVector(initialSession.selection.baseMask) as Uint8Array);if(initialSession.selection.mask){const mask=unpackSessionVector(initialSession.selection.mask) as Uint8Array;let retained=0;for(const value of mask)retained+=value?1:0;setSelectionPreview({mask,inputRecords:initialSession.workingStages.find(stage=>stage.id==="selection")?.input??store.count,retainedRecords:retained,discardedRecords:(initialSession.workingStages.find(stage=>stage.id==="selection")?.input??store.count)-retained,summary:"restored saved selection"});}}
         const rawRestoredLineages=restoredRuntimeState.lineages??(lineage?.dashboard?lineage.dashboard as unknown as LineageDashboard:null);
-        const restoredLineages=rawRestoredLineages?{...rawRestoredLineages,summaries:rawRestoredLineages.summaries.map((summary)=>({...summary,studyScope:summary.studyScope??"global",studyGroup:summary.studyGroup||"complete study",sampleIds:summary.sampleIds??[],subjectIds:summary.subjectIds??[],timepoints:summary.timepoints??[],compartments:summary.compartments??[],doubleDPositiveMembers:summary.doubleDPositiveMembers??0,doubleDPositiveAbundance:summary.doubleDPositiveAbundance??0}))}:null;
+        const restoredLineages=rawRestoredLineages?{...rawRestoredLineages,summaries:rawRestoredLineages.summaries.map((summary)=>({...summary,studyScope:summary.studyScope??"global",studyGroup:summary.studyGroup||"complete study",sampleIds:summary.sampleIds??[],sampleCounts:summary.sampleCounts??(summary.sampleIds??[]).map((sampleId)=>({sampleId,uniqueMembers:(summary.sampleIds??[]).length===1?summary.uniqueMembers:0,abundance:(summary.sampleIds??[]).length===1?summary.abundance:0})),subjectIds:summary.subjectIds??[],timepoints:summary.timepoints??[],compartments:summary.compartments??[],doubleDPositiveMembers:summary.doubleDPositiveMembers??0,doubleDPositiveAbundance:summary.doubleDPositiveAbundance??0}))}:null;
         if(restoredLineages){setLineages(restoredLineages);const o=lineage?.options??{};if(typeof o.identity==="number")setIdentity(o.identity);if(typeof o.resolution==="string")setResolution(o.resolution as CallResolution);if(typeof o.ambiguity==="string")setAmbiguity(o.ambiguity as AmbiguityPolicy);if(typeof o.productiveOnly==="boolean")setProductiveOnly(o.productiveOnly);if(typeof o.lineageScope==="string")setLineageScope(o.lineageScope as DatasetScope);}
         const restoredMerges=(initialSession.lineageMerges??[]).map((merge)=>({...merge,originalLineageIds:[...new Set(merge.originalLineageIds)].filter((value)=>value>0).sort((a,b)=>a-b)}));
         setLineageMerges(restoredMerges);
@@ -1285,7 +1306,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setWorkingStages((stages) => [...stages.filter((stage) => stage.id !== "selection"), {
       id: "selection", label: `Repertoire selection · ${selectionPreview.summary}`, input: selectionPreview.inputRecords,
       retained: selectionPreview.retainedRecords, discarded: selectionPreview.discardedRecords,
-      detail: "Explicitly committed selection; downstream lineage, SHM, reference diagnostics, and sequence queries inherit this mask.",
+      detail: "Explicitly committed selection; downstream lineage, SHM, reference evidence, and sequence queries inherit this mask.",
     }]);
     invalidateAssignmentDependentAnalyses();
     advanceModule("selection","lineage");
@@ -2104,7 +2125,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const members=await runtime.lineageMembers(hit.lineageId,0,1);
       const [record]=await store.indexRecords([hit.bestOrdinal,...members.ordinals]);
       if(!record){setError(`Could not load lineage ${hit.lineageId}.`);return;}
-      summary={id:hit.lineageId,representativeOrdinal:record.ordinal,uniqueMembers:members.total,abundance:members.total,locus:record.locus,vCalls:record.vCall.split(",").map((value)=>value.trim()).filter(Boolean),jCalls:record.jCall.split(",").map((value)=>value.trim()).filter(Boolean),cdr3Length:record.cdr3.length,studyScope:lineageScope,studyGroup:datasetScopeValue(record,lineageScope),sampleIds:record.sampleId?[record.sampleId]:[],subjectIds:record.subjectId?[record.subjectId]:[],timepoints:record.timepoint?[record.timepoint]:[],compartments:record.compartment?[record.compartment]:[]};
+      summary={id:hit.lineageId,representativeOrdinal:record.ordinal,uniqueMembers:members.total,abundance:members.total,locus:record.locus,vCalls:record.vCall.split(",").map((value)=>value.trim()).filter(Boolean),jCalls:record.jCall.split(",").map((value)=>value.trim()).filter(Boolean),cdr3Length:record.cdr3.length,studyScope:lineageScope,studyGroup:datasetScopeValue(record,lineageScope),sampleIds:record.sampleId?[record.sampleId]:[],sampleCounts:record.sampleId?[{sampleId:record.sampleId,uniqueMembers:members.total,abundance:members.total}]:[],subjectIds:record.subjectId?[record.subjectId]:[],timepoints:record.timepoint?[record.timepoint]:[],compartments:record.compartment?[record.compartment]:[]};
     }
     await openLineage(summary);
   }
@@ -2149,14 +2170,14 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   }
 
   const workingCount = workingStages.length ? workingStages[workingStages.length - 1].retained : store.count;
-  const guidedAction = !dedup ? "run-dedup"
-    : !workingStages.some((stage)=>stage.id==="dedup") ? "apply-dedup"
-    : selectionPreview&&!selectionApplied ? "apply-selection"
-    : selectionApplied&&!lineages ? "run-lineages"
-    : lineages&&!shmDashboard ? "run-shm"
-    : !chmm ? "run-chimera"
-    : !workingStages.some((stage)=>stage.id==="chimera") ? "apply-chimera"
-    : !selectionPreview ? "preview-selection"
+  const guidedAction = !skippedModules.has("dedup")&&!dedup ? "run-dedup"
+    : !skippedModules.has("dedup")&&!workingStages.some((stage)=>stage.id==="dedup") ? "apply-dedup"
+    : !skippedModules.has("chimera")&&!chmm ? "run-chimera"
+    : !skippedModules.has("chimera")&&!workingStages.some((stage)=>stage.id==="chimera") ? "apply-chimera"
+    : !skippedModules.has("selection")&&!selectionPreview ? "preview-selection"
+    : !skippedModules.has("selection")&&selectionPreview&&!selectionApplied ? "apply-selection"
+    : !skippedModules.has("lineage")&&!lineages ? "run-lineages"
+    : !skippedModules.has("diagnostics")&&lineages&&!shmDashboard ? "run-shm"
     : "complete";
   const guidedClass=(action:string,base="post-primary")=>`${base}${guidedAction===action?" guided-next":""}`;
   useEffect(()=>{
@@ -2201,6 +2222,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       if(lineageMinCdr3Length&&summary.cdr3Length<lineageMinCdr3Length)return false;
       if(lineageMaxCdr3Length&&summary.cdr3Length>lineageMaxCdr3Length)return false;
       if(!lineageDoubleDMatches(summary,lineageDoubleDFilter))return false;
+      if(lineageSpecificSample&&!samples.includes(lineageSpecificSample))return false;
       if(lineageSampleFilterMode==="multiple"&&samples.length<2)return false;
       if(lineageSampleFilterMode==="single"&&samples.length!==1)return false;
       if(lineageSampleFilterMode==="selected-any"&&(!selected.size||![...selected].some((sample)=>samples.includes(sample))))return false;
@@ -2214,10 +2236,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     const numericKeys=new Set<LineageSortKey>(["id","abundance","uniqueMembers","doubleDPositiveMembers","sampleCount","cdr3Length","shmMean","shmMaximum","shmP95"]);
     summaries.sort((left,right)=>{const comparison=numericKeys.has(lineageSort.key)?numeric(left,lineageSort.key)-numeric(right,lineageSort.key):text(left,lineageSort.key).localeCompare(text(right,lineageSort.key),undefined,{numeric:true,sensitivity:"base"});return (lineageSort.direction==="asc"?comparison:-comparison)||right.abundance-left.abundance||left.id-right.id;});
     return summaries;
-  },[lineages,lineageSort,lineageSearch,lineageLocusFilter,lineageMinAbundance,lineageMinUnique,lineageMinSamples,lineageMinCdr3Length,lineageMaxCdr3Length,lineageDoubleDFilter,lineageSampleFilterMode,lineageSelectedSamples,lineageMinimumShm,lineageShmFilterStatistic,lineageShmById]);
+  },[lineages,lineageSort,lineageSearch,lineageLocusFilter,lineageMinAbundance,lineageMinUnique,lineageMinSamples,lineageMinCdr3Length,lineageMaxCdr3Length,lineageDoubleDFilter,lineageSpecificSample,lineageSampleFilterMode,lineageSelectedSamples,lineageMinimumShm,lineageShmFilterStatistic,lineageShmById]);
   const sortLineages=(key:LineageSortKey)=>setLineageSort((current)=>current.key===key?{key,direction:current.direction==="desc"?"asc":"desc"}:{key,direction:"desc"});
   const sortIndicator=(key:LineageSortKey)=>lineageSort.key===key?(lineageSort.direction==="desc"?" ↓":" ↑"):"";
-  const lineageSampleOptions=useMemo(()=>[...new Set(datasets.map((dataset)=>dataset.sampleId).filter(Boolean))],[datasets]);
+  const lineageSampleOptions=useMemo(()=>[...new Set([...datasets.map((dataset)=>dataset.sampleId),...(lineages?.summaries??[]).flatMap((summary)=>summary.sampleIds??[])].filter(Boolean))].sort((left,right)=>left.localeCompare(right,undefined,{numeric:true,sensitivity:"base"})),[datasets,lineages]);
   const visibleLineageSampleOptions=useMemo(()=>{
     const query=lineageSampleSearch.trim().toLowerCase();
     if(query)return lineageSampleOptions.filter((sample)=>sample.toLowerCase().includes(query)).slice(0,200);
@@ -2228,6 +2250,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const lineageShmLabel=(lineageId:number,key:LineageShmFilterStatistic)=>{const value=lineageShmById.get(lineageId)?.[key];if(value===undefined)return "—";return shmMetric.toLowerCase().includes("rate")?`${(value*100).toFixed(1)}%`:value.toFixed(value<10?2:0);};
   const vChart = lineages?.vUsage.slice(0, topGenes).map((item) => ({ label: item.call, value: item[geneMetric] })) ?? [];
   const jChart = lineages?.jUsage.slice(0, topGenes).map((item) => ({ label: item.call, value: item[geneMetric] })) ?? [];
+  const railClass=(module:PostModuleId)=>`${activeWorkspace===module?"active":""}${skippedModules.has(module)?" skipped":""}`.trim();
 
   return <section className="post-analysis-shell">
     <header className="post-analysis-heading"><div><span className="section-kicker">Post-assignment analyses</span><h2>Repertoire structure and lineage analysis</h2><p>Exact collapse or denoising and chimera exclusion modify an explicit cumulative working set. CHMMAIRRa, lineage assignment, repertoire querying, and expansion consume that set; alignment and tree inference consume the selected lineage.</p><a href="./METHODS_INDEX.md" target="_blank" rel="noreferrer">Complete methods index ↗</a></div><div className="local-method-note"><span>Data handling</span><strong>Browser-local</strong><small>Input, germlines, and results are not submitted to an analysis server.</small></div></header>
@@ -2236,14 +2259,14 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       <nav className="context-rail post-context-rail" aria-label="Post-analysis sections">
         <div className="context-rail-heading"><span>Post-analysis</span><small>{workingCount.toLocaleString()} active records</small></div>
         <button type="button" className={activeWorkspace==="overview"?"active":""} onClick={()=>setActiveWorkspace("overview")}><b>00</b><span>Overview<small>Working set + exports</small></span></button>
-        <button type="button" className={activeWorkspace==="alleles"?"active":""} onClick={()=>setActiveWorkspace("alleles")}><b>01</b><span>Allele pooling<small>{alleleRefinement?`${alleleRefinement.activeRecords.toLocaleString()} modeled`:"Optional · runs first"}</small></span></button>
-        <button type="button" className={activeWorkspace==="dedup"?"active":""} onClick={()=>setActiveWorkspace("dedup")}><b>02</b><span>Collapse<small>{dedup?`${dedup.uniqueRecords.toLocaleString()} representatives`:"Not run"}</small></span></button>
-        <button type="button" className={activeWorkspace==="chimera"?"active":""} onClick={()=>setActiveWorkspace("chimera")}><b>03</b><span>Chimera<small>{chmm?`${chmm.evaluated.toLocaleString()} evaluated`:"Optional"}</small></span></button>
-        <button type="button" className={activeWorkspace==="selection"?"active":""} onClick={()=>setActiveWorkspace("selection")}><b>04</b><span>Selection<small>{selectionApplied?"Committed":selectionPreview?"Preview ready":"Configure filters"}</small></span></button>
-        <button type="button" className={activeWorkspace==="lineage"?"active":""} onClick={()=>setActiveWorkspace("lineage")}><b>05</b><span>Lineages<small>{lineages?`${lineages.summaries.length.toLocaleString()} assigned`:"Not run"}</small></span></button>
-        <button type="button" className={activeWorkspace==="diagnostics"?"active":""} onClick={()=>setActiveWorkspace("diagnostics")}><b>06</b><span>Diagnostics<small>SHM + allele hints</small></span></button>
-        <button type="button" disabled={!selectedLineage} className={activeWorkspace==="workbench"?"active":""} onClick={()=>setActiveWorkspace("workbench")}><b>07</b><span>Workbench<small>{selectedLineage?`Lineage ${selectedLineage.id}`:"Select a lineage"}</small></span></button>
-        <button type="button" className={activeWorkspace==="query"?"active":""} onClick={()=>setActiveWorkspace("query")}><b>08</b><span>Query<small>Search + expand</small></span></button>
+        <button type="button" className={railClass("alleles")} onClick={()=>setActiveWorkspace("alleles")}><b>01</b><span>Allele pooling<small>{skippedModules.has("alleles")?"Skipped":alleleRefinement?`${alleleRefinement.activeRecords.toLocaleString()} modeled`:"Optional · runs first"}</small></span></button>
+        <button type="button" className={railClass("dedup")} onClick={()=>setActiveWorkspace("dedup")}><b>02</b><span>Collapse<small>{skippedModules.has("dedup")?"Skipped":dedup?`${dedup.uniqueRecords.toLocaleString()} representatives`:"Not run"}</small></span></button>
+        <button type="button" className={railClass("chimera")} onClick={()=>setActiveWorkspace("chimera")}><b>03</b><span>Chimera<small>{skippedModules.has("chimera")?"Skipped":chmm?`${chmm.evaluated.toLocaleString()} evaluated`:"Optional"}</small></span></button>
+        <button type="button" className={railClass("selection")} onClick={()=>setActiveWorkspace("selection")}><b>04</b><span>Selection<small>{skippedModules.has("selection")?"Skipped by default":selectionApplied?"Committed":selectionPreview?"Preview ready":"Configure filters"}</small></span></button>
+        <button type="button" className={railClass("lineage")} onClick={()=>setActiveWorkspace("lineage")}><b>05</b><span>Lineages<small>{skippedModules.has("lineage")?"Skipped":lineages?`${lineages.summaries.length.toLocaleString()} assigned`:"Not run"}</small></span></button>
+        <button type="button" className={railClass("diagnostics")} onClick={()=>setActiveWorkspace("diagnostics")}><b>06</b><span>Post-lineage<small>{skippedModules.has("diagnostics")?"Skipped":"SHM + allele evidence"}</small></span></button>
+        <button type="button" disabled={!selectedLineage} className={railClass("workbench")} onClick={()=>setActiveWorkspace("workbench")}><b>07</b><span>Workbench<small>{skippedModules.has("workbench")?"Skipped":selectedLineage?`Lineage ${selectedLineage.id}`:"Select a lineage"}</small></span></button>
+        <button type="button" className={railClass("query")} onClick={()=>setActiveWorkspace("query")}><b>08</b><span>Query<small>{skippedModules.has("query")?"Skipped":"Search + expand"}</small></span></button>
         {sidebarTools}
       </nav>
 
@@ -2253,7 +2276,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
 
     {autoPipeline?.enabled&&<section className={`pipeline-run-banner ${busy?"running":"complete"}`}><div><span className="section-kicker">Pipeline execution</span><h3>{busy?busy:"Selected repertoire-scale stages complete"}</h3><p>{pipelineReport.length?pipelineReport.join(" "):"The configured stages are running in order; each stage receives the retained set from the previous stage."}</p></div><strong>{busy?"RUNNING":"COMPLETE"}</strong></section>}
 
-    <div className="post-method-map"><article><b>01</b><span>Alleles</span><strong>Optional donor-level evidence pooling</strong></article><article><b>02</b><span>Collapse</span><strong>Exact deduplication or denoising</strong></article><article><b>03</b><span>QC</span><strong>Optional CHMMAIRRa</strong></article><article><b>04</b><span>Select</span><strong>Commit a repertoire population</strong></article><article><b>05</b><span>Repertoire</span><strong>Assign lineages</strong></article><article><b>06</b><span>Diagnostics</span><strong>SHM + allele hints</strong></article><article><b>07</b><span>On demand</span><strong>Align + infer tree</strong></article><article><b>08</b><span>Targeted</span><strong>Query + expand</strong></article></div>
+    <div className="post-method-map"><article><b>01</b><span>Alleles</span><strong>Optional donor-level evidence pooling</strong></article><article><b>02</b><span>Collapse</span><strong>Exact deduplication or denoising</strong></article><article><b>03</b><span>QC</span><strong>Optional CHMMAIRRa</strong></article><article><b>04</b><span>Select</span><strong>Skipped by default; opt in to filtering</strong></article><article><b>05</b><span>Repertoire</span><strong>Assign lineages</strong></article><article><b>06</b><span>Post-lineage</span><strong>SHM + allele evidence</strong></article><article><b>07</b><span>On demand</span><strong>Align + infer tree</strong></article><article><b>08</b><span>Targeted</span><strong>Query + expand</strong></article></div>
 
     {datasets.length>0&&<section className="study-policy-panel"><header><div><span className="section-kicker">Multi-dataset policy</span><h3>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"} · {new Set(datasets.map((item)=>item.sampleId)).size.toLocaleString()} sample{new Set(datasets.map((item)=>item.sampleId)).size===1?"":"s"} · {new Set(datasets.map((item)=>item.subjectId)).size.toLocaleString()} donor{new Set(datasets.map((item)=>item.subjectId)).size===1?"":"s"}</h3></div><p>Metadata are stored on every AIRR row. Scope controls below are candidate-generation boundaries, not display-only labels.</p></header><div>{datasets.slice(0,12).map((item)=><article key={item.datasetId}><strong>{item.sampleId}</strong><span>{item.subjectId}</span><small>{[item.cohort,item.timepoint,item.compartment,item.inputName].filter(Boolean).join(" · ")}</small></article>)}</div>{datasets.length>12&&<small>+ {(datasets.length-12).toLocaleString()} additional datasets</small>}</section>}
 
@@ -2269,7 +2292,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     {error && <div className="post-error" role="alert"><strong>Post-analysis stopped</strong><span>{error}</span><button type="button" onClick={() => setError("")}>Dismiss</button></div>}
 
     <section className={moduleClass("dedup","post-module dedup-module")}>
-      <header><div className="module-number">02</div><div><span className="section-kicker">Abundance preservation after optional call reassignment</span><h3>Collapse exact duplicates or denoise read errors</h3><p>When allele pooling is applied, rearrangement-key partitions use the policy-selected V/D/J calls. Every retained representative carries the sum of its source multiplicities in <code>duplicate_count</code>.</p></div><a href="./methods/06_COLLAPSE_AND_DENOISING.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("dedup")} onClick={()=>toggleModule("dedup")}>{openModules.has("dedup")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number">02</div><div><span className="section-kicker">Abundance preservation after optional call reassignment</span><h3>Collapse exact duplicates or denoise read errors</h3><p>When allele pooling is applied, rearrangement-key partitions use the policy-selected V/D/J calls. Every retained representative carries the sum of its source multiplicities in <code>duplicate_count</code>.</p></div><a href="./methods/06_COLLAPSE_AND_DENOISING.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("dedup")}<button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("dedup")} onClick={()=>toggleModule("dedup")}>{openModules.has("dedup")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="collapse-mode-grid" role="radiogroup" aria-label="Collapse method">
         <button type="button" role="radio" aria-checked={collapseMode === "exact"} className={collapseMode === "exact" ? "selected" : ""} onClick={() => { setCollapseMode("exact"); setDedup(null); }}><b>A</b><span><strong>Exact deduplication</strong><small>Collapse identical keys only. No error model.</small></span></button>
         <button type="button" role="radio" aria-checked={collapseMode === "fad"} className={collapseMode === "fad" ? "selected" : ""} onClick={() => { setCollapseMode("fad"); setDenoiseAmbiguousPolicy("exclude"); setDedup(null); }}><b>B</b><span><strong>FAD-compatible denoising</strong><small>Published 6-mer distance and abundance/Poisson rule.</small></span></button>
@@ -2315,7 +2338,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("chimera","post-module chmm-module")}>
-      <header><div className="module-number amber">03</div><div><span className="section-kicker">Optional PCR-chimera model</span><h3>CHMMAIRRa after V(D)J assignment</h3><p>The browser port threads each AIRR local V or J alignment onto a reference MSA, then evaluates the CHMMera posterior. V is the manuscript default; D is not modeled.</p></div><a href="./methods/07_CHIMERA_INFERENCE.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("chimera")} onClick={()=>toggleModule("chimera")}>{openModules.has("chimera")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number amber">03</div><div><span className="section-kicker">Optional PCR-chimera model</span><h3>CHMMAIRRa after V(D)J assignment</h3><p>The browser port threads each AIRR local V or J alignment onto a reference MSA, then evaluates the CHMMera posterior. V is the manuscript default; D is not modeled.</p></div><a href="./methods/07_CHIMERA_INFERENCE.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("chimera")}<button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("chimera")} onClick={()=>toggleModule("chimera")}>{openModules.has("chimera")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="chmm-grid">
         <div className="chmm-config">
           <div className="control-grid three"><label><span>Segment</span><select value={chmmSegment} onChange={(event) => { setChmmSegment(event.target.value as ChmmSegment); setPreparedMsa(""); setChmm(null); setChmmRun(null); setChimeraDetail(null); }}><option value="V">V (recommended)</option><option value="J">J (optional)</option></select></label><label><span>Model</span><select value={chmmMethod} onChange={(event) => setChmmMethod(event.target.value as "BW" | "DB")}><option value="BW">Baum–Welch · IG default</option><option value="DB">Discretized Bayesian · TCR default</option></select></label><label><span>Posterior threshold</span><CommitNumberInput min="0" max="1" step="0.01" value={chmmThreshold} onCommit={setChmmThreshold} /></label></div>
@@ -2343,7 +2366,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("selection","post-module selection-module")}>
-      <header><div className="module-number dark">04</div><div><span className="section-kicker">Composable repertoire population</span><h3>Select the records used downstream</h3><p>Combine assignment, CDR3, motif, quality, SHM, and double-D evidence filters. Preview is read-only; nothing changes until the retained count is explicitly committed.</p></div><a href="./methods/05_STORAGE_DASHBOARD_SELECTION.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("selection")} onClick={()=>toggleModule("selection")}>{openModules.has("selection")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number dark">04</div><div><span className="section-kicker">Composable repertoire population</span><h3>Select the records used downstream</h3><p>Combine assignment, CDR3, motif, quality, SHM, and double-D evidence filters. This step is skipped by default; include it when you need an explicit filtered population.</p></div><a href="./methods/05_STORAGE_DASHBOARD_SELECTION.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("selection")}<button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("selection")} onClick={()=>toggleModule("selection")}>{openModules.has("selection")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="control-grid four selection-call-grid selection-common-grid">
         <label><span>Sequence ID contains</span><CommitTextInput value={selectionDraft.sequenceId} onCommit={(sequenceId)=>{setSelectionDraft(value=>({...value,sequenceId}));setSelectionPreview(null);}} placeholder="one or more IDs" /></label>
         {selectionFacets.samples.length>0&&<FacetPicker label="Sample" value={selectionDraft.sampleId} items={selectionFacets.samples} multiple placeholder="Any sample" onChange={(sampleId)=>{setSelectionDraft(value=>({...value,sampleId}));setSelectionPreview(null);}}/>}
@@ -2380,12 +2403,12 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("alleles","post-module allele-refinement-module")}>
-      <header><div className="module-number amber">01</div><div><span className="section-kicker">Optional first-stage repertoire assignment model</span><h3>Resolve ambiguous germline calls by pooling repertoire evidence</h3><p>Choose the continuous Dirichlet mixture or the fast exact-zero hurdle model before collapse or filtering, so policy-selected V/D/J calls define every downstream partition. The default is one independent fit per donor, combining that donor's samples without crossing participant IDs.</p></div><a href="./REPERTOIRE_ALLELE_REFINEMENT.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("alleles")} onClick={()=>toggleModule("alleles")}>{openModules.has("alleles")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number amber">01</div><div><span className="section-kicker">Optional first-stage repertoire assignment model</span><h3>Resolve ambiguous germline calls by pooling repertoire evidence</h3><p>Choose the continuous Dirichlet mixture or the fast exact-zero hurdle model before collapse or filtering, so policy-selected V/D/J calls define every downstream partition. The default is one independent fit per donor, combining that donor's samples without crossing participant IDs.</p></div><a href="./REPERTOIRE_ALLELE_REFINEMENT.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("alleles")}<button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("alleles")} onClick={()=>toggleModule("alleles")}>{openModules.has("alleles")?"Collapse ↑":"Expand ↓"}</button></header>
       <AlleleRefinementPanel references={references} options={alleleOptions} onOptionsChange={(next)=>{setAlleleOptions(next);setAlleleRefinement(null);discardAppliedAllelePolicy();}} result={alleleRefinement} applied={alleleApplied} reassignmentPolicy={alleleReassignmentPolicy} onReassignmentPolicyChange={(policy)=>{setAlleleReassignmentPolicy(policy);discardAppliedAllelePolicy();}} applyMinimumPosterior={alleleApplyMinimumPosterior} onApplyMinimumPosteriorChange={(value)=>{setAlleleApplyMinimumPosterior(Math.max(0,Math.min(1,value)));discardAppliedAllelePolicy();}} busy={Boolean(busy)} progress={alleleProgress} onRun={()=>void runAlleleRefinement()} onCancel={()=>void cancelActiveOperation()} onApply={()=>void applyAlleleRefinement()} onReset={()=>void resetAlleleRefinement()} onDownloadModel={downloadAlleleModel} onDownloadSidecar={()=>void downloadAlleleSidecar()} onDownloadAirr={()=>void downloadRefinedAirr()} />
     </section>
 
     <section className={moduleClass("lineage","post-module lineage-module")}>
-      <header><div className="module-number">05</div><div><span className="section-kicker">Repertoire-scale clonal grouping</span><h3>Assign lineages from CDR3 nucleotide distance</h3><p>Default: same locus, overlapping V/J gene assignments, exact CDR3 nucleotide length, and single-linkage at ≥85% identity. The threshold is a starting point and remains dataset-adjustable.</p></div><a href="./methods/08_LINEAGE_ASSIGNMENT.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("lineage")} onClick={()=>toggleModule("lineage")}>{openModules.has("lineage")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number">05</div><div><span className="section-kicker">Repertoire-scale clonal grouping</span><h3>Assign lineages from CDR3 nucleotide distance</h3><p>Default: same locus, overlapping V/J gene assignments, exact CDR3 nucleotide length, and single-linkage at ≥85% identity. The threshold is a starting point and remains dataset-adjustable.</p></div><a href="./methods/08_LINEAGE_ASSIGNMENT.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("lineage")}<button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("lineage")} onClick={()=>toggleModule("lineage")}>{openModules.has("lineage")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="lineage-config">
         <div className="control-grid three"><label><span>Study boundary</span><select value={lineageScope} onChange={(event)=>{setLineageScope(event.target.value as DatasetScope);setLineages(null);}}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><label><span>CDR3 identity</span><div className="range-number"><input type="range" min="0.7" max="1" step="0.01" value={identity} onChange={(event) => setIdentity(Number(event.target.value))} /><b>{Math.round(identity * 100)}%</b></div></label><label className="check-line"><input type="checkbox" checked={productiveOnly} onChange={(event) => setProductiveOnly(event.target.checked)} /><span>Productive only</span></label></div>
         <details className="post-advanced"><summary>Advanced call matching and performance settings</summary><div className="control-grid three"><label><span>Call level</span><select value={resolution} onChange={(event) => setResolution(event.target.value as CallResolution)}><option value="gene">Gene</option><option value="allele">Allele</option></select></label><label><span>Ambiguous calls</span><select value={ambiguity} onChange={(event) => setAmbiguity(event.target.value as AmbiguityPolicy)}><option value="overlap">Any assignment overlaps</option><option value="top">Top call only</option><option value="strict">Exact call sets</option></select></label><label><span>Candidate cap / record</span><CommitNumberInput min="100" max="1000000" step="1000" value={candidateCap} onCommit={setCandidateCap} /></label></div><div className="algorithm-note"><strong>Exact accelerated single-linkage · {DATASET_SCOPE_LABELS[lineageScope]}</strong><span>Partition by study boundary → locus → V/J calls → CDR3 length → d+1 exact blocks → verify normalized Hamming distance → union-find components.</span></div></details>
@@ -2402,6 +2425,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           <button type="button" onClick={() => {
             setLineageSearch("");
             setLineageLocusFilter("");
+            setLineageSpecificSample("");
             setLineageSampleFilterMode("any");
             setLineageDoubleDFilter("any");
             setLineageSelectedSamples(new Set());
@@ -2417,6 +2441,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         <div className="lineage-filter-grid">
           <label><span>Lineage, V, J, locus, or study group</span><CommitTextInput type="search" value={lineageSearch} onCommit={setLineageSearch} placeholder="contains…"/></label>
           <label><span>Locus</span><select value={lineageLocusFilter} onChange={(event) => setLineageLocusFilter(event.target.value)}><option value="">Any locus</option>{lineageLocusOptions.map((locus) => <option value={locus} key={locus}>{locus}</option>)}</select></label>
+          <label><span>Contains reads from sample</span><select value={lineageSpecificSample} onChange={(event)=>setLineageSpecificSample(event.target.value)}><option value="">Any sample</option>{lineageSampleOptions.map((sample)=><option value={sample} key={sample}>{sample}</option>)}</select><small>Other samples may also occur in the lineage.</small></label>
           <label><span>Sample membership</span><select value={lineageSampleFilterMode} onChange={(event) => setLineageSampleFilterMode(event.target.value as LineageSampleFilterMode)}><option value="any">Any sample pattern</option><option value="multiple">Multiple samples</option><option value="single">One sample only</option><option value="selected-any">Any selected sample</option><option value="selected-all">Every selected sample</option><option value="selected-only">No samples outside selection</option></select></label>
           {doubleDCount > 0 && <label><span>Double-D membership</span><select value={lineageDoubleDFilter} onChange={(event) => setLineageDoubleDFilter(event.target.value as LineageDoubleDFilter)}><option value="any">Any Double-D status</option><option value="present">At least one positive member</option><option value="all">Every active member positive</option><option value="absent">No positive members</option></select><small>Supported VDDJ calls among active lineage representatives.</small></label>}
           <label><span>Minimum abundance</span><CommitNumberInput min="0" value={lineageMinAbundance} blankWhenZero placeholder="Any" onCommit={setLineageMinAbundance}/></label>
@@ -2444,7 +2469,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
               <th><button type="button" onClick={() => sortLineages("vCalls")}>V calls{sortIndicator("vCalls")}</button></th>
               <th><button type="button" onClick={() => sortLineages("jCalls")}>J calls{sortIndicator("jCalls")}</button></th>
               <th><button type="button" onClick={() => sortLineages("cdr3Length")}>CDR3 nt{sortIndicator("cdr3Length")}</button></th>
-              {shmDashboard && <><th><button type="button" onClick={() => sortLineages("shmMean")}>SHM mean{sortIndicator("shmMean")}</button></th><th><button type="button" onClick={() => sortLineages("shmMaximum")}>SHM max{sortIndicator("shmMaximum")}</button></th><th><button type="button" onClick={() => sortLineages("shmP95")}>SHM q95{sortIndicator("shmP95")}</button></th></>}
+              {shmDashboard && <><th><button type="button" onClick={() => sortLineages("shmMean")}>Mean SHM{sortIndicator("shmMean")}</button></th><th><button type="button" onClick={() => sortLineages("shmP95")}>SHM upper q95{sortIndicator("shmP95")}</button></th></>}
               <th/>
             </tr></thead>
             <tbody>{sortedLineageSummaries.slice(0, 500).map((summary) => <tr key={summary.id} className={selectedLineageIds.includes(summary.id) ? "selected" : ""} onClick={() => void openLineage(summary)}>
@@ -2454,12 +2479,12 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
               <td>{summary.abundance.toLocaleString()}</td>
               <td>{summary.uniqueMembers.toLocaleString()}</td>
               {doubleDCount > 0 && <td><strong>{(summary.doubleDPositiveMembers ?? 0).toLocaleString()} / {summary.uniqueMembers.toLocaleString()}</strong><small>{(summary.doubleDPositiveAbundance ?? 0).toLocaleString()} weighted abundance</small></td>}
-              <td><strong>{(summary.sampleIds ?? []).length}</strong><small title={(summary.sampleIds ?? []).join(", ")}>{(summary.sampleIds ?? []).slice(0, 3).join(" · ")}{(summary.sampleIds ?? []).length > 3 ? ` +${summary.sampleIds.length - 3}` : ""}</small></td>
+              <td className="lineage-sample-counts"><strong>{(summary.sampleIds ?? []).length} sample{(summary.sampleIds ?? []).length===1?"":"s"}</strong>{(summary.sampleCounts??[]).map((sample)=><small key={sample.sampleId} title={`${sample.uniqueMembers.toLocaleString()} unique sequence${sample.uniqueMembers===1?"":"s"}`}>{sample.sampleId}: {sample.abundance.toLocaleString()} read{sample.abundance===1?"":"s"}</small>)}</td>
               <td>{summary.locus}</td>
               <td>{summary.vCalls.join(", ")}</td>
               <td>{summary.jCalls.join(", ")}</td>
               <td>{summary.cdr3Length} nt</td>
-              {shmDashboard && <><td>{lineageShmLabel(summary.id, "mean")}</td><td>{lineageShmLabel(summary.id, "maximum")}</td><td>{lineageShmLabel(summary.id, "p95")}</td></>}
+              {shmDashboard && <><td>{lineageShmLabel(summary.id, "mean")}</td><td>{lineageShmLabel(summary.id, "p95")}</td></>}
               <td><button type="button">Open →</button></td>
             </tr>)}</tbody>
           </table>
@@ -2469,7 +2494,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("diagnostics","post-module downstream-viz-module")}>
-      <header><div className="module-number amber">06</div><div><span className="section-kicker">Selected-population diagnostics</span><h3>Somatic hypermutation and reference-set evidence</h3><p>Both analyses inherit the committed population above. SHM summaries retain collapsed abundance; missing-V screening tests linked nucleotide haplotypes across independent lineages and then checks every retained member of each lineage.</p></div><a href="./methods/09_SHM_AND_GERMLINE_DIAGNOSTICS.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("diagnostics")} onClick={()=>toggleModule("diagnostics")}>{openModules.has("diagnostics")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number amber">06</div><div><span className="section-kicker">Post-lineage analysis</span><h3>Somatic hypermutation and reference-set evidence</h3><p>These are separate downstream analyses of the current population. SHM summarizes mutation distributions; the missing-V screen tests linked nucleotide haplotypes across independent lineages.</p></div><a href="./methods/09_SHM_AND_GERMLINE_DIAGNOSTICS.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("diagnostics")}<button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("diagnostics")} onClick={()=>toggleModule("diagnostics")}>{openModules.has("diagnostics")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="diagnostic-grid">
         <article><span className="section-kicker">SHM</span><h4>Mutation distributions</h4><div className="control-grid two"><label><span>Measure</span><select value={shmMetric} onChange={(event)=>{setShmMetric(event.target.value as ShmMetricKey);setShmDashboard(null);}}><option value="vNtRate">V nucleotide rate</option><option value="vNtMutations">V nucleotide count</option><option value="vAaRate">V amino-acid replacement rate</option><option value="vAaReplacements">V amino-acid replacement count</option><option value="synonymous">Synonymous codon count</option><option value="cdrNtRate">CDR1/2 nucleotide rate</option><option value="frameworkNtRate">Framework nucleotide rate</option></select></label><label><span>Stratify by</span><select value={shmStratum} onChange={(event)=>{setShmStratum(event.target.value as typeof shmStratum);setShmDashboard(null);}}><option value="all">No additional stratum</option><option value="sample_id">Sample</option><option value="subject_id">Donor / subject</option><option value="swig_cohort">Cohort</option><option value="swig_timepoint">Timepoint</option><option value="swig_compartment">Compartment / tissue</option><option value="locus">Locus</option><option value="v_call">V call</option><option value="isotype">Isotype</option></select></label></div><details className="post-advanced"><summary>Advanced plot sampling</summary><div className="control-grid"><label><span>Plot sample / lineage</span><CommitNumberInput min="50" max="10000" step="50" value={shmSampleCap} onCommit={(value)=>{setShmSampleCap(value);setShmDashboard(null);}} /></label></div></details><button className={guidedClass("run-shm")} type="button" disabled={Boolean(busy)} onClick={()=>void runShmAnalysis()}>Calculate SHM on {workingCount.toLocaleString()} records</button><p>Plot memory is bounded per lineage; scalar counts still cover every selected row.</p></article>
         <article><span className="section-kicker">Reference warning</span><h4>Possible missing V alleles</h4>
@@ -2499,7 +2524,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("query","post-module query-module")}>
-      <header><div className="module-number dark">08</div><div><span className="section-kicker">Targeted repertoire search</span><h3>Query sequences, then expand the matched set</h3><p>Paste one or more sequences or FASTA records. V/J constraints can be supplied directly or inferred per seed with the same references, assignment strategy, and calling profile as the main analysis.</p></div><a href="./methods/10_RETRIEVAL_AND_NEIGHBOURS.md" target="_blank" rel="noreferrer">Method details ↗</a><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("query")} onClick={()=>toggleModule("query")}>{openModules.has("query")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number dark">08</div><div><span className="section-kicker">Targeted repertoire search</span><h3>Query sequences, then expand the matched set</h3><p>Paste one or more sequences or FASTA records. V/J constraints can be supplied directly or inferred per seed with the same references, assignment strategy, and calling profile as the main analysis.</p></div><a href="./methods/10_RETRIEVAL_AND_NEIGHBOURS.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("query")}<button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("query")} onClick={()=>toggleModule("query")}>{openModules.has("query")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="query-layout">
         <div className="query-input">
           <label><span>Query sequence(s) or FASTA</span><CommitTextarea value={queryText} onCommit={setQueryText} placeholder=">seed_1\nTGTGCGAGAGAT…\n>seed_2\nTGTGCGAGGGAT…" /></label>
@@ -2524,7 +2549,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     {selectedLineage && <section ref={workbenchRef} className={moduleClass("workbench","post-module lineage-workbench")} tabIndex={-1}>
-      <header><div className="module-number dark">07</div><div><span className="section-kicker">{selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>Lineage neighbours, alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · {selectedLineage.locus} · original assignments {selectedLineageIds.map((id) => `L${id}`).join(", ")}</p></div><a href="./methods/11_ALIGNMENT_AND_PHYLOGENY.md" target="_blank" rel="noreferrer">Method details ↗</a><button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number dark">07</div><div><span className="section-kicker">{selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>Lineage neighbours, alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · {selectedLineage.locus} · original assignments {selectedLineageIds.map((id) => `L${id}`).join(", ")}</p></div><a href="./methods/11_ALIGNMENT_AND_PHYLOGENY.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("workbench")}<button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `${lineageRows.length} stratified members loaded from ${lineageTotal.toLocaleString()}; analysis remains bounded` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => {const sample=row.values.sample_id||row.record.sampleId||"";const original=originalLineageByOrdinal.get(row.record.ordinal);const cdr3=row.values.cdr3_aa||row.values.cdr3||"CDR3 —";return <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)} title={`${sample||"sample unassigned"}${original?` · original lineage ${original}`:""} · ${cdr3}`}><i style={{background:sampleColor(sample,sampleColors)}}/><span><b>{row.record.sequenceId}</b><small>{cdr3}</small></span></button>;})}</div></div>
       <div className="lineage-neighbour-explorer">
         <header><div><span className="section-kicker">Exploratory boundary review</span><h4>Lineage neighbours</h4><p>Find separate assigned lineages with CDR3 links below the clustering cutoff, similar inferred lineage germlines, or either criterion. Search is read-only until you explicitly merge.</p></div><span className="neighbour-source-chip">Source {selectedLineageIds.map((id)=>`L${id}`).join(" + ")}</span></header>

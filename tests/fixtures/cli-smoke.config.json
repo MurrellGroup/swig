@@ -1,0 +1,18 @@
+{
+  "inputs": [
+    {
+      "path": "cli-smoke.fasta",
+      "sampleId": "sample-A",
+      "subjectId": "donor-A"
+    }
+  ],
+  "pipeline": {
+    "lineage": {
+      "productiveOnly": false
+    }
+  },
+  "output": {
+    "directory": "../../tmp-cli-smoke-lineage",
+    "prefix": "smoke"
+  }
+}

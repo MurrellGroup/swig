@@ -1,4 +1,4 @@
-# Somatic hypermutation summaries and possible-missing-V diagnostics
+# Post-lineage analysis: SHM summaries and possible-missing-V evidence
 
 ## SHM metrics
 
@@ -33,6 +33,17 @@ Default discovery requirements include at least 6 independent supporting lineage
 For each proposed linked pattern, Swig scans every retained member of the relevant lineages. It requires joint coverage and linked alternate support, counts units retaining the reference or a conflicting base, requires at least 3 near-germline units, minimum linked fraction 0.9, and maximum other-alternate fraction 0.02. It also requires default diversity of 3 J calls, 3 junction lengths, and 6 distinct CDR3 fingerprints. This second pass prevents one convenient lineage representative from hiding contradictory descendants.
 
 Candidates can be exported as proposed V FASTA after explicit selection. No reference is added to the running assignment database automatically.
+
+SHM and possible-missing-V evidence are separate full-width result sections, one below the other. They share a post-lineage location because both consume lineage assignments; neither is treated as a generic “diagnostic.”
+
+## Prominent incomplete-reference escalation
+
+Swig displays a blocking-style visual warning when either condition holds:
+
+- at least one retained candidate is supported by more than 50 independent lineages; or
+- more than five candidates with support at or below 50 independent lineages pass the two evidence stages.
+
+The warning tells the user to rerun with a more complete germline database or use personalized germline discovery with **IgDiscover**. It does not present the candidate FASTA as a validated genotype and does not automatically rerun assignment.
 
 ## Literature relationship
 

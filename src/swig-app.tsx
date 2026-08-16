@@ -85,6 +85,9 @@ import {
   type GzipMemberInspection,
 } from "./gzip-members";
 import { prepareReferenceMsa } from "./post-analysis-core";
+import { cliConfigFromBrowser } from "./pipeline-config";
+import { decodeLineageStudy, type LineageStudyManifest } from "./lineage-study";
+import { LineageStudyPage } from "./lineage-study-page";
 import { ReferenceAlleleExclusionEditor } from "./reference-allele-exclusion";
 import { filterReferenceFasta } from "./reference-fasta";
 import { createSampleColorMap, sampleColor, sampleIds, type SampleColorMap } from "./sample-colors";
@@ -123,7 +126,7 @@ import {
   type StudyDesign,
 } from "./study-design";
 
-type AppPage = "home" | "analyze" | "results";
+type AppPage = "home" | "analyze" | "results" | "lineage-study";
 type InputFormat = "FASTA" | "FASTQ" | "AIRR TSV";
 type InputSource = "upload" | "paste";
 type OutputStorageMode = "auto" | "browser" | "disk";
@@ -191,7 +194,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.28.0";
+const APP_VERSION = "0.29.0";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -618,12 +621,14 @@ function Brand() {
   );
 }
 
-function AppHeader({ page, hasResults, projectName, onNavigate, onLoadSession, onOpenProject }: {
+function AppHeader({ page, hasResults, hasLineageStudy, projectName, onNavigate, onLoadSession, onLoadLineageStudy, onOpenProject }: {
   page: AppPage;
   hasResults: boolean;
+  hasLineageStudy:boolean;
   projectName?: string;
   onNavigate: (page: AppPage) => void;
   onLoadSession: () => void;
+  onLoadLineageStudy:()=>void;
   onOpenProject: () => void;
 }) {
   return (
@@ -633,7 +638,9 @@ function AppHeader({ page, hasResults, projectName, onNavigate, onLoadSession, o
         <button className={page === "home" ? "active" : ""} type="button" onClick={() => onNavigate("home")}>Overview</button>
         <button className={page === "analyze" ? "active" : ""} type="button" onClick={() => onNavigate("analyze")}>Analyze</button>
         {hasResults && <button className={page === "results" ? "active" : ""} type="button" onClick={() => onNavigate("results")}>Results</button>}
-        <button type="button" onClick={onLoadSession}>Load session</button>
+        {hasLineageStudy&&<button className={page==="lineage-study"?"active":""} type="button" onClick={()=>onNavigate("lineage-study")}>Lineage study</button>}
+        <button type="button" onClick={onLoadSession}>Load full session</button>
+        <button type="button" onClick={onLoadLineageStudy}>Load lineage study</button>
         <button type="button" onClick={onOpenProject}>{projectName ? `Project · ${projectName}` : "Load project directory"}</button>
       </nav>
       <span className="local-badge"><i /> Query records remain in this browser</span>
@@ -1266,6 +1273,30 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     }catch(error){if(!isAbortError(error))setDownloadError(error instanceof Error?error.message:String(error));}finally{if(sessionSaveAbortRef.current===controller)sessionSaveAbortRef.current=null;setSavingSession(false);}
   }
 
+  async function exportCliConfig(){
+    setDownloadError("");
+    try{
+      const post=postSessionRef.current?await postSessionRef.current.snapshot():session.postAnalysis??{workingStages:[]};
+      const plan=copyPipeline(session.pipeline);
+      if(post.collapse){plan.collapse.enabled=true;plan.collapse.mode=post.collapse.mode;const key=post.collapse.options.key;if(key==="sequence"||key==="trimmed"||key==="cdr3"||key==="rearrangement")plan.collapse.key=key;}
+      if(post.chimera)plan.chimera.enabled=true;
+      if(post.selection)plan.selection.enabled=true;
+      if(post.alleleRefinement)plan.alleleRefinement.enabled=true;
+      if(post.lineage)plan.lineage.enabled=true;
+      if(post.shm)plan.shm.enabled=true;
+      if(post.missingAlleles)plan.missingAlleles.enabled=true;
+      const config=cliConfigFromBrowser({
+        studyName:session.inputName,studyDesign:session.studyDesign,datasets,references:session.references,species:session.species,scope:session.scope,workers:session.workers,callingProfile:session.callingProfile,assignerStrategy:session.assignerStrategy,minimumIdentity:session.minimumIdentity,strand:session.strand,doubleD:session.doubleD,pipeline:plan,
+        collapseOptions:post.collapse?.options,
+        selectionOptions:post.selection?.options,
+        alleleOptions:post.alleleRefinement?{...post.alleleRefinement.options,reassignmentPolicy:post.alleleRefinement.reassignmentPolicy,applyMinimumPosterior:post.alleleRefinement.applyMinimumPosterior}:undefined,
+        missingAlleleOptions:post.missingAlleles?.options,
+      });
+      if(post.chimera){Object.assign(config.pipeline.chimera,post.chimera.options);config.pipeline.chimera.uploadedMsa=post.chimera.msa??config.pipeline.chimera.uploadedMsa;config.pipeline.chimera.uploadedMsaName=post.chimera.options.uploadedMsaName?String(post.chimera.options.uploadedMsaName):config.pipeline.chimera.uploadedMsaName;}
+      downloadBlob(new Blob([`${JSON.stringify(config,null,2)}\n`],{type:"application/json"}),`${session.inputName.replace(/\.[^.]+$/,"")||"swig"}.swig-cli.json`);
+    }catch(error){setDownloadError(error instanceof Error?error.message:String(error));}
+  }
+
   const callSuggestions=useMemo(()=>({
     vCall:callFacetItems(facets.vCalls),dCall:callFacetItems(facets.dCalls),
     jCall:callFacetItems(facets.jCalls),cCall:callFacetItems(facets.cCalls),
@@ -1292,6 +1323,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         <button className={downloading?"post-cancel":"primary"} type="button" onClick={()=>downloading?exportAbortRef.current?.abort():void downloadAll()} disabled={doubleDDownloading}>{downloading?"Cancel results export":`Download ${downloadFormat.toUpperCase()}`}</button>
         {session.doubleDCount>0&&<button className={doubleDDownloading?"post-cancel":undefined} type="button" onClick={()=>doubleDDownloading?exportAbortRef.current?.abort():void downloadDoubleD()} disabled={downloading}>{doubleDDownloading?"Cancel evidence export":`Double-D evidence · ${session.doubleDCount.toLocaleString()}`}</button>}
         <button className={savingSession?"post-cancel":undefined} type="button" onClick={()=>savingSession?sessionSaveAbortRef.current?.abort():void saveAnalysisSession()}>{savingSession?"Cancel session save":"Save portable session"}</button>
+        <button type="button" onClick={()=>void exportCliConfig()}><strong>Export CLI config</strong><small>Exact references, methods, and donor map</small></button>
         {session.project&&<button type="button" onClick={()=>saveProjectNow("manual_checkpoint")}>Save project checkpoint</button>}
       </div>
       {session.project&&<small className="results-rail-project">{projectSaveStatus}</small>}
@@ -1477,7 +1509,11 @@ export default function SwigApp() {
   const directoryInputRef=useRef<HTMLInputElement>(null);
   const sessionInputRef=useRef<HTMLInputElement>(null);
   const linkedAirrInputRef=useRef<HTMLInputElement>(null);
+  const lineageStudyInputRef=useRef<HTMLInputElement>(null);
+  const lineageStudyAirrInputRef=useRef<HTMLInputElement>(null);
   const [pendingLoadedSession,setPendingLoadedSession]=useState<SwigSession|null>(null);
+  const [pendingLineageStudy,setPendingLineageStudy]=useState<LineageStudyManifest|null>(null);
+  const [lineageStudyAirr,setLineageStudyAirr]=useState<File|null>(null);
   const [sessionLoadError,setSessionLoadError]=useState("");
   const [sessionLoadProgress,setSessionLoadProgress]=useState({records:0,total:0,stage:""});
   const [loadingSession,setLoadingSession]=useState(false);
@@ -1504,6 +1540,8 @@ export default function SwigApp() {
     || pasteText.trim().length > 0
     || Boolean(projectWorkspace)
     || Boolean(pendingLoadedSession)
+    || Boolean(pendingLineageStudy)
+    || Boolean(lineageStudyAirr)
     || loadingSession;
 
   useEffect(() => {
@@ -1701,6 +1739,7 @@ export default function SwigApp() {
 
   function navigate(next: AppPage) {
     if (next === "results" && !session) next = "analyze";
+    if(next==="lineage-study"&&(!pendingLineageStudy||!lineageStudyAirr))next="analyze";
     setPage(next);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -1709,6 +1748,20 @@ export default function SwigApp() {
     setSessionLoadError("");
     try{const loaded=await decodeSession(file);setPendingLoadedSession(loaded);setSessionLoadProgress({records:0,total:loaded.linkedAirr.records,stage:"Session manifest read; select the linked AIRR table."});}
     catch(error){setPendingLoadedSession(null);setSessionLoadError(error instanceof Error?error.message:String(error));}
+  }
+
+  async function acceptLineageStudyFile(file:File){
+    setSessionLoadError("");
+    try{
+      const manifest=await decodeLineageStudy(file);
+      setPendingLineageStudy(manifest);setLineageStudyAirr(null);
+    }catch(error){setPendingLineageStudy(null);setSessionLoadError(error instanceof Error?error.message:String(error));}
+  }
+
+  function restoreLineageStudyAirr(file:File){
+    const manifest=pendingLineageStudy;if(!manifest)return;
+    if(file.size!==manifest.linkedAirr.size){setSessionLoadError(`This AIRR file has ${file.size.toLocaleString()} bytes; the lineage-study manifest expects ${manifest.linkedAirr.size.toLocaleString()}. Choose the uncompressed CLI lineage AIRR file.`);return;}
+    setSessionLoadError("");setLineageStudyAirr(file);setPage("lineage-study");window.scrollTo({top:0});
   }
 
   async function restoreSavedSession(saved:SwigSession,file:File,restoredProject?:ProjectWorkspace){
@@ -2469,9 +2522,11 @@ export default function SwigApp() {
 
   return (
     <div className="site-shell">
-      <AppHeader page={page} hasResults={Boolean(session)} projectName={projectWorkspace?.root.name} onNavigate={navigate} onLoadSession={()=>sessionInputRef.current?.click()} onOpenProject={()=>void chooseProjectDirectory()} />
+      <AppHeader page={page} hasResults={Boolean(session)} hasLineageStudy={Boolean(pendingLineageStudy&&lineageStudyAirr)} projectName={projectWorkspace?.root.name} onNavigate={navigate} onLoadSession={()=>sessionInputRef.current?.click()} onLoadLineageStudy={()=>lineageStudyInputRef.current?.click()} onOpenProject={()=>void chooseProjectDirectory()} />
       <input ref={sessionInputRef} className="visually-hidden" type="file" accept=".swig-session,.json,.gz" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(file)void acceptSessionFile(file);}}/>
       <input ref={linkedAirrInputRef} className="visually-hidden" type="file" accept=".tsv,.tsv.gz,.gz" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(file)void restoreLinkedAirr(file);}}/>
+      <input ref={lineageStudyInputRef} className="visually-hidden" type="file" accept=".json,.gz,.swig-lineage-study" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(file)void acceptLineageStudyFile(file);}}/>
+      <input ref={lineageStudyAirrInputRef} className="visually-hidden" type="file" accept=".tsv,.airr.tsv" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(file)restoreLineageStudyAirr(file);}}/>
       {page === "home" && <LandingPage references={pack?.species.length ?? null} onStart={() => navigate("analyze")} onDemo={chooseDemo} />}
 
       {page === "analyze" && (
@@ -2623,7 +2678,7 @@ export default function SwigApp() {
 
                 <section className={`analysis-card pipeline-card ${pipeline.enabled ? "active" : ""}`}>
                   <header><span className="card-number">04</span><div><h2>Execution mode</h2><p>Stop after annotation, or run the selected post-analysis stages sequentially.</p></div><div className="mode-toggle"><button className={!pipeline.enabled ? "active" : ""} type="button" onClick={()=>setPipeline((current)=>({...current,enabled:false}))}>Interactive</button><button className={pipeline.enabled ? "active" : ""} type="button" onClick={()=>setPipeline((current)=>({...current,enabled:true}))}>Pipeline</button></div></header>
-                  {!pipeline.enabled ? <div className="pipeline-interactive-note"><span>Manual post-analysis</span><strong>Annotation finishes at Results.</strong><p>Collapse, chimera filtering, selection, lineage assignment, SHM, missing-allele diagnostics, queries, alignments, and trees remain available as explicit steps.</p></div> : <>
+                  {!pipeline.enabled ? <div className="pipeline-interactive-note"><span>Manual post-analysis</span><strong>Annotation finishes at Results.</strong><p>Collapse, chimera filtering, selection, lineage assignment, SHM, missing-allele evidence, queries, alignments, and trees remain available as explicit steps.</p></div> : <>
                     <div className="pipeline-stage-grid">
                       <article className={pipeline.collapse.enabled?"enabled":""}><label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.collapse.enabled} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,enabled:event.target.checked}}))}/><span><b>2 · Collapse / denoise</b><small>Uses policy-selected V/D/J calls when pooling is enabled.</small></span></label>{pipeline.collapse.enabled&&<div className="pipeline-fields"><label><span>Method</span><select value={pipeline.collapse.mode} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,mode:event.target.value as PipelinePlan["collapse"]["mode"]}}))}><option value="exact">Exact deduplication</option><option value="fad">FAD-compatible denoising</option><option value="conservative">Conservative indexed model</option><option value="indel">Indel-aware method D</option></select></label>{pipeline.collapse.mode==="exact"&&<label><span>Exact key</span><select value={pipeline.collapse.key} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,key:event.target.value as PipelinePlan["collapse"]["key"]}}))}><option value="sequence">Full input sequence</option><option value="trimmed">V–J-trimmed sequence</option><option value="cdr3">CDR3 nucleotide</option><option value="rearrangement">V/J calls + CDR3</option></select></label>}<label><span>Boundary</span><select value={pipeline.collapse.scope} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,scope:event.target.value as DatasetScope}}))}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><label><span>Unusable V/J or trim</span><select value={pipeline.collapse.unresolvedPolicy} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,unresolvedPolicy:event.target.value as "discard"|"retain"}}))}><option value="discard">Discard · default</option><option value="retain">Retain unchanged</option></select></label><label className="check-line"><input type="checkbox" checked={pipeline.collapse.respectConstantCall??true} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,respectConstantCall:event.target.checked}}))}/><span>Separate C-gene/isotype calls</span></label></div>}</article>
                       <article className={pipeline.chimera.enabled?"enabled":""}>
@@ -2655,7 +2710,7 @@ export default function SwigApp() {
                       <article className={pipeline.lineage.enabled?"enabled":""}><label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.lineage.enabled} onChange={(event)=>setPipeline((current)=>({...current,lineage:{...current.lineage,enabled:event.target.checked}}))}/><span><b>5 · Lineage assignment</b><small>May span samples only within the selected boundary.</small></span></label><div className="pipeline-fields"><label><span>Boundary</span><select value={pipeline.lineage.scope} onChange={(event)=>setPipeline((current)=>({...current,lineage:{...current.lineage,scope:event.target.value as DatasetScope}}))}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><label><span>CDR3 nt identity</span><CommitNumberInput min="0.7" max="1" step="0.01" value={pipeline.lineage.identity} onCommit={(identity)=>setPipeline((current)=>({...current,lineage:{...current.lineage,identity}}))}/></label><label><span>V/J level</span><select value={pipeline.lineage.resolution} onChange={(event)=>setPipeline((current)=>({...current,lineage:{...current.lineage,resolution:event.target.value as "gene"|"allele"}}))}><option value="gene">Gene</option><option value="allele">Allele</option></select></label><label><span>Multiple-call policy</span><select value={pipeline.lineage.ambiguity} onChange={(event)=>setPipeline((current)=>({...current,lineage:{...current.lineage,ambiguity:event.target.value as PipelinePlan["lineage"]["ambiguity"]}}))}><option value="overlap">Any V/J overlap</option><option value="top">Top call only</option><option value="strict">Identical call sets</option></select></label><label className="check-line"><input type="checkbox" checked={pipeline.lineage.productiveOnly} onChange={(event)=>setPipeline((current)=>({...current,lineage:{...current.lineage,productiveOnly:event.target.checked}}))}/><span>Productive only</span></label></div></article>
                       <article className={pipeline.shm.enabled||pipeline.missingAlleles.enabled?"enabled":""}><div className="pipeline-diagnostic-switches"><label><input type="checkbox" checked={pipeline.shm.enabled} onChange={(event)=>setPipeline((current)=>({...current,shm:{...current.shm,enabled:event.target.checked}}))}/><span><b>6 · SHM summary</b><small>On the final working set.</small></span></label><label><input type="checkbox" checked={pipeline.missingAlleles.enabled} onChange={(event)=>setPipeline((current)=>({...current,missingAlleles:{enabled:event.target.checked},lineage:event.target.checked?{...current.lineage,enabled:true}:current.lineage}))}/><span><b>7 · Missing-allele hints</b><small>Enabling this also enables lineage assignment.</small></span></label></div>{pipeline.shm.enabled&&<div className="pipeline-fields"><label><span>SHM metric</span><select value={pipeline.shm.metric} onChange={(event)=>setPipeline((current)=>({...current,shm:{...current.shm,metric:event.target.value as PipelinePlan["shm"]["metric"]}}))}><option value="vNtRate">V nucleotide mutation rate</option><option value="vNtMutations">V nucleotide mutation count</option><option value="vAaRate">V amino-acid replacement rate</option><option value="vAaReplacements">V amino-acid replacement count</option><option value="synonymous">V synonymous mutation count</option><option value="cdrNtRate">CDR nucleotide mutation rate</option><option value="frameworkNtRate">Framework nucleotide mutation rate</option></select></label></div>}</article>
                     </div>
-                    <p className="scientific-note"><span>i</span>The pipeline runs annotation → optional allele pooling and policy reassignment → collapse → chimera exclusion → repertoire selection → lineage assignment → diagnostics in that order. Every stage receives the retained set from the previous stage. Targeted queries, lineage alignments, and phylogenies remain on-demand because they require a selected target.</p>
+                    <p className="scientific-note"><span>i</span>The pipeline runs annotation → optional allele pooling and policy reassignment → collapse → chimera exclusion → repertoire selection → lineage assignment → post-lineage analyses in that order. Every stage receives the retained set from the previous stage. Targeted queries, lineage alignments, and phylogenies remain on-demand because they require a selected target.</p>
                   </>}
                 </section>
               </div>
@@ -2672,6 +2727,7 @@ export default function SwigApp() {
       )}
 
       {page === "results" && session && <ResultsPage session={session} onNewAnalysis={() => navigate("analyze")} />}
+      {page==="lineage-study"&&pendingLineageStudy&&lineageStudyAirr&&<LineageStudyPage manifest={pendingLineageStudy} airrFile={lineageStudyAirr} onClose={()=>{setPendingLineageStudy(null);setLineageStudyAirr(null);setPage("analyze");}}/>}
       {leavePrompt&&<div className="output-modal-backdrop leave-guard-backdrop" role="presentation"><section className="output-modal leave-guard-modal" role="alertdialog" aria-modal="true" aria-labelledby="leave-guard-title" aria-describedby="leave-guard-description" onKeyDown={(event)=>{if(event.key==="Escape")setLeavePrompt(false);}}>
         <span className="output-direction">UNSAVED BROWSER STATE</span>
         <h2 id="leave-guard-title">Leave Swig and lose the current work?</h2>
@@ -2688,7 +2744,8 @@ export default function SwigApp() {
         <p className="output-safety"><span>i</span>All metadata remain editable in the dataset table. Neither choice drops records or changes sequence content.</p>
       </section></div>}
       {pendingDirectoryInputs&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal directory-donor-modal" role="dialog" aria-modal="true" aria-labelledby="directory-donor-title"><button className="output-modal-close" type="button" onClick={()=>setPendingDirectoryInputs(null)} aria-label="Cancel directory loading">×</button><span className="output-direction">DIRECTORY · DONOR METADATA</span><h2 id="directory-donor-title">Do files directly inside {pendingDirectoryInputs.flatRoots.length===1?<em>{pendingDirectoryInputs.flatRoots[0]}</em>:"these directories"} come from the same donor?</h2><p>{pendingDirectoryInputs.inputs.length.toLocaleString()} compatible dataset file{pendingDirectoryInputs.inputs.length===1?" was":"s were"} found. This choice only initializes <b>Donor / subject</b>; every value remains editable in the dataset table.</p><div className="directory-donor-summary">{pendingDirectoryInputs.flatRoots.map((root)=><span key={root}><b>{root}</b><small>{pendingDirectoryInputs.inputs.filter((input)=>input.directoryRoot===root&&!input.nestedDirectoryDonor).length} direct file(s)</small></span>)}</div><div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={()=>commitDirectoryInputs(true)}><span>Same donor within each directory</span><b>Group →</b></button><button type="button" onClick={()=>commitDirectoryInputs(false)}><span>Different donor for each file</span><small>Keep separate initial donor IDs</small></button></div><p className="output-safety"><span>i</span>Nested directories are assigned automatically from the first folder beneath the selected root.</p></section></div>}
-      {(pendingLoadedSession||sessionLoadError||loadingSession)&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal session-load-modal" role="dialog" aria-modal="true" aria-labelledby="session-load-title"><button className="output-modal-close" type="button" onClick={()=>{if(loadingSession)cancelSessionRestore();else{setPendingLoadedSession(null);setSessionLoadError("");}}}>×</button><span className="output-direction">{pendingLoadedSession?"SESSION · LINKED AIRR DATA":"PROJECT DIRECTORY · RESTORE"}</span><h2 id="session-load-title">{pendingLoadedSession?"Select the AIRR table linked to this session.":loadingSession?"Restoring the active project run.":"Saved state could not be loaded."}</h2>{pendingLoadedSession?<><p>The session stores references, options, masks, counts, lineage assignments, plots, and sparse double-D evidence. It deliberately does not duplicate the main AIRR table.</p><div className="output-flow"><div><span>Saved analysis</span><strong>{pendingLoadedSession.analysis.inputName}</strong><small>{pendingLoadedSession.linkedAirr.records.toLocaleString()} records · fingerprint {pendingLoadedSession.linkedAirr.fingerprint.slice(0,12)}…</small></div><b>+</b><div className="destination"><span>Required linked file</span><strong>{pendingLoadedSession.linkedAirr.name}</strong><small>AIRR TSV or TSV.gz; content is verified before restoration</small></div></div>{!loadingSession&&<button className="output-save-primary" type="button" onClick={()=>linkedAirrInputRef.current?.click()}><span>Choose linked AIRR TSV</span><b>Open →</b></button>}</>:loadingSession?<p>The active run's AIRR table is being verified and indexed from the selected directory.</p>:null}{loadingSession&&<div className="post-progress"><div><span>{sessionLoadProgress.stage}</span><span className="post-progress-actions"><strong>{sessionLoadProgress.total?`${Math.min(100,sessionLoadProgress.records/sessionLoadProgress.total*100).toFixed(1)}%`:"working"}</strong><button type="button" onClick={cancelSessionRestore}>Cancel</button></span></div><progress max={Math.max(1,sessionLoadProgress.total)} value={sessionLoadProgress.records}/><small>{sessionLoadProgress.records.toLocaleString()} / {sessionLoadProgress.total.toLocaleString()} records</small></div>}{sessionLoadError?<p className="run-error" role="alert">{sessionLoadError}</p>:null}</section></div>}
+      {pendingLineageStudy&&!lineageStudyAirr&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal session-load-modal" role="dialog" aria-modal="true" aria-labelledby="lineage-study-load-title"><button className="output-modal-close" type="button" onClick={()=>{setPendingLineageStudy(null);setSessionLoadError("");}}>×</button><span className="output-direction">LINEAGE STUDY · LAZY LINKED AIRR</span><h2 id="lineage-study-load-title">Select the lineage-sorted AIRR file.</h2><p>Swig will load the {pendingLineageStudy.summaries.length.toLocaleString()} lineage summaries now, but it will not scan or index the linked AIRR table. Only the byte range for a lineage you open is read.</p><div className="output-flow"><div><span>Lineage manifest</span><strong>{pendingLineageStudy.analysis.inputName}</strong><small>{pendingLineageStudy.summaries.length.toLocaleString()} selectable lineages</small></div><b>+</b><div className="destination"><span>Required uncompressed file</span><strong>{pendingLineageStudy.linkedAirr.name}</strong><small>{pendingLineageStudy.linkedAirr.size.toLocaleString()} bytes · {pendingLineageStudy.linkedAirr.records.toLocaleString()} lineage rows</small></div></div><button className="output-save-primary" type="button" onClick={()=>lineageStudyAirrInputRef.current?.click()}><span>Choose lineage AIRR TSV</span><b>Open lazily →</b></button>{sessionLoadError?<p className="run-error" role="alert">{sessionLoadError}</p>:null}</section></div>}
+      {(pendingLoadedSession||(sessionLoadError&&!pendingLineageStudy)||loadingSession)&&<div className="output-modal-backdrop" role="presentation"><section className="output-modal session-load-modal" role="dialog" aria-modal="true" aria-labelledby="session-load-title"><button className="output-modal-close" type="button" onClick={()=>{if(loadingSession)cancelSessionRestore();else{setPendingLoadedSession(null);setSessionLoadError("");}}}>×</button><span className="output-direction">{pendingLoadedSession?"SESSION · LINKED AIRR DATA":"PROJECT DIRECTORY · RESTORE"}</span><h2 id="session-load-title">{pendingLoadedSession?"Select the AIRR table linked to this session.":loadingSession?"Restoring the active project run.":"Saved state could not be loaded."}</h2>{pendingLoadedSession?<><p>The session stores references, options, masks, counts, lineage assignments, plots, and sparse double-D evidence. It deliberately does not duplicate the main AIRR table.</p><div className="output-flow"><div><span>Saved analysis</span><strong>{pendingLoadedSession.analysis.inputName}</strong><small>{pendingLoadedSession.linkedAirr.records.toLocaleString()} records · fingerprint {pendingLoadedSession.linkedAirr.fingerprint.slice(0,12)}…</small></div><b>+</b><div className="destination"><span>Required linked file</span><strong>{pendingLoadedSession.linkedAirr.name}</strong><small>AIRR TSV or TSV.gz; content is verified before restoration</small></div></div>{!loadingSession&&<button className="output-save-primary" type="button" onClick={()=>linkedAirrInputRef.current?.click()}><span>Choose linked AIRR TSV</span><b>Open →</b></button>}</>:loadingSession?<p>The active run's AIRR table is being verified and indexed from the selected directory.</p>:null}{loadingSession&&<div className="post-progress"><div><span>{sessionLoadProgress.stage}</span><span className="post-progress-actions"><strong>{sessionLoadProgress.total?`${Math.min(100,sessionLoadProgress.records/sessionLoadProgress.total*100).toFixed(1)}%`:"working"}</strong><button type="button" onClick={cancelSessionRestore}>Cancel</button></span></div><progress max={Math.max(1,sessionLoadProgress.total)} value={sessionLoadProgress.records}/><small>{sessionLoadProgress.records.toLocaleString()} / {sessionLoadProgress.total.toLocaleString()} records</small></div>}{sessionLoadError?<p className="run-error" role="alert">{sessionLoadError}</p>:null}</section></div>}
       {outputPrompt && activeInput && <div className="output-modal-backdrop" role="presentation"><section className="output-modal" role="dialog" aria-modal="true" aria-labelledby="output-dialog-title">
         <button className="output-modal-close" type="button" onClick={() => setOutputPrompt(false)} aria-label="Cancel output selection">×</button>
         <span className="output-direction">OUTPUT · SAVE RESULTS</span>

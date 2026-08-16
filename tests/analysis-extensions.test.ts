@@ -3,7 +3,7 @@ import test from "node:test";
 
 import "fake-indexeddb/auto";
 import { alignmentText, tableHeader, tableRow, treeNexus } from "../src/export-formats.ts";
-import { augmentReferenceFasta, candidateFasta, MissingAlleleAccumulator } from "../src/germline-evidence.ts";
+import { augmentReferenceFasta, candidateFasta, MissingAlleleAccumulator, requiresCompleteGermlineWarning, type MissingAlleleCandidate } from "../src/germline-evidence.ts";
 import { filterReferenceFasta, parseReferenceFasta } from "../src/reference-fasta.ts";
 import { DEFAULT_REPERTOIRE_SELECTION, selectRepertoire } from "../src/repertoire-selection.ts";
 import { AirrResultStore } from "../src/result-store.ts";
@@ -64,6 +64,13 @@ test("selected missing-V candidates export alone and append to an annotated V re
   assert.equal(augmented.originalRecords,2);assert.equal(augmented.addedRecords,1);assert.equal(augmented.inheritedAnnotationRecords,1);
   const parsed=parseReferenceFasta(augmented.fasta);assert.equal(parsed.length,3);assert.equal(parsed[2].sequence,candidate.sequence);
   assert.match(parsed[2].header,/SWIGMETA=1,2,3,4/);assert.match(parsed[2].header,/SWIG_CANDIDATE=missing_allele_hint/);assert.match(parsed[2].header,/PARENT=IGHV1-2\*01/);
+});
+
+test("large or numerous possible-missing-V signals trigger the complete-reference warning",()=>{
+  const candidate=(id:string,independentUnits:number)=>({id,independentUnits} as MissingAlleleCandidate);
+  assert.equal(requiresCompleteGermlineWarning({candidates:[candidate("large",51)]}),true);
+  assert.equal(requiresCompleteGermlineWarning({candidates:Array.from({length:6},(_,index)=>candidate(`small-${index}`,8))}),true);
+  assert.equal(requiresCompleteGermlineWarning({candidates:[candidate("boundary",50),...Array.from({length:4},(_,index)=>candidate(`small-${index}`,8))]}),false);
 });
 
 test("a parent-reference nucleotide anywhere else in a supporting lineage vetoes that lineage",()=>{

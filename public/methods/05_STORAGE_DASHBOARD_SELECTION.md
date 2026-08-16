@@ -24,6 +24,8 @@ Applying edited dataset/sample/donor/cohort/timepoint/compartment values updates
 
 Post-analysis never deletes assigned rows. It keeps a `Uint8Array` mask with one entry per AIRR ordinal. Applying collapse representatives, a chimera threshold, or repertoire selection composes a new mask. Later methods consume only ordinals marked active. `Reset to all records` restores the complete assigned population; it does not discard fitted models or files unless those results depend on an incompatible upstream call policy.
 
+Every post-analysis card has an explicit **Skip step** control. Skipping bypasses that method in guided navigation without fabricating a result or changing the current mask; **Include step** puts it back. Repertoire selection (step 04) starts skipped because its untouched configuration would retain every record and add no information. This is navigation state, is saved with the analysis session, and can be changed before or after earlier steps have run.
+
 ## Repertoire selection
 
 The selection block supports dataset/sample/donor/cohort/timepoint/compartment, identifier, locus, V/D1/D2/J/C/isotype calls, CDR3 nucleotide/amino-acid substring, literal/IUPAC/regular-expression motifs, productivity/completeness/frame/stop/D/CDR3 states, Double-D status, CDR3 lengths, V/J identity, and V mutation fraction. Non-empty conditions are ANDed. Comma/newline-separated values within one field use that field's documented any/all behavior.
