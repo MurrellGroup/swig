@@ -41,6 +41,8 @@ test("the CLI pipeline runs annotation through lazy lineage-study export",async(
     assert.equal(summary.retainedRecords,1);
     assert.equal(summary.lineages,1);
     const airr=await readFile(join(output,"smoke.lineages.airr.tsv"));
+    const headers=airr.toString("utf8").split("\n",1)[0].split("\t");
+    for(const field of ["v_support","d_support","j_support","c_support"])assert.ok(headers.includes(field));
     const manifest=JSON.parse(gunzipSync(await readFile(join(output,"smoke.swig-lineage-study.json.gz"))).toString("utf8"));
     assert.equal(manifest.linkedAirr.size,airr.byteLength);
     assert.equal(manifest.linkedAirr.sha256,createHash("sha256").update(airr).digest("hex"));
@@ -220,6 +222,10 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
     assert.equal(plain.status,0,plain.stderr);assert.match(plain.stderr,/assignments-only; 1 worker/);
     const plainRow=await readRow(plainPath);
     assert.equal(plainRow.v_call,v[0]);assert.equal(plainRow.j_call,j[0]);assert.equal(plainRow.cdr1,"");assert.equal(plainRow.cdr3,"");assert.equal(plainRow.region_definition,"");
+    assert.ok(plainRow.v_support&&Number.isFinite(Number(plainRow.v_support))&&Number(plainRow.v_support)>=0);
+    assert.ok(plainRow.d_support&&Number.isFinite(Number(plainRow.d_support))&&Number(plainRow.d_support)>=0);
+    assert.ok(plainRow.j_support&&Number.isFinite(Number(plainRow.j_support))&&Number(plainRow.j_support)>=0);
+    assert.equal(plainRow.c_support,"");
 
     const igblastPath=join(temporary,"igblast-data.airr.tsv");
     const igblast=runRawCli(root,[...common,"-custom_internal_data",internalPath,"-auxiliary_data",auxPath,"-out",igblastPath]);

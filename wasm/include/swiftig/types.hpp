@@ -10,7 +10,7 @@
 
 namespace swiftig {
 
-inline constexpr const char* kVersion = "0.5.0";
+inline constexpr const char* kVersion = "0.6.0";
 
 enum class Segment : std::uint8_t { V = 0, D = 1, J = 2, C = 3 };
 
@@ -92,6 +92,12 @@ struct SegmentHit {
     const Gene* gene = nullptr;
     Alignment alignment;
     std::string call;
+    // Length of the query span searched to produce this hit. D is searched in
+    // the V/J-bounded junction; V, J, and C use the complete oriented query.
+    std::size_t search_query_length = 0;
+    // Calibrated BLAST-form expectation value for this SwiftIG score. Missing
+    // when a caller supplies a scoring tuple without an offline calibration.
+    std::optional<double> support;
 
     [[nodiscard]] bool valid() const noexcept { return gene != nullptr && alignment.valid(); }
 };

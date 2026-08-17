@@ -1,6 +1,7 @@
 #include "swiftig/airr.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <iomanip>
 #include <ostream>
 #include <sstream>
@@ -19,10 +20,10 @@ const std::vector<std::string>& columns() {
         "germline_alignment_aa", "junction", "junction_aa", "np1", "np2",
         "cdr1", "cdr1_aa", "cdr2", "cdr2_aa", "cdr3", "cdr3_aa",
         "fwr1", "fwr1_aa", "fwr2", "fwr2_aa", "fwr3", "fwr3_aa", "fwr4", "fwr4_aa",
-        "v_score", "v_identity", "v_cigar",
-        "d_score", "d_identity", "d_cigar",
-        "j_score", "j_identity", "j_cigar",
-        "c_score", "c_identity", "c_cigar",
+        "v_score", "v_identity", "v_support", "v_cigar",
+        "d_score", "d_identity", "d_support", "d_cigar",
+        "j_score", "j_identity", "j_support", "j_cigar",
+        "c_score", "c_identity", "c_support", "c_cigar",
         "v_sequence_start", "v_sequence_end", "v_germline_start", "v_germline_end",
         "d_sequence_start", "d_sequence_end", "d_germline_start", "d_germline_end",
         "j_sequence_start", "j_sequence_end", "j_germline_start", "j_germline_end",
@@ -68,6 +69,14 @@ std::string hit_score(const std::optional<SegmentHit>& hit) {
 
 std::string hit_identity(const std::optional<SegmentHit>& hit) {
     return hit ? number(hit->alignment.identity()) : std::string{};
+}
+
+std::string hit_support(const std::optional<SegmentHit>& hit) {
+    if (!hit || !hit->support) return {};
+    char buffer[48];
+    const int written = std::snprintf(buffer, sizeof(buffer), "%.6e", *hit->support);
+    return written > 0 && static_cast<std::size_t>(written) < sizeof(buffer)
+        ? std::string(buffer, static_cast<std::size_t>(written)) : std::string{};
 }
 
 std::string hit_cigar(const std::optional<SegmentHit>& hit) {
@@ -153,10 +162,10 @@ void write_airr_record(std::ostream& output, const Annotation& a) {
         a.cdr3, a.cdr3_aa,
         a.fwr1.sequence, a.fwr1.sequence_aa, a.fwr2.sequence, a.fwr2.sequence_aa,
         a.fwr3.sequence, a.fwr3.sequence_aa, a.fwr4.sequence, a.fwr4.sequence_aa,
-        hit_score(a.v), hit_identity(a.v), hit_cigar(a.v),
-        hit_score(a.d), hit_identity(a.d), hit_cigar(a.d),
-        hit_score(a.j), hit_identity(a.j), hit_cigar(a.j),
-        hit_score(a.c), hit_identity(a.c), hit_cigar(a.c),
+        hit_score(a.v), hit_identity(a.v), hit_support(a.v), hit_cigar(a.v),
+        hit_score(a.d), hit_identity(a.d), hit_support(a.d), hit_cigar(a.d),
+        hit_score(a.j), hit_identity(a.j), hit_support(a.j), hit_cigar(a.j),
+        hit_score(a.c), hit_identity(a.c), hit_support(a.c), hit_cigar(a.c),
         query_start(a.v), query_end(a.v), reference_start(a.v), reference_end(a.v),
         query_start(a.d), query_end(a.d), reference_start(a.d), reference_end(a.d),
         query_start(a.j), query_end(a.j), reference_start(a.j), reference_end(a.j),

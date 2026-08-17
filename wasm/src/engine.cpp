@@ -497,7 +497,12 @@ std::optional<std::pair<std::size_t, std::size_t>> map_reference_interval(
 }  // namespace
 
 AnnotationEngine::AnnotationEngine(const GermlineDatabase& database, EngineOptions options)
-    : database_(database), options_(std::move(options)) {}
+    : database_(database),
+      options_(std::move(options)),
+      v_statistics_(reference_database_statistics(database.v.genes())),
+      d_statistics_(reference_database_statistics(database.d.genes())),
+      j_statistics_(reference_database_statistics(database.j.genes())),
+      c_statistics_(reference_database_statistics(database.c.genes())) {}
 
 std::vector<SegmentHit> AnnotationEngine::align_candidates(
     const std::string& query,
@@ -571,7 +576,7 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
             adaptive_band);
         if (!alignment.valid() || aligned_bases(alignment) < min_length ||
             alignment.identity() < options_.min_identity) continue;
-        hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name});
+        hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name, query.size()});
     }
     std::sort(hits.begin(), hits.end(), [](const SegmentHit& a, const SegmentHit& b) {
         if (a.alignment.score != b.alignment.score) return a.alignment.score > b.alignment.score;
@@ -802,7 +807,7 @@ std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
         ++stats.final_realignments;
         if (!alignment.valid() || aligned_bases(alignment) < min_length ||
             alignment.identity() < options_.min_identity) continue;
-        exhaustive_hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name});
+        exhaustive_hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name, query.size()});
     }
     std::sort(exhaustive_hits.begin(), exhaustive_hits.end(), [](const SegmentHit& left, const SegmentHit& right) {
         if (left.alignment.score != right.alignment.score) {
@@ -841,7 +846,7 @@ std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
         if (!alignment.valid() || aligned_bases(alignment) < min_length ||
             alignment.identity() < options_.min_identity) continue;
         emitted_genes.insert(proxy.gene_index);
-        hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name});
+        hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name, query.size()});
         if (hits.size() == top_n) break;
     }
 #endif
@@ -1005,6 +1010,19 @@ Annotation AnnotationEngine::annotate(const SequenceRecord& record, const Annota
     annotation.d_alternatives = std::move(chosen.d_alternatives);
     annotation.j_alternatives = std::move(chosen.j_alternatives);
     annotation.c_alternatives = std::move(chosen.c_alternatives);
+    const auto assign_support = [&](std::optional<SegmentHit>& hit,
+                                    const Scoring& scoring,
+                                    const ReferenceDatabaseStatistics& statistics) {
+        if (!hit) return;
+        const auto query_length = hit->search_query_length > 0
+            ? hit->search_query_length : annotation.oriented_sequence.size();
+        hit->support = calibrated_alignment_evalue(
+            hit->alignment.score, query_length, statistics, scoring);
+    };
+    assign_support(annotation.v, options_.v_scoring, v_statistics_);
+    assign_support(annotation.d, options_.d_scoring, d_statistics_);
+    assign_support(annotation.j, options_.j_scoring, j_statistics_);
+    assign_support(annotation.c, options_.c_scoring, c_statistics_);
     if (annotation.v && !annotation.v->gene->locus.empty()) annotation.locus = annotation.v->gene->locus;
     else if (annotation.j) annotation.locus = annotation.j->gene->locus;
     if (annotation.v) {

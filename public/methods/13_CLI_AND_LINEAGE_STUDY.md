@@ -51,6 +51,8 @@ FASTA, wrapped FASTA, FASTQ, wrapped FASTQ, AIRR TSV/CSV, and gzip-compressed ve
 
 The route accepts the common IgBLAST names `-query`, `-germline_db_V`, `-germline_db_D`, `-germline_db_J`, `-c_region_db`, `-out`, `-outfmt`, `-organism`, `-ig_seqtype`, `-domain_system`, `-strand`, `-num_threads`, `-custom_internal_data`, `-auxiliary_data`, and `-d_frame_data`. Source germline arguments are nucleotide FASTA (plain or gzip), not BLAST database prefixes. `--workers` has higher precedence than `-num_threads`. SwiftIG-specific `--batch-records`, `--minimum-identity`, `--assigner`, and `--calling-profile` remain available. A small set of D/J search controls maps to the already exported SwiftIG tuning ABI; unsupported BLAST scoring/search/report options fail rather than being silently ignored.
 
+Both the pipeline route and `--vdj` write calibrated SwiftIG expectation values in AIRR `v_support`, `d_support`, `j_support`, and `c_support`. The calculation is shared with Swig Web and does not invoke IgBLAST. See [V(D)J assignment](03_VDJ_ASSIGNMENT.md) for the definition and its numerical-parity limitation.
+
 Reference/annotation behavior is intentionally three-way:
 
 | Invocation | Metadata used by SwiftIG |

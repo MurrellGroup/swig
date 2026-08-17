@@ -198,7 +198,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.33.0";
+const APP_VERSION = "0.34.0";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -856,6 +856,14 @@ function parseAlternatives(value: string): AlternativeHit[] {
   });
 }
 
+function formatAlignmentSupport(value: string): string {
+  if (!value) return "";
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return value;
+  if (parsed === 0) return "E < 5e−324";
+  return `E ${parsed.toExponential(2).replace("e-", "e−")}`;
+}
+
 function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
   const [mode, setMode] = useState<"nt" | "aa">("nt");
   const sequenceLength = row.sequence?.length ?? 0;
@@ -890,7 +898,8 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
           {displayedSegments.map((segment) => {
             const selected = splitCalls(row[`${segment}_call`] || "");
             const alternatives = parseAlternatives(row[`${segment}_alternatives`] || "");
-            return <div key={segment}><span>{segment.toUpperCase()} call</span><strong>{selected[0] || "—"}</strong><small>{row[`${segment}_identity`] ? `${(Number(row[`${segment}_identity`]) * 100).toFixed(1)}% identity` : "not assigned"}{selected.length > 1 ? ` · ${selected.length} co-optimal` : alternatives.length ? ` · ${alternatives.length} near-tied` : ""}</small></div>;
+            const support = formatAlignmentSupport(row[`${segment}_support`] || "");
+            return <div key={segment}><span>{segment.toUpperCase()} call</span><strong>{selected[0] || "—"}</strong><small>{row[`${segment}_identity`] ? `${(Number(row[`${segment}_identity`]) * 100).toFixed(1)}% identity` : "not assigned"}{support ? ` · ${support}` : ""}{selected.length > 1 ? ` · ${selected.length} co-optimal` : alternatives.length ? ` · ${alternatives.length} near-tied` : ""}</small></div>;
           })}
         </div>
       </section>

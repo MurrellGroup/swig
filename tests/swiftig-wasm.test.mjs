@@ -282,6 +282,16 @@ test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, 
   assert.equal(fasta.rows[0].j_call, customJName);
   assert.ok(fasta.headers.includes("junction_aa"));
   assert.ok(fasta.headers.includes("germline_alignment"));
+  for (const segment of ["v", "d", "j", "c"]) {
+    assert.ok(fasta.headers.includes(`${segment}_support`));
+    if (fasta.rows[0][`${segment}_call`]) {
+      assert.notEqual(fasta.rows[0][`${segment}_support`], "");
+      const support = Number(fasta.rows[0][`${segment}_support`]);
+      assert.ok(Number.isFinite(support) && support >= 0, `${segment.toUpperCase()} support is not a finite E-value`);
+    } else {
+      assert.equal(fasta.rows[0][`${segment}_support`], "");
+    }
+  }
   assert.equal(fasta.rows[0].region_definition, "IMGT");
   assert.equal(fasta.rows[0].v_annotation_source, "IMGT-gapped");
   assert.equal(fasta.rows[0].j_annotation_source, "validated-J-motif");
@@ -342,6 +352,24 @@ test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, 
   assert.ok(tcrResult.rows[0].j_call);
   assert.equal(tcrResult.rows[0].c_call, tcr.names.C);
   if (tcr.names.D) assert.ok(tcrResult.rows[0].d_call);
+});
+
+test("calibrated AIRR support uses the supplied segment database search space", async () => {
+  const human = pack.species.find((entry) => entry.name === "Homo sapiens");
+  assert.ok(human?.loci.IGH);
+  const v = human.loci.IGH.V[0];
+  const j = human.loci.IGH.J[0];
+  const query = `>search_space\n${v[1]}AACCGG${j[1]}\n`;
+  const runtime = await makeRuntime();
+  runtime.initialize({ V: asFasta([v]), D: "", J: asFasta([j]), C: "" });
+  const one = runtime.annotate(query, 1).rows[0];
+  const duplicate = [`${v[0]}_DECOY`, v[1], v[2]];
+  runtime.initialize({ V: asFasta([v, duplicate]), D: "", J: asFasta([j]), C: "" });
+  const two = runtime.annotate(query, 1).rows[0];
+  assert.equal(one.v_score, two.v_score);
+  assert.ok(Number(one.v_support) > 0);
+  assert.ok(Number(two.v_support) > Number(one.v_support), "a doubled V search space did not increase the E-value");
+  assert.equal(one.d_support, "");
 });
 
 test("bundled macaque KIMDB references produce complete IMGT region and CDR calls end to end", { timeout: 45_000 }, async () => {

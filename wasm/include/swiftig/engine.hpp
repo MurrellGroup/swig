@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "swiftig/index.hpp"
+#include "swiftig/statistics.hpp"
 #include "swiftig/types.hpp"
 
 namespace swiftig {
@@ -42,6 +43,10 @@ private:
 
     const GermlineDatabase& database_;
     EngineOptions options_;
+    ReferenceDatabaseStatistics v_statistics_;
+    ReferenceDatabaseStatistics d_statistics_;
+    ReferenceDatabaseStatistics j_statistics_;
+    ReferenceDatabaseStatistics c_statistics_;
 
     [[nodiscard]] OrientationResult annotate_orientation(
         const std::string& sequence,
