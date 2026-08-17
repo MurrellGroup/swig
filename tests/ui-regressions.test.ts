@@ -34,6 +34,32 @@ test("FASTQ quality control is an initially collapsed pre-assignment step", () =
   assert.match(app, /FASTA and AIRR records will pass through this step unchanged/);
 });
 
+test("the web entry point exposes three focused workflows and keeps UCA trees observed-only", () => {
+  const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
+  const post = fs.readFileSync(new URL("../src/post-analysis.tsx", import.meta.url), "utf8");
+  const uca = fs.readFileSync(new URL("../src/phylo-uca/panel.tsx", import.meta.url), "utf8");
+  const styles = fs.readFileSync(new URL("../src/globals.css", import.meta.url), "utf8");
+
+  assert.match(app, /VDJ assignment, annotation, and visualization/);
+  assert.match(app, /End-to-end repertoire analysis/);
+  assert.match(app, /Single lineage analysis/);
+  assert.match(app, /Swig runs on your machine\. Your sequence data are not uploaded/);
+  assert.doesNotMatch(app, /Local annotation of/);
+  assert.match(app, /useState<AssignerStrategy>\("riat_mp"\)/);
+  assert.match(app, /!focusedWebMode && <section className=\{`analysis-card pipeline-card/);
+  assert.match(app, /directLineage=\{session\.webMode === "lineage"\}/);
+  assert.match(styles, /\.workflow-choice-grid[\s\S]*grid-template-columns: repeat\(3/);
+
+  assert.match(post, /Upload Newick/);
+  assert.match(post, /allowGermlineGuide|prepareUploadedLineageTree\(text, observedNames, true\)/);
+  assert.match(post, /treeRun\?\.origin === "uploaded" && treeRun\.observedOnly/);
+  assert.match(post, /Contains germline guide · display only; UCA will infer a fresh observed-only tree/);
+  assert.match(uca, /Use uploaded observed-only tree/);
+  assert.match(uca, /Infer a fresh tree with FastTree/);
+  assert.match(uca, /prepareObservedOnlyAlignment\(alignment, GERMLINE_OUTGROUP\)/);
+  assert.match(uca, /usingUploadedTree \? suppliedObservedTree : inferredObservedTree!\.newick/);
+});
+
 test("concatenated gzip uploads require an explicit merged-versus-separate sample choice", () => {
   const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const gzip = fs.readFileSync(new URL("../src/gzip-members.ts", import.meta.url), "utf8");

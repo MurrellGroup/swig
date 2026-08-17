@@ -86,11 +86,19 @@ Original names are restored in the returned Newick. The executed named FASTA, ex
 
 This is direct execution of FastTree, but the surrounding lineage selection, germline guide, rooting, and display are Swig behavior. It is not IgPhyML, HLP17/HLP19, or another antibody-specific codon phylogeny.
 
+## Uploaded trees for the ordinary viewer
+
+Instead of running FastTree, the user may upload Newick for the exact current alignment. Swig requires a complete, unique tip set and finite, non-negative branch lengths with at least one positive edge. Tips may use the complete Swig alignment identifiers, unambiguous original identifiers before Swig's `__ordinal` suffix, or a complete zero-based numeric set in alignment order. Swig reconciles those names but does not estimate missing branches, prune taxa, or silently add taxa.
+
+An ordinary display upload may either contain only the biological sequences or also contain `__germline_N_masked__`. The uploaded topology and branch lengths are retained. The original child order, a deterministic child order, and an optional numerical-floor-collapsed view are available; Swig does not pretend that an arbitrary uploaded root was inferred by its ordinary guide-rooting procedure.
+
+Tree use in the ordinary viewer and tree use in phylogenetic UCA inference are deliberately separate choices. A validated **observed-only** upload is eligible as one possible fixed tree for UCA inference, but the UCA panel still lets the user ignore it and infer a fresh observed-only FastTree tree. An uploaded tree that contains `__germline_N_masked__` is display-only and is never passed to UCA inference.
+
 ## Rooting and stable display
 
 FastTree first estimates an unrooted tree containing the N-masked guide. Swig then reroots **exactly at the guide tip**: the guide-to-root edge becomes zero and the full original connecting-edge length is assigned to the ingroup side. No midpoint split is introduced, so pairwise path lengths are preserved.
 
-Three outputs remain available:
+For a Swig-inferred tree, three outputs remain available:
 
 - **Raw FastTree:** untouched returned topology and lengths;
 - **Rooted, resolved:** rooted at the N-masked guide with all inferred resolutions retained; and
@@ -100,7 +108,7 @@ Child order is canonicalized for deterministic rendering and can be ladderized f
 
 ## Exports and invalidation
 
-The current MSA can be exported as aligned FASTA, Clustal, relaxed PHYLIP, Stockholm, or NEXUS. Tree exports include raw/rooted/floor-collapsed Newick, NEXUS, and the current SVG. A manually corrected MSA and its frame are retained in a saved session. Changing lineage membership, the germline method, the alignment, or its frame invalidates dependent tree and phylogenetic-UCA results rather than reusing stale coordinates.
+The current MSA can be exported as aligned FASTA, Clustal, relaxed PHYLIP, Stockholm, or NEXUS. Tree exports include raw/rooted-or-canonical/floor-collapsed Newick, NEXUS, and the current SVG. A manually corrected MSA and its frame are retained in a saved session. Changing lineage membership, the germline method, the alignment, or its frame invalidates dependent tree and phylogenetic-UCA results rather than reusing stale coordinates.
 
 ## Limitations
 

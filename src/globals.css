@@ -3601,6 +3601,169 @@ label[data-field-help] > span:first-child { cursor: help; text-decoration: under
   display: grid !important; width: auto; min-width: 0; grid-template-columns: 18px minmax(0,1fr); align-items: start;
   margin: 0 28px 20px; padding: 12px 14px; box-sizing: border-box;
 }
+
+/* Three explicit web workflows. The home route intentionally has no secondary
+   marketing or methods content beneath these choices. */
+.workflow-landing-page {
+  display: flex;
+  width: min(100% - 64px, 1420px);
+  min-height: calc(100vh - 88px);
+  margin: 0 auto;
+  padding: clamp(44px, 8vh, 100px) 0 clamp(34px, 6vh, 74px);
+  flex-direction: column;
+  justify-content: center;
+  gap: 32px;
+}
+.workflow-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(14px, 2vw, 28px);
+}
+.workflow-choice-grid > button {
+  display: grid;
+  min-width: 0;
+  min-height: clamp(245px, 34vh, 390px);
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto 1fr auto;
+  gap: 22px;
+  padding: clamp(24px, 3.4vw, 48px);
+  border: 1px solid var(--line-dark);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  text-align: left;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.workflow-choice-grid > button:hover {
+  border-color: var(--teal);
+  box-shadow: 0 22px 58px rgba(19, 35, 33, .13);
+  transform: translateY(-3px);
+}
+.workflow-choice-grid > button > span {
+  color: var(--teal);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .14em;
+}
+.workflow-choice-grid > button > strong {
+  grid-column: 1 / -1;
+  align-self: center;
+  max-width: 12em;
+  font-size: clamp(24px, 2.5vw, 39px);
+  font-weight: 650;
+  line-height: 1.04;
+  letter-spacing: -.045em;
+}
+.workflow-choice-grid > button > i {
+  grid-column: 2;
+  align-self: end;
+  width: 44px;
+  height: 44px;
+  padding-top: 8px;
+  border-radius: 50%;
+  color: white;
+  background: var(--teal);
+  font-size: 19px;
+  font-style: normal;
+  text-align: center;
+}
+.workflow-local-statement {
+  display: flex;
+  margin: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 650;
+}
+.workflow-local-statement > i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--teal);
+  box-shadow: 0 0 0 4px rgba(8, 108, 100, .12);
+}
+
+.focused-input-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--teal);
+  border-radius: 4px;
+  background: var(--surface-soft);
+}
+.focused-input-summary > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.focused-input-summary span { color: var(--muted); font-size: 8px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+.focused-input-summary strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.focused-input-summary small { color: var(--muted); font-size: 8px; }
+.focused-input-summary > button { padding: 9px 12px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); font-size: 9px; font-weight: 750; }
+
+.focused-results-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 28px;
+  align-items: center;
+  margin: 30px 0 18px;
+  padding: 24px 26px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.focused-results-overview h1 { margin: 5px 0; font-size: 31px; letter-spacing: -.04em; }
+.focused-results-overview p { margin: 0; color: var(--muted); font-size: 9px; }
+.focused-results-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; justify-content: flex-end; }
+.focused-results-actions label { display: flex; flex-direction: column; gap: 4px; }
+.focused-results-actions label > span { color: var(--muted); font-size: 7px; font-weight: 800; text-transform: uppercase; }
+.focused-results-actions select,
+.focused-results-actions button { min-height: 36px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-soft); font-size: 8px; font-weight: 750; }
+.focused-results-actions button.post-primary { color: white; border-color: var(--teal); background: var(--teal); }
+.focused-results-overview > .run-error { grid-column: 1 / -1; }
+.results-mode-vdj .sequence-context-workspace { margin-top: 0; }
+
+.results-mode-lineage .direct-lineage-shell .post-context-workspace { grid-template-columns: minmax(0, 1fr); }
+.direct-lineage-shell .post-context-main { min-height: 0; }
+.direct-lineage-shell .post-analysis-heading { margin-top: 0; }
+.tree-upload-button { min-height: 38px; align-self: end; }
+.tree-provenance em.tree-uca-eligible,
+.tree-provenance em.tree-display-only {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  margin-top: 8px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 750;
+}
+.tree-provenance em.tree-uca-eligible { color: var(--teal); background: var(--lime-soft); }
+.tree-provenance em.tree-display-only { color: #8b442f; background: #f8ded6; }
+.phylo-uca-tree-source { display: flex; min-width: 245px; flex-direction: column; gap: 5px; }
+.phylo-uca-tree-source > span { color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+
+@media (max-width: 900px) {
+  .workflow-landing-page { justify-content: flex-start; }
+  .workflow-choice-grid { grid-template-columns: 1fr; }
+  .workflow-choice-grid > button { min-height: 170px; }
+  .workflow-choice-grid > button > strong { max-width: 20em; font-size: clamp(24px, 5vw, 36px); }
+  .focused-results-overview { grid-template-columns: 1fr; }
+  .focused-results-actions { justify-content: flex-start; }
+}
+
+@media (max-width: 600px) {
+  .workflow-landing-page { width: calc(100% - 28px); padding-top: 30px; }
+  .workflow-choice-grid > button { min-height: 150px; padding: 22px; }
+  .workflow-choice-grid > button > i { width: 36px; height: 36px; padding-top: 6px; }
+  .focused-input-summary { grid-template-columns: 1fr 1fr; }
+  .focused-input-summary > div { grid-column: 1 / -1; }
+  .focused-results-overview { padding: 18px; }
+}
 .post-module > label.constant-collapse-policy > input { margin: 2px 0 0; }
 .post-module > label.constant-collapse-policy > span { min-width: 0; overflow-wrap: anywhere; }
 .collapse-mode-grid { grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); }

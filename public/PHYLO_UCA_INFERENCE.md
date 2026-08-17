@@ -8,7 +8,7 @@ This module estimates the unmutated common ancestor (UCA) of a selected BCR or T
 2. the length of the branch between the UCA and that attachment point; and
 3. the UCA nucleotide sequence and V(D)J recombination path.
 
-The method is a **fixed-observed-tree approximation**. It is not the joint tree/recombination phylo-HMM of Dhar et al. and it does not integrate over observed-tree topology or the fitted branch lengths inside that tree. Swig first infers one observed tree, holds it fixed, and then offers conditional ML, explicit grid integration, or a Metropolis-within-Gibbs sampler for the UCA attachment, UCA pendant length, recombination path, and sequence.
+The method is a **fixed-observed-tree approximation**. It is not the joint tree/recombination phylo-HMM of Dhar et al. and it does not integrate over observed-tree topology or the fitted branch lengths inside that tree. Swig either infers one observed-only tree or accepts an explicitly selected validated observed-only upload, holds that tree fixed, and then offers conditional ML, explicit grid integration, or a Metropolis-within-Gibbs sampler for the UCA attachment, UCA pendant length, recombination path, and sequence.
 
 The implementation is isolated under `src/phylo-uca/`. React is confined to `panel.tsx` and the HMM-annotation renderer; the likelihood, HMM, placement search, worker, and public data contracts are separate modules.
 
@@ -21,11 +21,17 @@ The analysis uses:
 - the active composed V, D, and J reference FASTA sets;
 - fixed, user-visible model and search parameters.
 
-The N-masked germline guide row used by the ordinary lineage viewer is **not an observed taxon**. It is removed before tree inference. For FastTree fitting, a column is removed only when every remaining tip is missing there (`?` or a leading/trailing gap). A column containing an internal gap is retained even when every tip has that internal gap.
+The N-masked germline guide row used by the ordinary lineage viewer is **not an observed taxon**. It is always removed before UCA inference. The UCA panel's tree-source control is independent of the ordinary lineage-tree display:
+
+- **Infer a fresh tree with FastTree** removes the guide, fits a new observed-only tree, and is always available.
+- **Use uploaded observed-only tree** is offered only when the current ordinary upload has exactly the biological alignment tips and validated branch lengths.
+- An ordinary uploaded tree containing `__germline_N_masked__` is display-only and cannot be selected for UCA inference.
+
+Thus uploading a tree for the first lineage visualization never forces that tree into UCA inference. Conversely, selecting an eligible uploaded tree deliberately uses its topology and branch lengths as the fixed observed tree; Swig does not refit them. For fresh FastTree fitting, a column is removed only when every remaining tip is missing there (`?` or a leading/trailing gap). A column containing an internal gap is retained even when every tip has that internal gap.
 
 The posterior pass then uses the **full original alignment width**. Columns omitted only from FastTree fitting are restored as missing tip data, so they do not change the fitted observed tree but the V(D)J prior can infer a UCA state there. Keeping these columns also preserves the selected codon phase exactly; deleting a three-column-external padding site must not shift every downstream codon. Result coordinates always refer to the original curated alignment.
 
-At least three observed sequences are required. The observed-only tree is inferred with the same double-precision FastTree 2.1.11 WebAssembly executable used by the ordinary lineage-tree action, using nucleotide GTR and the exact retained alignment.
+At least three observed sequences are required. When the fresh-tree route is selected, the observed-only tree is inferred with the same double-precision FastTree 2.1.11 WebAssembly executable used by the ordinary lineage-tree action, using nucleotide GTR and the exact retained alignment. When an eligible upload is selected, its complete observed-only Newick replaces only that FastTree step; all subsequent likelihood, HMM, and placement calculations are identical.
 
 ## Character model: four states normally, five only for gapped alignments
 

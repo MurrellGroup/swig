@@ -12,11 +12,13 @@ The minimum identity control is an acceptance floor for candidate alignments, no
 
 The strategy changes V candidate retrieval/refinement only. D and J use the selected calling profile in every strategy.
 
-### AER—Adaptive Exact Refinement (default)
+Swig Web starts all three front-page workflows with RIAT-MP. The command-line config and `swig-cli --vdj` retain AER as their default for backward compatibility. Either surface can select any strategy explicitly, and a browser-exported config records the web selection.
+
+### AER—Adaptive Exact Refinement
 
 AER begins from the complete V-allele seed index. It exactly aligns the leading candidates and increases exact affine-alignment depth only when the leading 9-mer vote ranking is ambiguous: within 5% relative vote count or 8 weighted votes, up to 16 candidates. It never substitutes a propagated approximate score for the final retained exact alignment.
 
-### RIAT-MP
+### RIAT-MP (Swig Web default)
 
 RIAT-MP groups close V alleles into root-indexed trees. It aligns up to three representative roots and propagates sparse descendant differences without performing a full descendant alignment. When the provisional winner contains an indel, it tests at most two root traceback geometries within four raw-score units, with a 1,024-state traceback cap. This is a Swig/SwiftIG algorithm, not a literature package.
 

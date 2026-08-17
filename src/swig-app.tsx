@@ -128,6 +128,7 @@ import {
 } from "./study-design";
 
 type AppPage = "home" | "analyze" | "results" | "lineage-study";
+type WebAnalysisMode = "vdj" | "repertoire" | "lineage";
 type InputFormat = "FASTA" | "FASTQ" | "AIRR TSV";
 type InputSource = "upload" | "paste";
 type OutputStorageMode = "auto" | "browser" | "disk";
@@ -164,6 +165,7 @@ type ReferenceAlleleExclusionMap = Record<string, string[]>;
 
 interface ResultSession {
   id: number;
+  webMode: WebAnalysisMode;
   store: AirrResultStore;
   total: number;
   seconds: number;
@@ -198,7 +200,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.34.0";
+const APP_VERSION = "0.35.0";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -574,6 +576,7 @@ async function sessionArtifact(
       fingerprint: session.store.fingerprint,
     },
     analysis: {
+      webMode: session.webMode,
       inputName: session.inputName,
       species: session.species,
       scope: session.scope,
@@ -645,57 +648,27 @@ function WorkflowStepper({ active }: { active: 1 | 2 | 3 }) {
   );
 }
 
-function LandingPage({ references, onStart, onDemo }: {
-  references: number | null;
-  onStart: () => void;
-  onDemo: () => void;
-}) {
+function LandingPage({ onChoose }: { onChoose: (mode: WebAnalysisMode) => void }) {
   return (
-    <main className="landing-page">
-      <section className="landing-hero">
-        <div className="hero-copy">
-          <p className="eyebrow"><span>V(D)J sequence annotation</span></p>
-          <h1>Local annotation of<br /><em>BCR and TCR sequences.</em></h1>
-          <p className="hero-lede">Swig runs the SwiftIG annotation core as WebAssembly for IG and TR loci. Query records, locally loaded germlines, and AIRR results are processed in the browser and are not transmitted by Swig.</p>
-          <div className="hero-actions">
-            <button className="primary-cta" type="button" onClick={onStart}>Start an analysis <span>→</span></button>
-            <button className="secondary-cta" type="button" onClick={onDemo}>Load example data</button>
-          </div>
-          <div className="hero-proof">
-            <span><b>FASTA</b> / FASTQ / AIRR · gzip</span>
-            <span><b>7</b> IG + TR loci</span>
-            <span><b>Query</b> records not transmitted</span>
-          </div>
-        </div>
-        <div className="hero-instrument" aria-label="Example VDJ assignment">
-          <div className="instrument-top"><span>example_read_01</span><b>productive</b></div>
-          <div className="sequence-ruler"><i /><i /><i /><i /><i /><i /><i /></div>
-          <div className="vdj-track"><span className="v">IGHV3-23</span><span className="n">N</span><span className="d">IGHD3-10</span><span className="n">N</span><span className="j">IGHJ4</span></div>
-          <div className="instrument-alignment"><code>CAGGTGCAGCTGGTGGAGTCTGGGGGA...</code><code>||||||||||||||||||||||||| ·...</code><code>CAGGTGCAGCTGGTGGAGTCTGGGGGA...</code></div>
-          <div className="instrument-callouts"><span><i className="v" />V 98.7%</span><span><i className="d" />D 100%</span><span><i className="j" />J 96.2%</span></div>
-        </div>
+    <main className="workflow-landing-page">
+      <section className="workflow-choice-grid" aria-label="Choose a Swig workflow">
+        <button type="button" onClick={() => onChoose("vdj")}>
+          <span>01</span>
+          <strong>VDJ assignment, annotation, and visualization</strong>
+          <i>→</i>
+        </button>
+        <button type="button" onClick={() => onChoose("repertoire")}>
+          <span>02</span>
+          <strong>End-to-end repertoire analysis</strong>
+          <i>→</i>
+        </button>
+        <button type="button" onClick={() => onChoose("lineage")}>
+          <span>03</span>
+          <strong>Single lineage analysis</strong>
+          <i>→</i>
+        </button>
       </section>
-
-      <section className="workflow-story">
-        <div className="section-heading"><p className="eyebrow"><span>Analysis workflow</span></p><h2>Input, annotation, and results.</h2><p>Each run has an explicit configuration, measured progress, and a browser-local result index.</p></div>
-        <div className="workflow-cards">
-          <article><span>01</span><div className="workflow-icon upload-icon" /><h3>Provide sequences</h3><p>Load or paste FASTA, FASTQ, or an AIRR table. Gzip inputs are decompressed incrementally.</p></article>
-          <article><span>02</span><div className="workflow-icon engine-icon" /><h3>Set references</h3><p>Choose a species and IG/TR search space, then compose IMGT, published, or local V/D/J/C sets by locus.</p></article>
-          <article><span>03</span><div className="workflow-icon result-icon" /><h3>Review and post-analyze</h3><p>Download AIRR TSV, inspect calls, deduplicate with abundance, assign or query lineages, and align selected groups on demand.</p></article>
-        </div>
-      </section>
-
-      <section className="scale-section">
-        <div className="scale-copy"><p className="eyebrow"><span>Dataset-size behavior</span></p><h2>Detailed review for small runs;<br />bounded streaming for large runs.</h2><p>Runs of up to three records open at the record view. Larger inputs are decompressed, parsed, annotated, indexed, and optionally written to disk through a bounded queue.</p></div>
-        <div className="scale-grid">
-          <article><strong>1–3</strong><span>Record detail opens automatically</span><small>Region and alignment layers</small></article>
-          <article><strong>10³</strong><span>Facets and paged records</span><small>Indexed categorical filters</small></article>
-          <article><strong>10⁶</strong><span>Bounded local batches</span><small>No full-table DOM or full-input buffer</small></article>
-          <article><strong>{references ?? "—"}</strong><span>IMGT species/strain sets</span><small>Compatible alternative databases by locus</small></article>
-        </div>
-      </section>
-
-      <section className="landing-final"><div><span>Annotation setup</span><h2>Configure input, locus, and germline references.</h2></div><button className="primary-cta light" type="button" onClick={onStart}>Open analysis setup <span>→</span></button></section>
+      <p className="workflow-local-statement"><i /> Swig runs on your machine. Your sequence data are not uploaded.</p>
     </main>
   );
 }
@@ -954,7 +927,7 @@ type ResultsView = "repertoire" | "sequences" | "post";
 type ResultsUtilityPanel = "study" | "palette" | null;
 
 function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNewAnalysis: () => void }) {
-  const initialView: ResultsView = session.pipeline.enabled ? "post" : session.total <= 3 ? "sequences" : "repertoire";
+  const initialView: ResultsView = session.webMode === "lineage" ? "post" : session.webMode === "vdj" ? "sequences" : session.pipeline.enabled ? "post" : session.total <= 3 ? "sequences" : "repertoire";
   const [view, setView] = useState<ResultsView>(initialView);
   const [openedViews, setOpenedViews] = useState<Set<ResultsView>>(() => new Set([
     initialView,
@@ -1069,6 +1042,10 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   },[datasets,sampleColors]);
 
   useEffect(() => {
+    if (session.webMode === "lineage") {
+      setSearching(false);
+      return;
+    }
     let cancelled = false;
     const controller = new AbortController();
     searchAbortRef.current = controller;
@@ -1306,18 +1283,18 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         <strong>{session.total.toLocaleString()} records</strong>
         <small>{friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]}</small>
       </div>
-      <div className="results-rail-section">
+      {session.webMode === "repertoire" && <div className="results-rail-section">
         <span className="results-rail-section-label">Study</span>
         <button type="button" className={utilityPanel==="study"?"active":""} onClick={()=>setUtilityPanel("study")}><strong>Study design</strong><small>Samples, donors and timepoints</small></button>
         <button type="button" className={utilityPanel==="palette"?"active":""} onClick={()=>setUtilityPanel("palette")}><strong>Sample colors</strong><small>Shared figure palette</small></button>
-      </div>
+      </div>}
       <div className="results-rail-section results-rail-export">
         <span className="results-rail-section-label">Files</span>
         <label><span>Table format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label>
         <button className={downloading?"post-cancel":"primary"} type="button" onClick={()=>downloading?exportAbortRef.current?.abort():void downloadAll()} disabled={doubleDDownloading}>{downloading?"Cancel results export":`Download ${downloadFormat.toUpperCase()}`}</button>
         {session.doubleDCount>0&&<button className={doubleDDownloading?"post-cancel":undefined} type="button" onClick={()=>doubleDDownloading?exportAbortRef.current?.abort():void downloadDoubleD()} disabled={downloading}>{doubleDDownloading?"Cancel evidence export":`Double-D evidence · ${session.doubleDCount.toLocaleString()}`}</button>}
         <button className={savingSession?"post-cancel":undefined} type="button" onClick={()=>savingSession?sessionSaveAbortRef.current?.abort():void saveAnalysisSession()}>{savingSession?"Cancel session save":"Save portable session"}</button>
-        <button className={cliConfigExporting?"post-cancel":undefined} type="button" onClick={()=>void exportCliConfig()}><strong>{cliConfigExporting?"Cancel CLI config export":"Export CLI config"}</strong><small>{cliConfigExporting?"Stop MSA preparation and discard the export":"Inputs, QC, references, methods, and donor map"}</small></button>
+        {session.webMode === "repertoire" && <button className={cliConfigExporting?"post-cancel":undefined} type="button" onClick={()=>void exportCliConfig()}><strong>{cliConfigExporting?"Cancel CLI config export":"Export CLI config"}</strong><small>{cliConfigExporting?"Stop MSA preparation and discard the export":"Inputs, QC, references, methods, and donor map"}</small></button>}
         {session.project&&<button type="button" onClick={()=>saveProjectNow("manual_checkpoint")}>Save project checkpoint</button>}
       </div>
       {session.project&&<small className="results-rail-project">{projectSaveStatus}</small>}
@@ -1339,8 +1316,15 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     {session.project&&<div className="repertoire-project-status"><strong>{session.project.root.name}</strong><span>{projectSaveStatus}</span></div>}
   </section>;
 
+  const focusedOverview = session.webMode === "repertoire" ? null : <section className="focused-results-overview">
+    <div><span className="section-kicker">{session.webMode === "lineage" ? "Single lineage ready" : "VDJ annotation complete"}</span><h1>{session.total.toLocaleString()} sequence{session.total === 1 ? "" : "s"}</h1><p>{session.summary.assigned.toLocaleString()} V+J assigned · {session.summary.withCdr3.toLocaleString()} CDR3 called · {session.seconds.toFixed(2)} s · {assignerStrategyLabel(session.assignerStrategy)}</p></div>
+    <div className="focused-results-actions"><label><span>Download format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button className={downloading?"post-cancel":"post-primary"} type="button" onClick={()=>downloading?exportAbortRef.current?.abort():void downloadAll()}>{downloading?"Cancel export":`Download ${downloadFormat.toUpperCase()}`}</button><button className={savingSession?"post-cancel":undefined} type="button" onClick={()=>savingSession?sessionSaveAbortRef.current?.abort():void saveAnalysisSession()}>{savingSession?"Cancel session save":"Save session"}</button><button type="button" onClick={onNewAnalysis}>New analysis</button></div>
+    {downloadError && <p className="run-error" role="alert">{downloadError}</p>}
+  </section>;
+
   return (
-    <main className="results-page results-application-page">
+    <main className={`results-page results-application-page results-mode-${session.webMode}`}>
+      {focusedOverview}
       <section className="results-hero" hidden aria-hidden="true">
         <WorkflowStepper active={3} />
         <div className="results-title"><div><p className="eyebrow"><span>{session.restored?"Saved state restored":`Analysis complete · ${session.seconds.toFixed(2)} s · ${Math.round(session.total / Math.max(session.seconds, 0.001)).toLocaleString()} reads/s`}</span></p><h1>{session.total.toLocaleString()} analyzed<br /><em>rearrangements.</em></h1><p>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"} · {friendlySpecies(session.species)} · {LOCUS_LABELS[session.scope]} · {assignerStrategyLabel(session.assignerStrategy)} · {callingProfileLabel(session.callingProfile)} calling · {session.workers} WASM worker{session.workers===1?"":"s"} · {bytes(session.outputBytes)} AIRR{session.subsampleSize?` · exact random sample per dataset from ${session.inputTotal.toLocaleString()} input records (base seed ${session.subsampleSeed})`:""}{fastqQualityResultText(session)}{session.doubleD.mode!=="off"?` · double-D screen ${session.doubleD.mode==="all"?"all eligible junctions":`V–J spans ≥ ${session.doubleD.minimumVjSpan} nt`}`:""}</p>{session.project&&<span className="project-state-line"><b>Project directory · {session.project.root.name}</b><small>{projectSaveStatus}</small></span>}</div><div className="results-actions"><label className="compact-export-format"><span>Table format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button className={downloading?"post-cancel":"download-primary"} type="button" onClick={()=>downloading?exportAbortRef.current?.abort():void downloadAll()} disabled={doubleDDownloading}>{downloading?"Cancel results export":<>Download {downloadFormat.toUpperCase()}<span>↓</span></>}</button>{session.doubleDCount>0&&<button className={doubleDDownloading?"post-cancel":undefined} type="button" onClick={()=>doubleDDownloading?exportAbortRef.current?.abort():void downloadDoubleD()} disabled={downloading}>{doubleDDownloading?"Cancel evidence export":`Double-D evidence (${session.doubleDCount.toLocaleString()})`}</button>}{session.project&&<button type="button" onClick={()=>saveProjectNow("manual_checkpoint")}>Save project checkpoint</button>}<button className={savingSession?"post-cancel":undefined} type="button" onClick={()=>savingSession?sessionSaveAbortRef.current?.abort():void saveAnalysisSession()}>{savingSession?"Cancel session save":"Save portable session"}</button><button type="button" onClick={onNewAnalysis}>New analysis</button>{downloadError&&<small role="alert">{downloadError}</small>}</div></div>
@@ -1355,18 +1339,18 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         <details className="sample-palette-editor"><summary><span>Study palette</span><strong>Sample colors</strong><small>One association is reused in sample-level figures and phylogenies.</small></summary><div>{sampleIds(datasets).map((sample)=><label key={sample}><input type="color" value={sampleColor(sample,sampleColors)} onChange={(event)=>setSampleColors((current)=>({...current,[sample]:event.target.value}))}/><span><i style={{background:sampleColor(sample,sampleColors)}}/>{sample}</span></label>)}<button type="button" onClick={()=>setSampleColors(createSampleColorMap(datasets))}>Reset palette</button></div></details>
       </section>
 
-      <nav ref={resultsTabsRef} className="results-view-tabs" aria-label="Results view" role="tablist">
+      {session.webMode === "repertoire" && <nav ref={resultsTabsRef} className="results-view-tabs" aria-label="Results view" role="tablist">
         <button id="results-tab-repertoire" role="tab" aria-selected={view === "repertoire"} aria-controls="results-panel-repertoire" className={view === "repertoire" ? "active" : ""} type="button" onClick={() => activateView("repertoire")}><b>01</b><span>Repertoire<small>Composition and figures</small></span></button>
         <button id="results-tab-sequences" role="tab" aria-selected={view === "sequences"} aria-controls="results-panel-sequences" className={view === "sequences" ? "active" : ""} type="button" onClick={() => activateView("sequences")}><b>02</b><span>Sequences<small>Filter and inspect calls</small></span></button>
         <button id="results-tab-post" role="tab" aria-selected={view === "post"} aria-controls="results-panel-post" className={view === "post" ? "active" : ""} type="button" onClick={() => activateView("post")}><b>03</b><span>Post-analysis<small>Lineages, SHM and trees</small></span></button>
-      </nav>
+      </nav>}
 
-      {openedViews.has("repertoire") && <div id="results-panel-repertoire" role="tabpanel" aria-labelledby="results-tab-repertoire" className="results-view-panel" hidden={view !== "repertoire"}><RepertoireDashboard key={metadataRevision} store={session.store} loci={facets.loci} inputName={session.inputName} samples={facets.samples} sampleColors={sampleColors} sidebarTools={resultsSidebarTools()} overview={repertoireOverview} /></div>}
-      {openedViews.has("sequences") && <div id="results-panel-sequences" role="tabpanel" aria-labelledby="results-tab-sequences" className="results-view-panel" hidden={view !== "sequences"}>
+      {session.webMode === "repertoire" && openedViews.has("repertoire") && <div id="results-panel-repertoire" role="tabpanel" aria-labelledby="results-tab-repertoire" className="results-view-panel" hidden={view !== "repertoire"}><RepertoireDashboard key={metadataRevision} store={session.store} loci={facets.loci} inputName={session.inputName} samples={facets.samples} sampleColors={sampleColors} sidebarTools={resultsSidebarTools()} overview={repertoireOverview} /></div>}
+      {session.webMode !== "lineage" && openedViews.has("sequences") && <div id="results-panel-sequences" role="tabpanel" aria-labelledby={session.webMode === "repertoire" ? "results-tab-sequences" : undefined} className="results-view-panel" hidden={view !== "sequences"}>
       <div className="sequence-context-workspace contextual-workspace">
         <nav className="context-rail" aria-label="Sequence result panels">
           <div className="context-rail-heading"><span>Sequences</span><small>{session.total.toLocaleString()} AIRR records</small></div>
-          <button type="button" className={sequenceWorkspace==="records"?"active":""} onClick={()=>setSequenceWorkspace("records")}><b>01</b><span>Records + filters<small>{results.totalMatches===null?`${pageEnd.toLocaleString()}+ matches`:`${results.totalMatches.toLocaleString()} matches`}{filtered?" · filtered":""}</small></span></button>
+          <button type="button" className={sequenceWorkspace==="records"?"active":""} onClick={()=>setSequenceWorkspace("records")}><b>01</b><span>{session.webMode === "vdj" ? "Assigned records" : "Records + filters"}<small>{results.totalMatches===null?`${pageEnd.toLocaleString()}+ matches`:`${results.totalMatches.toLocaleString()} matches`}{filtered?" · filtered":""}</small></span></button>
           <button type="button" disabled={!selected} className={sequenceWorkspace==="detail"?"active":""} onClick={()=>setSequenceWorkspace("detail")}><b>02</b><span>Record detail<small>{selected?.sequenceId||"Select a record"}</small></span></button>
           {session.doubleDCount>0&&<button type="button" className={`context-rail-secondary ${sequenceWorkspace==="double-d"?"active":""}`} onClick={()=>setSequenceWorkspace("double-d")}><span>Double-D explorer<small>{session.doubleDCount.toLocaleString()} supported calls</small></span></button>}
           {resultsSidebarTools()}
@@ -1375,7 +1359,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
 
       <section className={`explorer-shell sequence-workspace-${sequenceWorkspace}`}>
         <div className="sequence-records-stack" hidden={sequenceWorkspace!=="records"}>
-        <aside className="filter-panel compact-filter-panel">
+        {session.webMode === "repertoire" && <aside className="filter-panel compact-filter-panel">
           <div className="filter-heading"><div><span className="section-kicker">Local query</span><h2>Filter records</h2><p>Filters update the table below.</p></div>{filtered && <button type="button" onClick={() => { setFilters({ ...EMPTY_FILTERS }); setPage(0); }}>Clear all</button>}</div>
           <div className="sequence-filter-primary-grid">
             <label className="filter-field"><span>Sequence ID contains</span><CommitTextInput type="search" value={filters.sequenceId} placeholder="e.g. clonotype_104" onCommit={(value) => updateFilter("sequenceId", value)} /></label>
@@ -1410,7 +1394,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
             {session.doubleDCount>0&&<section className="filter-section niche-filter-section"><h3>Rare VDDJ evidence</h3><label className="check-filter"><input type="checkbox" checked={filters.hasDoubleD} onChange={(event) => updateFilter("hasDoubleD", event.target.checked)} /><span>Only supported Double-D calls</span></label><button type="button" onClick={()=>setSequenceWorkspace("double-d")}>Open Double-D evidence explorer ({session.doubleDCount.toLocaleString()})</button></section>}
             <p className="index-note"><span>i</span> Gene and allele filters use browser-local token indexes. A complete comma-separated call set matches that exact ambiguous assignment; sequence substrings scan indexed candidates on demand.</p>
           </div></details>
-        </aside>
+        </aside>}
 
         <div className="result-browser">
           <header className="browser-heading"><div><span className="section-kicker">AIRR records</span><h2>{searching ? "Searching local index…" : results.totalMatches !== null ? `${results.totalMatches.toLocaleString()} matching records` : `${(pageEnd + (results.hasMore ? 1 : 0)).toLocaleString()}+ matching records`}</h2><p>{searching && scanCount ? `${scanCount.toLocaleString()} candidates scanned` : results.rows.length ? `Showing ${pageStart.toLocaleString()}–${pageEnd.toLocaleString()}` : "Adjust filters to broaden the query."}</p></div>{searching&&<button className="post-cancel" type="button" onClick={()=>searchAbortRef.current?.abort()}>Cancel search</button>}<span className="scale-mode">{session.total <= 3 ? "detail mode" : session.total >= 100000 ? "large-run index" : "paged index"}</span></header>
@@ -1440,7 +1424,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         </div>
       </div>
       </div>}
-      {openedViews.has("post") && <div id="results-panel-post" role="tabpanel" aria-labelledby="results-tab-post" className="results-view-panel" hidden={view !== "post"}><PostAnalysisWorkbench key={metadataRevision} store={session.store} references={session.references} scope={session.scope} loci={facets.loci} resultFacets={facets} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} assignerStrategy={session.assignerStrategy} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={datasets} sampleColors={sampleColors} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} doubleDCount={session.doubleDCount} autoPipeline={metadataRevision===0&&session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} sidebarTools={resultsSidebarTools()} onInspect={(ordinal) => void inspectOrdinal(ordinal)} onSessionChange={(reason)=>scheduleProjectSave(reason)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} /></div>}
+      {(session.webMode === "lineage" || openedViews.has("post")) && <div id="results-panel-post" role="tabpanel" aria-labelledby={session.webMode === "repertoire" ? "results-tab-post" : undefined} className="results-view-panel" hidden={view !== "post"}><PostAnalysisWorkbench key={metadataRevision} store={session.store} references={session.references} scope={session.scope} loci={facets.loci} resultFacets={facets} inputName={session.inputName} workers={session.workers} callingProfile={session.callingProfile} assignerStrategy={session.assignerStrategy} minimumIdentity={session.minimumIdentity} strand={session.strand} datasets={datasets} sampleColors={sampleColors} defaultCollapseScope={session.pipeline.collapse.scope} defaultLineageScope={session.pipeline.lineage.scope} doubleDCount={session.doubleDCount} autoPipeline={metadataRevision===0&&session.webMode === "repertoire"&&session.pipeline.enabled&&!session.postAnalysis?session.pipeline:null} sidebarTools={resultsSidebarTools()} onInspect={(ordinal) => { if (session.webMode !== "lineage") void inspectOrdinal(ordinal); }} onSessionChange={(reason)=>scheduleProjectSave(reason)} sessionHandleRef={postSessionRef} initialSession={session.postAnalysis??null} directLineage={session.webMode === "lineage"} /></div>}
       {utilityPanel&&<div className="results-tool-drawer-backdrop" role="presentation" onMouseDown={(event)=>{if(event.target===event.currentTarget)setUtilityPanel(null);}}><section className="results-tool-drawer" role="dialog" aria-modal="true" aria-labelledby="results-tool-drawer-title">
         <header><div><span className="section-kicker">Analysis settings</span><h2 id="results-tool-drawer-title">{utilityPanel==="study"?"Study design":"Sample colors"}</h2><p>{utilityPanel==="study"?"Edit grouping metadata. Applying changes re-indexes downstream grouping without rerunning V(D)J assignment.":"The same sample-to-color association is used throughout figures and lineage trees."}</p></div><button type="button" onClick={()=>setUtilityPanel(null)} aria-label="Close analysis settings">×</button></header>
         {utilityPanel==="study"?<div className="results-drawer-study"><div className="study-metadata-table"><div className="study-metadata-head"><span>Dataset</span><span>Sample</span><span>Donor / subject</span><span>Cohort</span><span>Timepoint</span><span>Compartment / tissue</span></div>{metadataDraft.map((dataset)=><div className="study-metadata-row" key={dataset.datasetId}><span><strong>{dataset.inputName}</strong><small>{dataset.datasetId}</small></span><input aria-label={`${dataset.inputName} sample ID`} value={dataset.sampleId} onChange={(event)=>updateMetadataDraft(dataset.datasetId,"sampleId",event.target.value)}/><input aria-label={`${dataset.inputName} subject ID`} value={dataset.subjectId} onChange={(event)=>updateMetadataDraft(dataset.datasetId,"subjectId",event.target.value)}/><input aria-label={`${dataset.inputName} cohort`} value={dataset.cohort} onChange={(event)=>updateMetadataDraft(dataset.datasetId,"cohort",event.target.value)}/><input aria-label={`${dataset.inputName} timepoint`} value={dataset.timepoint} onChange={(event)=>updateMetadataDraft(dataset.datasetId,"timepoint",event.target.value)}/><input aria-label={`${dataset.inputName} compartment`} value={dataset.compartment??""} onChange={(event)=>updateMetadataDraft(dataset.datasetId,"compartment",event.target.value)}/></div>)}</div><div className="study-metadata-actions">{metadataBusy?<button className="post-cancel" type="button" onClick={()=>metadataAbortRef.current?.abort()}>Cancel re-indexing</button>:<button className="post-primary" type="button" onClick={()=>void applyStudyMetadata()}>Apply metadata + clear downstream state</button>}<button type="button" disabled={metadataBusy} onClick={()=>{setMetadataDraft(datasets.map((dataset)=>({...dataset})));setMetadataStatus("");}}>Discard edits</button>{metadataBusy&&<span>{metadataProgress.processed.toLocaleString()} / {metadataProgress.total.toLocaleString()}</span>}</div>{metadataStatus&&<p className="scientific-note"><span>i</span>{metadataStatus}</p>}</div>:<div className="results-drawer-palette"><div>{sampleIds(datasets).map((sample)=><label key={sample}><input type="color" value={sampleColor(sample,sampleColors)} onChange={(event)=>setSampleColors((current)=>({...current,[sample]:event.target.value}))}/><span><i style={{background:sampleColor(sample,sampleColors)}}/>{sample}</span></label>)}</div><button type="button" onClick={()=>setSampleColors(createSampleColorMap(datasets))}>Reset palette</button></div>}
@@ -1451,6 +1435,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
 
 export default function SwigApp() {
   const [page, setPage] = useState<AppPage>("home");
+  const [webMode, setWebMode] = useState<WebAnalysisMode>("repertoire");
   const [pack, setPack] = useState<ReferencePack | null>(null);
   const [packError, setPackError] = useState("");
   const [speciesName, setSpeciesName] = useState("Homo sapiens");
@@ -1475,7 +1460,7 @@ export default function SwigApp() {
   const [pendingDatabaseId,setPendingDatabaseId]=useState<string|null>(null);
   const [minimumIdentity, setMinimumIdentity] = useState(0.6);
   const [callingProfile, setCallingProfile] = useState<CallingProfile>("truth_optimized");
-  const [assignerStrategy, setAssignerStrategy] = useState<AssignerStrategy>("aer");
+  const [assignerStrategy, setAssignerStrategy] = useState<AssignerStrategy>("riat_mp");
   const [strand, setStrand] = useState<0 | 1 | 2>(0);
   const [workerCount, setWorkerCount] = useState(recommendedWorkerCount);
   const [outputStorage, setOutputStorage] = useState<OutputStorageMode>("auto");
@@ -1741,6 +1726,27 @@ export default function SwigApp() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function chooseWebAnalysisMode(next: WebAnalysisMode) {
+    if (next !== webMode) {
+      cancelInputInspection();
+      setFileInputs([]);
+      setPasteText("");
+      setInputSource("upload");
+      setInputError("");
+      setRunError("");
+      setPendingDirectoryInputs(null);
+      setProjectWorkspace(null);
+      setProjectStatus("");
+    }
+    setWebMode(next);
+    if (next !== "repertoire") {
+      setPipeline((current) => ({ ...current, enabled: false }));
+      setSubsampleEnabled(false);
+      setFastqFilter(copyFastqQualityFilter());
+    }
+    navigate("analyze");
+  }
+
   async function acceptSessionFile(file:File){
     setSessionLoadError("");
     try{const loaded=await decodeSession(file);setPendingLoadedSession(loaded);setSessionLoadProgress({records:0,total:loaded.linkedAirr.records,stage:"Session manifest read; select the linked AIRR table."});}
@@ -1782,7 +1788,9 @@ export default function SwigApp() {
       if(controller.signal.aborted)throw new DOMException("Session restoration was cancelled.","AbortError");
       const dd={mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8,...saved.analysis.doubleD} as DoubleDScreenOptions;
       setSessionLoadProgress({records:store.count,total:store.count,stage:"Local AIRR indexes ready"});
-      setSession({id:Date.now(),store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:saved.analysis.subsample?.enabled?saved.analysis.subsample.size:null,subsampleSeed:saved.analysis.subsample?.enabled?saved.analysis.subsample.seed:null,fastqFilter:copyFastqQualityFilter(saved.analysis.fastqFilter),fastqFilterStats:saved.analysis.fastqFilterStats??emptyFastqQualityFilterStats(Boolean(saved.analysis.fastqFilter?.enabled),false),references:saved.analysis.references,referenceExclusions:Object.fromEntries(Object.entries(saved.analysis.referenceExclusions??{}).map(([key,names])=>[key,[...names]])),callingProfile:saved.analysis.callingProfile??"truth_optimized",assignerStrategy:saved.analysis.assignerStrategy??"standard",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true,project:restoredProject});
+      const restoredWebMode=saved.analysis.webMode??"repertoire";
+      setWebMode(restoredWebMode);
+      setSession({id:Date.now(),webMode:restoredWebMode,store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:saved.analysis.subsample?.enabled?saved.analysis.subsample.size:null,subsampleSeed:saved.analysis.subsample?.enabled?saved.analysis.subsample.seed:null,fastqFilter:copyFastqQualityFilter(saved.analysis.fastqFilter),fastqFilterStats:saved.analysis.fastqFilterStats??emptyFastqQualityFilterStats(Boolean(saved.analysis.fastqFilter?.enabled),false),references:saved.analysis.references,referenceExclusions:Object.fromEntries(Object.entries(saved.analysis.referenceExclusions??{}).map(([key,names])=>[key,[...names]])),callingProfile:saved.analysis.callingProfile??"truth_optimized",assignerStrategy:saved.analysis.assignerStrategy??"standard",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true,project:restoredProject});
       if(restoredProject){setProjectWorkspace(restoredProject);const run=activeProjectRun(restoredProject);if(run)await appendProjectLog(restoredProject,run,"project_opened",{records:store.count});setProjectStatus(`Restored ${run?.id??"active run"}`);}
       setPendingLoadedSession(null);setSessionLoadProgress({records:store.count,total:store.count,stage:"Session restored"});setPage("results");window.scrollTo({top:0});
     }catch(error){if(store)await store.clear();if(isAbortError(error))setSessionLoadProgress({records:0,total:saved.linkedAirr.records,stage:"Session restoration cancelled; no state was changed"});else setSessionLoadError(error instanceof Error?error.message:String(error));}finally{if(sessionLoadAbortRef.current===controller)sessionLoadAbortRef.current=null;setLoadingSession(false);}
@@ -1836,6 +1844,10 @@ export default function SwigApp() {
 
   async function acceptInputCandidates(candidates: InputFileCandidate[]) {
     if (!candidates.length) return;
+    if (webMode !== "repertoire" && candidates.length !== 1) {
+      setInputError("This focused workflow accepts one input file. Choose a single FASTA, FASTQ, or AIRR file.");
+      return;
+    }
     if(inputImportBusyRef.current){setInputError("Finish the current gzip-member choice before adding more files.");return;}
     inputImportBusyRef.current=true;
     const controller=new AbortController();inputInspectAbortRef.current=controller;
@@ -1848,6 +1860,7 @@ export default function SwigApp() {
     const accepted: DirectoryDatasetInput[] = [];
     const failures: string[] = [];
     let ignored=0;
+    let promoteFocusedImportToRepertoire=false;
     try{
       for (const candidate of candidates) {
         if(controller.signal.aborted)throw new DOMException("Input inspection was cancelled.","AbortError");
@@ -1875,6 +1888,7 @@ export default function SwigApp() {
                 });
                 const choice=await requestGzipImportChoice({inputName:candidate.relativePath,format:namedFormat.format,members,suggestedNames});
                 if(choice==="cancel")continue;
+                if(choice==="separate"&&webMode!=="repertoire")promoteFocusedImportToRepertoire=true;
                 inspectedInputs=choice==="separate"
                   ? members.map((member,index)=>{
                     const memberFile=gzipMemberFile(candidate.file,member,suggestedNames[index]);
@@ -1901,10 +1915,12 @@ export default function SwigApp() {
           failures.push(`${candidate.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      const acceptedFlatRoots=donorPlan.flatRoots.filter((root)=>accepted.some((input)=>input.directoryRoot===root&&!input.nestedDirectoryDonor));
+      const acceptingAsRepertoire=webMode === "repertoire"||promoteFocusedImportToRepertoire;
+      if(promoteFocusedImportToRepertoire)setWebMode("repertoire");
+      const acceptedFlatRoots=acceptingAsRepertoire ? donorPlan.flatRoots.filter((root)=>accepted.some((input)=>input.directoryRoot===root&&!input.nestedDirectoryDonor)) : [];
       if(accepted.length){
         if(acceptedFlatRoots.length)setPendingDirectoryInputs({inputs:accepted,flatRoots:acceptedFlatRoots});
-        else setFileInputs((current)=>[...current,...accepted]);
+        else setFileInputs((current)=>acceptingAsRepertoire ? [...current,...accepted] : accepted.slice(0,1));
       }
       if(failures.length||(!accepted.length&&ignored))setInputError(`${failures.slice(0,8).join(" ")}${failures.length>8?` ${failures.length-8} additional file(s) could not be read.`:""}${ignored?` ${ignored.toLocaleString()} non-dataset file(s) were ignored.`:""}`.trim());
     }catch(error){
@@ -2264,32 +2280,35 @@ export default function SwigApp() {
 
   function requestRun() {
     if (!activeInput || !activeDatasets.length || !compiled || !species) return;
+    const pipelineActive = webMode === "repertoire" && pipeline.enabled;
+    const subsampleActive = webMode === "repertoire" && subsampleEnabled;
+    const fastqFilterActive = webMode === "repertoire" && fastqFilter.enabled;
     const invalidDataset = activeDatasets.find((input) => !input.sampleId.trim() || !input.subjectId.trim());
     if (invalidDataset) {
       setRunError(`Dataset ${invalidDataset.inputName} needs both a sample ID and donor/subject ID.`);
       return;
     }
-    if (pipeline.enabled && pipeline.lineage.enabled && (pipeline.lineage.identity < 0 || pipeline.lineage.identity > 1)) {
+    if (pipelineActive && pipeline.lineage.enabled && (pipeline.lineage.identity < 0 || pipeline.lineage.identity > 1)) {
       setRunError("Pipeline lineage identity must be between 0 and 1.");
       return;
     }
-    if (pipeline.enabled && pipeline.alleleRefinement.enabled && !pipeline.alleleRefinement.segments.length) {
+    if (pipelineActive && pipeline.alleleRefinement.enabled && !pipeline.alleleRefinement.segments.length) {
       setRunError("Select at least one V, D, or J segment for pipeline allele pooling.");
       return;
     }
-    if (pipeline.enabled && pipeline.alleleRefinement.enabled && pipeline.alleleRefinement.reassignmentPolicy === "confidence" && (pipeline.alleleRefinement.applyMinimumPosterior < 0 || pipeline.alleleRefinement.applyMinimumPosterior > 1)) {
+    if (pipelineActive && pipeline.alleleRefinement.enabled && pipeline.alleleRefinement.reassignmentPolicy === "confidence" && (pipeline.alleleRefinement.applyMinimumPosterior < 0 || pipeline.alleleRefinement.applyMinimumPosterior > 1)) {
       setRunError("Pipeline allele-pooling posterior threshold must be between 0 and 1.");
       return;
     }
-    if (pipeline.enabled && pipeline.chimera.enabled && (pipeline.chimera.posteriorThreshold < 0 || pipeline.chimera.posteriorThreshold > 1)) {
+    if (pipelineActive && pipeline.chimera.enabled && (pipeline.chimera.posteriorThreshold < 0 || pipeline.chimera.posteriorThreshold > 1)) {
       setRunError("Pipeline chimera posterior threshold must be between 0 and 1.");
       return;
     }
-    if (pipeline.enabled && pipeline.chimera.enabled && pipeline.chimera.msaSource === "upload" && !pipeline.chimera.uploadedMsa) {
+    if (pipelineActive && pipeline.chimera.enabled && pipeline.chimera.msaSource === "upload" && !pipeline.chimera.uploadedMsa) {
       setRunError("Choose an aligned FASTA reference MSA for the pipeline CHMMAIRRa stage, or build it from the selected references.");
       return;
     }
-    if (pipeline.enabled && pipeline.chimera.enabled && pipeline.chimera.msaSource === "upload") {
+    if (pipelineActive && pipeline.chimera.enabled && pipeline.chimera.msaSource === "upload") {
       try { prepareReferenceMsa(pipeline.chimera.uploadedMsa); }
       catch (error) { setRunError(error instanceof Error ? error.message : String(error)); return; }
     }
@@ -2309,11 +2328,11 @@ export default function SwigApp() {
       setRunError("None of the selected J records has a validated coding frame and conserved F/W–G anchor. Junction and CDR3 calls cannot be made from this set.");
       return;
     }
-    if (subsampleEnabled && (!Number.isFinite(subsampleSize) || subsampleSize < 1)) {
+    if (subsampleActive && (!Number.isFinite(subsampleSize) || subsampleSize < 1)) {
       setRunError("Random subsample size must be at least one record.");
       return;
     }
-    if (fastqFilter.enabled) {
+    if (fastqFilterActive) {
       if (!Number.isFinite(fastqFilter.maximumExpectedErrors) || fastqFilter.maximumExpectedErrors < 0) {
         setRunError("Maximum FASTQ expected errors must be a non-negative number.");
         return;
@@ -2340,7 +2359,7 @@ export default function SwigApp() {
       }
     }
     if (session && !window.confirm("Starting this analysis will replace the current in-browser result. Cancel to save the current session first.")) return;
-    const selectedCount = subsampleEnabled ? Math.floor(subsampleSize) : null;
+    const selectedCount = subsampleActive ? Math.floor(subsampleSize) : null;
     if(projectWorkspace){void run("browser");return;}
     const wantsDisk = outputStorage === "disk" || (outputStorage === "auto" && activeDatasets.some((input) => likelyLargeInput(input, selectedCount)));
     if (wantsDisk && !savePicker() && outputStorage === "disk") {
@@ -2359,7 +2378,8 @@ export default function SwigApp() {
     setOutputPrompt(false);
     const datasetSnapshot = activeDatasets.map((input) => ({ ...input }));
     const runName = activeInputName;
-    const fastqFilterSnapshot = copyFastqQualityFilter(fastqFilter);
+    const runSubsampleEnabled = webMode === "repertoire" && subsampleEnabled;
+    const fastqFilterSnapshot = webMode === "repertoire" ? copyFastqQualityFilter(fastqFilter) : copyFastqQualityFilter();
 
     let directOutput: DirectAirrOutput | undefined;
     let preparedProject:PreparedProjectRun|undefined;
@@ -2446,7 +2466,7 @@ export default function SwigApp() {
             strand,
             workers: workerCount,
             countHint: input.count,
-            subsample: subsampleEnabled ? { size: Math.floor(subsampleSize), seed: stableDatasetSeed(subsampleSeed, datasetIndex) } : undefined,
+            subsample: runSubsampleEnabled ? { size: Math.floor(subsampleSize), seed: stableDatasetSeed(subsampleSeed, datasetIndex) } : undefined,
             fastqFilter: fastqFilterSnapshot,
             doubleD,
             signal: controller.signal,
@@ -2478,13 +2498,14 @@ export default function SwigApp() {
       setProgress({ stage: "Results ready", value: 1 });
       const resultSession:ResultSession={
         id: Date.now(),
+        webMode,
         store,
         total: result.count,
         seconds: (performance.now() - started) / 1000,
         inputName: runName,
         datasets: datasetSnapshot.map((input) => ({ datasetId: input.datasetId, inputName: input.inputName, inputPath:input.inputPath, inputFormat:input.inputFormat, gzipRange:input.gzipRange?{...input.gzipRange}:undefined, sampleId: input.sampleId, subjectId: input.subjectId, cohort: input.cohort, timepoint: input.timepoint, compartment: input.compartment, records: input.count })),
         studyDesign,
-        pipeline: copyPipeline(pipeline),
+        pipeline: webMode === "repertoire" ? copyPipeline(pipeline) : { ...copyPipeline(pipeline), enabled: false },
         species: species.name,
         scope: activeScope,
         facets: store.facets(),
@@ -2493,8 +2514,8 @@ export default function SwigApp() {
         outputBytes: store.outputBytes,
         streamedDirectly: store.streamedDirectly,
         inputTotal: result.inputRecords,
-        subsampleSize: subsampleEnabled ? Math.floor(subsampleSize) : null,
-        subsampleSeed: subsampleEnabled ? Math.trunc(subsampleSeed) : null,
+        subsampleSize: runSubsampleEnabled ? Math.floor(subsampleSize) : null,
+        subsampleSeed: runSubsampleEnabled ? Math.trunc(subsampleSeed) : null,
         fastqFilter: fastqFilterSnapshot,
         fastqFilterStats: result.fastqFilterStats,
         references: compiled,
@@ -2539,6 +2560,8 @@ export default function SwigApp() {
 
   const hasBcr = scopes.includes("BCR");
   const hasTcr = scopes.includes("TCR");
+  const focusedWebMode = webMode !== "repertoire";
+  const analysisTitle = webMode === "vdj" ? "VDJ assignment and visualization" : webMode === "lineage" ? "Single lineage analysis" : "End-to-end repertoire analysis";
 
   return (
     <div className="site-shell">
@@ -2547,26 +2570,30 @@ export default function SwigApp() {
       <input ref={linkedAirrInputRef} className="visually-hidden" type="file" accept=".tsv,.tsv.gz,.gz" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(file)void restoreLinkedAirr(file);}}/>
       <input ref={lineageStudyInputRef} className="visually-hidden" type="file" accept=".json,.gz,.swig-lineage-study" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(file)void acceptLineageStudyFile(file);}}/>
       <input ref={lineageStudyAirrInputRef} className="visually-hidden" type="file" accept=".tsv,.airr.tsv" onChange={(event)=>{const file=event.target.files?.[0];event.target.value="";if(file)restoreLineageStudyAirr(file);}}/>
-      {page === "home" && <LandingPage references={pack?.species.length ?? null} onStart={() => navigate("analyze")} onDemo={chooseDemo} />}
+      {page === "home" && <LandingPage onChoose={chooseWebAnalysisMode} />}
 
       {page === "analyze" && (
         <main className="analysis-page">
-          <section className="analysis-intro"><WorkflowStepper active={running ? 2 : 1} /><div><p className="eyebrow"><span>Analysis configuration</span></p><h1>{running ? "Calling rearrangements…" : "Configure an annotation run."}</h1><p>{running ? "SwiftIG is processing bounded batches and writing AIRR records into a browser-local index." : "Provide sequences, select the biological search space, and specify any germline replacements."}</p></div></section>
+          <section className="analysis-intro"><WorkflowStepper active={running ? 2 : 1} /><div><p className="eyebrow"><span>{analysisTitle}</span></p><h1>{running ? "Calling rearrangements…" : webMode === "vdj" ? "Annotate and inspect one input." : webMode === "lineage" ? "Annotate one pre-defined lineage." : "Configure an annotation run."}</h1><p>{running ? "SwiftIG is processing bounded batches and writing AIRR records into a browser-local index." : webMode === "lineage" ? "Every input sequence will enter the alignment workbench as one lineage; clustering and lineage selection are bypassed." : focusedWebMode ? "Upload or paste sequences, choose germlines, and run V(D)J/CDR3 annotation." : "Provide sequences, select the biological search space, and specify any germline replacements."}</p></div></section>
 
           {running ? <AnalysisProgress stage={progress.stage} value={progress.value} onCancel={() => abortRef.current?.abort()} lockState={analysisLockState} hidden={pageHidden} /> : (
             <div className="analysis-layout single-action-layout">
               <div className="analysis-forms">
                 <section className="analysis-card input-card">
-                  <header><span className="card-number">01</span><div><h2>Datasets and study structure</h2><p>Load one or more datasets, a directory tree, or paste one dataset directly.</p></div>{activeInput && <span className="ready-tag">{activeDatasets.length} dataset{activeDatasets.length===1?"":"s"}</span>}</header>
-                  <div className="project-directory-panel"><div><span>Optional project directory</span><strong>{projectWorkspace?projectWorkspace.root.name:"No project directory selected"}</strong><small>{projectWorkspace?projectStatus||"AIRR output, state checkpoints, and an event log will be written here.":projectDirectoriesSupported()?"Select a directory to write numbered runs, intermediate state, and logs automatically. Selecting an existing Swig project restores its active run.":"Unavailable in this browser; portable session files remain available."}</small></div><button type="button" disabled={projectBusy||!projectDirectoriesSupported()} onClick={()=>void chooseProjectDirectory()}>{projectBusy?"Reading directory…":projectWorkspace?"Change / load project":"Select / load project"}</button>{projectWorkspace&&<button type="button" onClick={()=>{setProjectWorkspace(null);setProjectStatus("");}}>Use browser storage only</button>}</div>
-                  <div className="source-tabs" role="tablist"><button className={inputSource === "upload" ? "active" : ""} type="button" onClick={() => setInputSource("upload")}>Load dataset(s)</button><button className={inputSource === "paste" ? "active" : ""} type="button" onClick={() => setInputSource("paste")}>Paste one dataset</button></div>
-                  <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".fa,.fasta,.fna,.fas,.fq,.fastq,.tsv,.csv,.txt,.gz" onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                  <header><span className="card-number">01</span><div><h2>{focusedWebMode ? "Input sequences" : "Datasets and study structure"}</h2><p>{focusedWebMode ? "Load one file or paste sequences directly. No sample naming or study metadata are required." : "Load one or more datasets, a directory tree, or paste one dataset directly."}</p></div>{activeInput && <span className="ready-tag">{focusedWebMode ? "input ready" : `${activeDatasets.length} dataset${activeDatasets.length===1?"":"s"}`}</span>}</header>
+                  {!focusedWebMode && <div className="project-directory-panel"><div><span>Optional project directory</span><strong>{projectWorkspace?projectWorkspace.root.name:"No project directory selected"}</strong><small>{projectWorkspace?projectStatus||"AIRR output, state checkpoints, and an event log will be written here.":projectDirectoriesSupported()?"Select a directory to write numbered runs, intermediate state, and logs automatically. Selecting an existing Swig project restores its active run.":"Unavailable in this browser; portable session files remain available."}</small></div><button type="button" disabled={projectBusy||!projectDirectoriesSupported()} onClick={()=>void chooseProjectDirectory()}>{projectBusy?"Reading directory…":projectWorkspace?"Change / load project":"Select / load project"}</button>{projectWorkspace&&<button type="button" onClick={()=>{setProjectWorkspace(null);setProjectStatus("");}}>Use browser storage only</button>}</div>}
+                  <div className="source-tabs" role="tablist"><button className={inputSource === "upload" ? "active" : ""} type="button" onClick={() => setInputSource("upload")}>{focusedWebMode ? "Upload file" : "Load dataset(s)"}</button><button className={inputSource === "paste" ? "active" : ""} type="button" onClick={() => setInputSource("paste")}>{focusedWebMode ? "Paste sequences" : "Paste one dataset"}</button></div>
+                  <input ref={inputRef} className="visually-hidden" type="file" multiple={!focusedWebMode} accept=".fa,.fasta,.fna,.fas,.fq,.fastq,.tsv,.csv,.txt,.gz" onChange={(event: ChangeEvent<HTMLInputElement>) => {
                     const files = [...(event.target.files ?? [])];
                     if (files.length) void acceptInputFiles(files);
                     event.target.value = "";
                   }} />
                   <input ref={directoryInputRef} className="visually-hidden" type="file" multiple {...{webkitdirectory:"",directory:""}} onChange={(event:ChangeEvent<HTMLInputElement>)=>{const files=[...(event.target.files??[])];event.target.value="";if(files.length)void acceptInputCandidates(candidatesFromDirectoryPicker(files));}}/>
-                  {inputSource === "upload" ? fileInputs.length ? (
+                  {inputSource === "upload" ? (
+                    fileInputs.length ? (
+                      focusedWebMode ? (
+                    <div className="focused-input-summary"><div><span>Selected input</span><strong>{fileInputs[0].name}</strong><small>{fileInputs[0].count === null ? "Records counted while streaming" : `${fileInputs[0].count.toLocaleString()} records`} · {fileInputs[0].format} · {bytes(fileInputs[0].size)}{fileInputs[0].gzipMembersMerged&&fileInputs[0].gzipMemberCount&&fileInputs[0].gzipMemberCount>1?` · ${fileInputs[0].gzipMemberCount} gzip members merged`:""}</small></div><button type="button" onClick={() => inputRef.current?.click()}>Replace file</button><button type="button" onClick={() => setFileInputs([])}>Remove</button></div>
+                  ) : (
                     <div className="dataset-import-stack" onDragOver={(event:DragEvent)=>event.preventDefault()} onDrop={(event:DragEvent)=>{event.preventDefault();void collectDroppedInput(event.dataTransfer).then((candidates)=>acceptInputCandidates(candidates)).catch((error)=>setInputError(error instanceof Error?error.message:String(error)));}}>
                       <div className="dataset-import-heading"><div><strong>{fileInputs.length.toLocaleString()} dataset{fileInputs.length === 1 ? "" : "s"}</strong><span>{inputInspecting?"Inspecting gzip member boundaries…":knownInputCount === null ? "Record totals will be counted during analysis" : `${knownInputCount.toLocaleString()} total records`}</span></div><div>{inputInspecting?<button className="post-cancel" type="button" onClick={cancelInputInspection}>Cancel inspection</button>:<><button type="button" onClick={() => inputRef.current?.click()}>＋ Add files</button><button type="button" onClick={()=>directoryInputRef.current?.click()}>＋ Add directory</button></>}</div></div>
                       <div className="dataset-manifest-table" role="table" aria-label="Dataset metadata">
@@ -2583,16 +2610,18 @@ export default function SwigApp() {
                       </div>
                       <div className="dataset-add-dropzone">Drop additional files or a directory anywhere in this dataset panel.</div>
                     </div>
-                  ) : (
+                      )
+                    ) : (
                     <div className="input-dropzone" role="button" aria-disabled={inputInspecting} tabIndex={0} onKeyDown={(event)=>{if(!inputInspecting&&(event.key==="Enter"||event.key===" ")){event.preventDefault();inputRef.current?.click();}}} onClick={() => {if(!inputInspecting)inputRef.current?.click();}} onDragOver={(event: DragEvent) => event.preventDefault()} onDrop={(event: DragEvent) => {
                       event.preventDefault();
                       if(inputInspecting)return;
                       void collectDroppedInput(event.dataTransfer).then((candidates)=>acceptInputCandidates(candidates)).catch((error)=>setInputError(error instanceof Error?error.message:String(error)));
-                    }}><span>＋</span><strong>{inputInspecting?"Inspecting gzip member boundaries…":"Drop files or an entire directory here"}</strong><small>.fasta(.gz) · .fastq(.gz) · AIRR .tsv(.gz)</small><i>{inputInspecting?"No files are committed until inspection finishes":"Choose files"}</i>{inputInspecting?<button className="post-cancel" type="button" onClick={(event)=>{event.stopPropagation();cancelInputInspection();}}>Cancel inspection</button>:<button type="button" onClick={(event)=>{event.stopPropagation();directoryInputRef.current?.click();}}>Choose directory</button>}</div>
+                    }}><span>＋</span><strong>{inputInspecting?"Inspecting gzip member boundaries…":focusedWebMode?"Drop one input file here":"Drop files or an entire directory here"}</strong><small>.fasta(.gz) · .fastq(.gz) · AIRR .tsv(.gz)</small><i>{inputInspecting?"No file is committed until inspection finishes":focusedWebMode?"Choose file":"Choose files"}</i>{inputInspecting?<button className="post-cancel" type="button" onClick={(event)=>{event.stopPropagation();cancelInputInspection();}}>Cancel inspection</button>:!focusedWebMode&&<button type="button" onClick={(event)=>{event.stopPropagation();directoryInputRef.current?.click();}}>Choose directory</button>}</div>
+                    )
                   ) : (
-                    <div className="paste-input"><textarea spellCheck={false} value={pasteText} onChange={(event) => setPasteText(event.target.value)} placeholder={">sequence_1\nCAGGTGCAGCTGGTG...\n\n—or—\n\nsequence_id\tsequence\nread_1\tCAGGTGCAGCTGGTG..."} /><footer><span>{pasteInput ? `${pasteInput.count?.toLocaleString()} ${pasteInput.format} records detected` : pasteText.trim() ? "Waiting for valid FASTA, FASTQ, or AIRR…" : "Nothing pasted yet"}</span><button type="button" onClick={chooseDemo}>Insert demo</button></footer>{pasteInput && <div className="paste-metadata"><label><span>Sample ID</span><input value={pasteMetadata.sampleId} onChange={(event)=>setPasteMetadata((current)=>({...current,sampleId:event.target.value}))}/></label><label><span>Donor / subject</span><input value={pasteMetadata.subjectId} onChange={(event)=>setPasteMetadata((current)=>({...current,subjectId:event.target.value}))}/></label><label><span>Cohort</span><input value={pasteMetadata.cohort} onChange={(event)=>setPasteMetadata((current)=>({...current,cohort:event.target.value}))}/></label><label><span>Timepoint</span><input value={pasteMetadata.timepoint} onChange={(event)=>setPasteMetadata((current)=>({...current,timepoint:event.target.value}))}/></label><label><span>Compartment / tissue</span><input value={pasteMetadata.compartment} onChange={(event)=>setPasteMetadata((current)=>({...current,compartment:event.target.value}))}/></label></div>}</div>
+                    <div className="paste-input"><textarea spellCheck={false} value={pasteText} onChange={(event) => setPasteText(event.target.value)} placeholder={">sequence_1\nCAGGTGCAGCTGGTG...\n\n—or—\n\nsequence_id\tsequence\nread_1\tCAGGTGCAGCTGGTG..."} /><footer><span>{pasteInput ? `${pasteInput.count?.toLocaleString()} ${pasteInput.format} records detected` : pasteText.trim() ? "Waiting for valid FASTA, FASTQ, or AIRR…" : "Nothing pasted yet"}</span><button type="button" onClick={chooseDemo}>Insert demo</button></footer>{pasteInput && !focusedWebMode && <div className="paste-metadata"><label><span>Sample ID</span><input value={pasteMetadata.sampleId} onChange={(event)=>setPasteMetadata((current)=>({...current,sampleId:event.target.value}))}/></label><label><span>Donor / subject</span><input value={pasteMetadata.subjectId} onChange={(event)=>setPasteMetadata((current)=>({...current,subjectId:event.target.value}))}/></label><label><span>Cohort</span><input value={pasteMetadata.cohort} onChange={(event)=>setPasteMetadata((current)=>({...current,cohort:event.target.value}))}/></label><label><span>Timepoint</span><input value={pasteMetadata.timepoint} onChange={(event)=>setPasteMetadata((current)=>({...current,timepoint:event.target.value}))}/></label><label><span>Compartment / tissue</span><input value={pasteMetadata.compartment} onChange={(event)=>setPasteMetadata((current)=>({...current,compartment:event.target.value}))}/></label></div>}</div>
                   )}
-                  {activeDatasets.length > 0 && <div className="study-design-panel">
+                  {!focusedWebMode && activeDatasets.length > 0 && <div className="study-design-panel">
                     <header><div><span>Study behavior</span><strong>Define which biological boundaries downstream methods may cross.</strong></div>{activeDatasets.length > 1 && <label><span>Study / output name</span><input value={studyName} onChange={(event)=>setStudyName(event.target.value)} /></label>}</header>
                     <div className="study-design-options">
                       {([
@@ -2648,8 +2677,8 @@ export default function SwigApp() {
                 </section></div>}
 
                 <section className="analysis-card settings-card">
-                  <header><span className="card-number">03</span><div><h2>Assignment and input options</h2><p>Configure optional read preprocessing and rare-rearrangement screening. Calibrated compute settings are available below.</p></div></header>
-                  <details className={`fastq-quality-control ${fastqFilter.enabled ? "active" : ""}`}>
+                  <header><span className="card-number">03</span><div><h2>Assignment options</h2><p>{focusedWebMode ? "Advanced mapping, calling, and Double-D controls remain available without adding downstream repertoire stages." : "Configure optional read preprocessing and rare-rearrangement screening. Calibrated compute settings are available below."}</p></div></header>
+                  {!focusedWebMode && <details className={`fastq-quality-control ${fastqFilter.enabled ? "active" : ""}`}>
                     <summary><span><b>FASTQ quality filter</b><small>Expected errors and optional 3′ quality trimming before V(D)J assignment.</small></span><i>{fastqFilter.enabled ? `Enabled · EE ≤ ${fastqFilter.maximumExpectedErrors}` : "Off"}</i></summary>
                     <div className="fastq-quality-body">
                       <label className="fastq-quality-switch"><input type="checkbox" checked={fastqFilter.enabled} onChange={(event)=>setFastqFilter((current)=>({...current,enabled:event.target.checked}))}/><span><b>Enable FASTQ filtering</b><small>Each retained read must have Σ 10<sup>−Q/10</sup> ≤ the maximum expected errors. Processing is streaming and linear in the number of quality scores.</small></span></label>
@@ -2667,16 +2696,16 @@ export default function SwigApp() {
                         {fastqDatasetCount === 0 ? <p className="fastq-format-warning" role="status"><span>!</span>No selected input is FASTQ. FASTA and AIRR records will pass through this step unchanged because they contain no Phred scores.</p> : nonFastqDatasetCount > 0 ? <p className="fastq-format-warning" role="status"><span>i</span>{fastqDatasetCount} FASTQ dataset{fastqDatasetCount===1?"":"s"} will be filtered; {nonFastqDatasetCount} FASTA/AIRR dataset{nonFastqDatasetCount===1?"":"s"} will pass through unchanged.</p> : <p className="fastq-order-note"><span>Order</span>3′ trim → minimum retained length → expected-error filter → optional random subsample → V(D)J assignment.</p>}
                       </>}
                     </div>
-                  </details>
-                  <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records {activeDatasets.length > 1 ? "from each dataset" : ""} in memory and output.{fastqFilter.enabled ? " Sampling is from reads retained by FASTQ QC; non-FASTQ records pass through that step." : ""}</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>{activeDatasets.length > 1 ? "Records per dataset" : "Records to analyze"}</span><CommitNumberInput min="1" step="1000" value={subsampleSize} onCommit={setSubsampleSize} /></label><label><span>Base random seed</span><CommitNumberInput step="1" value={subsampleSeed} onCommit={setSubsampleSeed} /></label></div>}</div>
+                  </details>}
+                  {!focusedWebMode && <div className={`subsample-control ${subsampleEnabled ? "active" : ""}`}><label className="subsample-switch"><input type="checkbox" checked={subsampleEnabled} onChange={(event) => setSubsampleEnabled(event.target.checked)} /><span><b>Analyze a random subsample</b><small>Exact reservoir sampling scans the full stream but retains only the requested records {activeDatasets.length > 1 ? "from each dataset" : ""} in memory and output.{fastqFilter.enabled ? " Sampling is from reads retained by FASTQ QC; non-FASTQ records pass through that step." : ""}</small></span></label>{subsampleEnabled && <div className="subsample-fields"><label><span>{activeDatasets.length > 1 ? "Records per dataset" : "Records to analyze"}</span><CommitNumberInput min="1" step="1000" value={subsampleSize} onCommit={setSubsampleSize} /></label><label><span>Base random seed</span><CommitNumberInput step="1" value={subsampleSeed} onCommit={setSubsampleSeed} /></label></div>}</div>}
                   <details className="advanced-settings progressive-settings">
                     <summary title="Assigner, calling profile, strand, workers, output storage, and identity floor"><span><b>Advanced options</b><small>Assigner, calling profile, strand, workers, output storage, and identity floor.</small></span></summary>
                     <div className="advanced-settings-grid">
-                    <label><span>Assignment strategy</span><select value={assignerStrategy} onChange={(event) => setAssignerStrategy(event.target.value as AssignerStrategy)}><option value="aer">AER · adaptive exact V refinement · default</option><option value="riat_mp">RIAT-MP · root-indexed V allele tree</option><option value="standard">Standard SwiftIG · fixed V depth</option></select></label>
+                    <label><span>Assignment strategy</span><select value={assignerStrategy} onChange={(event) => setAssignerStrategy(event.target.value as AssignerStrategy)}><option value="riat_mp">RIAT-MP · root-indexed V allele tree · default</option><option value="aer">AER · adaptive exact V refinement</option><option value="standard">Standard SwiftIG · fixed V depth</option></select></label>
                     <label><span>Calling profile</span><select value={callingProfile} onChange={(event) => setCallingProfile(event.target.value as CallingProfile)}><option value="truth_optimized">Truth-optimized · default</option><option value="igblast_balanced">IgBLAST-balanced · agreement + truth constraint</option><option value="igblast_compatible">IgBLAST-agreement · agreement only</option></select></label>
                     <label><span>Search strand</span><select value={strand} onChange={(event) => setStrand(Number(event.target.value) as 0 | 1 | 2)}><option value={0}>Both orientations</option><option value={1}>Plus only</option><option value={2}>Minus only</option></select></label>
                     <label><span>Parallel WASM workers</span><CommitNumberInput min="1" max={browserWorkerLimit()} step="1" value={workerCount} onCommit={(value)=>setWorkerCount(Math.max(1,Math.min(browserWorkerLimit(),Math.round(value))))}/><small>{recommendedWorkerCount()} recommended on this device · {browserWorkerLimit()} maximum</small></label>
-                    <label><span>AIRR results destination</span><select disabled={Boolean(projectWorkspace)} value={projectWorkspace?"project":outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}>{projectWorkspace&&<option value="project">Project directory · save while analyzing</option>}<option value="auto">Auto · ask to save large results</option><option value="browser">Browser · compressed local index</option><option value="disk">File · save while analyzing</option></select></label>
+                    {!focusedWebMode && <label><span>AIRR results destination</span><select disabled={Boolean(projectWorkspace)} value={projectWorkspace?"project":outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}>{projectWorkspace&&<option value="project">Project directory · save while analyzing</option>}<option value="auto">Auto · ask to save large results</option><option value="browser">Browser · compressed local index</option><option value="disk">File · save while analyzing</option></select></label>}
                     <label className="minimum-slider"><span>Minimum alignment identity <b>{Math.round(minimumIdentity * 100)}%</b></span><input type="range" min="0.45" max="0.9" step="0.01" value={minimumIdentity} onChange={(event) => setMinimumIdentity(Number(event.target.value))} /></label>
                     <p className="scientific-note calling-profile-note"><span>i</span>{assignerStrategy === "aer" ? "AER uses the ordinary full V-allele index, then increases exact affine-alignment depth only when leading 9-mer vote counts remain ambiguous (5% relative or 8 weighted votes; maximum 16 candidates). D and J use the selected calling profile's calibrated exact paths." : assignerStrategy === "riat_mp" ? "RIAT-MP indexes representative V roots, aligns up to three roots, propagates score changes through close-allele trees, and tests at most two root traceback geometries within four raw-score units when the provisional winner contains an indel. It performs no descendant V alignments. D and J retain the selected profile's calibrated exact paths." : "Standard SwiftIG exactly aligns the three leading strong-seed V candidates; weak-seed and seedless cases retain the existing safety pool. D and J retain the selected profile's calibrated exact paths."}</p>
                     <p className="scientific-note calling-profile-note"><span>i</span>{callingProfile === "igblast_compatible" ? "Selected solely for agreement with the supplied IgBLAST calls: D +2/−4/−11/−1, minimum 5-nt exact run, 3 candidates; J +2/−4/−13/−1, 2 candidates. Calibrated on simulated human IGH; it is not an IgBLAST implementation." : callingProfile === "igblast_balanced" ? "Maximizes IgBLAST agreement subject to combined V/D/J first-call and fair-scored truth accuracy exceeding IgBLAST on the supplied simulation. It uses the IgBLAST-agreement settings, then removes a D call only when its strongest support is exactly five consecutive matches and j_sequence_start − v_sequence_end ≤ 11 nt. Calibrated on simulated human IGH." : "Default profile selected for simulated ground-truth accuracy. Optional agreement-oriented profiles are never selected automatically."}</p>
@@ -2696,7 +2725,7 @@ export default function SwigApp() {
                     </details>}
                 </section>
 
-                <section className={`analysis-card pipeline-card ${pipeline.enabled ? "active" : ""}`}>
+                {!focusedWebMode && <section className={`analysis-card pipeline-card ${pipeline.enabled ? "active" : ""}`}>
                   <header><span className="card-number">04</span><div><h2>Execution mode</h2><p>Stop after annotation, or run the selected post-analysis stages sequentially.</p></div><div className="mode-toggle"><button className={!pipeline.enabled ? "active" : ""} type="button" disabled={configExporting} onClick={()=>setPipeline((current)=>({...current,enabled:false}))}>Interactive</button><button className={pipeline.enabled ? "active" : ""} type="button" disabled={configExporting} onClick={()=>setPipeline((current)=>({...current,enabled:true}))}>Pipeline</button></div></header>
                   {!pipeline.enabled ? <div className="pipeline-interactive-note"><span>Manual post-analysis</span><strong>Annotation finishes at Results.</strong><p>Collapse, chimera filtering, selection, lineage assignment, SHM, missing-allele evidence, queries, alignments, and trees remain available as explicit steps.</p></div> : <>
                     <div className="pipeline-stage-grid">
@@ -2736,13 +2765,13 @@ export default function SwigApp() {
                       <button className={configExporting?"post-cancel":""} type="button" disabled={!configExporting&&(!activeDatasets.length||!compiled||databaseBusy||Boolean(busyCells.size)||inputInspecting)} onClick={()=>void exportConfiguredCliConfig()}>{configExporting?"Cancel config export":"Export CLI config"}</button>
                     </div>
                   </>}
-                </section>
+                </section>}
               </div>
 
               <section className="run-summary launch-panel">
-                <span className="section-kicker">Start analysis</span><h2>{activeInput ? `${activeDatasets.length.toLocaleString()} dataset${activeDatasets.length === 1 ? "" : "s"} ready` : "Data required"}</h2><p>{activeInput ? `${activeInputName} · ${friendlySpecies(species?.name ?? "")} · ${LOCUS_LABELS[activeScope]}${compiled ? ` · ${compiled.counts.V}/${compiled.counts.D}/${compiled.counts.J}/${compiled.counts.C} V/D/J/C references` : ""}` : "Load or paste sequence data above before starting."}</p>
+                <span className="section-kicker">Start analysis</span><h2>{activeInput ? focusedWebMode ? "Input ready" : `${activeDatasets.length.toLocaleString()} dataset${activeDatasets.length === 1 ? "" : "s"} ready` : "Data required"}</h2><p>{activeInput ? `${activeInputName} · ${friendlySpecies(species?.name ?? "")} · ${LOCUS_LABELS[activeScope]}${compiled ? ` · ${compiled.counts.V}/${compiled.counts.D}/${compiled.counts.J}/${compiled.counts.C} V/D/J/C references` : ""}` : "Load or paste sequence data above before starting."}</p>
                 {runError && <p className="run-error" role="alert">{runError}</p>}
-                <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError) || databaseBusy || Boolean(busyCells.size) || inputInspecting} onClick={requestRun}><span>{inputInspecting?"Inspecting input…":databaseBusy || busyCells.size ? "Validating references…" : pipeline.enabled ? "Run annotation + pipeline" : "Analyze with SwiftIG"}</span><b>→</b></button>
+                <button className="analyze-button" type="button" disabled={!activeInput || !compiled || Boolean(packError) || databaseBusy || Boolean(busyCells.size) || inputInspecting} onClick={requestRun}><span>{inputInspecting?"Inspecting input…":databaseBusy || busyCells.size ? "Validating references…" : webMode === "vdj" ? "Run VDJ annotation" : webMode === "lineage" ? "Annotate + open lineage" : pipeline.enabled ? "Run annotation + pipeline" : "Analyze with SwiftIG"}</span><b>→</b></button>
                 <p className="privacy-copy"><span>i</span> Query sequences, locally loaded germlines, and AIRR results are processed in this browser; Swig does not transmit them. A remotely hosted alternative database is requested from its named provider only when selected.</p>
               </section>
             </div>
@@ -2762,7 +2791,7 @@ export default function SwigApp() {
         <button className="output-modal-close" type="button" onClick={cancelInputInspection} aria-label="Cancel this input import">×</button>
         <span className="output-direction">CONCATENATED GZIP · SAMPLE STRUCTURE</span>
         <h2 id="gzip-member-title"><em>{pendingGzipImport.inputName}</em> contains {pendingGzipImport.members.length.toLocaleString()} independently readable {pendingGzipImport.format} files.</h2>
-        <p>Each gzip member begins at a complete {pendingGzipImport.format} record boundary. Choose whether those members represent one biological sample or separate samples.</p>
+        <p>Each gzip member begins at a complete {pendingGzipImport.format} record boundary. Choose whether those members represent one biological sample or separate samples.</p>{webMode!=="repertoire"&&<p className="scientific-note"><span>i</span>Separate samples need editable sample names and metadata. Choosing that option will move this input into the end-to-end repertoire workflow; merging keeps the current focused workflow.</p>}
         <div className="gzip-member-summary">{pendingGzipImport.members.map((member,index)=><span key={`${member.start}-${member.end}`}><b>{index+1} · {pendingGzipImport.suggestedNames[index]}</b><small>{bytes(member.compressedBytes)} compressed{member.uncompressedBytes===null?"":` · ${bytes(member.uncompressedBytes)} decoded`}</small><code title={member.firstLine}>{member.firstRecordId||member.firstLine||"empty member"}</code></span>)}</div>
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={()=>resolveGzipImportChoice("separate")}><span>Import as {pendingGzipImport.members.length} separate samples</span><small>Independent sample, donor, cohort, timepoint, and tissue fields</small><b>Separate →</b></button><button type="button" onClick={()=>resolveGzipImportChoice("merge")}><span>Merge into one sample</span><small>Decode every member in order as one continuous dataset</small></button><button className="post-cancel" type="button" onClick={cancelInputInspection}>Cancel import</button></div>
         <p className="output-safety"><span>i</span>All metadata remain editable in the dataset table. Neither choice drops records or changes sequence content.</p>
@@ -2779,7 +2808,7 @@ export default function SwigApp() {
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
         <p className="output-safety"><span>i</span> Query sequences remain in this browser and are not transmitted by Swig.</p>
       </section></div>}
-      <footer className="site-footer"><Brand /><p>Swig {APP_VERSION} · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="./METHODS_INDEX.md" target="_blank" rel="noreferrer">Methods ↗</a><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="./references/README.md" target="_blank" rel="noreferrer">IMGT data notice ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      {page !== "home" && <footer className="site-footer"><Brand /><p>Swig {APP_VERSION} · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="./METHODS_INDEX.md" target="_blank" rel="noreferrer">Methods ↗</a><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="./references/README.md" target="_blank" rel="noreferrer">IMGT data notice ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>}
     </div>
   );
 }

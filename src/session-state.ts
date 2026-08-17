@@ -88,6 +88,8 @@ export interface SwigSession {
   savedAt: string;
   linkedAirr: LinkedAirrBinding;
   analysis: {
+    /** Browser entry route; omitted by sessions created before the focused workflows existed. */
+    webMode?: "vdj" | "repertoire" | "lineage";
     inputName: string;
     species: string;
     scope: ScopeKey;

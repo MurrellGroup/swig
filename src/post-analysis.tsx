@@ -89,6 +89,7 @@ import { packSessionVector, unpackSessionVector, type PostAnalysisSessionSnapsho
 import { DATASET_SCOPE_LABELS, datasetScopeValue, type DatasetManifestEntry, type DatasetScope, type PipelinePlan } from "./study-design";
 import { sampleColor, type SampleColorMap } from "./sample-colors";
 import { PhyloUcaPanel, type PhyloUcaPanelState } from "./phylo-uca/panel";
+import { prepareUploadedLineageTree } from "./uploaded-lineage-tree";
 import { AlleleRefinementPanel } from "./allele-refinement/panel";
 import { AlleleRefinementRuntime } from "./allele-refinement/runtime";
 import { refinedCall, refineDetailRows, modelSummaryTable, writeRefinedAirr, writeRefinementSidecar } from "./allele-refinement/export";
@@ -119,6 +120,8 @@ interface Props {
   onSessionChange?: (reason: string) => void;
   sessionHandleRef?: MutableRefObject<PostAnalysisSessionHandle | null>;
   initialSession?: PostAnalysisSessionSnapshot | null;
+  /** Treat the complete assigned input as one preselected lineage. */
+  directLineage?: boolean;
 }
 
 export interface PostAnalysisSessionHandle {
@@ -150,6 +153,9 @@ interface TreeSnapshot extends FastTreeRun {
   collapseThreshold: number;
   source: string;
   frameOffset: AlignmentFrameOffset;
+  origin?: "fasttree" | "uploaded";
+  /** Uploaded trees containing the synthetic germline guide are display-only. */
+  observedOnly?: boolean;
 }
 
 type TreeViewMode = "stable" | "rooted" | "raw";
@@ -413,7 +419,7 @@ function isAbortError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "name" in error && (error as { name?: unknown }).name === "AbortError";
 }
 
-export function PostAnalysisWorkbench({ store, references, scope, loci, resultFacets, inputName, workers, callingProfile, assignerStrategy, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", doubleDCount = 0, autoPipeline, sidebarTools, onInspect, onSessionChange, sessionHandleRef, initialSession }: Props) {
+export function PostAnalysisWorkbench({ store, references, scope, loci, resultFacets, inputName, workers, callingProfile, assignerStrategy, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", doubleDCount = 0, autoPipeline, sidebarTools, onInspect, onSessionChange, sessionHandleRef, initialSession, directLineage = false }: Props) {
   const runtime = useMemo(() => new PostAnalysisRuntime(store), [store]);
   const alleleRuntime = useMemo(() => new AlleleRefinementRuntime(), [store]);
   const postLockAbortRef = useRef<AbortController | null>(null);
@@ -430,7 +436,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [postLockState, setPostLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
   const [progress, setProgress] = useState<{ processed: number; total: number; unit?: string }>({ processed: 0, total: store.count });
   const [error, setError] = useState("");
-  const [activeWorkspace,setActiveWorkspace]=useState<PostWorkspaceId>("alleles");
+  const [activeWorkspace,setActiveWorkspace]=useState<PostWorkspaceId>(directLineage ? "workbench" : "alleles");
   const openModules=useMemo(()=>new Set<PostModuleId>(activeWorkspace === "overview" ? [] : [activeWorkspace]),[activeWorkspace]);
   const [skippedModules,setSkippedModules]=useState<Set<PostModuleId>>(
     ()=>new Set(initialSession?.skippedModules ?? (autoPipeline?.selection.enabled?[]:["selection"])),
@@ -660,6 +666,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [queryLineageHits,setQueryLineageHits]=useState<QueryLineageHit[]>([]);
   const [expanded, setExpanded] = useState<{ ordinals: number[]; comparisons: number; capped: boolean } | null>(null);
   const restoredSessionRef = useRef(false);
+  const directLineageInitializedRef = useRef(false);
   const pipelineRunRef = useRef(false);
   const sessionChangeReadyRef = useRef(false);
   const sessionChangeCallbackRef = useRef(onSessionChange);
@@ -723,7 +730,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   }, [lineageRows, lineageGermlineMethod]);
 
   useEffect(() => {
-    if (!autoPipeline?.enabled || initialSession || pipelineRunRef.current) return;
+    if (directLineage || !autoPipeline?.enabled || initialSession || pipelineRunRef.current) return;
     pipelineRunRef.current = true;
     void (async () => {
       const report: string[] = [];
@@ -976,7 +983,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         pipelineActiveRef.current = false;
       }
     })();
-  }, [alleleRuntime, autoPipeline, initialSession, references, runtime, scope, store, workers]);
+  }, [alleleRuntime, autoPipeline, directLineage, initialSession, references, runtime, scope, store, workers]);
 
   useEffect(() => {
     if(!sessionHandleRef)return;
@@ -1014,8 +1021,90 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,phyloUcaState,workingStages,
   ]);
 
+  useEffect(() => {
+    if (!directLineage || directLineageInitializedRef.current) return;
+    directLineageInitializedRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      setBusy("Loading the uploaded lineage");
+      setError("");
+      try {
+        const rowLimit = Math.min(store.count, 500);
+        const ordinals = Array.from({ length: rowLimit }, (_, index) => rowLimit === store.count
+          ? index
+          : Math.floor(index * (store.count - 1) / Math.max(1, rowLimit - 1)));
+        const rows = await store.detailMany(ordinals);
+        if (cancelled) return;
+        if (!rows.length) throw new Error("The assigned input contains no records to open as a lineage.");
+
+        const valueCounts = (values: string[]) => [...values.reduce((counts, value) => {
+          if (value) counts.set(value, (counts.get(value) ?? 0) + 1);
+          return counts;
+        }, new Map<string, number>()).entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
+        const locus = valueCounts(rows.map((row) => row.values.locus || row.record.locus))[0]?.[0] ?? "";
+        const sampleCounts = valueCounts(rows.map((row) => row.values.sample_id || row.record.sampleId)).map(([sampleId, count]) => ({ sampleId, uniqueMembers: count, abundance: count }));
+        const samples = sampleCounts.map((item) => item.sampleId);
+        const summary: LineageSummary = {
+          id: 1,
+          representativeOrdinal: rows[0].record.ordinal,
+          uniqueMembers: store.count,
+          abundance: store.count,
+          locus,
+          vCalls: [...new Set(rows.flatMap((row) => (row.values.v_call || row.record.vCall).split(",").map((value) => value.trim()).filter(Boolean)))].slice(0, 12),
+          jCalls: [...new Set(rows.flatMap((row) => (row.values.j_call || row.record.jCall).split(",").map((value) => value.trim()).filter(Boolean)))].slice(0, 12),
+          cdr3Length: Math.max(0, Math.round(rows.reduce((sum, row) => sum + (row.values.cdr3 || row.record.cdr3).length, 0) / rows.length)),
+          studyScope: "global",
+          studyGroup: "uploaded lineage",
+          sampleIds: samples,
+          sampleCounts,
+          subjectIds: [...new Set(rows.map((row) => row.values.subject_id || row.record.subjectId).filter(Boolean))],
+          timepoints: [...new Set(rows.map((row) => row.values.swig_timepoint || row.record.timepoint).filter(Boolean))],
+          compartments: [...new Set(rows.map((row) => row.values.swig_compartment || row.record.compartment).filter(Boolean))],
+          doubleDPositiveMembers: rows.filter((row) => Boolean(row.values.d2_call || row.record.d2Call)).length,
+          doubleDPositiveAbundance: rows.filter((row) => Boolean(row.values.d2_call || row.record.d2Call)).length,
+        };
+        const lineageByOrdinal = new Map(rows.map((row) => [row.record.ordinal, 1] as const));
+        const multiplicity = new Map(rows.map((row) => {
+          const imported = Number(row.values.duplicate_count);
+          return [row.record.ordinal, Number.isFinite(imported) && imported > 0 ? Math.floor(imported) : 1] as const;
+        }));
+        setSelectedLineage(summary);
+        setSelectedLineageIds([1]);
+        setLineageRows(rows);
+        setLineageTotal(store.count);
+        setOriginalLineageByOrdinal(lineageByOrdinal);
+        setLineageMultiplicity(multiplicity);
+        setActiveWorkspace("workbench");
+
+        const restoredEdit = initialSession?.editedAlignments?.find((entry) => entry.lineageIds.includes(1));
+        const savedFrameOffset = validAlignmentFrameOffset(initialSession?.alignmentFrameOffset);
+        if (restoredEdit) {
+          installAlignment(restoredEdit.fasta, restoredEdit.source, true, [1], validAlignmentFrameOffset(restoredEdit.frameOffset) ?? savedFrameOffset);
+          setEditedAlignments(new Map([[lineageGroupKey([1]), { ...restoredEdit, key: lineageGroupKey([1]), lineageIds: [1], frameOffset: validAlignmentFrameOffset(restoredEdit.frameOffset) }]]));
+        } else if (initialSession?.tree?.run && typeof initialSession.tree.run.alignmentFasta === "string") {
+          installAlignment(initialSession.tree.run.alignmentFasta, initialSession.tree.source || "Saved tree input", false, [1], validAlignmentFrameOffset(initialSession.tree.run.frameOffset) ?? savedFrameOffset);
+        } else if (rows.length >= 2) {
+          const selectedRows = stratifiedLineageRows(rows, lineageByOrdinal, Math.min(200, rows.length));
+          const input = lineageInputFasta(selectedRows, lineageGermlineMethod);
+          const records = parseFasta(input.fasta, true);
+          const maximum = Math.max(...records.map((record) => record.sequence.length));
+          installAlignment(records.map((record) => `>${record.name}\n${record.sequence.padEnd(maximum, "-")}`).join("\n") + "\n", "AIRR-anchored reference quick view", false, [1], input.alignmentFrameOffset);
+        } else {
+          setError("This input contains only one sequence. V(D)J annotation succeeded, but an MSA needs at least two biological sequences.");
+        }
+        if (initialSession?.tree?.run) setTreeRun(initialSession.tree.run as unknown as TreeSnapshot);
+        if (initialSession?.phyloUca) setPhyloUcaState(initialSession.phyloUca);
+      } catch (loadError) {
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+      } finally {
+        if (!cancelled) setBusy("");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [directLineage, initialSession, lineageGermlineMethod, store]);
+
   useEffect(()=>{
-    if(!initialSession||restoredSessionRef.current)return;restoredSessionRef.current=true;
+    if(directLineage||!initialSession||restoredSessionRef.current)return;restoredSessionRef.current=true;
     void (async()=>{
       setBusy("Restoring saved post-analysis state");setError("");
       postRestoreActiveRef.current=true;runtime.beginTransaction();
@@ -1069,7 +1158,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         });runtime.commitTransaction();postRestoreActiveRef.current=false;
       }catch(restoreError){if(!cancellationRecoveryRef.current){if(runtime.requiresRecoveryForCancellation())await runtime.rollbackTransaction((processed,total)=>setProgress({processed,total,unit:"AIRR records restored"}));else runtime.commitTransaction();setError(restoreError instanceof Error?restoreError.message:String(restoreError));}}finally{if(!cancellationRecoveryRef.current)setBusy("");postRestoreActiveRef.current=false;}
     })();
-  },[initialSession,runtime,store.count]);
+  },[directLineage,initialSession,runtime,store.count]);
 
   async function cancelActiveOperation() {
     const controller = postLockAbortRef.current;
@@ -1827,6 +1916,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         collapseThreshold: stable.threshold,
         source: sourceSnapshot,
         frameOffset: alignmentFrameOffset,
+        origin: "fasttree",
+        observedOnly: false,
       });
       setTreeViewMode("rooted");
       window.requestAnimationFrame(() => treeResultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -1837,6 +1928,44 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       }
     } finally {
       if (!cancellationRecoveryRef.current) setBusy("");
+    }
+  }
+
+  async function acceptUploadedTree(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !alignment) return;
+    setTreeError("");
+    const revision = alignmentRevisionRef.current;
+    try {
+      const text = await file.text();
+      if (revision !== alignmentRevisionRef.current) throw new Error("The alignment changed while the tree file was being read. Choose the tree again for the current alignment.");
+      const inspected = inspectAlignment(alignment);
+      const observedNames = inspected.records.filter((record) => record.name !== GERMLINE_OUTGROUP).map((record) => record.name);
+      const uploaded = prepareUploadedLineageTree(text, observedNames, true);
+      setTreeRun({
+        newick: uploaded.rawNewick,
+        rootedNewick: uploaded.canonicalNewick,
+        stableNewick: uploaded.stableNewick,
+        inputFasta: "",
+        alignmentFasta: inspected.fasta,
+        command: "Uploaded Newick · FastTree was not run",
+        rows: observedNames.length,
+        columns: inspected.columns,
+        fingerprint: inspected.fingerprint,
+        collapsedEdges: uploaded.collapsedEdges,
+        collapseThreshold: uploaded.collapseThreshold,
+        source: `Uploaded tree · ${file.name}`,
+        frameOffset: alignmentFrameOffset,
+        origin: "uploaded",
+        observedOnly: uploaded.observedOnly,
+      });
+      setPhyloUcaState(null);
+      setTreeViewMode("rooted");
+      window.requestAnimationFrame(() => treeResultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    } catch (uploadError) {
+      setTreeError(uploadError instanceof Error ? uploadError.message : String(uploadError));
+      window.requestAnimationFrame(() => treeResultRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
     }
   }
 
@@ -2292,11 +2421,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const jChart = lineages?.jUsage.slice(0, topGenes).map((item) => ({ label: item.call, value: item[geneMetric] })) ?? [];
   const railClass=(module:PostModuleId)=>`${activeWorkspace===module?"active":""}${skippedModules.has(module)?" skipped":""}`.trim();
 
-  return <section className="post-analysis-shell">
-    <header className="post-analysis-heading"><div><span className="section-kicker">Post-assignment analyses</span><h2>Repertoire structure and lineage analysis</h2><p>Exact collapse or denoising and chimera exclusion modify an explicit cumulative working set. CHMMAIRRa, lineage assignment, repertoire querying, and expansion consume that set; alignment and tree inference consume the selected lineage.</p><a href="./METHODS_INDEX.md" target="_blank" rel="noreferrer">Complete methods index ↗</a></div><div className="local-method-note"><span>Data handling</span><strong>Browser-local</strong><small>Input, germlines, and results are not submitted to an analysis server.</small></div></header>
+  return <section className={`post-analysis-shell${directLineage ? " direct-lineage-shell" : ""}`}>
+    <header className="post-analysis-heading"><div><span className="section-kicker">{directLineage ? "Single lineage analysis" : "Post-assignment analyses"}</span><h2>{directLineage ? "Alignment, tree and UCA inference" : "Repertoire structure and lineage analysis"}</h2><p>{directLineage ? "Every sequence in the uploaded input is treated as a member of one lineage. No clustering, repertoire filtering, or lineage selection is performed." : "Exact collapse or denoising and chimera exclusion modify an explicit cumulative working set. CHMMAIRRa, lineage assignment, repertoire querying, and expansion consume that set; alignment and tree inference consume the selected lineage."}</p><a href="./METHODS_INDEX.md" target="_blank" rel="noreferrer">Complete methods index ↗</a></div><div className="local-method-note"><span>Data handling</span><strong>Browser-local</strong><small>Input, germlines, and results are not submitted to an analysis server.</small></div></header>
 
     <div className="post-context-workspace contextual-workspace">
-      <nav className="context-rail post-context-rail" aria-label="Post-analysis sections">
+      {!directLineage && <nav className="context-rail post-context-rail" aria-label="Post-analysis sections">
         <div className="context-rail-heading"><span>Post-analysis</span><small>{workingCount.toLocaleString()} active records</small></div>
         <button type="button" className={activeWorkspace==="overview"?"active":""} onClick={()=>setActiveWorkspace("overview")}><b>00</b><span>Overview<small>Working set + exports</small></span></button>
         <button type="button" className={railClass("alleles")} onClick={()=>setActiveWorkspace("alleles")}><b>01</b><span>Allele pooling<small>{skippedModules.has("alleles")?"Skipped":alleleRefinement?`${alleleRefinement.activeRecords.toLocaleString()} modeled`:"Optional · runs first"}</small></span></button>
@@ -2308,7 +2437,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         <button type="button" disabled={!selectedLineage} className={railClass("workbench")} onClick={()=>setActiveWorkspace("workbench")}><b>07</b><span>Workbench<small>{skippedModules.has("workbench")?"Skipped":selectedLineage?`Lineage ${selectedLineage.id}`:"Select a lineage"}</small></span></button>
         <button type="button" className={railClass("query")} onClick={()=>setActiveWorkspace("query")}><b>08</b><span>Query<small>{skippedModules.has("query")?"Skipped":"Search + expand"}</small></span></button>
         {sidebarTools}
-      </nav>
+      </nav>}
 
       <div className="context-main post-context-main">
     {activeWorkspace==="overview"&&<section className="post-overview-panel">
@@ -2589,9 +2718,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     {selectedLineage && <section ref={workbenchRef} className={moduleClass("workbench","post-module lineage-workbench")} tabIndex={-1}>
-      <header><div className="module-number dark">07</div><div><span className="section-kicker">{selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>Lineage neighbours, alignment and rooted phylogeny</h3><p>{lineageTotal.toLocaleString()} active rows · {selectedLineage.locus} · original assignments {selectedLineageIds.map((id) => `L${id}`).join(", ")}</p></div><a href="./methods/11_ALIGNMENT_AND_PHYLOGENY.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("workbench")}<button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number dark">{directLineage ? "01" : "07"}</div><div><span className="section-kicker">{directLineage ? "Complete uploaded input · one lineage" : selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>{directLineage ? "Lineage alignment, phylogeny and UCA" : "Lineage neighbours, alignment and rooted phylogeny"}</h3><p>{lineageTotal.toLocaleString()} input rows · {selectedLineage.locus}{directLineage ? " · lineage clustering was bypassed" : ` · original assignments ${selectedLineageIds.map((id) => `L${id}`).join(", ")}`}</p></div><a href="./methods/11_ALIGNMENT_AND_PHYLOGENY.md" target="_blank" rel="noreferrer">Method details ↗</a>{!directLineage && <>{skipStepButton("workbench")}<button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></>}</header>
       <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `${lineageRows.length} stratified members loaded from ${lineageTotal.toLocaleString()}; analysis remains bounded` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => {const sample=row.values.sample_id||row.record.sampleId||"";const original=originalLineageByOrdinal.get(row.record.ordinal);const cdr3=row.values.cdr3_aa||row.values.cdr3||"CDR3 —";return <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)} title={`${sample||"sample unassigned"}${original?` · original lineage ${original}`:""} · ${cdr3}`}><i style={{background:sampleColor(sample,sampleColors)}}/><span><b>{row.record.sequenceId}</b><small>{cdr3}</small></span></button>;})}</div></div>
-      <div className="lineage-neighbour-explorer">
+      {!directLineage && <div className="lineage-neighbour-explorer">
         <header><div><span className="section-kicker">Exploratory boundary review</span><h4>Lineage neighbours</h4><p>Find separate assigned lineages with CDR3 links below the clustering cutoff, similar inferred lineage germlines, or either criterion. Search is read-only until you explicitly merge.</p></div><span className="neighbour-source-chip">Source {selectedLineageIds.map((id)=>`L${id}`).join(" + ")}</span></header>
         <div className="control-grid five">
           <label><span>Evidence route</span><select value={neighbourMethod} onChange={(event)=>{setNeighbourMethod(event.target.value as typeof neighbourMethod);clearNeighbourResults();}}><option value="either">CDR3 or inferred germline</option><option value="cdr3">CDR3 only</option><option value="germline">Inferred germline only</option></select></label>
@@ -2604,7 +2733,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         <div className="result-actions"><button className="post-primary dark" type="button" disabled={Boolean(busy)} onClick={()=>void searchLineageNeighbours()}>Search neighbouring lineages</button>{combinedNeighbourHits.length>0&&<><button type="button" disabled={!selectedNeighbourIds.size} onClick={()=>void viewSelectedNeighbourGroup(false)}>View selected together</button><button type="button" disabled={!selectedNeighbourIds.size} onClick={()=>void viewSelectedNeighbourGroup(true)}>Merge + view together</button></>}</div>
         {(neighbourResult||germlineNeighbourScores.length>0)&&<><div className="neighbour-search-stats"><span>{combinedNeighbourHits.length.toLocaleString()} displayed candidates</span>{neighbourResult&&<span>{neighbourResult.candidateComparisons.toLocaleString()} exact CDR3 comparisons</span>}{germlineSketchIndex&&<span>{germlineSketchIndex.representedLineages.toLocaleString()} lineage germline sketches</span>}<span>{selectedNeighbourIds.size.toLocaleString()} selected</span></div><div className="lineage-table-wrap neighbour-table"><table><thead><tr><th>Select</th><th>Original lineage</th><th>Best source</th><th>CDR3 identity</th><th>Inferred germline identity</th><th>Members / abundance</th><th>Boundary</th></tr></thead><tbody>{combinedNeighbourHits.map((hit)=><tr key={hit.lineageId} className={selectedNeighbourIds.has(hit.lineageId)?"selected":""}><td><input aria-label={`Select lineage ${hit.lineageId}`} type="checkbox" checked={selectedNeighbourIds.has(hit.lineageId)} onChange={(event)=>setNeighbourSelected(hit.lineageId,event.target.checked)}/></td><td><strong>L{hit.lineageId}</strong>{mergedIdByOriginal.get(hit.lineageId)&&<small>{mergedIdByOriginal.get(hit.lineageId)}</small>}</td><td>L{hit.cdr3?.sourceLineageId??hit.germline?.sourceLineageId??"—"}</td><td>{hit.cdr3?`${(hit.cdr3.cdr3Identity*100).toFixed(2)}%`:"—"}</td><td>{hit.germline?`${(hit.germline.germlineIdentity*100).toFixed(2)}%`:"—"}</td><td>{hit.cdr3?`${hit.cdr3.uniqueMembers.toLocaleString()} / ${hit.cdr3.abundance.toLocaleString()}`:hit.germline?`${hit.germline.candidateTotalRows.toLocaleString()} / —`:"—"}</td><td>{hit.cdr3?.studyGroup||"same selected boundary"}</td></tr>)}</tbody></table></div></>}
         {(neighbourResult&&neighbourResult.hits.length===0&&!germlineNeighbourScores.length)&&<div className="method-placeholder small"><span>∅</span><h4>No candidate met the selected neighbour criteria</h4><p>Lower the exploratory threshold or broaden the search boundary; original assignments remain unchanged.</p></div>}
-      </div>
+      </div>}
       {lineageGermline&&<div className="lineage-germline-method">
         <div>
           <span className="section-kicker">Lineage root construction</span>
@@ -2629,11 +2758,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         <div className="alignment-view-controls"><div className="mode-toggle"><button className={alignmentMode === "nt" ? "active" : ""} type="button" onClick={() => setAlignmentMode("nt")}>Nucleotide</button><button className={alignmentMode === "aa" ? "active" : ""} type="button" onClick={() => setAlignmentMode("aa")}>Amino acid</button></div><span>{alignmentInfo?.rows.toLocaleString() ?? parseFasta(alignment, true).length.toLocaleString()} aligned rows · {alignmentInfo?.columns.toLocaleString() ?? "—"} columns · AA frame starts at nucleotide column {alignmentFrameOffset + 1} · {alignmentSource || "alignment"} · fingerprint {alignmentInfo?.fingerprint ?? "—"}</span></div>
         <AlignmentPreview fasta={alignment} mode={alignmentMode} frameOffset={alignmentFrameOffset} />
         <div ref={treeResultRef} className="tree-operation-region">
-          <div className="tree-controls"><div><span className="section-kicker">On-demand tree</span><h4>FastTree 2.1.11 double-precision WASM</h4><p>The exact current nucleotide alignment is rewritten into the WASM filesystem before every run. Rooting is a separate post-inference operation.</p></div><label><span>Model</span><select value={treeModel} onChange={(event) => setTreeModel(event.target.value as "gtr" | "jc")}><option value="gtr">GTR</option><option value="jc">Jukes–Cantor</option></select></label><label className="check-line"><input type="checkbox" checked={treeFast} onChange={(event) => setTreeFast(event.target.checked)} /><span>Fastest heuristic</span></label><button className="post-primary dark" type="button" disabled={Boolean(busy)} onClick={() => void inferTree()}>{busy.startsWith("Running FastTree") ? "Inferring tree…" : "Infer tree"}</button></div>
-          {treeError && <div className="inline-method-error tree-error" role="alert"><strong>Tree inference stopped</strong><span>{treeError}</span><button type="button" onClick={() => setTreeError("")}>Dismiss</button></div>}
+          <div className="tree-controls"><div><span className="section-kicker">On-demand tree</span><h4>Infer or upload a lineage tree</h4><p>FastTree uses the exact current nucleotide alignment and its synthetic germline guide. An uploaded Newick may contain that guide for ordinary display, or may be observed-only for optional reuse by UCA inference.</p></div><label><span>FastTree model</span><select value={treeModel} onChange={(event) => setTreeModel(event.target.value as "gtr" | "jc")}><option value="gtr">GTR</option><option value="jc">Jukes–Cantor</option></select></label><label className="check-line"><input type="checkbox" checked={treeFast} onChange={(event) => setTreeFast(event.target.checked)} /><span>Fastest heuristic</span></label><button className="post-primary dark" type="button" disabled={Boolean(busy)} onClick={() => void inferTree()}>{busy.startsWith("Running FastTree") ? "Inferring tree…" : "Infer with FastTree"}</button><label className="file-button tree-upload-button">Upload Newick<input type="file" accept=".nwk,.newick,.tree,.tre,.txt" onChange={(event) => void acceptUploadedTree(event)} /></label></div>
+          {treeError && <div className="inline-method-error tree-error" role="alert"><strong>Tree could not be loaded or inferred</strong><span>{treeError}</span><button type="button" onClick={() => setTreeError("")}>Dismiss</button></div>}
           {treeRun && <>
-            <div className="tree-provenance"><div><span className="section-kicker">Executed input</span><strong>{treeRun.rows.toLocaleString()} rows × {treeRun.columns.toLocaleString()} columns</strong><small>{treeRun.source} · alignment fingerprint {treeRun.fingerprint}</small><code>{treeRun.command}</code></div><div className="result-actions"><button type="button" onClick={() => downloadText(treeRun.alignmentFasta, `${baseName(inputName)}.lineage-${selectedLineage.id}.fasttree-alignment.fasta`)}>Named input FASTA ↓</button><button type="button" onClick={() => downloadText(treeRun.inputFasta, `${baseName(inputName)}.lineage-${selectedLineage.id}.fasttree-exact-input.fasta`)}>Exact numeric input ↓</button><button type="button" onClick={()=>downloadText(treeViewMode==="stable"?treeRun.stableNewick:treeViewMode==="rooted"?treeRun.rootedNewick:treeRun.newick,`${baseName(inputName)}.lineage-${selectedLineage.id}.${treeViewMode}.nwk`)}>Newick ↓</button><button type="button" onClick={()=>downloadText(treeNexus(treeViewMode==="stable"?treeRun.stableNewick:treeViewMode==="rooted"?treeRun.rootedNewick:treeRun.newick,`lineage_${selectedLineage.id}`),`${baseName(inputName)}.lineage-${selectedLineage.id}.${treeViewMode}.nex`)}>NEXUS ↓</button></div></div>
-            <div className="tree-output-switch"><div className="mode-toggle"><button className={treeViewMode === "rooted" ? "active" : ""} type="button" onClick={() => setTreeViewMode("rooted")}>Rooted · resolved</button><button className={treeViewMode === "stable" ? "active" : ""} type="button" onClick={() => setTreeViewMode("stable")}>Rooted · floor-collapsed</button><button className={treeViewMode === "raw" ? "active" : ""} type="button" onClick={() => setTreeViewMode("raw")}>Raw FastTree</button></div><span>{treeRun.collapsedEdges.toLocaleString()} numerical-floor internal edges can optionally be displayed as polytomies; the complete resolved tree is the default.</span></div>
+            <div className="tree-provenance"><div><span className="section-kicker">{treeRun.origin === "uploaded" ? "Validated upload" : "Executed input"}</span><strong>{treeRun.rows.toLocaleString()} biological rows × {treeRun.columns.toLocaleString()} columns</strong><small>{treeRun.source} · alignment fingerprint {treeRun.fingerprint}</small><code>{treeRun.command}</code>{treeRun.origin === "uploaded" && <em className={treeRun.observedOnly ? "tree-uca-eligible" : "tree-display-only"}>{treeRun.observedOnly ? "Observed-only · eligible as an optional UCA tree" : "Contains germline guide · display only; UCA will infer a fresh observed-only tree"}</em>}</div><div className="result-actions"><button type="button" onClick={() => downloadText(treeRun.alignmentFasta, `${baseName(inputName)}.lineage-${selectedLineage.id}.tree-alignment.fasta`)}>Named alignment FASTA ↓</button>{treeRun.inputFasta && <button type="button" onClick={() => downloadText(treeRun.inputFasta, `${baseName(inputName)}.lineage-${selectedLineage.id}.fasttree-exact-input.fasta`)}>Exact numeric input ↓</button>}<button type="button" onClick={()=>downloadText(treeViewMode==="stable"?treeRun.stableNewick:treeViewMode==="rooted"?treeRun.rootedNewick:treeRun.newick,`${baseName(inputName)}.lineage-${selectedLineage.id}.${treeViewMode}.nwk`)}>Newick ↓</button><button type="button" onClick={()=>downloadText(treeNexus(treeViewMode==="stable"?treeRun.stableNewick:treeViewMode==="rooted"?treeRun.rootedNewick:treeRun.newick,`lineage_${selectedLineage.id}`),`${baseName(inputName)}.lineage-${selectedLineage.id}.${treeViewMode}.nex`)}>NEXUS ↓</button></div></div>
+            <div className="tree-output-switch"><div className="mode-toggle"><button className={treeViewMode === "rooted" ? "active" : ""} type="button" onClick={() => setTreeViewMode("rooted")}>{treeRun.origin === "uploaded" ? "Uploaded · ordered" : "Rooted · resolved"}</button><button className={treeViewMode === "stable" ? "active" : ""} type="button" onClick={() => setTreeViewMode("stable")}>{treeRun.origin === "uploaded" ? "Uploaded · floor-collapsed" : "Rooted · floor-collapsed"}</button><button className={treeViewMode === "raw" ? "active" : ""} type="button" onClick={() => setTreeViewMode("raw")}>{treeRun.origin === "uploaded" ? "Uploaded · original order" : "Raw FastTree"}</button></div><span>{treeRun.collapsedEdges.toLocaleString()} numerical-floor internal edges can optionally be displayed as polytomies; the complete resolved tree is the default.</span></div>
             <LineageTreeViewer
               newick={treeViewMode === "stable" ? treeRun.stableNewick : treeViewMode === "rooted" ? treeRun.rootedNewick : treeRun.newick}
               alignmentFasta={treeRun.alignmentFasta}
@@ -2665,6 +2794,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           sampleColors={sampleColors}
           multiplicityByOrdinal={lineageMultiplicity}
           lineageByOrdinal={originalLineageByOrdinal}
+          observedTreeNewick={treeRun?.origin === "uploaded" && treeRun.observedOnly ? treeRun.newick : undefined}
+          observedTreeSource={treeRun?.origin === "uploaded" && treeRun.observedOnly ? treeRun.source : undefined}
           initialState={phyloUcaState}
           onStateChange={setPhyloUcaState}
         />

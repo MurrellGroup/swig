@@ -38,6 +38,9 @@ interface Props {
   sampleColors: SampleColorMap;
   multiplicityByOrdinal: Map<number, number>;
   lineageByOrdinal: Map<number, number>;
+  /** Optional validated observed-only tree supplied by the user. */
+  observedTreeNewick?: string;
+  observedTreeSource?: string;
   initialState?: PhyloUcaPanelState | null;
   onStateChange?: (state: PhyloUcaPanelState | null) => void;
 }
@@ -152,10 +155,19 @@ function PhyloUcaMcmcMixing({ diagnostics }: { diagnostics: PhyloUcaMcmcDiagnost
   </section>;
 }
 
-export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel, locus, references, inputName, frameOffset, isTcr, sampleColors, multiplicityByOrdinal, lineageByOrdinal, initialState, onStateChange }: Props) {
+export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel, locus, references, inputName, frameOffset, isTcr, sampleColors, multiplicityByOrdinal, lineageByOrdinal, observedTreeNewick, observedTreeSource, initialState, onStateChange }: Props) {
   const fingerprint = useMemo(() => inspectAlignment(alignment).fingerprint, [alignment]);
+  const suppliedObservedTree = observedTreeNewick?.trim() ?? "";
+  const initialUsesUploadedTree = Boolean(suppliedObservedTree && (!initialState?.result || initialState.result.observedTreeNewick.trim() === suppliedObservedTree));
+  const [observedTreeMode, setObservedTreeMode] = useState<"uploaded" | "fasttree">(initialUsesUploadedTree ? "uploaded" : "fasttree");
+  const usingUploadedTree = observedTreeMode === "uploaded" && Boolean(suppliedObservedTree);
   const initialFrame = initialState?.frameOffset ?? initialState?.result?.frameOffset ?? 0;
-  const matchingInitial = initialState?.alignmentFingerprint === fingerprint && initialState.lineageIds.join(",") === lineageIds.join(",") && initialFrame === frameOffset ? initialState : null;
+  const matchingInitial = initialState?.alignmentFingerprint === fingerprint
+    && initialState.lineageIds.join(",") === lineageIds.join(",")
+    && initialFrame === frameOffset
+    && (!usingUploadedTree || initialState.result?.observedTreeNewick.trim() === suppliedObservedTree)
+    ? initialState
+    : null;
   const [options, setOptions] = useState<PhyloUcaOptions>(() => completePhyloUcaOptions(matchingInitial?.options));
   const [result, setResult] = useState<PhyloUcaResult | null>(() => matchingInitial?.result ?? null);
   const [progress, setProgress] = useState<PhyloUcaProgress | null>(null);
@@ -172,16 +184,32 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
   const annotationSvgRef = useRef<SVGSVGElement>(null);
   const annotationViewportRef = useRef<HTMLDivElement>(null);
   const annotationScrollRef = useRef<HTMLDivElement>(null);
+  const suppliedTreeRef = useRef(suppliedObservedTree);
   const adoptedResultSnapshotRef = useRef(matchingInitial?.result?.generatedAt ?? null);
+  // Tree-source changes invalidate only the fitted result. They must not reset
+  // the user's HMM/search settings; alignment identity changes still do.
   const identityKey = `${lineageIds.join(",")}|${fingerprint}|${frameOffset}`;
   const identityKeyRef = useRef(identityKey);
   useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => {
+    if (suppliedTreeRef.current === suppliedObservedTree) return;
+    suppliedTreeRef.current = suppliedObservedTree;
+    setObservedTreeMode(suppliedObservedTree ? "uploaded" : "fasttree");
+    setResult(null);
+    setProgress(null);
+    setError("");
+  }, [suppliedObservedTree]);
   useEffect(() => {
     if (identityKeyRef.current === identityKey) return;
     identityKeyRef.current = identityKey;
     abortRef.current?.abort();
     const restoredFrame = initialState?.frameOffset ?? initialState?.result?.frameOffset ?? 0;
-    const restored = initialState?.alignmentFingerprint === fingerprint && initialState.lineageIds.join(",") === lineageIds.join(",") && restoredFrame === frameOffset ? initialState : null;
+    const restored = initialState?.alignmentFingerprint === fingerprint
+      && initialState.lineageIds.join(",") === lineageIds.join(",")
+      && restoredFrame === frameOffset
+      && (!usingUploadedTree || initialState.result?.observedTreeNewick.trim() === suppliedObservedTree)
+      ? initialState
+      : null;
     adoptedResultSnapshotRef.current = restored?.result?.generatedAt ?? null;
     setOptions(completePhyloUcaOptions(restored?.options));
     setResult(restored?.result ?? null);
@@ -227,17 +255,17 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
     const controller = new AbortController();
     abortRef.current = controller;
     setRunning(true);
-    setTreeStage(true);
+    setTreeStage(!usingUploadedTree);
     setProgress(null);
     setError("");
     try {
       const observed = prepareObservedOnlyAlignment(alignment, GERMLINE_OUTGROUP);
-      const observedTree = await runFastTreeTask(observed.fasta, "gtr", false, controller.signal);
+      const inferredObservedTree = usingUploadedTree ? null : await runFastTreeTask(observed.fasta, "gtr", false, controller.signal);
       if (controller.signal.aborted) throw new DOMException("Cancelled", "AbortError");
       setTreeStage(false);
       const inference = await runPhyloUca({
         curatedAlignmentFasta: alignment,
-        observedTreeNewick: observedTree.newick,
+        observedTreeNewick: usingUploadedTree ? suppliedObservedTree : inferredObservedTree!.newick,
         observedAlignmentFasta: observed.posteriorFasta,
         retainedColumns: observed.posteriorColumns,
         germlineGuideName: GERMLINE_OUTGROUP,
@@ -336,11 +364,12 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
   const resultInferenceMode = result?.options.search.inferenceMode ?? (result?.options.search.marginalizeLocally ? "grid-marginalization" : "maximum-likelihood");
   return <section className="phylo-uca-panel">
     <header>
-      <div><span className="section-kicker">Fixed-tree empirical Bayes</span><h4>Phylogenetic UCA inference</h4><p>Infer the UCA attachment, pendant length, recombination path, and nucleotide posterior from the exact curated lineage alignment. The ordinary germline guide is removed before the observed tree is inferred.</p></div>
+      <div><span className="section-kicker">Fixed-tree empirical Bayes</span><h4>Phylogenetic UCA inference</h4><p>Infer the UCA attachment, pendant length, recombination path, and nucleotide posterior from the exact curated lineage alignment. {usingUploadedTree ? `The validated ${observedTreeSource || "uploaded tree"} is used as the fixed observed-only tree.` : "FastTree is run afresh after the ordinary germline guide is removed."}</p></div>
       <a href="./PHYLO_UCA_INFERENCE.md" target="_blank" rel="noreferrer">Method details ↗</a>
     </header>
     <div className="phylo-uca-run-row">
-      <div><strong>{options.characterMode === "auto" ? "Automatic GTR4 / internal-gap GTR5" : options.characterMode === "nucleotide-gtr4" ? "Forced nucleotide GTR4" : "Forced gap-aware GTR5"}</strong><span>Terminal tip gaps are missing coverage · broad V/J hypotheses · all {references.counts.D.toLocaleString()} active D records · up to {options.hmm.maximumDSegments} D segments · {options.search.inferenceMode === "maximum-likelihood" ? "conditional ML placement" : options.search.inferenceMode === "grid-marginalization" ? "explicit grid marginalization" : "continuous Gibbs/MH"}</span></div>
+      <div><strong>{options.characterMode === "auto" ? "Automatic GTR4 / internal-gap GTR5" : options.characterMode === "nucleotide-gtr4" ? "Forced nucleotide GTR4" : "Forced gap-aware GTR5"}</strong><span>{usingUploadedTree ? `${observedTreeSource || "Uploaded Newick"} · ` : "fresh observed-only FastTree · "}terminal tip gaps are missing coverage · broad V/J hypotheses · all {references.counts.D.toLocaleString()} active D records · up to {options.hmm.maximumDSegments} D segments · {options.search.inferenceMode === "maximum-likelihood" ? "conditional ML placement" : options.search.inferenceMode === "grid-marginalization" ? "explicit grid marginalization" : "continuous Gibbs/MH"}</span></div>
+      {suppliedObservedTree && <label className="phylo-uca-tree-source"><span>Observed tree for UCA</span><select value={observedTreeMode} disabled={running} onChange={(event) => { setObservedTreeMode(event.target.value as "uploaded" | "fasttree"); setResult(null); setError(""); }}><option value="uploaded">Use uploaded observed-only tree</option><option value="fasttree">Infer a fresh tree with FastTree</option></select></label>}
       {!running ? <button className="post-primary dark" type="button" onClick={() => void run()}>Infer phylogenetic UCA</button> : <button type="button" onClick={() => abortRef.current?.abort()}>Cancel</button>}
     </div>
     <details className="post-advanced phylo-uca-advanced">
