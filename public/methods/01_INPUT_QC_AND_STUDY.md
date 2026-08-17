@@ -36,6 +36,8 @@ This is a **direct expected-error implementation**, not a USEARCH/VSEARCH wrappe
 
 When enabled, each dataset is sampled independently using seeded one-pass reservoir sampling. If a dataset has \(N\) eligible records and the requested size is \(k<N\), each record has probability \(k/N\) of inclusion. The selected records are restored to original input order before batching. The complete input must still be scanned, but memory is \(O(k)\) records per dataset.
 
+The standalone CLI imports the same parser, quality-filter function, seeded generator, and per-dataset seed derivation used by the browser. Its config records the complete `preprocessing.fastqFilter` and `preprocessing.subsample` blocks. Quality filtering therefore precedes the reservoir in both execution routes; the requested sample size applies to QC-eligible reads, not raw FASTQ records.
+
 This is a standard reservoir-sampling application; the seeded generator and per-dataset policy are Swig engineering choices. See Vitter, [Random sampling with a reservoir](https://doi.org/10.1145/3147.3165).
 
 ## Multi-dataset boundaries
@@ -51,3 +53,4 @@ Changing metadata after assignment rewrites the browser-local AIRR metadata over
 - Quality trimming is 3′-only. It is not adapter removal, paired-read merging, UMI consensus, or a learned error model.
 - The 0.01 expected-error default is deliberately strict and assay dependent.
 - A concatenated gzip member is a file container boundary, not biological evidence that members are separate samples; Swig therefore asks.
+- A browser-exported CLI config stores each separated member as an end-exclusive compressed-byte `gzipRange` against the original file and retains its editable display name separately. This reproduces the choice without materializing temporary member files.

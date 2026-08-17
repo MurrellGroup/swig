@@ -213,6 +213,10 @@ test("post-analysis skipping, richer lineage rows, CLI export, and lazy lineage 
   assert.match(post,/SHM upper q95/);
   assert.match(post,/Post-lineage analysis/);
   assert.match(app,/Export CLI config/);
+  assert.match(app,/Run this setup with swig-cli/);
+  assert.match(app,/exportConfiguredCliConfig/);
+  assert.match(app,/Cancel config export/);
+  assert.match(app,/Cancel CLI config export/);
   assert.match(app,/Load lineage study/);
   assert.match(lineageStudy,/readLineageAirrSlice/);
   assert.match(lineageStudy,/Samples and read counts/);

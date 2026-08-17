@@ -9,6 +9,11 @@ export type DatasetScope = "dataset" | "sample" | "subject" | "cohort" | "global
 export interface DatasetManifestEntry {
   datasetId: string;
   inputName: string;
+  /** CLI-resolvable source path; may differ from inputName for one member of a concatenated gzip. */
+  inputPath?: string;
+  inputFormat?: "auto" | "fasta" | "fastq" | "airr";
+  /** Compressed-byte range for one complete member of a concatenated gzip source. */
+  gzipRange?: { start: number; end: number };
   sampleId: string;
   subjectId: string;
   cohort: string;

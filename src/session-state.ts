@@ -96,6 +96,7 @@ export interface SwigSession {
     assignerStrategy?: AssignerStrategy;
     minimumIdentity: number;
     strand: 0 | 1 | 2;
+    subsample?: { enabled: boolean; size: number; seed: number };
     fastqFilter?: FastqQualityFilterOptions;
     fastqFilterStats?: FastqQualityFilterStats;
     references: CompiledReferences;

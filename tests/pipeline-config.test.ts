@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cliConfigFromBrowser, normalizeCliConfig } from "../src/pipeline-config.ts";
+import { cliConfigFromBrowser, cliStateFromPostAnalysis, normalizeCliConfig } from "../src/pipeline-config.ts";
+import { DEFAULT_MISSING_ALLELE_OPTIONS } from "../src/germline-evidence.ts";
+import { DEFAULT_REPERTOIRE_SELECTION } from "../src/repertoire-selection.ts";
+import type { PostAnalysisSessionSnapshot } from "../src/session-state.ts";
+import type { DatasetManifestEntry } from "../src/study-design.ts";
 import type { CompiledReferences } from "../src/reference-pack.ts";
 import { DEFAULT_PIPELINE_PLAN } from "../src/study-design.ts";
 
@@ -35,7 +39,7 @@ test("browser CLI export preserves exact references, methods, and sample-to-dono
     studyName:"vaccine study",
     studyDesign:"longitudinal",
     datasets:[
-      {datasetId:"d0",inputName:"day0.fastq.gz",sampleId:"day_0",subjectId:"person_1",cohort:"vaccinated",timepoint:"0",compartment:"blood"},
+      {datasetId:"d0",inputName:"day0.member.fastq.gz",inputPath:"study.fastq.gz",inputFormat:"fastq",gzipRange:{start:0,end:1234},sampleId:"day_0",subjectId:"person_1",cohort:"vaccinated",timepoint:"0",compartment:"blood"},
       {datasetId:"d30",inputName:"day30.fastq.gz",sampleId:"day_30",subjectId:"person_1",cohort:"vaccinated",timepoint:"30",compartment:"lymph"},
     ],
     references,
@@ -46,14 +50,58 @@ test("browser CLI export preserves exact references, methods, and sample-to-dono
     assignerStrategy:"aer",
     minimumIdentity:0.7,
     strand:0,
+    fastqFilter:{enabled:true,maximumExpectedErrors:0.2,phredOffset:33,trim3Prime:{enabled:true,windowSize:6,minimumMeanPhred:25,minimumLength:100}},
+    subsample:{enabled:true,size:12_345,seed:19},
     doubleD:{mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8},
     pipeline:{...DEFAULT_PIPELINE_PLAN,enabled:true,selection:{...DEFAULT_PIPELINE_PLAN.selection,enabled:true,sampleId:"day_30"}},
   });
   assert.equal(config.output.prefix,"vaccine-study");
   assert.equal(config.inputs[0].subjectId,config.inputs[1].subjectId);
+  assert.equal(config.inputs[0].path,"study.fastq.gz");
+  assert.equal(config.inputs[0].inputName,"day0.member.fastq.gz");
+  assert.deepEqual(config.inputs[0].gzipRange,{start:0,end:1234});
   assert.equal(config.references.inline?.V,references.V);
   assert.equal(config.references.inline?.J,references.J);
   assert.equal(config.pipeline.selection.enabled,true);
   assert.equal(config.pipeline.selection.sampleId,"day_30");
   assert.equal(config.annotation.workers,3);
+  assert.equal(config.annotation.airrMode,"reannotate");
+  assert.equal(config.preprocessing.fastqFilter.trim3Prime.minimumMeanPhred,25);
+  assert.deepEqual(config.preprocessing.subsample,{enabled:true,size:12_345,seed:19});
+});
+
+test("completed interactive settings map back to executable CLI fields without losing advanced options",()=>{
+  const post={
+    workingStages:[],
+    collapse:{mode:"indel",options:{dedupKey:"cdr3",collapseScope:"cohort",respectConstantCall:false,denoiseErrorRate:0.012,denoiseAlpha:0.02,denoiseResolution:"gene",denoiseAmbiguity:"top",minimumParentCount:7,denoiseAmbiguousPolicy:"retain",denoiseUnresolvedPolicy:"retain",fadNeighborThreshold:1.5,fadMethod:1,expectedZeroErrorFraction:0.9,maximumDenoiseDistance:2,maximumEditDistance:4,minimumIndelParentRatio:3,denoiseCandidateCap:1234}},
+    chimera:{options:{segment:"J",method:"DB",priorProbability:0.08,baseMutationProbability:0.04,mutationRates:"0.01,0.03",mutationSwitchProbability:0.02,minDfr:4,detailed:true,retainUnevaluated:false,uploadedMsaName:"j.msa.fasta"},msa:">IGHJ1*01\nAC-G\n>IGHJ2*01\nACTG\n",filterThreshold:0.81},
+    selection:{options:{...DEFAULT_REPERTOIRE_SELECTION,motif:"CAR",motifSyntax:"regex"}},
+    lineage:{options:{identity:0.91,resolution:"allele",ambiguity:"strict",productiveOnly:false,candidateCap:4321,lineageScope:"global"}},
+    shm:{metric:"synonymous",dashboard:{}},
+    missingAlleles:{options:{...DEFAULT_MISSING_ALLELE_OPTIONS,minimumIndependentUnits:11},dashboard:{}},
+  } as unknown as PostAnalysisSessionSnapshot;
+  // The browser may have started in interactive mode; only stages with a
+  // committed result should become enabled in its Results-page export.
+  const state=cliStateFromPostAnalysis({...DEFAULT_PIPELINE_PLAN,enabled:false},post);
+  const config=cliConfigFromBrowser({studyName:"interactive",studyDesign:"custom",datasets:[{datasetId:"d",inputName:"reads.airr.tsv",sampleId:"s",subjectId:"p",cohort:"",timepoint:""}],references,species:"Homo sapiens",scope:"IGH",workers:2,callingProfile:"truth_optimized",assignerStrategy:"aer",minimumIdentity:0.6,strand:0,doubleD:{mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8},...state});
+  assert.equal(config.pipeline.collapse.mode,"indel");
+  assert.equal(config.pipeline.collapse.scope,"cohort");
+  assert.equal(config.pipeline.collapse.denoise.maximumEditDistance,4);
+  assert.equal(config.pipeline.chimera.segment,"J");
+  assert.equal(config.pipeline.chimera.posteriorThreshold,0.81);
+  assert.equal(config.pipeline.chimera.minimumDfr,4);
+  assert.equal(config.pipeline.chimera.detailed,true);
+  assert.equal(config.pipeline.chimera.uploadedMsaName,"j.msa.fasta");
+  assert.equal(config.pipeline.selection.motif,"CAR");
+  assert.equal(config.pipeline.lineage.maxCandidateComparisons,4321);
+  assert.equal(config.pipeline.lineage.scope,"global");
+  assert.equal(config.pipeline.shm.metric,"synonymous");
+  assert.equal(config.pipeline.missingAlleles.minimumIndependentUnits,11);
+});
+
+test("pre-run export embeds a pasted dataset instead of emitting an unusable text-file path",()=>{
+  const pasted={datasetId:"paste",inputName:"pasted-sequences.txt",inputPath:"pasted-sequences.txt",inputFormat:"fasta",sampleId:"sample",subjectId:"donor",cohort:"",timepoint:"",source:">read\nACGT\n"} as DatasetManifestEntry & {source:string};
+  const config=cliConfigFromBrowser({studyName:"paste",studyDesign:"independent",datasets:[pasted],references,species:"Homo sapiens",scope:"IGH",workers:1,callingProfile:"truth_optimized",assignerStrategy:"aer",minimumIdentity:0.6,strand:0,doubleD:{mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8},pipeline:{...DEFAULT_PIPELINE_PLAN,enabled:true}});
+  assert.equal(config.inputs[0].format,"fasta");
+  assert.equal(config.inputs[0].inline,">read\nACGT\n");
 });

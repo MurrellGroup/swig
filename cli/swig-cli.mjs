@@ -9,6 +9,7 @@ import { Worker } from "node:worker_threads";
 import { createGunzip, gunzipSync, gzipSync } from "node:zlib";
 import { once } from "node:events";
 import { availableParallelism } from "node:os";
+import { Readable } from "node:stream";
 //#region src/study-design.ts
 const DEFAULT_PIPELINE_PLAN = {
 	enabled: false,
@@ -83,6 +84,72 @@ function datasetScopeValue(record, scope = "global") {
 	if (scope === "sample") return record.sampleId || record.datasetId || "legacy";
 	if (scope === "subject") return record.subjectId || record.sampleId || record.datasetId || "legacy";
 	return record.cohort || record.subjectId || record.sampleId || record.datasetId || "legacy";
+}
+const METADATA_FIELDS = [
+	"swig_dataset_id",
+	"sample_id",
+	"subject_id",
+	"swig_cohort",
+	"swig_timepoint",
+	"swig_compartment",
+	"swig_source_sequence_id"
+];
+function normalizedLines(body) {
+	return (typeof body === "string" ? body : new TextDecoder().decode(body)).split("\n").map((line) => line.replace(/\r$/, "")).filter(Boolean);
+}
+function replaceOrAppend(values, positions, field, value) {
+	const position = positions.get(field);
+	if (position === void 0) values.push(value);
+	else values[position] = value;
+}
+/** Adds study metadata to a SwiftIG AIRR batch without materializing the input file. */
+function annotateAirrBatch(headerLine, body, dataset) {
+	const headers = headerLine.replace(/\r$/, "").split("	");
+	const positions = new Map(headers.map((field, index) => [field, index]));
+	for (const field of METADATA_FIELDS) if (!positions.has(field)) headers.push(field);
+	const sourceSequencePosition = positions.get("sequence_id");
+	const bodyText = normalizedLines(body).map((line) => {
+		const values = line.split("	");
+		const sourceSequenceId = sourceSequencePosition === void 0 ? "" : values[sourceSequencePosition] ?? "";
+		if (sourceSequencePosition !== void 0) values[sourceSequencePosition] = `${dataset.datasetId}::${sourceSequenceId || "record"}`;
+		replaceOrAppend(values, positions, "swig_dataset_id", dataset.datasetId);
+		replaceOrAppend(values, positions, "sample_id", dataset.sampleId);
+		replaceOrAppend(values, positions, "subject_id", dataset.subjectId);
+		replaceOrAppend(values, positions, "swig_cohort", dataset.cohort);
+		replaceOrAppend(values, positions, "swig_timepoint", dataset.timepoint ?? "");
+		replaceOrAppend(values, positions, "swig_compartment", dataset.compartment ?? "");
+		replaceOrAppend(values, positions, "swig_source_sequence_id", sourceSequenceId);
+		return values.join("	");
+	}).join("\n");
+	return {
+		header: headers.join("	"),
+		body: bodyText ? `${bodyText}\n` : ""
+	};
+}
+/** Mirrors metadata and collision-safe IDs into the sparse double-D table. */
+function annotateDoubleDBatch(headerLine, body, dataset) {
+	const headers = headerLine.replace(/\r$/, "").split("	");
+	const positions = new Map(headers.map((field, index) => [field, index]));
+	for (const field of METADATA_FIELDS.slice(0, 6)) if (!positions.has(field)) headers.push(field);
+	const sequencePosition = positions.get("sequence_id");
+	const bodyText = normalizedLines(body).map((line) => {
+		const values = line.split("	");
+		if (sequencePosition !== void 0) values[sequencePosition] = `${dataset.datasetId}::${values[sequencePosition] || "record"}`;
+		replaceOrAppend(values, positions, "swig_dataset_id", dataset.datasetId);
+		replaceOrAppend(values, positions, "sample_id", dataset.sampleId);
+		replaceOrAppend(values, positions, "subject_id", dataset.subjectId);
+		replaceOrAppend(values, positions, "swig_cohort", dataset.cohort);
+		replaceOrAppend(values, positions, "swig_timepoint", dataset.timepoint ?? "");
+		replaceOrAppend(values, positions, "swig_compartment", dataset.compartment ?? "");
+		return values.join("	");
+	}).join("\n");
+	return {
+		header: headers.join("	"),
+		body: bodyText ? `${bodyText}\n` : ""
+	};
+}
+function stableDatasetSeed(baseSeed, datasetIndex) {
+	return Math.trunc(baseSeed) + Math.imul(datasetIndex + 1, 1831565813) | 0;
 }
 //#endregion
 //#region src/allele-refinement/evidence.ts
@@ -3433,6 +3500,221 @@ function repertoireRowMatches(row, options, doubleD) {
 	}
 	return true;
 }
+//#endregion
+//#region src/sequence-stream.ts
+const DEFAULT_FASTQ_QUALITY_FILTER = {
+	enabled: false,
+	maximumExpectedErrors: .01,
+	phredOffset: 33,
+	trim3Prime: {
+		enabled: false,
+		windowSize: 4,
+		minimumMeanPhred: 20,
+		minimumLength: 50
+	}
+};
+function emptyFastqQualityFilterStats(enabled = false, applicable = false) {
+	return {
+		enabled,
+		applicable,
+		recordsEvaluated: 0,
+		recordsRetained: 0,
+		recordsPassedThrough: 0,
+		recordsRejectedExpectedErrors: 0,
+		recordsRejectedMinimumLength: 0,
+		recordsTrimmed: 0,
+		basesTrimmed: 0
+	};
+}
+function addFastqQualityFilterStats(target, source) {
+	return {
+		enabled: target.enabled || source.enabled,
+		applicable: target.applicable || source.applicable,
+		recordsEvaluated: target.recordsEvaluated + source.recordsEvaluated,
+		recordsRetained: target.recordsRetained + source.recordsRetained,
+		recordsPassedThrough: target.recordsPassedThrough + source.recordsPassedThrough,
+		recordsRejectedExpectedErrors: target.recordsRejectedExpectedErrors + source.recordsRejectedExpectedErrors,
+		recordsRejectedMinimumLength: target.recordsRejectedMinimumLength + source.recordsRejectedMinimumLength,
+		recordsTrimmed: target.recordsTrimmed + source.recordsTrimmed,
+		basesTrimmed: target.basesTrimmed + source.basesTrimmed
+	};
+}
+async function* fastaRecords(source) {
+	let header = "";
+	let sequence = [];
+	for await (const line of source) {
+		if (line.startsWith(">")) {
+			if (header) {
+				const joined = sequence.join("");
+				if (!joined) throw new Error(`Empty FASTA record: ${header.slice(1).trim() || "unnamed sequence"}.`);
+				yield `${header}\n${joined}\n`;
+			}
+			header = line;
+			sequence = [];
+			continue;
+		}
+		if (!line.trim()) continue;
+		if (!header) throw new Error("Expected a FASTA header beginning with '>'.");
+		sequence.push(line.replace(/\s/g, ""));
+	}
+	if (header) {
+		const joined = sequence.join("");
+		if (!joined) throw new Error(`Empty FASTA record: ${header.slice(1).trim() || "unnamed sequence"}.`);
+		yield `${header}\n${joined}\n`;
+	}
+}
+async function* fastqRecords(source) {
+	let header = "";
+	let plus = "";
+	let sequence = [];
+	let quality = [];
+	let sequenceLength = 0;
+	let qualityLength = 0;
+	let state = "header";
+	for await (const line of source) {
+		if (state === "header") {
+			if (!line.trim()) continue;
+			if (!line.startsWith("@")) throw new Error("Expected a FASTQ header beginning with '@'.");
+			header = line;
+			plus = "";
+			sequence = [];
+			quality = [];
+			sequenceLength = 0;
+			qualityLength = 0;
+			state = "sequence";
+			continue;
+		}
+		if (state === "sequence") {
+			if (line.startsWith("+")) {
+				if (!sequenceLength) throw new Error(`Empty FASTQ sequence: ${header.slice(1).trim() || "unnamed sequence"}.`);
+				plus = line;
+				state = "quality";
+			} else {
+				const normalized = line.replace(/\s/g, "");
+				sequence.push(normalized);
+				sequenceLength += normalized.length;
+			}
+			continue;
+		}
+		quality.push(line);
+		qualityLength += line.length;
+		if (qualityLength > sequenceLength) throw new Error(`FASTQ sequence/quality length mismatch: ${header.slice(1).trim() || "unnamed sequence"}.`);
+		if (qualityLength === sequenceLength) {
+			yield {
+				header,
+				sequence: sequence.join(""),
+				plus,
+				quality: quality.join("")
+			};
+			state = "header";
+		}
+	}
+	if (state === "sequence") throw new Error(`The FASTQ input ended before a '+' line for ${header.slice(1).trim() || "a sequence"}.`);
+	if (state === "quality") throw new Error(`The FASTQ quality string is truncated for ${header.slice(1).trim() || "a sequence"}.`);
+}
+async function* airrRecords(source) {
+	let header = "";
+	let delimiter = "	";
+	let sequenceColumn = -1;
+	for await (const line of source) {
+		if (!header) {
+			if (!line.trim()) continue;
+			header = line;
+			delimiter = header.includes("	") ? "	" : ",";
+			sequenceColumn = header.split(delimiter).indexOf("sequence");
+			if (sequenceColumn < 0) throw new Error("AIRR input requires a 'sequence' column.");
+			continue;
+		}
+		if (!line.trim()) continue;
+		if (line.split(delimiter)[sequenceColumn]) yield {
+			header,
+			row: line
+		};
+	}
+}
+function expectedErrorTable(offset) {
+	const table = new Float64Array(127);
+	for (let code = offset; code < table.length; code += 1) table[code] = 10 ** (-(code - offset) / 10);
+	return table;
+}
+const PHRED33_EXPECTED_ERRORS = expectedErrorTable(33);
+const PHRED64_EXPECTED_ERRORS = expectedErrorTable(64);
+function canonicalFastq(record, end = record.sequence.length) {
+	if (end === record.sequence.length) return `${record.header}\n${record.sequence}\n${record.plus}\n${record.quality}\n`;
+	return `${record.header}\n${record.sequence.slice(0, end)}\n${record.plus}\n${record.quality.slice(0, end)}\n`;
+}
+/**
+* Apply the FASTQ filter without constructing an output record for rejected
+* reads. The full-read expected-error sum is accumulated once; when 3' trim
+* removes a base, its contribution is subtracted before the threshold test.
+*/
+function filterFastqRecord(record, options, stats) {
+	stats.recordsEvaluated += 1;
+	const offset = options.phredOffset;
+	const errorTable = offset === 64 ? PHRED64_EXPECTED_ERRORS : PHRED33_EXPECTED_ERRORS;
+	const quality = record.quality;
+	const trim = options.trim3Prime;
+	const windowSize = Math.max(1, Math.floor(trim.windowSize));
+	let end = quality.length;
+	const initialWindowStart = Math.max(0, end - windowSize);
+	let windowStart = initialWindowStart;
+	let windowPhredSum = 0;
+	let expectedErrors = 0;
+	for (let index = 0; index < quality.length; index += 1) {
+		const code = quality.charCodeAt(index);
+		if (code < offset || code >= errorTable.length) {
+			const name = record.header.slice(1).trim() || "unnamed sequence";
+			throw new Error(`FASTQ quality character outside Phred+${offset} range in ${name} at base ${index + 1}.`);
+		}
+		expectedErrors += errorTable[code];
+		if (trim.enabled && index >= initialWindowStart) windowPhredSum += code - offset;
+	}
+	if (trim.enabled) {
+		while (end > 0 && windowPhredSum < trim.minimumMeanPhred * (end - windowStart)) {
+			const removedCode = quality.charCodeAt(end - 1);
+			expectedErrors -= errorTable[removedCode];
+			windowPhredSum -= removedCode - offset;
+			end -= 1;
+			const nextWindowStart = Math.max(0, end - windowSize);
+			if (nextWindowStart < windowStart) {
+				const addedCode = quality.charCodeAt(nextWindowStart);
+				windowPhredSum += addedCode - offset;
+			}
+			windowStart = nextWindowStart;
+		}
+		if (end < Math.max(1, Math.floor(trim.minimumLength))) {
+			stats.recordsRejectedMinimumLength += 1;
+			return null;
+		}
+	}
+	if (Math.max(0, expectedErrors) > options.maximumExpectedErrors) {
+		stats.recordsRejectedExpectedErrors += 1;
+		return null;
+	}
+	const trimmedBases = quality.length - end;
+	if (trimmedBases) {
+		stats.recordsTrimmed += 1;
+		stats.basesTrimmed += trimmedBases;
+	}
+	stats.recordsRetained += 1;
+	return canonicalFastq(record, end);
+}
+function seededRandom(seed) {
+	let value = Math.trunc(seed) >>> 0;
+	return () => {
+		value = value + 1831565813 >>> 0;
+		let mixed = value;
+		mixed = Math.imul(mixed ^ mixed >>> 15, mixed | 1);
+		mixed ^= mixed + Math.imul(mixed ^ mixed >>> 7, mixed | 61);
+		return ((mixed ^ mixed >>> 14) >>> 0) / 4294967296;
+	};
+}
+function validateFastqQualityFilter(options) {
+	if (!options.enabled) return;
+	if (!Number.isFinite(options.maximumExpectedErrors) || options.maximumExpectedErrors < 0) throw new Error("Maximum FASTQ expected errors must be a non-negative number.");
+	if (options.phredOffset !== 33 && options.phredOffset !== 64) throw new Error("FASTQ quality encoding must be Phred+33 or Phred+64.");
+	if (options.trim3Prime.enabled && (!Number.isFinite(options.trim3Prime.windowSize) || options.trim3Prime.windowSize < 1 || !Number.isFinite(options.trim3Prime.minimumMeanPhred) || options.trim3Prime.minimumMeanPhred < 0 || !Number.isFinite(options.trim3Prime.minimumLength) || options.trim3Prime.minimumLength < 1)) throw new Error("FASTQ 3' trimming requires a positive window and retained length, and a non-negative mean Phred threshold.");
+}
 const DEFAULT_DENOISE = {
 	mode: "conservative",
 	errorRate: .00473,
@@ -3462,6 +3744,17 @@ const DEFAULT_CLI_CONFIG = {
 		species: "Homo sapiens",
 		scope: "BCR"
 	},
+	preprocessing: {
+		fastqFilter: {
+			...DEFAULT_FASTQ_QUALITY_FILTER,
+			trim3Prime: { ...DEFAULT_FASTQ_QUALITY_FILTER.trim3Prime }
+		},
+		subsample: {
+			enabled: false,
+			size: 1e4,
+			seed: 1
+		}
+	},
 	annotation: {
 		workers: 0,
 		batchRecords: 2e3,
@@ -3469,6 +3762,7 @@ const DEFAULT_CLI_CONFIG = {
 		assignerStrategy: "aer",
 		minimumIdentity: .6,
 		strand: 0,
+		airrMode: "preserve",
 		doubleD: {
 			mode: "off",
 			minimumVjSpan: 40,
@@ -3488,7 +3782,7 @@ const DEFAULT_CLI_CONFIG = {
 			...DEFAULT_PIPELINE_PLAN.chimera,
 			enabled: false,
 			priorProbability: .05,
-			baseMutationProbability: .005,
+			baseMutationProbability: .05,
 			mutationRates: [
 				0,
 				.0179,
@@ -3506,8 +3800,9 @@ const DEFAULT_CLI_CONFIG = {
 				.2321,
 				.25
 			],
-			mutationSwitchProbability: .01,
-			minimumDfr: 1
+			mutationSwitchProbability: 0,
+			minimumDfr: 1,
+			detailed: false
 		},
 		selection: {
 			...DEFAULT_REPERTOIRE_SELECTION,
@@ -3556,6 +3851,9 @@ function normalizeCliConfig(value) {
 	const lineage = value.pipeline?.lineage ?? {};
 	const shm = value.pipeline?.shm ?? {};
 	const missing = value.pipeline?.missingAlleles ?? {};
+	const fastqFilter = value.preprocessing?.fastqFilter ?? {};
+	const trim3Prime = fastqFilter.trim3Prime ?? {};
+	const subsample = value.preprocessing?.subsample ?? {};
 	const inputs = (value.inputs ?? []).map((input, index) => {
 		const stem = input.path.split(/[\\/]/).pop()?.replace(/\.(?:fasta?|fna|fas|fastq|fq|airr\.tsv|tsv)(?:\.gz)?$/i, "") || `dataset-${index + 1}`;
 		const datasetId = safeIdentifier(input.datasetId ?? stem, `dataset-${index + 1}`);
@@ -3582,6 +3880,13 @@ function normalizeCliConfig(value) {
 	annotation.workers = Math.max(0, Math.floor(finite(annotation.workers, 0)));
 	annotation.batchRecords = Math.max(1, Math.floor(finite(annotation.batchRecords, 2e3)));
 	annotation.minimumIdentity = Math.max(0, Math.min(1, finite(annotation.minimumIdentity, .6)));
+	const normalizedSubsample = {
+		...DEFAULT_CLI_CONFIG.preprocessing.subsample,
+		...subsample
+	};
+	normalizedSubsample.enabled = Boolean(normalizedSubsample.enabled);
+	normalizedSubsample.size = Math.max(1, Math.floor(finite(normalizedSubsample.size, 1e4)));
+	normalizedSubsample.seed = Math.trunc(finite(normalizedSubsample.seed, 1));
 	return {
 		...DEFAULT_CLI_CONFIG,
 		...value,
@@ -3593,6 +3898,17 @@ function normalizeCliConfig(value) {
 			...value.references,
 			inline: value.references?.inline ? { ...value.references.inline } : void 0,
 			files: value.references?.files ? { ...value.references.files } : void 0
+		},
+		preprocessing: {
+			fastqFilter: {
+				...DEFAULT_CLI_CONFIG.preprocessing.fastqFilter,
+				...fastqFilter,
+				trim3Prime: {
+					...DEFAULT_CLI_CONFIG.preprocessing.fastqFilter.trim3Prime,
+					...trim3Prime
+				}
+			},
+			subsample: normalizedSubsample
 		},
 		annotation,
 		pipeline: {
@@ -4120,7 +4436,7 @@ var ShmAccumulator = class {
 };
 //#endregion
 //#region cli-src/swig-cli.mjs
-const VERSION = "0.29.4";
+const VERSION = "0.30.0";
 const CLI_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 function defaultCliAssets() {
 	const directory = join(CLI_DIRECTORY, "assets");
@@ -4170,95 +4486,118 @@ function detectFormat(path, requested = "auto") {
 	if ([".tsv", ".airr"].includes(extension) || plain.toLowerCase().endsWith(".airr.tsv")) return "airr";
 	throw new Error(`Cannot infer the input format for ${path}; set format to fasta, fastq, or airr in the config.`);
 }
-function inputLines(path) {
-	const raw = createReadStream(path);
+function inputLines(input) {
+	const range = input.gzipRange;
+	if (typeof input.inline === "string") {
+		if (range) throw new Error(`${input.path} cannot combine inline input with gzipRange.`);
+		return createInterface({
+			input: Readable.from([input.inline]),
+			crlfDelay: Infinity
+		});
+	}
+	if (range && (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end) || range.start < 0 || range.end <= range.start)) throw new Error(`${input.path} has an invalid gzipRange.`);
+	const raw = createReadStream(input.path, range ? {
+		start: range.start,
+		end: range.end - 1
+	} : void 0);
 	return createInterface({
-		input: /\.gz$/i.test(path) ? raw.pipe(createGunzip()) : raw,
+		input: /\.gz$/i.test(input.path) || range ? raw.pipe(createGunzip()) : raw,
 		crlfDelay: Infinity
 	});
 }
-async function* sequenceBatches(input, batchRecords) {
+async function* sequenceBatches(input, batchRecords, preprocessing, airrMode, datasetIndex, state) {
 	const format = detectFormat(input.path, input.format);
-	const lines = inputLines(input.path);
-	if (format === "airr") {
-		let header = "";
-		let body = [];
-		for await (const line of lines) {
-			if (!header) {
-				if (!line.trim()) continue;
-				header = line.replace(/\r$/, "");
-				continue;
-			}
-			if (!line) continue;
-			body.push(line);
-			if (body.length >= batchRecords) {
+	const lines = inputLines(input);
+	const filter = preprocessing.fastqFilter;
+	validateFastqQualityFilter(filter);
+	state.fastqFilter = emptyFastqQualityFilterStats(filter.enabled, filter.enabled && format === "fastq");
+	const parsed = async function* () {
+		if (format === "airr") {
+			for await (const record of airrRecords(lines)) {
+				state.inputRecords += 1;
+				state.eligibleRecords += 1;
+				if (filter.enabled) {
+					state.fastqFilter.recordsRetained += 1;
+					state.fastqFilter.recordsPassedThrough += 1;
+				}
+				const delimiter = record.header.includes("	") ? "	" : ",";
+				const header = delimiter === "	" ? record.header : record.header.split(delimiter).join("	");
+				const row = delimiter === "	" ? record.row : record.row.split(delimiter).join("	");
 				yield {
-					format,
-					count: body.length,
-					header,
-					body: body.join("\n") + "\n"
+					ordinal: state.inputRecords - 1,
+					text: `${row}\n`,
+					header
 				};
-				body = [];
+			}
+			return;
+		}
+		if (format === "fasta") {
+			for await (const text of fastaRecords(lines)) {
+				state.inputRecords += 1;
+				state.eligibleRecords += 1;
+				if (filter.enabled) {
+					state.fastqFilter.recordsRetained += 1;
+					state.fastqFilter.recordsPassedThrough += 1;
+				}
+				yield {
+					ordinal: state.inputRecords - 1,
+					text
+				};
+			}
+			return;
+		}
+		for await (const record of fastqRecords(lines)) {
+			state.inputRecords += 1;
+			const text = filter.enabled ? filterFastqRecord(record, filter, state.fastqFilter) : canonicalFastq(record);
+			if (text !== null) {
+				state.eligibleRecords += 1;
+				yield {
+					ordinal: state.inputRecords - 1,
+					text
+				};
 			}
 		}
-		if (!header.includes("	")) throw new Error(`${input.path} is not an AIRR TSV.`);
-		if (body.length) yield {
-			format,
-			count: body.length,
-			header,
-			body: body.join("\n") + "\n"
-		};
-		return;
+	};
+	let selected = parsed();
+	if (preprocessing.subsample.enabled) {
+		const size = preprocessing.subsample.size;
+		const random = seededRandom(stableDatasetSeed(preprocessing.subsample.seed, datasetIndex));
+		const reservoir = [];
+		for await (const record of selected) if (reservoir.length < size) reservoir.push(record);
+		else {
+			const replacement = Math.floor(random() * state.eligibleRecords);
+			if (replacement < size) reservoir[replacement] = record;
+		}
+		reservoir.sort((left, right) => left.ordinal - right.ordinal);
+		selected = (async function* () {
+			yield* reservoir;
+		})();
 	}
-	if (format === "fastq") {
-		let record = [];
-		let batch = [];
-		let count = 0;
-		for await (const line of lines) {
-			record.push(line);
-			if (record.length < 4) continue;
-			if (!record[0].startsWith("@") || !record[2].startsWith("+")) throw new Error(`${input.path} contains a malformed four-line FASTQ record near record ${count + 1}.`);
-			batch.push(record.join("\n"));
-			record = [];
-			count += 1;
-			if (batch.length >= batchRecords) {
-				yield {
-					format,
-					count: batch.length,
-					text: batch.join("\n") + "\n"
-				};
-				batch = [];
-			}
-		}
-		if (record.length) throw new Error(`${input.path} ends inside a FASTQ record.`);
-		if (batch.length) yield {
+	let batch = [];
+	const emit = () => {
+		const header = format === "airr" ? batch[0]?.header : void 0;
+		const body = batch.map((record) => record.text).join("");
+		const result = format === "airr" && airrMode === "preserve" ? {
 			format,
 			count: batch.length,
-			text: batch.join("\n") + "\n"
+			header,
+			body
+		} : {
+			format,
+			count: batch.length,
+			text: header ? `${header}\n${body}` : body
 		};
-		return;
-	}
-	let current = [];
-	let batch = [];
-	for await (const line of lines) if (line.startsWith(">")) {
-		if (current.length) batch.push(current.join("\n"));
-		current = [line];
-		if (batch.length >= batchRecords) {
-			yield {
-				format,
-				count: batch.length,
-				text: batch.join("\n") + "\n"
-			};
-			batch = [];
-		}
-	} else if (current.length) current.push(line);
-	else if (line.trim()) throw new Error(`${input.path} has sequence text before its first FASTA header.`);
-	if (current.length) batch.push(current.join("\n"));
-	if (batch.length) yield {
-		format,
-		count: batch.length,
-		text: batch.join("\n") + "\n"
+		batch = [];
+		return result;
 	};
+	for await (const record of selected) {
+		batch.push(record);
+		state.selectedRecords += 1;
+		if (batch.length >= batchRecords) yield emit();
+	}
+	if (batch.length) yield emit();
+	if (!state.inputRecords) throw new Error(`No sequence records were found in ${input.path}.`);
+	if (!state.eligibleRecords && state.fastqFilter.applicable) throw new Error(`The FASTQ quality filter rejected all ${state.inputRecords.toLocaleString()} reads in ${input.path}.`);
 }
 var WasmPool = class {
 	constructor(size, init) {
@@ -4430,10 +4769,17 @@ function applyAlleles(rows, result, policy, threshold, headers) {
 		});
 	}
 }
-function runChimera(rows, activeMask, config, scope, headers) {
-	const msaText = config.uploadedMsa?.trim();
-	if (!msaText) throw new Error("CLI chimera filtering requires an aligned reference MSA in pipeline.chimera.uploadedMsa. A browser export includes the exact MSA after CHMMAIRRa has been run.");
-	const msa = prepareReferenceMsa(msaText);
+function runChimera(rows, activeMask, config, scope, headers, references) {
+	const selectedSegment = config.segment.toUpperCase();
+	const msaText = config.uploadedMsa?.trim() || (config.msaSource === "selected" ? references[selectedSegment]?.trim() : "");
+	if (!msaText) throw new Error("CLI chimera filtering requires either pipeline.chimera.uploadedMsa or an aligned selected-segment reference.");
+	let msa;
+	try {
+		msa = prepareReferenceMsa(msaText);
+	} catch (error) {
+		if (config.msaSource === "selected" && !config.uploadedMsa?.trim()) throw new Error(`The selected ${selectedSegment} references are not already aligned. Export this pipeline from Swig Web to embed its Kalign MSA, or set pipeline.chimera.uploadedMsa explicitly. ${error instanceof Error ? error.message : String(error)}`);
+		throw error;
+	}
 	const segment = config.segment.toLowerCase();
 	const options = {
 		method: config.model === "auto" ? scope === "TCR" || String(scope).startsWith("TR") ? "DB" : "BW" : config.model,
@@ -4441,11 +4787,12 @@ function runChimera(rows, activeMask, config, scope, headers) {
 		baseMutationProbability: config.baseMutationProbability,
 		mutationRates: config.mutationRates,
 		mutationSwitchProbability: config.mutationSwitchProbability,
-		detailed: false
+		detailed: config.detailed
 	};
 	const cache = /* @__PURE__ */ new Map();
 	let evaluated = 0, flagged = 0, unevaluated = 0;
 	addHeaders(headers, ["swig_chimera_probability", "swig_chimera_status"]);
+	if (config.detailed) addHeaders(headers, ["swig_chimera_starting_reference", "swig_chimera_recombinations"]);
 	for (let ordinal = 0; ordinal < rows.length; ordinal += 1) {
 		if (!activeMask[ordinal]) continue;
 		const row = rows[ordinal], call = row[`${segment}_call`] ?? "", sequence = row[`${segment}_sequence_alignment`] ?? "", germline = row[`${segment}_germline_alignment`] ?? "";
@@ -4463,15 +4810,19 @@ function runChimera(rows, activeMask, config, scope, headers) {
 		}
 		const key = `${call}\0${sequence}\0${germline}`;
 		try {
-			let probability = cache.get(key);
-			if (probability === void 0) {
-				probability = runChmm(msa, threadSequenceToMsa(sequence, germline, call, msa), sequence, germline, options).probability;
-				cache.set(key, probability);
+			let result = cache.get(key);
+			if (result === void 0) {
+				result = runChmm(msa, threadSequenceToMsa(sequence, germline, call, msa), sequence, germline, options);
+				cache.set(key, result);
 			}
-			row.swig_chimera_probability = String(probability);
+			row.swig_chimera_probability = String(result.probability);
 			row.swig_chimera_status = "evaluated";
 			evaluated += 1;
-			if (probability >= config.posteriorThreshold) {
+			if (config.detailed) {
+				row.swig_chimera_starting_reference = result.startingReference;
+				row.swig_chimera_recombinations = result.recombinations.map((event) => `${event.left}->${event.right}@${event.position}`).join(";");
+			}
+			if (result.probability >= config.posteriorThreshold) {
 				activeMask[ordinal] = 0;
 				flagged += 1;
 			}
@@ -4563,7 +4914,7 @@ async function writeLineageStudy(path, manifestPath, headers, rows, activeMask, 
 			references,
 			datasets: config.inputs.map((input) => ({
 				datasetId: input.datasetId,
-				inputName: basename(input.path),
+				inputName: input.inputName || basename(input.path),
 				sampleId: input.sampleId,
 				subjectId: input.subjectId,
 				cohort: input.cohort,
@@ -4598,7 +4949,8 @@ async function runPipeline(config, base, assets) {
 	const outputDirectory = resolveFrom(base, config.output.directory);
 	await mkdir(outputDirectory, { recursive: true });
 	const references = await loadReferences(config, base, assets.referencePackPath);
-	const pool = config.inputs.some((input) => detectFormat(input.path, input.format) !== "airr") ? new WasmPool(config.annotation.workers, {
+	if (config.annotation.airrMode === "preserve" && config.annotation.doubleD.mode !== "off" && config.inputs.some((input) => detectFormat(input.path, input.format) === "airr")) throw new Error("Double-D screening of AIRR input requires annotation.airrMode = \"reannotate\".");
+	const pool = config.inputs.some((input) => detectFormat(input.path, input.format) !== "airr" || config.annotation.airrMode === "reannotate") ? new WasmPool(config.annotation.workers, {
 		wasmPath: assets.wasmPath,
 		references,
 		callingProfile: config.annotation.callingProfile,
@@ -4609,31 +4961,38 @@ async function runPipeline(config, base, assets) {
 	const headers = [];
 	let annotatedRecords = 0;
 	let inputRecords = 0;
+	let eligibleRecords = 0;
+	let fastqFilterStats = emptyFastqQualityFilterStats(config.preprocessing.fastqFilter.enabled, false);
 	try {
-		for (const input of config.inputs) {
-			process.stderr.write(`Annotating ${basename(input.path)} (${input.sampleId}; donor ${input.subjectId})…\n`);
+		for (let datasetIndex = 0; datasetIndex < config.inputs.length; datasetIndex += 1) {
+			const input = config.inputs[datasetIndex];
+			const preserveAirr = detectFormat(input.path, input.format) === "airr" && config.annotation.airrMode === "preserve";
+			process.stderr.write(`${preserveAirr ? "Loading existing AIRR calls from" : "Annotating"} ${input.inputName || basename(input.path)} (${input.sampleId}; donor ${input.subjectId})…\n`);
+			const preprocessingState = {
+				inputRecords: 0,
+				eligibleRecords: 0,
+				selectedRecords: 0,
+				fastqFilter: emptyFastqQualityFilterStats(false, false)
+			};
 			const pending = [];
 			const consume = async (item) => {
 				const result = await item.promise;
-				const table = result.direct ? parseTable(result.header, result.body) : parseTable(result.header, result.body);
-				const doubleD = result.doubleDHeader ? parseTable(result.doubleDHeader, result.doubleDBody) : null;
+				const manifest = {
+					datasetId: input.datasetId,
+					inputName: input.inputName || basename(input.path),
+					sampleId: input.sampleId,
+					subjectId: input.subjectId,
+					cohort: input.cohort,
+					timepoint: input.timepoint,
+					compartment: input.compartment
+				};
+				const annotated = annotateAirrBatch(result.header, result.body, manifest);
+				const table = parseTable(annotated.header, annotated.body);
+				const doubleDAnnotated = result.doubleDHeader ? annotateDoubleDBatch(result.doubleDHeader, result.doubleDBody, manifest) : null;
+				const doubleD = doubleDAnnotated ? parseTable(doubleDAnnotated.header, doubleDAnnotated.body) : null;
 				const ddById = new Map((doubleD?.rows ?? []).map((row) => [row.sequence_id, row]));
 				addHeaders(headers, table.headers);
-				addHeaders(headers, [
-					"swig_dataset_id",
-					"sample_id",
-					"subject_id",
-					"swig_cohort",
-					"swig_timepoint",
-					"swig_compartment"
-				]);
 				for (const row of table.rows) {
-					row.swig_dataset_id = input.datasetId;
-					row.sample_id = input.sampleId;
-					row.subject_id = input.subjectId;
-					row.swig_cohort = input.cohort;
-					row.swig_timepoint = input.timepoint;
-					row.swig_compartment = input.compartment;
 					const dd = ddById.get(row.sequence_id);
 					if (dd) {
 						Object.assign(row, dd);
@@ -4642,10 +5001,9 @@ async function runPipeline(config, base, assets) {
 					rows.push(row);
 				}
 				annotatedRecords += table.rows.length;
-				inputRecords += item.count;
 			};
-			for await (const batch of sequenceBatches(input, config.annotation.batchRecords)) {
-				const promise = batch.format === "airr" ? Promise.resolve({
+			for await (const batch of sequenceBatches(input, config.annotation.batchRecords, config.preprocessing, config.annotation.airrMode, datasetIndex, preprocessingState)) {
+				const promise = batch.format === "airr" && config.annotation.airrMode === "preserve" ? Promise.resolve({
 					direct: true,
 					header: batch.header,
 					body: batch.body,
@@ -4654,7 +5012,7 @@ async function runPipeline(config, base, assets) {
 				}) : pool.run({
 					text: batch.text,
 					count: batch.count,
-					format: batch.format === "fasta" ? 1 : 2,
+					format: batch.format === "fasta" ? 1 : batch.format === "fastq" ? 2 : 3,
 					minimumIdentity: config.annotation.minimumIdentity,
 					strand: config.annotation.strand,
 					doubleD: config.annotation.doubleD
@@ -4666,6 +5024,9 @@ async function runPipeline(config, base, assets) {
 				if (pending.length >= Math.max(2, config.annotation.workers * 2)) await consume(pending.shift());
 			}
 			while (pending.length) await consume(pending.shift());
+			inputRecords += preprocessingState.inputRecords;
+			eligibleRecords += preprocessingState.eligibleRecords;
+			fastqFilterStats = addFastqQualityFilterStats(fastqFilterStats, preprocessingState.fastqFilter);
 		}
 	} finally {
 		await pool?.close();
@@ -4715,7 +5076,7 @@ async function runPipeline(config, base, assets) {
 	let chimeraSummary = null;
 	if (config.pipeline.chimera.enabled) {
 		process.stderr.write("Filtering candidate chimeras…\n");
-		chimeraSummary = runChimera(rows, activeMask, config.pipeline.chimera, config.references.scope, headers);
+		chimeraSummary = runChimera(rows, activeMask, config.pipeline.chimera, config.references.scope, headers, references);
 	}
 	if (config.pipeline.selection.enabled) {
 		const errors = validateRepertoireSelection(config.pipeline.selection);
@@ -4788,9 +5149,17 @@ async function runPipeline(config, base, assets) {
 		version: VERSION,
 		completedAt: (/* @__PURE__ */ new Date()).toISOString(),
 		inputRecords,
+		eligibleRecords,
 		annotatedRecords,
 		retainedRecords: retained,
 		lineages: lineages?.lineageCount ?? 0,
+		preprocessing: {
+			subsample: config.preprocessing.subsample,
+			fastqFilter: {
+				options: config.preprocessing.fastqFilter,
+				stats: fastqFilterStats
+			}
+		},
 		collapse: collapseResult ? {
 			mode: collapseResult.mode,
 			inputRecords: collapseResult.inputRecords,
@@ -4871,7 +5240,7 @@ async function runCli(assets = defaultCliAssets()) {
 	if (config.annotation.workers === 0) config.annotation.workers = Math.max(1, Math.min(8, availableParallelism()));
 	config.inputs = config.inputs.map((input) => ({
 		...input,
-		path: resolveFrom(base, input.path)
+		path: typeof input.inline === "string" ? input.path : resolveFrom(base, input.path)
 	}));
 	await runPipeline(config, base, assets);
 }

@@ -85,7 +85,8 @@ import {
   type GzipMemberInspection,
 } from "./gzip-members";
 import { prepareReferenceMsa } from "./post-analysis-core";
-import { cliConfigFromBrowser } from "./pipeline-config";
+import { runKalignTask } from "./biowasm-task-runtime";
+import { cliConfigFromBrowser, cliStateFromPostAnalysis } from "./pipeline-config";
 import { decodeLineageStudy, type LineageStudyManifest } from "./lineage-study";
 import { LineageStudyPage } from "./lineage-study-page";
 import { ReferenceAlleleExclusionEditor } from "./reference-allele-exclusion";
@@ -139,6 +140,9 @@ interface InputData {
   format: InputFormat;
   formatCode: 1 | 2 | 3;
   size: number;
+  inputPath?: string;
+  inputFormat?: "auto" | "fasta" | "fastq" | "airr";
+  gzipRange?: { start: number; end: number };
   gzipMemberCount?: number;
   gzipMembersMerged?: boolean;
 }
@@ -194,7 +198,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.29.0";
+const APP_VERSION = "0.30.0";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -411,6 +415,10 @@ function formatFromName(name: string): { format: InputFormat; formatCode: 1 | 2 
   return null;
 }
 
+function cliInputFormat(formatCode: 1|2|3): "fasta"|"fastq"|"airr" {
+  return formatCode===1?"fasta":formatCode===2?"fastq":"airr";
+}
+
 function detectFormat(text: string): { format: InputFormat; formatCode: 1 | 2 | 3 } {
   const first = text.trimStart()[0];
   if (first === ">") return { format: "FASTA", formatCode: 1 };
@@ -453,7 +461,7 @@ function inspectText(name: string, text: string, size = text.length): InputData 
   const detected = detectFormat(text);
   const count = countTextRecords(text, detected.formatCode);
   if (!count) throw new Error(`No ${detected.format} sequence records were found.`);
-  return { name, source: text, count, size, ...detected };
+  return { name, source: text, count, size, ...detected, inputPath:name, inputFormat:cliInputFormat(detected.formatCode) };
 }
 
 async function inspectFile(file: File): Promise<InputData> {
@@ -597,6 +605,7 @@ async function sessionArtifact(
       assignerStrategy: session.assignerStrategy,
       minimumIdentity: session.minimumIdentity,
       strand: session.strand,
+      subsample: { enabled:session.subsampleSize!==null,size:session.subsampleSize??10_000,seed:session.subsampleSeed??1 },
       fastqFilter: copyFastqQualityFilter(session.fastqFilter),
       fastqFilterStats: { ...session.fastqFilterStats },
       references: session.references,
@@ -978,6 +987,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const [downloadError, setDownloadError] = useState("");
   const [downloadFormat,setDownloadFormat]=useState<TableExportFormat>("tsv");
   const [savingSession,setSavingSession]=useState(false);
+  const [cliConfigExporting,setCliConfigExporting]=useState(false);
   const [projectSaveStatus,setProjectSaveStatus]=useState(session.project?session.projectStatus||"Project state current":"");
   const [datasets,setDatasets]=useState<DatasetManifestEntry[]>(()=>session.datasets.map((dataset)=>({...dataset})));
   const [metadataDraft,setMetadataDraft]=useState<DatasetManifestEntry[]>(()=>session.datasets.map((dataset)=>({...dataset})));
@@ -992,6 +1002,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const metadataAbortRef=useRef<AbortController|null>(null);
   const exportAbortRef=useRef<AbortController|null>(null);
   const sessionSaveAbortRef=useRef<AbortController|null>(null);
+  const cliConfigExportAbortRef=useRef<AbortController|null>(null);
   const searchAbortRef=useRef<AbortController|null>(null);
   const autoOpened = useRef(false);
   const detailRef = useRef<HTMLElement>(null);
@@ -1063,7 +1074,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     },delay);
   }
 
-  useEffect(()=>()=>{if(projectSaveTimerRef.current!==null)window.clearTimeout(projectSaveTimerRef.current);metadataAbortRef.current?.abort();exportAbortRef.current?.abort();sessionSaveAbortRef.current?.abort();searchAbortRef.current?.abort();},[]);
+  useEffect(()=>()=>{if(projectSaveTimerRef.current!==null)window.clearTimeout(projectSaveTimerRef.current);metadataAbortRef.current?.abort();exportAbortRef.current?.abort();sessionSaveAbortRef.current?.abort();cliConfigExportAbortRef.current?.abort();searchAbortRef.current?.abort();},[]);
 
   useEffect(()=>{
     if(!session.project)return;
@@ -1274,27 +1285,24 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   }
 
   async function exportCliConfig(){
+    if(cliConfigExporting){cliConfigExportAbortRef.current?.abort();return;}
+    const controller=new AbortController();cliConfigExportAbortRef.current=controller;setCliConfigExporting(true);
     setDownloadError("");
     try{
-      const post=postSessionRef.current?await postSessionRef.current.snapshot():session.postAnalysis??{workingStages:[]};
-      const plan=copyPipeline(session.pipeline);
-      if(post.collapse){plan.collapse.enabled=true;plan.collapse.mode=post.collapse.mode;const key=post.collapse.options.key;if(key==="sequence"||key==="trimmed"||key==="cdr3"||key==="rearrangement")plan.collapse.key=key;}
-      if(post.chimera)plan.chimera.enabled=true;
-      if(post.selection)plan.selection.enabled=true;
-      if(post.alleleRefinement)plan.alleleRefinement.enabled=true;
-      if(post.lineage)plan.lineage.enabled=true;
-      if(post.shm)plan.shm.enabled=true;
-      if(post.missingAlleles)plan.missingAlleles.enabled=true;
+      const post=postSessionRef.current?await postSessionRef.current.snapshot(controller.signal):session.postAnalysis??{workingStages:[]};
+      const state=cliStateFromPostAnalysis(session.pipeline,post);
       const config=cliConfigFromBrowser({
-        studyName:session.inputName,studyDesign:session.studyDesign,datasets,references:session.references,species:session.species,scope:session.scope,workers:session.workers,callingProfile:session.callingProfile,assignerStrategy:session.assignerStrategy,minimumIdentity:session.minimumIdentity,strand:session.strand,doubleD:session.doubleD,pipeline:plan,
-        collapseOptions:post.collapse?.options,
-        selectionOptions:post.selection?.options,
-        alleleOptions:post.alleleRefinement?{...post.alleleRefinement.options,reassignmentPolicy:post.alleleRefinement.reassignmentPolicy,applyMinimumPosterior:post.alleleRefinement.applyMinimumPosterior}:undefined,
-        missingAlleleOptions:post.missingAlleles?.options,
+        studyName:session.inputName,studyDesign:session.studyDesign,datasets,references:session.references,species:session.species,scope:session.scope,workers:session.workers,callingProfile:session.callingProfile,assignerStrategy:session.assignerStrategy,minimumIdentity:session.minimumIdentity,strand:session.strand,fastqFilter:session.fastqFilter,subsample:{enabled:session.subsampleSize!==null,size:session.subsampleSize??10_000,seed:session.subsampleSeed??1},doubleD:session.doubleD,pipeline:state.pipeline,
+        collapseOptions:state.collapseOptions,chimeraOptions:state.chimeraOptions,selectionOptions:state.selectionOptions,alleleOptions:state.alleleOptions,lineageOptions:state.lineageOptions,missingAlleleOptions:state.missingAlleleOptions,
       });
-      if(post.chimera){Object.assign(config.pipeline.chimera,post.chimera.options);config.pipeline.chimera.uploadedMsa=post.chimera.msa??config.pipeline.chimera.uploadedMsa;config.pipeline.chimera.uploadedMsaName=post.chimera.options.uploadedMsaName?String(post.chimera.options.uploadedMsaName):config.pipeline.chimera.uploadedMsaName;}
+      if(config.pipeline.chimera.enabled&&config.pipeline.chimera.msaSource==="selected"&&!config.pipeline.chimera.uploadedMsa.trim()){
+        const msa=await runKalignTask(session.references[config.pipeline.chimera.segment],controller.signal);
+        prepareReferenceMsa(msa);config.pipeline.chimera.msaSource="upload";config.pipeline.chimera.uploadedMsa=msa;config.pipeline.chimera.uploadedMsaName=`${config.pipeline.chimera.segment.toLowerCase()}-reference-msa.fasta`;
+      }
+      if(controller.signal.aborted)throw new DOMException("Config export cancelled.","AbortError");
       downloadBlob(new Blob([`${JSON.stringify(config,null,2)}\n`],{type:"application/json"}),`${session.inputName.replace(/\.[^.]+$/,"")||"swig"}.swig-cli.json`);
-    }catch(error){setDownloadError(error instanceof Error?error.message:String(error));}
+    }catch(error){if(!isAbortError(error))setDownloadError(error instanceof Error?error.message:String(error));}
+    finally{if(cliConfigExportAbortRef.current===controller)cliConfigExportAbortRef.current=null;setCliConfigExporting(false);}
   }
 
   const callSuggestions=useMemo(()=>({
@@ -1323,7 +1331,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
         <button className={downloading?"post-cancel":"primary"} type="button" onClick={()=>downloading?exportAbortRef.current?.abort():void downloadAll()} disabled={doubleDDownloading}>{downloading?"Cancel results export":`Download ${downloadFormat.toUpperCase()}`}</button>
         {session.doubleDCount>0&&<button className={doubleDDownloading?"post-cancel":undefined} type="button" onClick={()=>doubleDDownloading?exportAbortRef.current?.abort():void downloadDoubleD()} disabled={downloading}>{doubleDDownloading?"Cancel evidence export":`Double-D evidence · ${session.doubleDCount.toLocaleString()}`}</button>}
         <button className={savingSession?"post-cancel":undefined} type="button" onClick={()=>savingSession?sessionSaveAbortRef.current?.abort():void saveAnalysisSession()}>{savingSession?"Cancel session save":"Save portable session"}</button>
-        <button type="button" onClick={()=>void exportCliConfig()}><strong>Export CLI config</strong><small>Exact references, methods, and donor map</small></button>
+        <button className={cliConfigExporting?"post-cancel":undefined} type="button" onClick={()=>void exportCliConfig()}><strong>{cliConfigExporting?"Cancel CLI config export":"Export CLI config"}</strong><small>{cliConfigExporting?"Stop MSA preparation and discard the export":"Inputs, QC, references, methods, and donor map"}</small></button>
         {session.project&&<button type="button" onClick={()=>saveProjectNow("manual_checkpoint")}>Save project checkpoint</button>}
       </div>
       {session.project&&<small className="results-rail-project">{projectSaveStatus}</small>}
@@ -1496,6 +1504,7 @@ export default function SwigApp() {
   const [doubleDMaximumPseudoMismatches, setDoubleDMaximumPseudoMismatches] = useState(3);
   const [doubleDMinimumScoreGain, setDoubleDMinimumScoreGain] = useState(8);
   const [outputPrompt, setOutputPrompt] = useState(false);
+  const [configExporting,setConfigExporting]=useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ stage: "Preparing analysis", value: 0 });
   const [analysisLockState, setAnalysisLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
@@ -1520,6 +1529,7 @@ export default function SwigApp() {
   const sessionLoadAbortRef=useRef<AbortController|null>(null);
   const [leavePrompt,setLeavePrompt]=useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const configExportAbortRef=useRef<AbortController|null>(null);
   const databaseRequestRef = useRef(0);
   const cellRequestRef = useRef<Record<string, number>>({});
   const referenceCacheRef = useRef<Map<string, ReferenceOverride>>(new Map());
@@ -1610,6 +1620,7 @@ export default function SwigApp() {
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      configExportAbortRef.current?.abort();
       if (session) void session.store.clear();
     };
   }, [session]);
@@ -1785,7 +1796,7 @@ export default function SwigApp() {
       if(controller.signal.aborted)throw new DOMException("Session restoration was cancelled.","AbortError");
       const dd={mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8,...saved.analysis.doubleD} as DoubleDScreenOptions;
       setSessionLoadProgress({records:store.count,total:store.count,stage:"Local AIRR indexes ready"});
-      setSession({id:Date.now(),store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:null,subsampleSeed:null,fastqFilter:copyFastqQualityFilter(saved.analysis.fastqFilter),fastqFilterStats:saved.analysis.fastqFilterStats??emptyFastqQualityFilterStats(Boolean(saved.analysis.fastqFilter?.enabled),false),references:saved.analysis.references,referenceExclusions:Object.fromEntries(Object.entries(saved.analysis.referenceExclusions??{}).map(([key,names])=>[key,[...names]])),callingProfile:saved.analysis.callingProfile??"truth_optimized",assignerStrategy:saved.analysis.assignerStrategy??"standard",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true,project:restoredProject});
+      setSession({id:Date.now(),store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:saved.analysis.subsample?.enabled?saved.analysis.subsample.size:null,subsampleSeed:saved.analysis.subsample?.enabled?saved.analysis.subsample.seed:null,fastqFilter:copyFastqQualityFilter(saved.analysis.fastqFilter),fastqFilterStats:saved.analysis.fastqFilterStats??emptyFastqQualityFilterStats(Boolean(saved.analysis.fastqFilter?.enabled),false),references:saved.analysis.references,referenceExclusions:Object.fromEntries(Object.entries(saved.analysis.referenceExclusions??{}).map(([key,names])=>[key,[...names]])),callingProfile:saved.analysis.callingProfile??"truth_optimized",assignerStrategy:saved.analysis.assignerStrategy??"standard",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true,project:restoredProject});
       if(restoredProject){setProjectWorkspace(restoredProject);const run=activeProjectRun(restoredProject);if(run)await appendProjectLog(restoredProject,run,"project_opened",{records:store.count});setProjectStatus(`Restored ${run?.id??"active run"}`);}
       setPendingLoadedSession(null);setSessionLoadProgress({records:store.count,total:store.count,stage:"Session restored"});setPage("results");window.scrollTo({top:0});
     }catch(error){if(store)await store.clear();if(isAbortError(error))setSessionLoadProgress({records:0,total:saved.linkedAirr.records,stage:"Session restoration cancelled; no state was changed"});else setSessionLoadError(error instanceof Error?error.message:String(error));}finally{if(sessionLoadAbortRef.current===controller)sessionLoadAbortRef.current=null;setLoadingSession(false);}
@@ -1863,7 +1874,7 @@ export default function SwigApp() {
             const members=await inspectGzipMembers(candidate.file,namedFormat.formatCode,controller.signal);
             if(members.length>1){
               const source=gzipMemberSource(candidate.file,members);
-              const merged:InputData={name:candidate.file.name,source,count:null,size:candidate.file.size,...namedFormat,gzipMemberCount:members.length,gzipMembersMerged:true};
+              const merged:InputData={name:candidate.file.name,source,count:null,size:candidate.file.size,...namedFormat,inputPath:candidate.relativePath,inputFormat:cliInputFormat(namedFormat.formatCode),gzipMemberCount:members.length,gzipMembersMerged:true};
               if(members.every((member)=>member.startsAtRecordBoundary)){
                 const seen=new Set<string>();
                 const suggestedNames=members.map((member,index)=>{
@@ -1881,7 +1892,7 @@ export default function SwigApp() {
                 inspectedInputs=choice==="separate"
                   ? members.map((member,index)=>{
                     const memberFile=gzipMemberFile(candidate.file,member,suggestedNames[index]);
-                    return {name:memberFile.name,source:memberFile,count:null,size:memberFile.size,...namedFormat,gzipMemberCount:1,gzipMembersMerged:false};
+                    return {name:memberFile.name,source:memberFile,count:null,size:memberFile.size,...namedFormat,inputPath:candidate.relativePath,inputFormat:cliInputFormat(namedFormat.formatCode),gzipRange:{start:member.start,end:member.end},gzipMemberCount:1,gzipMembersMerged:false};
                   })
                   : [merged];
               }else inspectedInputs=[merged];
@@ -1892,6 +1903,8 @@ export default function SwigApp() {
           const directoryPrefix=candidate.fromDirectory&&slash>=0?candidate.relativePath.slice(0,slash+1):"";
           for(const inspected of inspectedInputs){
             if(candidate.fromDirectory)inspected.name=`${directoryPrefix}${inspected.name}`;
+            inspected.inputPath??=candidate.relativePath;
+            inspected.inputFormat??=cliInputFormat(inspected.formatCode);
             const ordinal = nextDatasetIdRef.current++;
             const input:DirectoryDatasetInput={...datasetInput(inspected,ordinal),directoryRoot:candidate.fromDirectory?candidate.rootName:undefined,nestedDirectoryDonor:donorByPath.get(candidate.relativePath)??undefined};
             if(input.nestedDirectoryDonor)input.subjectId=input.nestedDirectoryDonor;
@@ -2203,6 +2216,27 @@ export default function SwigApp() {
     referenceAbortRef.current.forEach((controller)=>controller.abort());
   }
 
+  async function exportConfiguredCliConfig(){
+    if(!pipeline.enabled||!compiled||!species||!activeDatasets.length)return;
+    if(configExporting){configExportAbortRef.current?.abort();return;}
+    const invalidDataset=activeDatasets.find((input)=>!input.sampleId.trim()||!input.subjectId.trim());
+    if(invalidDataset){setRunError(`Dataset ${invalidDataset.inputName} needs both a sample ID and donor/subject ID.`);return;}
+    const controller=new AbortController();configExportAbortRef.current=controller;setConfigExporting(true);setRunError("");
+    try{
+      const exportPipeline=copyPipeline(pipeline);
+      if(exportPipeline.chimera.enabled&&exportPipeline.chimera.msaSource==="selected"){
+        const msa=await runKalignTask(compiled[exportPipeline.chimera.segment],controller.signal);
+        prepareReferenceMsa(msa);exportPipeline.chimera.msaSource="upload";exportPipeline.chimera.uploadedMsa=msa;exportPipeline.chimera.uploadedMsaName=`${exportPipeline.chimera.segment.toLowerCase()}-reference-msa.fasta`;
+      }
+      if(controller.signal.aborted)throw new DOMException("Config export cancelled.","AbortError");
+      const config=cliConfigFromBrowser({
+        studyName:activeInputName,studyDesign,datasets:activeDatasets,references:compiled,species:species.name,scope:activeScope,workers:workerCount,callingProfile,assignerStrategy,minimumIdentity,strand,fastqFilter:copyFastqQualityFilter(fastqFilter),subsample:{enabled:subsampleEnabled,size:Math.max(1,Math.floor(subsampleSize)),seed:Math.trunc(subsampleSeed)},doubleD:{mode:doubleDMode,minimumVjSpan:Math.round(doubleDMinimumSpan),seedLength:Math.round(doubleDSeedLength),pseudoTrim:Math.round(doubleDPseudoTrim),maximumPseudoMismatches:Math.round(doubleDMaximumPseudoMismatches),minimumScoreGain:Math.round(doubleDMinimumScoreGain)},pipeline:exportPipeline,
+      });
+      downloadBlob(new Blob([`${JSON.stringify(config,null,2)}\n`],{type:"application/json"}),`${activeInputName.replace(/\.[^.]+$/,"")||"swig"}.swig-cli.json`);
+    }catch(error){if(!isAbortError(error))setRunError(error instanceof Error?error.message:String(error));}
+    finally{if(configExportAbortRef.current===controller)configExportAbortRef.current=null;setConfigExporting(false);}
+  }
+
   function resetReferenceContext(restorePreferred = false) {
     databaseAbortRef.current?.abort();databaseAbortRef.current=null;
     referenceAbortRef.current.forEach((controller)=>controller.abort());referenceAbortRef.current.clear();
@@ -2462,7 +2496,7 @@ export default function SwigApp() {
         total: result.count,
         seconds: (performance.now() - started) / 1000,
         inputName: runName,
-        datasets: datasetSnapshot.map((input) => ({ datasetId: input.datasetId, inputName: input.inputName, sampleId: input.sampleId, subjectId: input.subjectId, cohort: input.cohort, timepoint: input.timepoint, compartment: input.compartment, records: input.count })),
+        datasets: datasetSnapshot.map((input) => ({ datasetId: input.datasetId, inputName: input.inputName, inputPath:input.inputPath, inputFormat:input.inputFormat, gzipRange:input.gzipRange?{...input.gzipRange}:undefined, sampleId: input.sampleId, subjectId: input.subjectId, cohort: input.cohort, timepoint: input.timepoint, compartment: input.compartment, records: input.count })),
         studyDesign,
         pipeline: copyPipeline(pipeline),
         species: species.name,
@@ -2473,7 +2507,7 @@ export default function SwigApp() {
         outputBytes: store.outputBytes,
         streamedDirectly: store.streamedDirectly,
         inputTotal: result.inputRecords,
-        subsampleSize: subsampleEnabled ? result.count : null,
+        subsampleSize: subsampleEnabled ? Math.floor(subsampleSize) : null,
         subsampleSeed: subsampleEnabled ? Math.trunc(subsampleSeed) : null,
         fastqFilter: fastqFilterSnapshot,
         fastqFilterStats: result.fastqFilterStats,
@@ -2677,7 +2711,7 @@ export default function SwigApp() {
                 </section>
 
                 <section className={`analysis-card pipeline-card ${pipeline.enabled ? "active" : ""}`}>
-                  <header><span className="card-number">04</span><div><h2>Execution mode</h2><p>Stop after annotation, or run the selected post-analysis stages sequentially.</p></div><div className="mode-toggle"><button className={!pipeline.enabled ? "active" : ""} type="button" onClick={()=>setPipeline((current)=>({...current,enabled:false}))}>Interactive</button><button className={pipeline.enabled ? "active" : ""} type="button" onClick={()=>setPipeline((current)=>({...current,enabled:true}))}>Pipeline</button></div></header>
+                  <header><span className="card-number">04</span><div><h2>Execution mode</h2><p>Stop after annotation, or run the selected post-analysis stages sequentially.</p></div><div className="mode-toggle"><button className={!pipeline.enabled ? "active" : ""} type="button" disabled={configExporting} onClick={()=>setPipeline((current)=>({...current,enabled:false}))}>Interactive</button><button className={pipeline.enabled ? "active" : ""} type="button" disabled={configExporting} onClick={()=>setPipeline((current)=>({...current,enabled:true}))}>Pipeline</button></div></header>
                   {!pipeline.enabled ? <div className="pipeline-interactive-note"><span>Manual post-analysis</span><strong>Annotation finishes at Results.</strong><p>Collapse, chimera filtering, selection, lineage assignment, SHM, missing-allele evidence, queries, alignments, and trees remain available as explicit steps.</p></div> : <>
                     <div className="pipeline-stage-grid">
                       <article className={pipeline.collapse.enabled?"enabled":""}><label className="pipeline-stage-switch"><input type="checkbox" checked={pipeline.collapse.enabled} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,enabled:event.target.checked}}))}/><span><b>2 · Collapse / denoise</b><small>Uses policy-selected V/D/J calls when pooling is enabled.</small></span></label>{pipeline.collapse.enabled&&<div className="pipeline-fields"><label><span>Method</span><select value={pipeline.collapse.mode} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,mode:event.target.value as PipelinePlan["collapse"]["mode"]}}))}><option value="exact">Exact deduplication</option><option value="fad">FAD-compatible denoising</option><option value="conservative">Conservative indexed model</option><option value="indel">Indel-aware method D</option></select></label>{pipeline.collapse.mode==="exact"&&<label><span>Exact key</span><select value={pipeline.collapse.key} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,key:event.target.value as PipelinePlan["collapse"]["key"]}}))}><option value="sequence">Full input sequence</option><option value="trimmed">V–J-trimmed sequence</option><option value="cdr3">CDR3 nucleotide</option><option value="rearrangement">V/J calls + CDR3</option></select></label>}<label><span>Boundary</span><select value={pipeline.collapse.scope} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,scope:event.target.value as DatasetScope}}))}>{Object.entries(DATASET_SCOPE_LABELS).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label><label><span>Unusable V/J or trim</span><select value={pipeline.collapse.unresolvedPolicy} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,unresolvedPolicy:event.target.value as "discard"|"retain"}}))}><option value="discard">Discard · default</option><option value="retain">Retain unchanged</option></select></label><label className="check-line"><input type="checkbox" checked={pipeline.collapse.respectConstantCall??true} onChange={(event)=>setPipeline((current)=>({...current,collapse:{...current.collapse,respectConstantCall:event.target.checked}}))}/><span>Separate C-gene/isotype calls</span></label></div>}</article>
@@ -2711,6 +2745,10 @@ export default function SwigApp() {
                       <article className={pipeline.shm.enabled||pipeline.missingAlleles.enabled?"enabled":""}><div className="pipeline-diagnostic-switches"><label><input type="checkbox" checked={pipeline.shm.enabled} onChange={(event)=>setPipeline((current)=>({...current,shm:{...current.shm,enabled:event.target.checked}}))}/><span><b>6 · SHM summary</b><small>On the final working set.</small></span></label><label><input type="checkbox" checked={pipeline.missingAlleles.enabled} onChange={(event)=>setPipeline((current)=>({...current,missingAlleles:{enabled:event.target.checked},lineage:event.target.checked?{...current.lineage,enabled:true}:current.lineage}))}/><span><b>7 · Missing-allele hints</b><small>Enabling this also enables lineage assignment.</small></span></label></div>{pipeline.shm.enabled&&<div className="pipeline-fields"><label><span>SHM metric</span><select value={pipeline.shm.metric} onChange={(event)=>setPipeline((current)=>({...current,shm:{...current.shm,metric:event.target.value as PipelinePlan["shm"]["metric"]}}))}><option value="vNtRate">V nucleotide mutation rate</option><option value="vNtMutations">V nucleotide mutation count</option><option value="vAaRate">V amino-acid replacement rate</option><option value="vAaReplacements">V amino-acid replacement count</option><option value="synonymous">V synonymous mutation count</option><option value="cdrNtRate">CDR nucleotide mutation rate</option><option value="frameworkNtRate">Framework nucleotide mutation rate</option></select></label></div>}</article>
                     </div>
                     <p className="scientific-note"><span>i</span>The pipeline runs annotation → optional allele pooling and policy reassignment → collapse → chimera exclusion → repertoire selection → lineage assignment → post-lineage analyses in that order. Every stage receives the retained set from the previous stage. Targeted queries, lineage alignments, and phylogenies remain on-demand because they require a selected target.</p>
+                    <div className="pipeline-config-export">
+                      <div><strong>Run this setup with swig-cli</strong><small>Exports the same complete pipeline config available after analysis, including input QC, subsampling, references, annotation, and every enabled stage. If CHMMAIRRa uses the selected references, its MSA is built and embedded now.</small></div>
+                      <button className={configExporting?"post-cancel":""} type="button" disabled={!configExporting&&(!activeDatasets.length||!compiled||databaseBusy||Boolean(busyCells.size)||inputInspecting)} onClick={()=>void exportConfiguredCliConfig()}>{configExporting?"Cancel config export":"Export CLI config"}</button>
+                    </div>
                   </>}
                 </section>
               </div>

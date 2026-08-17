@@ -83,6 +83,8 @@ This guard protects accidental navigation; it is not durable persistence. Save a
 
 AIRR TSV, CSV, and JSON Lines exports stream the selected population from the immutable table plus the active overlays. Refined exports preserve original calls and add policy/provenance fields. Collapse and lineage exports add the corresponding representative, abundance, or lineage annotations. JSON/model/TSV/SVG artifacts are generated from the committed result object shown in the interface.
 
+Pipeline mode also exposes a pre-run CLI-config export. It serializes current preprocessing, reference, annotation, study, and stage settings without starting assignment. When selected-reference CHMMAIRRa is enabled, the export performs only the required abortable Kalign preparation and embeds that exact MSA so the standalone CLI has no external alignment dependency. The Results-page exporter remains separate and translates committed interactive settings—including advanced denoising, chimera, lineage, and evidence thresholds—back into the same config fields.
+
 ## Reproducibility limits
 
 - A saved session is valid only with the exact linked AIRR content it fingerprints.

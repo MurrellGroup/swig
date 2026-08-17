@@ -235,7 +235,7 @@ async function* lines(
   if (carry) yield carry.replace(/\r$/, "");
 }
 
-async function* fastaRecords(source: AsyncIterable<string>): AsyncGenerator<string> {
+export async function* fastaRecords(source: AsyncIterable<string>): AsyncGenerator<string> {
   let header = "";
   let sequence: string[] = [];
   for await (const line of source) {
@@ -260,14 +260,14 @@ async function* fastaRecords(source: AsyncIterable<string>): AsyncGenerator<stri
   }
 }
 
-interface FastqRecord {
+export interface FastqRecord {
   header: string;
   sequence: string;
   plus: string;
   quality: string;
 }
 
-async function* fastqRecords(source: AsyncIterable<string>): AsyncGenerator<FastqRecord> {
+export async function* fastqRecords(source: AsyncIterable<string>): AsyncGenerator<FastqRecord> {
   let header = "";
   let plus = "";
   let sequence: string[] = [];
@@ -317,7 +317,7 @@ async function* fastqRecords(source: AsyncIterable<string>): AsyncGenerator<Fast
   if (state === "quality") throw new Error(`The FASTQ quality string is truncated for ${header.slice(1).trim() || "a sequence"}.`);
 }
 
-async function* airrRecords(source: AsyncIterable<string>): AsyncGenerator<{ header: string; row: string }> {
+export async function* airrRecords(source: AsyncIterable<string>): AsyncGenerator<{ header: string; row: string }> {
   let header = "";
   let delimiter = "\t";
   let sequenceColumn = -1;
@@ -353,7 +353,7 @@ function expectedErrorTable(offset: 33 | 64): Float64Array {
 const PHRED33_EXPECTED_ERRORS = expectedErrorTable(33);
 const PHRED64_EXPECTED_ERRORS = expectedErrorTable(64);
 
-function canonicalFastq(record: FastqRecord, end = record.sequence.length): string {
+export function canonicalFastq(record: FastqRecord, end = record.sequence.length): string {
   if (end === record.sequence.length) {
     return `${record.header}\n${record.sequence}\n${record.plus}\n${record.quality}\n`;
   }
@@ -365,7 +365,7 @@ function canonicalFastq(record: FastqRecord, end = record.sequence.length): stri
  * reads. The full-read expected-error sum is accumulated once; when 3' trim
  * removes a base, its contribution is subtracted before the threshold test.
  */
-function filterFastqRecord(
+export function filterFastqRecord(
   record: FastqRecord,
   options: FastqQualityFilterOptions,
   stats: FastqQualityFilterStats,
@@ -427,7 +427,7 @@ function filterFastqRecord(
   return canonicalFastq(record, end);
 }
 
-function seededRandom(seed: number): () => number {
+export function seededRandom(seed: number): () => number {
   let value = Math.trunc(seed) >>> 0;
   return () => {
     value = (value + 0x6d2b79f5) >>> 0;
@@ -436,6 +436,23 @@ function seededRandom(seed: number): () => number {
     mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
     return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+export function validateFastqQualityFilter(options: FastqQualityFilterOptions): void {
+  if (!options.enabled) return;
+  if (!Number.isFinite(options.maximumExpectedErrors) || options.maximumExpectedErrors < 0) {
+    throw new Error("Maximum FASTQ expected errors must be a non-negative number.");
+  }
+  if (options.phredOffset !== 33 && options.phredOffset !== 64) {
+    throw new Error("FASTQ quality encoding must be Phred+33 or Phred+64.");
+  }
+  if (options.trim3Prime.enabled && (
+    !Number.isFinite(options.trim3Prime.windowSize) || options.trim3Prime.windowSize < 1
+    || !Number.isFinite(options.trim3Prime.minimumMeanPhred) || options.trim3Prime.minimumMeanPhred < 0
+    || !Number.isFinite(options.trim3Prime.minimumLength) || options.trim3Prime.minimumLength < 1
+  )) {
+    throw new Error("FASTQ 3' trimming requires a positive window and retained length, and a non-negative mean Phred threshold.");
+  }
 }
 
 export async function* streamSequenceBatches(options: SequenceStreamOptions): AsyncGenerator<SequenceBatch> {
@@ -451,21 +468,7 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
   let maxBatchCharacters = 0;
   let maxCarryCharacters = 0;
   const filterOptions = options.fastqFilter ?? DEFAULT_FASTQ_QUALITY_FILTER;
-  if (filterOptions.enabled) {
-    if (!Number.isFinite(filterOptions.maximumExpectedErrors) || filterOptions.maximumExpectedErrors < 0) {
-      throw new Error("Maximum FASTQ expected errors must be a non-negative number.");
-    }
-    if (filterOptions.phredOffset !== 33 && filterOptions.phredOffset !== 64) {
-      throw new Error("FASTQ quality encoding must be Phred+33 or Phred+64.");
-    }
-    if (filterOptions.trim3Prime.enabled && (
-      !Number.isFinite(filterOptions.trim3Prime.windowSize) || filterOptions.trim3Prime.windowSize < 1
-      || !Number.isFinite(filterOptions.trim3Prime.minimumMeanPhred) || filterOptions.trim3Prime.minimumMeanPhred < 0
-      || !Number.isFinite(filterOptions.trim3Prime.minimumLength) || filterOptions.trim3Prime.minimumLength < 1
-    )) {
-      throw new Error("FASTQ 3' trimming requires a positive window and retained length, and a non-negative mean Phred threshold.");
-    }
-  }
+  validateFastqQualityFilter(filterOptions);
   const fastqFilter = emptyFastqQualityFilterStats(
     filterOptions.enabled,
     filterOptions.enabled && options.format === 2,
