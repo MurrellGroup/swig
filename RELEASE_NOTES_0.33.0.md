@@ -20,3 +20,8 @@
 
 - Added unit tests for IMGT-gap removal, exact V internal-data coordinates, J auxiliary coordinates/FWR4 offsets, and D frame files.
 - Added end-to-end CLI tests for explicit-output enforcement, command-line worker precedence, annotation-free VDJ output, IgBLAST-data annotations, Swig-inferred annotations, mandatory VDJ output, and absence of downstream artifacts.
+
+## Bundled IMGT data notice
+
+- Added repository, deployed-reference, UI, CLI, and machine-readable attribution for the modified IMGT/GENE-DB reference pack.
+- Recorded release `202632-7`, retrieval date `2026-08-08`, the current CC BY 4.0 data license, Swig's transformations, the requested IMGT/GENE-DB citation, and explicit non-endorsement language.

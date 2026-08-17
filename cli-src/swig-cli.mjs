@@ -66,6 +66,8 @@ function usage(){
     `Run only streaming V(D)J assignment (AIRR outfmt 19):\n`+
     `  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n`+
     `    -germline_db_J J.fasta -out calls.airr.tsv\n\n`+
+    `Display bundled-data attribution and license:\n`+
+    `  swig-cli notices\n\n`+
     `Create an editable config:\n`+
     `  swig-cli init swig.config.json\n\n`+
     `Single-input metadata options:\n`+
@@ -95,6 +97,17 @@ function vdjUsage(){
     `  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\n`+
     `The germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\n`+
     `not IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally.`;
+}
+
+function thirdPartyNotices(){
+  return `Bundled IMGT/GENE-DB reference data\n\n`+
+    `Source: IMGT/GENE-DB release 202632-7, retrieved 2026-08-08.\n`+
+    `Copyright © 1995-2026 IMGT®, the international ImMunoGeneTics information system®.\n`+
+    `Attribution: IMGT®, the international ImMunoGeneTics information system®, https://www.imgt.org/, Institute of Human Genetics, Université de Montpellier and CNRS.\n`+
+    `License: CC BY 4.0, https://creativecommons.org/licenses/by/4.0/\n`+
+    `Terms: https://www.imgt.org/about/termsofuse.php\n`+
+    `Citation: Giudicelli V, Chaume D, Lefranc M-P. Nucleic Acids Research. 2005;33:D593-D597. https://doi.org/10.1093/nar/gki010\n\n`+
+    `Swig modifies the source data by selecting and reorganizing IG/TR V/D/J/C records, normalizing and ungapping nucleotide sequences, deriving compact coordinate metadata, selecting one source sequence per allele identifier, and joining selected coding IGH/TR constant exons. Membrane-only and untranslated constant exons are omitted. IMGT, Université de Montpellier, and CNRS do not endorse Swig or warrant the modified pack or its use.`;
 }
 
 function argumentValue(args,name){const index=args.indexOf(name);if(index>=0)return args[index+1];const inline=args.find((value)=>value.startsWith(`${name}=`));return inline?.slice(name.length+1);}
@@ -784,6 +797,7 @@ export async function runCli(assets=defaultCliAssets()){
   const command=args[0]&&!args[0].startsWith("-")?args[0]:"run";const rest=command===args[0]?args.slice(1):args;
   if(hasFlag(args,"--help")||command==="help"){process.stdout.write(`${usage()}\n`);return;}
   if(hasFlag(args,"--version")||command==="version"){process.stdout.write(`${VERSION}\n`);return;}
+  if(hasFlag(args,"--notices")||command==="notices"){process.stdout.write(`${thirdPartyNotices()}\n`);return;}
   if(command==="init"){
     const target=positional(rest)[0]??"swig.config.json";
     const example=normalizeCliConfig({...DEFAULT_CLI_CONFIG,inputs:[{path:"reads.fastq.gz",sampleId:"sample-1",subjectId:"donor-1"}]});

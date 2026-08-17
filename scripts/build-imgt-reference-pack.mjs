@@ -231,6 +231,14 @@ const pack = {
   source: "IMGT/GENE-DB",
   release,
   retrieved,
+  license: {
+    id: "CC-BY-4.0",
+    url: "https://creativecommons.org/licenses/by/4.0/",
+    terms: "https://www.imgt.org/about/termsofuse.php",
+    attribution: "IMGT®, the international ImMunoGeneTics information system®, https://www.imgt.org/, Institute of Human Genetics, Université de Montpellier and CNRS.",
+    modified: true,
+    modifications: "Selected and reorganized IG/TR V/D/J/C records; normalized and ungapped nucleotide sequences; selected one source sequence per allele identifier; derived compact V/J coordinate metadata; joined selected coding IGH/TR constant exons; omitted membrane-only and untranslated constant exons; serialized as Swig-specific compressed JSON.",
+  },
   species,
 };
 const json = `${JSON.stringify(pack)}\n`;

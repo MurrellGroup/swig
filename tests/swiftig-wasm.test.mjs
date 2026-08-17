@@ -189,6 +189,10 @@ function preprocessTiered(text, speciesName, segment) {
 }
 
 test("reference pack covers complete IG and TR loci", () => {
+  assert.equal(pack.license?.id, "CC-BY-4.0");
+  assert.equal(pack.license?.modified, true);
+  assert.match(pack.license?.attribution ?? "", /IMGT®.*CNRS/);
+  assert.match(pack.license?.modifications ?? "", /ungapped nucleotide sequences/);
   assert.ok(pack.species.length >= 60);
   const observed = new Set();
   for (const species of pack.species) {

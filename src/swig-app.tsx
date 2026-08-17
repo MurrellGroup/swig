@@ -802,7 +802,7 @@ function CompositionSummary({
         <p>{busy ? "Downloading and validating published germline FASTA in this browser…" : `Apply a database above, then refine any locus/segment independently in the matrix. Unchanged cells retain IMGT.${excludedAlleles ? ` ${excludedAlleles.toLocaleString()} exact allele${excludedAlleles === 1 ? " is" : "s are"} currently removed from the FASTA used for initial assignment.` : ""}`}</p>
       </div>
       {busy && <button className="post-cancel" type="button" onClick={onCancel}>Cancel reference preparation</button>}
-      {databases.length > 0 && <div className="database-links">{databases.flatMap((database) => [<a href={database.sourceUrl} target="_blank" rel="noreferrer" key={`${database.id}:source`}>{database.name} source ↗</a>, <a href={database.citationUrl} target="_blank" rel="noreferrer" key={`${database.id}:citation`}>Citation ↗</a>, ...(database.terms ? [<a href={database.terms.url} target="_blank" rel="noreferrer" key={`${database.id}:terms`}>{database.terms.label} ↗</a>] : [])])}</div>}
+      <div className="database-links"><a href="https://doi.org/10.1093/nar/gki010" target="_blank" rel="noreferrer">IMGT/GENE-DB citation ↗</a><a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">IMGT data · CC BY 4.0 ↗</a>{databases.flatMap((database) => [<a href={database.sourceUrl} target="_blank" rel="noreferrer" key={`${database.id}:source`}>{database.name} source ↗</a>, <a href={database.citationUrl} target="_blank" rel="noreferrer" key={`${database.id}:citation`}>Citation ↗</a>, ...(database.terms ? [<a href={database.terms.url} target="_blank" rel="noreferrer" key={`${database.id}:terms`}>{database.terms.label} ↗</a>] : [])])}</div>
     </section>
   );
 }
@@ -2770,7 +2770,7 @@ export default function SwigApp() {
         <div className="output-modal-actions"><button className="output-save-primary" type="button" onClick={() => void run("disk")}><span>Choose output file &amp; start</span><b>Save AIRR →</b></button><button type="button" onClick={() => void run("browser")}><span>Keep output in browser instead</span><small>Compressed local index; download after the run</small></button></div>
         <p className="output-safety"><span>i</span> Query sequences remain in this browser and are not transmitted by Swig.</p>
       </section></div>}
-      <footer className="site-footer"><Brand /><p>Swig {APP_VERSION} · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="./METHODS_INDEX.md" target="_blank" rel="noreferrer">Methods ↗</a><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="https://www.imgt.org/" target="_blank" rel="noreferrer">IMGT ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
+      <footer className="site-footer"><Brand /><p>Swig {APP_VERSION} · SwiftIG WebAssembly interface · research software · validate study-critical calls independently.</p><div><a href="./METHODS_INDEX.md" target="_blank" rel="noreferrer">Methods ↗</a><a href="https://github.com/MurrellGroup/swiftig" target="_blank" rel="noreferrer">Source ↗</a><a href="./references/README.md" target="_blank" rel="noreferrer">IMGT data notice ↗</a><a href="https://docs.airr-community.org/" target="_blank" rel="noreferrer">AIRR ↗</a></div></footer>
     </div>
   );
 }

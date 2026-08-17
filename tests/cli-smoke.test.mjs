@@ -241,3 +241,13 @@ test("--vdj refuses to accumulate output when no destination is supplied",()=>{
   const result=runRawCli(root,["--vdj","-germline_db_V","V.fasta","-germline_db_J","J.fasta"]);
   assert.notEqual(result.status,0);assert.match(result.stderr,/requires -out/);
 });
+
+test("CLI exposes the embedded IMGT data notice",()=>{
+  const root=resolve(import.meta.dirname,"..");
+  const result=runRawCli(root,["notices"]);
+  assert.equal(result.status,0,result.stderr);
+  assert.match(result.stdout,/IMGT\/GENE-DB reference data/);
+  assert.match(result.stdout,/CC BY 4\.0/);
+  assert.match(result.stdout,/Swig modifies the source data/);
+  assert.match(result.stdout,/gki010/);
+});

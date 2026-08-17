@@ -21,7 +21,7 @@ The Vite configuration derives the correct base path from `GITHUB_REPOSITORY`, s
 
 ## Standalone `swig-cli` — no Node installation
 
-End users download the single executable for their operating system from the repository release assets: Linux x86-64, Linux ARM64, macOS Intel, macOS Apple silicon, or Windows x86-64. The executable embeds the JavaScript runtime, the same SwiftIG WebAssembly core used by Swig Web, its WASI support, and the built-in reference pack. Running it requires **no Node, npm, Bun, Python, container engine, or separately installed WASM runtime**.
+End users download the single executable for their operating system from the repository release assets: Linux x86-64, Linux ARM64, macOS Intel, macOS Apple silicon, or Windows x86-64. The executable embeds the JavaScript runtime, the same SwiftIG WebAssembly core used by Swig Web, its WASI support, and the built-in reference pack. Running it requires **no Node, npm, Bun, Python, container engine, or separately installed WASM runtime**. Run `swig-cli notices` to display the attribution and license for the embedded IMGT/GENE-DB-derived data.
 
 ```bash
 chmod +x swig-cli-linux-x64
@@ -166,7 +166,7 @@ The character process is site-independent: automatic mode uses nucleotide GTR4 u
 - optional double-D/VDDJ evidence screening for `IGH`, `TRB`, and `TRD`: off by default; either all eligible junctions or only inter-V/J spans at or above a configurable threshold
 - independent V, D, J, and optional C source selection or local FASTA loading for every active locus
 - constant-region calls require at least 30 aligned nucleotides; the derived `isotype` AIRR extension additionally requires at least 65% identity
-- 64 species/strain reference sets derived from the IMGT-gapped all-species file in IMGT/GENE-DB release `202632-7`
+- 64 species/strain reference sets derived from the IMGT-gapped all-species file in IMGT/GENE-DB release `202632-7`, retrieved `2026-08-08`; the modified pack is attributed and described in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and is covered by the IMGT data license, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
 Swig runs SwiftIG, not IgBLAST. Receptor behavior is determined from the selected IG/TR locus and locus-bearing gene identifiers rather than an IgBLAST `ig_seqtype` setting. The bundled pack retains light-chain `C-REGION` records and assembles IMGT's exon-level IGH/TCR constant records into one secreted/coding reference per allele; membrane-only and UTR exons are not mixed into that path. A matching C FASTA can still be supplied independently.
 
@@ -234,7 +234,11 @@ npm run build:references -- \
   public/references/imgt-RELEASE_ID.json.gz
 ```
 
-Update the filename in `src/reference-pack.ts` when the release ID changes. The bundled file is a compact, segment-organized derivative; [IMGT attribution and terms](https://www.imgt.org/about/termsofuse.php) apply.
+Update the filename in `src/reference-pack.ts` when the release ID changes. The builder embeds the source release, retrieval date, CC BY 4.0 attribution, and a description of Swig's modifications in the compressed pack. Update [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`public/references/README.md`](public/references/README.md) when those provenance values change. The [IMGT terms of use](https://www.imgt.org/about/termsofuse.php) and [citation guidance](https://www.imgt.org/about/CitingIMGT.php) remain authoritative.
+
+## License and third-party data
+
+Swig source code is licensed under the [MIT license](LICENSE). Bundled third-party data and components retain their own terms. In particular, the modified IMGT/GENE-DB reference pack is licensed as IMGT data under CC BY 4.0, not under the Swig MIT license. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for attribution, modification disclosure, citation, trademark, and non-endorsement notices.
 
 ## Scientific scope
 

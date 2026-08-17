@@ -29,6 +29,14 @@ export interface ReferencePack {
   source: string;
   release: string;
   retrieved: string;
+  license?: {
+    id: string;
+    url: string;
+    terms: string;
+    attribution: string;
+    modified: boolean;
+    modifications: string;
+  };
   species: ReferenceSpecies[];
 }
 

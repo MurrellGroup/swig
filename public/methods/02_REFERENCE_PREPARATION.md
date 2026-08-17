@@ -24,6 +24,10 @@ SwiftIG computes local affine alignments against the selected references and rep
 
 This reference matrix and browser preparation layer are **custom Swig infrastructure**. IMGT, KI databases, and uploaded FASTA are data sources, not algorithms implemented by Swig. Personalized germline databases can materially improve assignment, as demonstrated by IgDiscover ([Corcoran et al., 2016](https://doi.org/10.1038/ncomms13642)) and TIgGER ([Gadala-Maria et al., 2015](https://doi.org/10.1073/pnas.1417683112)); selecting or excluding existing references in Swig is not equivalent to either method's novel-allele/genotype inference.
 
+## IMGT attribution and license
+
+The bundled pack is a modified derivative of IMGT/GENE-DB release `202632-7`, retrieved `2026-08-08`. IMGT data and metadata are provided under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Swig selects and reorganizes IG/TR records, ungaps and normalizes nucleotide sequences, derives compact coordinate metadata, and joins selected coding IGH/TR constant exons. These are Swig modifications; IMGT, Université de Montpellier, and CNRS do not endorse Swig or warrant the modified pack. See the adjacent [reference-data notice](../references/README.md), the official [IMGT terms](https://www.imgt.org/about/termsofuse.php), and the requested [IMGT citations](https://www.imgt.org/about/CitingIMGT.php).
+
 ## Limitations
 
 - Reference names and sequences are trusted after format validation; biological curation remains the user's responsibility.
