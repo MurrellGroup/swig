@@ -3,8 +3,17 @@ import fs from "node:fs";
 import test from "node:test";
 import zlib from "node:zlib";
 
-import { preprocessGermlineFasta, type MetadataAllele } from "../src/germline-preprocess.ts";
+import {
+  applyIgblastAuxiliaryData,
+  applyIgblastDFrameData,
+  applyIgblastInternalData,
+  prepareIgblastStyleGermlineFasta,
+  preprocessGermlineFasta,
+  preprocessGermlineFastaAcrossTiers,
+  type MetadataAllele,
+} from "../src/germline-preprocess.ts";
 import { composeReferenceOverrides, referenceCellKey, segmentAppliesToLocus } from "../src/reference-composition.ts";
+import { germlineTemplateTiers } from "../src/reference-pack.ts";
 import {
   collectionsFor,
   collectionsForDatabase,
@@ -19,19 +28,6 @@ const pack = JSON.parse(zlib.gunzipSync(fs.readFileSync(new URL("../public/refer
 const human = pack.species.find((entry: { name: string }) => entry.name === "Homo sapiens");
 const humanIghV = human.loci.IGH.V as MetadataAllele[];
 const humanIghJ = human.loci.IGH.J as MetadataAllele[];
-
-function imgtTemplateTiers(speciesName: string, segment: "V" | "J"): MetadataAllele[][] {
-  const selected = pack.species.find((entry: { name: string }) => entry.name === speciesName);
-  assert.ok(selected);
-  const baseTaxon = speciesName.split("_", 1)[0];
-  const genus = baseTaxon.split(" ", 1)[0];
-  return [
-    [selected],
-    pack.species.filter((entry: { name: string }) => entry.name !== speciesName && entry.name.split("_", 1)[0] === baseTaxon),
-    pack.species.filter((entry: { name: string }) => entry.name.split("_", 1)[0] !== baseTaxon && entry.name.startsWith(`${genus} `)),
-    pack.species.filter((entry: { name: string }) => !entry.name.startsWith(`${genus} `)),
-  ].map((group) => group.flatMap((entry: { loci: { IGH?: Record<string, MetadataAllele[]> } }) => entry.loci.IGH?.[segment] ?? [])).filter((group) => group.length);
-}
 
 function firstAnnotated(alleles: MetadataAllele[], segment: "V" | "J"): MetadataAllele {
   const allele = alleles.find((entry) => segment === "V"
@@ -76,6 +72,33 @@ test("J homology resolves multiple motif candidates but still verifies the mappe
   assert.equal(report.annotated, 1);
   assert.equal(report.transferred, 1);
   assert.match(report.fasta, /SWIGMETA=[^\n]*,6\n/);
+});
+
+test("IgBLAST-compatible preparation and annotation preserve each file's coordinate convention", () => {
+  const v = firstAnnotated(humanIghV, "V");
+  const j = firstAnnotated(humanIghJ, "J");
+  const d = (human.loci.IGH.D as MetadataAllele[])[0];
+  assert.ok(d);
+  const dotted = `${v[1].slice(0, 20)}...${v[1].slice(20)}`;
+  const normalized = prepareIgblastStyleGermlineFasta(`>IMGT|${v[0]}|Homo sapiens SWIGMETA=0,0,0,0,0,0,0,0,0,0,0,0,5\n${dotted}\n`, "V", ["IGH"]);
+  assert.equal(normalized.fasta, `>${v[0]}\n${v[1]}\n`);
+  assert.doesNotMatch(normalized.fasta, /SWIGMETA|\./);
+
+  const bounds = v[2]!.slice(2, 12);
+  const internal = `${v[0]} ${bounds.map((value, index) => index % 2 === 0 ? value + 1 : value).join(" ")} VH ${v[2]![0]}\n`;
+  const vApplied = applyIgblastInternalData(normalized.fasta, internal);
+  assert.equal(vApplied.matched, 1);
+  assert.match(vApplied.fasta, new RegExp(`SWIGMETA=${v[2]![0]},-1,${bounds.join(",")},5`));
+
+  const auxiliary = `# all coordinates are 0-based\n${j[0]} ${j[2]![0]} JH ${j[2]![1]} 1\n`;
+  const jApplied = applyIgblastAuxiliaryData(`>${j[0]}\n${j[1]}\n`, auxiliary);
+  assert.equal(jApplied.annotated, 1);
+  assert.equal(jApplied.fwr4EndOffsets?.[j[0]], 1);
+  assert.match(jApplied.fasta, new RegExp(`SWIGMETA=${j[2]![0]},${j[2]![1]},`));
+
+  const dApplied = applyIgblastDFrameData(`>${d[0]}\n${d[1]}\n`, `${d[0]} 2\n`);
+  assert.equal(dApplied.annotated, 1);
+  assert.match(dApplied.fasta, /SWIGMETA=2,-1,/);
 });
 
 test("germline preprocessing rejects a locus mismatch", () => {
@@ -188,14 +211,11 @@ test("the built IMGT pack includes assembled heavy-chain and TCR constant refere
 
 test("every bundled KIMDB macaque V and J record receives validated in-browser annotation", { timeout: 30_000 }, () => {
   for (const [speciesName, slug] of [["Macaca mulatta_AG07107", "Macaca_mulatta"], ["Macaca fascicularis", "Macaca_fascicularis"]]) {
+    const selected = pack.species.find((entry: { name: string }) => entry.name === speciesName);
+    assert.ok(selected);
     for (const segment of ["V", "J"] as const) {
-      let text = fs.readFileSync(new URL(`../public/references/kimdb-1.1/${slug}/IGH/${segment}.fasta`, import.meta.url), "utf8");
-      let report;
-      for (const templates of imgtTemplateTiers(speciesName, segment)) {
-        report = preprocessGermlineFasta(report?.fasta ?? text, segment, templates, ["IGH"]);
-        if (report.annotated === report.count) break;
-      }
-      assert.ok(report);
+      const text = fs.readFileSync(new URL(`../public/references/kimdb-1.1/${slug}/IGH/${segment}.fasta`, import.meta.url), "utf8");
+      const report = preprocessGermlineFastaAcrossTiers(text, segment, germlineTemplateTiers(pack, selected, "IGH", segment), ["IGH"]);
       assert.equal(report.annotated, report.count, `${speciesName} ${segment}: ${report.warnings.join("; ")}`);
       assert.equal((report.fasta.match(/SWIGMETA=/g) ?? []).length, report.count);
     }

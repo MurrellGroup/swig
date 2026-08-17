@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
@@ -11,9 +11,14 @@ function cliInvocation(root,configPath){
   return {command:standalone||process.execPath,arguments_:standalone?["run","--config",configPath]:[join(root,"cli/swig-cli.mjs"),"run","--config",configPath]};
 }
 
-function runCli(root,configPath){
+function runCli(root,configPath,extra=[]){
   const {command,arguments_}=cliInvocation(root,configPath);
-  return spawnSync(command,arguments_,{encoding:"utf8",timeout:120_000});
+  return spawnSync(command,[...arguments_,...extra],{encoding:"utf8",timeout:120_000});
+}
+
+function runRawCli(root,args){
+  const standalone=process.env.SWIG_CLI_EXECUTABLE;
+  return spawnSync(standalone||process.execPath,standalone?args:[join(root,"cli/swig-cli.mjs"),...args],{encoding:"utf8",timeout:120_000});
 }
 
 test("the CLI pipeline runs annotation through lazy lineage-study export",async()=>{
@@ -121,4 +126,118 @@ test("CLI executes a browser-exported pasted input embedded in the JSON config",
     const result=runCli(root,configPath);assert.equal(result.status,0,result.stderr);
     const summary=JSON.parse(result.stdout);assert.equal(summary.inputRecords,2);assert.equal(summary.annotatedRecords,2);
   }finally{await rm(temporary,{recursive:true,force:true});}
+});
+
+test("CLI prepares local V/J metadata by default and honors the config opt-out",async()=>{
+  const root=resolve(import.meta.dirname,"..");
+  const temporary=await mkdtemp(join(root,"tmp-cli-reference-prep-"));
+  try{
+    const pack=JSON.parse(gunzipSync(await readFile(join(root,"public/references/imgt-202632-7-swig-0.7.json.gz"))).toString("utf8"));
+    const human=pack.species.find((entry)=>entry.name==="Homo sapiens");
+    const v=human.loci.IGH.V.find((entry)=>entry[2]?.slice(2,12).every((value)=>value>=0));
+    const d=human.loci.IGH.D[0];
+    const j=human.loci.IGH.J.find((entry)=>entry[2]?.[0]>=0&&entry[2]?.[1]>=0);
+    assert.ok(v&&d&&j);
+    await writeFile(join(temporary,"custom-v.fasta"),`>${v[0]}\n${v[1]}\n`);
+    await writeFile(join(temporary,"custom-j.fasta"),`>${j[0]}\n${j[1]}\n`);
+    const input=join(temporary,"read.fasta");
+    await writeFile(input,`>custom-read\n${v[1]}${d[1]}${j[1]}\n`);
+    for(const prepareMetadata of [true,false]){
+      const label=prepareMetadata?"prepared":"raw";
+      const output=join(temporary,label),configPath=join(temporary,`${label}.json`);
+      const references={species:"Homo sapiens",scope:"IGH",files:{V:"custom-v.fasta",J:"custom-j.fasta"}};
+      if(!prepareMetadata)references.prepareMetadata=false;
+      await writeFile(configPath,JSON.stringify({inputs:[{path:input,format:"fasta",sampleId:"sample",subjectId:"donor"}],references,annotation:{workers:1},pipeline:{collapse:{enabled:false},lineage:{productiveOnly:false},shm:{enabled:false}},output:{directory:output,prefix:label}}));
+      const result=runCli(root,configPath);assert.equal(result.status,0,result.stderr);
+      const summary=JSON.parse(result.stdout);
+      assert.equal(summary.references.metadataPreparation.enabled,prepareMetadata);
+      const manifest=JSON.parse(gunzipSync(await readFile(join(output,`${label}.swig-lineage-study.json.gz`))).toString("utf8"));
+      if(prepareMetadata){
+        assert.equal(summary.references.metadataPreparation.segments.V.annotated,1);
+        assert.equal(summary.references.metadataPreparation.segments.J.annotated,1);
+        assert.match(manifest.analysis.references.V,/SWIGMETA=/);
+        assert.match(manifest.analysis.references.J,/SWIGMETA=/);
+        assert.match(result.stderr,/Preparing custom V reference metadata/);
+      }else{
+        assert.deepEqual(summary.references.metadataPreparation.segments,{});
+        assert.doesNotMatch(manifest.analysis.references.V,/SWIGMETA=/);
+        assert.doesNotMatch(manifest.analysis.references.J,/SWIGMETA=/);
+        assert.doesNotMatch(result.stderr,/Preparing custom V reference metadata/);
+      }
+      const resolved=JSON.parse(await readFile(join(output,`${label}.resolved-config.json`),"utf8"));
+      assert.equal(resolved.references.prepareMetadata,prepareMetadata);
+    }
+  }finally{await rm(temporary,{recursive:true,force:true});}
+});
+
+test("pipeline CLI requires an explicit output directory and command-line workers override config",async()=>{
+  const root=resolve(import.meta.dirname,"..");
+  const temporary=await mkdtemp(join(root,"tmp-cli-output-"));
+  try{
+    const input=join(root,"tests/fixtures/cli-smoke.fasta");
+    const missingPath=join(temporary,"missing-output.json");
+    await writeFile(missingPath,JSON.stringify({inputs:[{path:input}],annotation:{workers:1}}));
+    const missing=runCli(root,missingPath);
+    assert.notEqual(missing.status,0);
+    assert.match(missing.stderr,/requires an explicit output directory/);
+
+    const output=join(temporary,"out"),configPath=join(temporary,"config.json");
+    await writeFile(configPath,JSON.stringify({inputs:[{path:input}],annotation:{workers:1},pipeline:{collapse:{enabled:false},lineage:{enabled:false},shm:{enabled:false}},output:{directory:output,prefix:"workers"}}));
+    const result=runCli(root,configPath,["--workers","2"]);
+    assert.equal(result.status,0,result.stderr);
+    const resolved=JSON.parse(await readFile(join(output,"workers.resolved-config.json"),"utf8"));
+    assert.equal(resolved.annotation.workers,2);
+  }finally{await rm(temporary,{recursive:true,force:true});}
+});
+
+test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes without downstream state",async()=>{
+  const root=resolve(import.meta.dirname,"..");
+  const temporary=await mkdtemp(join(root,"tmp-cli-vdj-"));
+  try{
+    const pack=JSON.parse(gunzipSync(await readFile(join(root,"public/references/imgt-202632-7-swig-0.7.json.gz"))).toString("utf8"));
+    const human=pack.species.find((entry)=>entry.name==="Homo sapiens");
+    const v=human.loci.IGH.V.find((entry)=>entry[2]?.slice(2,12).every((value)=>value>=0));
+    const d=human.loci.IGH.D[0];
+    const j=human.loci.IGH.J.find((entry)=>entry[2]?.[0]>=0&&entry[2]?.[1]>=0);
+    assert.ok(v&&d&&j);
+    const vPath=join(temporary,"V.fasta"),dPath=join(temporary,"D.fasta"),jPath=join(temporary,"J.fasta"),queryPath=join(temporary,"query.fasta");
+    await writeFile(vPath,`>IMGT|${v[0]}|Homo sapiens\n${v[1].slice(0,30)}...${v[1].slice(30)}\n`);
+    await writeFile(dPath,`>${d[0]}\n${d[1]}\n`);
+    await writeFile(jPath,`>${j[0]}\n${j[1]}\n`);
+    await writeFile(queryPath,`>read-1\n${v[1]}AACCGG${d[1]}TTG${j[1]}\n`);
+    const bounds=v[2].slice(2,12);
+    const internalPath=join(temporary,"human.ndm.imgt"),auxPath=join(temporary,"human_gl.aux");
+    await writeFile(internalPath,`# FWR/CDR positions are 1-based; frame is 0-based\n${v[0]} ${bounds.map((value,index)=>index%2===0?value+1:value).join(" ")} VH ${v[2][0]}\n`);
+    await writeFile(auxPath,`# name, frame, chain, CDR3 stop, trailing non-coding bases; all but intervals are 0-based\n${j[0]} ${j[2][0]} JH ${j[2][1]} 1\n`);
+    const common=["--vdj","-query",queryPath,"-germline_db_V",vPath,"-germline_db_D",dPath,"-germline_db_J",jPath,"-outfmt","19","-num_threads","3","--workers","1","--batch-records","1"];
+    const readRow=async(path)=>{
+      const [header,line]=String(await readFile(path,"utf8")).trimEnd().split("\n");
+      const names=header.split("\t"),values=line.split("\t");return Object.fromEntries(names.map((name,index)=>[name,values[index]??""]));
+    };
+
+    const plainPath=join(temporary,"plain.airr.tsv");
+    const plain=runRawCli(root,[...common,"-out",plainPath]);
+    assert.equal(plain.status,0,plain.stderr);assert.match(plain.stderr,/assignments-only; 1 worker/);
+    const plainRow=await readRow(plainPath);
+    assert.equal(plainRow.v_call,v[0]);assert.equal(plainRow.j_call,j[0]);assert.equal(plainRow.cdr1,"");assert.equal(plainRow.cdr3,"");assert.equal(plainRow.region_definition,"");
+
+    const igblastPath=join(temporary,"igblast-data.airr.tsv");
+    const igblast=runRawCli(root,[...common,"-custom_internal_data",internalPath,"-auxiliary_data",auxPath,"-out",igblastPath]);
+    assert.equal(igblast.status,0,igblast.stderr);assert.match(igblast.stderr,/IgBLAST internal data/);assert.match(igblast.stderr,/IgBLAST auxiliary data/);
+    const igblastRow=await readRow(igblastPath);
+    assert.ok(igblastRow.cdr1);assert.ok(igblastRow.cdr3);assert.equal(igblastRow.region_definition,"IMGT");
+    assert.equal(Number(igblastRow.j_sequence_end)-Number(igblastRow.fwr4_end),1);
+
+    const swigPath=join(temporary,"swig.airr.tsv");
+    const swig=runRawCli(root,[...common,"--swigannots","-organism","human","-ig_seqtype","Ig","-out",swigPath]);
+    assert.equal(swig.status,0,swig.stderr);assert.match(swig.stderr,/Swig metadata preparation/);
+    const swigRow=await readRow(swigPath);assert.ok(swigRow.cdr1);assert.ok(swigRow.cdr3);
+    assert.deepEqual((await readdir(temporary)).filter((name)=>/summary|resolved-config|processed|lineage/i.test(name)),[]);
+  }finally{await rm(temporary,{recursive:true,force:true});}
+});
+
+test("--vdj refuses to accumulate output when no destination is supplied",()=>{
+  const root=resolve(import.meta.dirname,"..");
+  const result=runRawCli(root,["--vdj","-germline_db_V","V.fasta","-germline_db_J","J.fasta"]);
+  assert.notEqual(result.status,0);assert.match(result.stderr,/requires -out/);
 });

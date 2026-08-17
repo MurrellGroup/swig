@@ -3742,7 +3742,8 @@ const DEFAULT_CLI_CONFIG = {
 	inputs: [],
 	references: {
 		species: "Homo sapiens",
-		scope: "BCR"
+		scope: "BCR",
+		prepareMetadata: true
 	},
 	preprocessing: {
 		fastqFilter: {
@@ -3896,6 +3897,7 @@ function normalizeCliConfig(value) {
 		references: {
 			...DEFAULT_CLI_CONFIG.references,
 			...value.references,
+			prepareMetadata: value.references?.prepareMetadata !== false,
 			inline: value.references?.inline ? { ...value.references.inline } : void 0,
 			files: value.references?.files ? { ...value.references.files } : void 0
 		},
@@ -3957,6 +3959,649 @@ function normalizeCliConfig(value) {
 	};
 }
 //#endregion
+//#region src/germline-preprocess.ts
+const LOCI = [
+	"IGH",
+	"IGK",
+	"IGL",
+	"TRA",
+	"TRB",
+	"TRD",
+	"TRG"
+];
+const IMGT_V_GAPPED_ENDS = [
+	78,
+	114,
+	165,
+	195,
+	312
+];
+const EMPTY_BOUNDS = [
+	-1,
+	-1,
+	-1,
+	-1,
+	-1,
+	-1,
+	-1,
+	-1,
+	-1,
+	-1
+];
+const SOURCE_IMGT_GAPPED = 1;
+const SOURCE_TRANSFERRED_IMGT = 3;
+const SOURCE_VALIDATED_J_MOTIF = 4;
+const SOURCE_PROVIDED = 5;
+const SOURCE_TRANSFERRED_J = 6;
+const V_CHAIN_LOCI = {
+	VH: "IGH",
+	VK: "IGK",
+	VL: "IGL",
+	VA: "TRA",
+	VB: "TRB",
+	VD: "TRD",
+	VG: "TRG"
+};
+const J_CHAIN_LOCI = {
+	JH: "IGH",
+	JK: "IGK",
+	JL: "IGL",
+	JA: "TRA",
+	JB: "TRB",
+	JD: "TRD",
+	JG: "TRG"
+};
+function positiveModulo(value, modulus) {
+	return (value % modulus + modulus) % modulus;
+}
+function compactMetadata(frame = -1, cdr3Stop = -1, bounds = EMPTY_BOUNDS, source = 0) {
+	return [
+		frame,
+		cdr3Stop,
+		...bounds,
+		source
+	];
+}
+function inferLocus(value) {
+	const upper = value.toUpperCase();
+	return LOCI.find((locus) => upper.includes(locus)) ?? null;
+}
+function inferSegment(name) {
+	const match = /^(?:IGH|IGK|IGL|TRA|TRB|TRD|TRG)([VDJC])/.exec(name.toUpperCase());
+	return match ? match[1] : null;
+}
+function germlineName(header) {
+	const identifier = header.trim().split(/\s+/, 1)[0] ?? "";
+	const fields = identifier.split("|");
+	return fields.find((field) => inferLocus(field) && field.includes("*")) ?? fields.find((field) => inferLocus(field)) ?? identifier;
+}
+function normalizeSequence(raw) {
+	const compact = raw.toUpperCase().replaceAll("U", "T").replace(/\s/g, "");
+	if (/[^ACGTNRYKMSWBDHV.\-]/.test(compact)) throw new Error("Germline FASTA contains characters outside the IUPAC nucleotide alphabet.");
+	const withoutGaps = compact.replace(/[.\-]/g, "");
+	const ambiguous = (withoutGaps.match(/[^ACGT]/g) ?? []).length;
+	return {
+		sequence: withoutGaps.replace(/[^ACGT]/g, "N"),
+		ambiguous
+	};
+}
+function normalizeIndexSequence(raw) {
+	const compact = raw.toUpperCase().replaceAll("U", "T").replace(/\s/g, "");
+	if (/[^ACGTNRYKMSWBDHV.\-]/.test(compact)) throw new Error("Germline FASTA contains characters outside the IUPAC nucleotide alphabet.");
+	const sequence = compact.replace(/[.\-]/g, "");
+	return {
+		sequence,
+		ambiguous: (sequence.match(/[^ACGT]/g) ?? []).length
+	};
+}
+function parseFasta(text) {
+	const records = [];
+	let header = "";
+	let sequence = [];
+	for (const line of text.split(/\r?\n/)) if (line.startsWith(">")) {
+		if (header) records.push({
+			header,
+			rawSequence: sequence.join("")
+		});
+		header = line.slice(1).trim();
+		sequence = [];
+	} else if (header && line.trim()) sequence.push(line.trim());
+	else if (!header && line.trim()) throw new Error("Expected a FASTA header beginning with '>'.");
+	if (header) records.push({
+		header,
+		rawSequence: sequence.join("")
+	});
+	if (!records.length) throw new Error("No germline FASTA records were found.");
+	return records;
+}
+function parseImgtFields(header) {
+	const fields = (header.split(/\s+/, 1)[0] ?? "").split("|");
+	return fields.length >= 8 && fields[1] && fields[4] ? fields : null;
+}
+function imgtFrame(fields) {
+	const value = Number.parseInt(fields?.[7] ?? "", 10);
+	return value >= 1 && value <= 3 ? value - 1 : -1;
+}
+function metadataFromHeader(header) {
+	const match = /(?:^|\s)SWIGMETA=([\d,\-]+)/i.exec(header);
+	if (!match) return void 0;
+	const values = match[1].split(",").map(Number);
+	if (values.length !== 13 || values.some((value) => !Number.isInteger(value))) return void 0;
+	return values;
+}
+function metadataHeader(metadata) {
+	return metadata ? ` SWIGMETA=${metadata.join(",")}` : "";
+}
+function hasRegionMetadata(metadata) {
+	return Boolean(metadata && metadata.slice(2, 12).every((value) => value >= 0));
+}
+function hasJMetadata(metadata) {
+	return Boolean(metadata && metadata[0] >= 0 && metadata[1] >= 0);
+}
+function validateMetadata(metadata, sequenceLength, segment) {
+	if (metadata[0] < -1 || metadata[0] > 2 || metadata[1] < -1 || metadata[1] >= sequenceLength) return false;
+	if (segment === "V" && hasRegionMetadata(metadata)) {
+		const bounds = metadata.slice(2, 12);
+		if (bounds.some((value, index) => value < 0 || value > sequenceLength || index && value < bounds[index - 1])) return false;
+		for (let index = 0; index < bounds.length; index += 2) if (bounds[index + 1] <= bounds[index]) return false;
+	}
+	return true;
+}
+function nearestFrameCysEnd(sequence, predictedEnd, frame, maximumDistance = 60) {
+	const candidates = [];
+	const start = Math.max(0, predictedEnd - maximumDistance);
+	const stop = Math.min(sequence.length - 2, predictedEnd + maximumDistance);
+	for (let index = start; index <= stop; index += 1) {
+		const codon = sequence.slice(index, index + 3);
+		if (codon !== "TGT" && codon !== "TGC") continue;
+		if (frame >= 0 && positiveModulo(index - frame, 3) !== 0) continue;
+		candidates.push(index + 3);
+	}
+	return candidates.sort((left, right) => Math.abs(left - predictedEnd) - Math.abs(right - predictedEnd) || right - left)[0];
+}
+function imgtVMetadata(rawSequence, fields) {
+	if (fields?.[4]?.toUpperCase() !== "V-REGION") return void 0;
+	const gapped = rawSequence.toUpperCase().replaceAll("U", "T").replace(/\s/g, "");
+	if (gapped.length < IMGT_V_GAPPED_ENDS.at(-1)) return void 0;
+	const sequence = gapped.replace(/[.\-]/g, "");
+	const ends = IMGT_V_GAPPED_ENDS.map((end) => gapped.slice(0, end).replace(/[.\-]/g, "").length);
+	const anchorEnd = nearestFrameCysEnd(sequence, ends[4], imgtFrame(fields));
+	if (anchorEnd && anchorEnd > ends[3]) ends[4] = anchorEnd;
+	const bounds = [
+		0,
+		ends[0],
+		ends[0],
+		ends[1],
+		ends[1],
+		ends[2],
+		ends[2],
+		ends[3],
+		ends[3],
+		ends[4]
+	];
+	const result = compactMetadata(imgtFrame(fields), -1, bounds, SOURCE_IMGT_GAPPED);
+	return validateMetadata(result, sequence.length, "V") ? result : void 0;
+}
+function isJAnchor(sequence, index) {
+	const aromatic = sequence.slice(index, index + 3);
+	return (aromatic === "TGG" || aromatic === "TTT" || aromatic === "TTC") && /^GG[ACGT]$/.test(sequence.slice(index + 3, index + 6));
+}
+function jMetadata(sequence, fields) {
+	const providedFrame = imgtFrame(fields);
+	const candidates = [];
+	const limit = Math.min(sequence.length - 6, 54);
+	for (let index = Math.max(0, providedFrame); index <= limit; index += providedFrame >= 0 ? 3 : 1) if (isJAnchor(sequence, index)) candidates.push(index);
+	if (!candidates.length || providedFrame < 0 && candidates.length !== 1) return void 0;
+	const anchor = candidates[0];
+	const frame = providedFrame >= 0 ? providedFrame : anchor % 3;
+	if (anchor % 3 !== frame) return void 0;
+	return compactMetadata(frame, anchor - 1, EMPTY_BOUNDS, SOURCE_VALIDATED_J_MOTIF);
+}
+function globalAlignment(query, reference) {
+	const columns = reference.length + 1;
+	const rows = query.length + 1;
+	const scores = new Int16Array(columns);
+	const next = new Int16Array(columns);
+	const trace = new Uint8Array(rows * columns);
+	for (let column = 1; column < columns; column += 1) {
+		scores[column] = -3 * column;
+		trace[column] = 2;
+	}
+	for (let row = 1; row < rows; row += 1) {
+		next[0] = -3 * row;
+		trace[row * columns] = 1;
+		for (let column = 1; column < columns; column += 1) {
+			const diagonal = scores[column - 1] + (query[row - 1] === reference[column - 1] ? 2 : -2);
+			const up = scores[column] - 3;
+			const left = next[column - 1] - 3;
+			const best = Math.max(diagonal, up, left);
+			next[column] = best;
+			trace[row * columns + column] = best === diagonal ? 0 : best === up ? 1 : 2;
+		}
+		scores.set(next);
+	}
+	let row = query.length;
+	let column = reference.length;
+	const alignedQuery = [];
+	const alignedReference = [];
+	let matches = 0;
+	while (row || column) {
+		const direction = trace[row * columns + column];
+		if (row && column && direction === 0) {
+			const queryBase = query[--row];
+			const referenceBase = reference[--column];
+			alignedQuery.push(queryBase);
+			alignedReference.push(referenceBase);
+			if (queryBase === referenceBase) matches += 1;
+		} else if (row && (direction === 1 || !column)) {
+			alignedQuery.push(query[--row]);
+			alignedReference.push("-");
+		} else {
+			alignedQuery.push("-");
+			alignedReference.push(reference[--column]);
+		}
+	}
+	alignedQuery.reverse();
+	alignedReference.reverse();
+	return {
+		query: alignedQuery.join(""),
+		reference: alignedReference.join(""),
+		identity: matches / Math.max(1, alignedQuery.length)
+	};
+}
+function canonicalAllele(name) {
+	return name.replace(/_S\d+$/i, "").toUpperCase();
+}
+function canonicalGene(name) {
+	return canonicalAllele(name).split("*", 1)[0];
+}
+function kmerSet(sequence, size = 9) {
+	const output = /* @__PURE__ */ new Set();
+	for (let index = 0; index + size <= sequence.length; index += 1) {
+		const kmer = sequence.slice(index, index + size);
+		if (!kmer.includes("N")) output.add(kmer);
+	}
+	return output;
+}
+function nearestTemplates(query, templates, limit = 12) {
+	const queryKmers = kmerSet(query);
+	return templates.map((template) => {
+		const templateKmers = kmerSet(template[1]);
+		let shared = 0;
+		for (const kmer of templateKmers) if (queryKmers.has(kmer)) shared += 1;
+		const union = queryKmers.size + templateKmers.size - shared;
+		return {
+			template,
+			similarity: union ? shared / union : 0,
+			lengthDelta: Math.abs(query.length - template[1].length)
+		};
+	}).sort((a, b) => b.similarity - a.similarity || a.lengthDelta - b.lengthDelta).slice(0, limit).map(({ template }) => template);
+}
+function templateCandidateTiers(queryName, query, templates, eligible = hasRegionMetadata) {
+	const delineated = templates.filter((template) => eligible(template[2]));
+	const alleleName = canonicalAllele(queryName);
+	const geneName = canonicalGene(queryName);
+	const exactAllele = delineated.filter(([name]) => canonicalAllele(name) === alleleName);
+	const exactGene = delineated.filter(([name]) => canonicalGene(name) === geneName);
+	const preferred = exactAllele.length ? exactAllele : exactGene;
+	const preferredKeys = new Set(preferred.map(([name, sequence]) => `${name}\u0000${sequence}`));
+	return [preferred, nearestTemplates(query, delineated.filter(([name, sequence]) => !preferredKeys.has(`${name}\u0000${sequence}`)))].filter((tier) => tier.length);
+}
+function mapReferenceCoordinates(alignment, referenceLength) {
+	const mapped = new Array(referenceLength + 1).fill(-1);
+	let queryPosition = 0;
+	let referencePosition = 0;
+	mapped[0] = 0;
+	for (let column = 0; column < alignment.query.length; column += 1) {
+		const queryBase = alignment.query[column];
+		if (alignment.reference[column] === "-") {
+			if (queryBase !== "-") queryPosition += 1;
+			mapped[referencePosition] = queryPosition;
+			continue;
+		}
+		if (mapped[referencePosition] < 0) mapped[referencePosition] = queryPosition;
+		if (queryBase !== "-") queryPosition += 1;
+		referencePosition += 1;
+		mapped[referencePosition] = queryPosition;
+	}
+	return mapped;
+}
+function transferMetadata(name, sequence, templates) {
+	for (const candidates of templateCandidateTiers(name, sequence, templates)) {
+		let selected;
+		for (const template of candidates) {
+			const alignment = globalAlignment(sequence, template[1]);
+			const named = canonicalGene(template[0]) === canonicalGene(name);
+			if (alignment.identity < (named ? .8 : .72)) continue;
+			const templateMetadata = template[2];
+			const templateBounds = templateMetadata.slice(2, 12);
+			const mapped = mapReferenceCoordinates(alignment, template[1].length);
+			const bounds = templateBounds.map((boundary) => mapped[boundary]);
+			if (bounds.some((value, index) => value < 0 || value > sequence.length || index && value < bounds[index - 1])) continue;
+			let valid = true;
+			for (let index = 0; index < bounds.length; index += 2) if (bounds[index + 1] <= bounds[index]) valid = false;
+			if (!valid) continue;
+			const templateFrame = templateMetadata[0] >= 0 ? templateMetadata[0] : templateBounds[0] % 3;
+			const frame = positiveModulo(bounds[0] + templateFrame - templateBounds[0], 3);
+			const anchorEnd = nearestFrameCysEnd(sequence, bounds[9], frame, 24);
+			if (!anchorEnd || anchorEnd <= bounds[8]) continue;
+			bounds[9] = anchorEnd;
+			const metadata = compactMetadata(frame, -1, bounds, SOURCE_TRANSFERRED_IMGT);
+			if (!validateMetadata(metadata, sequence.length, "V")) continue;
+			if (!selected || alignment.identity > selected.identity) selected = {
+				metadata,
+				identity: alignment.identity
+			};
+		}
+		if (selected) return selected.metadata;
+	}
+}
+function transferJMetadata(name, sequence, templates) {
+	for (const candidates of templateCandidateTiers(name, sequence, templates, hasJMetadata)) {
+		let selected;
+		for (const template of candidates) {
+			const alignment = globalAlignment(sequence, template[1]);
+			const named = canonicalGene(template[0]) === canonicalGene(name);
+			if (alignment.identity < (named ? .75 : .68)) continue;
+			const referenceAnchor = template[2][1] + 1;
+			if (referenceAnchor < 0 || referenceAnchor + 6 > template[1].length) continue;
+			const mapped = mapReferenceCoordinates(alignment, template[1].length);
+			const anchor = mapped[referenceAnchor];
+			const anchorEnd = mapped[referenceAnchor + 6];
+			if (anchor < 0 || anchorEnd - anchor !== 6 || !isJAnchor(sequence, anchor)) continue;
+			const transferred = compactMetadata(anchor % 3, anchor - 1, EMPTY_BOUNDS, SOURCE_TRANSFERRED_J);
+			if (!validateMetadata(transferred, sequence.length, "J")) continue;
+			if (!selected || alignment.identity > selected.identity) selected = {
+				metadata: transferred,
+				identity: alignment.identity
+			};
+		}
+		if (selected) return selected.metadata;
+	}
+}
+function annotationPresent(segment, metadata) {
+	if (segment === "V") return hasRegionMetadata(metadata);
+	if (segment === "J") return hasJMetadata(metadata);
+	return true;
+}
+function integerField(value, context) {
+	if (value === void 0 || !/^-?\d+$/.test(value)) throw new Error(`${context} must be an integer.`);
+	return Number.parseInt(value, 10);
+}
+function annotationDataLines(text) {
+	const result = [];
+	text.split(/\r?\n/).forEach((raw, index) => {
+		const line = raw.trim();
+		if (!line || line.startsWith("#")) return;
+		result.push({
+			fields: line.split(/\s+/),
+			line: index + 1
+		});
+	});
+	return result;
+}
+function assertChainLocus(name, locus, chain, chainLoci, source) {
+	const declared = chainLoci[chain.toUpperCase()];
+	if (declared && declared !== locus) throw new Error(`${source} declares ${name} as ${chain} (${declared}), but its germline identifier is ${locus}.`);
+}
+/**
+* Perform the FASTA preparation done by IgBLAST's `edit_imgt_file.pl` where it
+* is relevant to SwiftIG: canonicalize the germline identifier and remove IMGT
+* alignment gaps before indexing. Existing SWIGMETA is deliberately removed.
+*/
+function prepareIgblastStyleGermlineFasta(text, segment, allowedLoci = LOCI) {
+	const inputRecords = parseFasta(text);
+	const seen = /* @__PURE__ */ new Set();
+	const loci = /* @__PURE__ */ new Set();
+	let ambiguousBases = 0;
+	return {
+		fasta: inputRecords.map((input) => {
+			const name = germlineName(input.header);
+			if (!name) throw new Error(`A ${segment} germline record has an empty identifier.`);
+			if (seen.has(name)) throw new Error(`Duplicate ${segment} germline identifier: ${name}.`);
+			seen.add(name);
+			const locus = inferLocus(`${name} ${input.header}`);
+			if (!locus) throw new Error(`${name} does not identify one of the supported IG/TR loci.`);
+			if (!allowedLoci.includes(locus)) throw new Error(`${name} belongs to ${locus}, outside the selected ${allowedLoci.join("/")} search space.`);
+			const detectedSegment = inferSegment(name);
+			if (detectedSegment && detectedSegment !== segment) throw new Error(`${name} looks like a ${detectedSegment} gene, not a ${segment} gene.`);
+			const normalized = normalizeIndexSequence(input.rawSequence);
+			if (!normalized.sequence) throw new Error(`${name} has an empty nucleotide sequence.`);
+			ambiguousBases += normalized.ambiguous;
+			loci.add(locus);
+			return `>${name}\n${normalized.sequence}\n`;
+		}).join(""),
+		count: inputRecords.length,
+		ambiguousBases,
+		loci: [...loci].sort()
+	};
+}
+/** Apply the exact, 1-based inclusive V-domain coordinates in IgBLAST `.ndm.imgt` data. */
+function applyIgblastInternalData(fasta, data) {
+	const entries = /* @__PURE__ */ new Map();
+	for (const record of annotationDataLines(data)) {
+		if (record.fields.length !== 13) throw new Error(`Invalid IgBLAST internal-data record at line ${record.line}; expected 13 fields.`);
+		const bounds = [];
+		for (let index = 0; index < 10; index += 2) {
+			const start = integerField(record.fields[index + 1], `IgBLAST internal-data line ${record.line} start`);
+			const stop = integerField(record.fields[index + 2], `IgBLAST internal-data line ${record.line} stop`);
+			if (start < 1 || stop < start) throw new Error(`Invalid 1-based FWR/CDR interval at IgBLAST internal-data line ${record.line}.`);
+			bounds.push(start - 1, stop);
+		}
+		const frame = integerField(record.fields[12], `IgBLAST internal-data line ${record.line} coding frame`);
+		if (frame < -1 || frame > 2) throw new Error(`Invalid coding frame at IgBLAST internal-data line ${record.line}.`);
+		entries.set(record.fields[0], {
+			bounds,
+			chain: record.fields[11],
+			frame
+		});
+	}
+	if (!entries.size) throw new Error("The IgBLAST internal-data file contains no annotation records.");
+	const prepared = prepareIgblastStyleGermlineFasta(fasta, "V");
+	let matched = 0;
+	const unmatched = [];
+	return {
+		fasta: parseFasta(prepared.fasta).map((record) => {
+			const name = germlineName(record.header);
+			const normalized = normalizeIndexSequence(record.rawSequence);
+			const locus = inferLocus(name);
+			const entry = entries.get(name);
+			if (!entry) {
+				unmatched.push(name);
+				return `>${name}\n${normalized.sequence}\n`;
+			}
+			assertChainLocus(name, locus, entry.chain, V_CHAIN_LOCI, "IgBLAST internal data");
+			const metadata = compactMetadata(entry.frame, -1, entry.bounds, SOURCE_PROVIDED);
+			if (!validateMetadata(metadata, normalized.sequence.length, "V")) throw new Error(`IgBLAST internal-data coordinates for ${name} exceed or contradict its ungapped V sequence.`);
+			matched += 1;
+			return `>${name}${metadataHeader(metadata)}\n${normalized.sequence}\n`;
+		}).join(""),
+		matched,
+		annotated: matched,
+		total: prepared.count,
+		unmatched
+	};
+}
+/**
+* Apply IgBLAST J auxiliary data. Frame and CDR3-stop coordinates are 0-based;
+* the optional fifth field is retained separately for FWR4 end trimming.
+*/
+function applyIgblastAuxiliaryData(fasta, data) {
+	const entries = /* @__PURE__ */ new Map();
+	for (const record of annotationDataLines(data)) {
+		if (record.fields.length < 3 || record.fields.length > 5) throw new Error(`Invalid IgBLAST auxiliary record at line ${record.line}; expected 3 to 5 fields.`);
+		const frame = integerField(record.fields[1], `IgBLAST auxiliary line ${record.line} coding frame`);
+		if (frame < -1 || frame > 2) throw new Error(`Invalid coding frame at IgBLAST auxiliary line ${record.line}.`);
+		const cdr3Stop = record.fields.length >= 4 ? integerField(record.fields[3], `IgBLAST auxiliary line ${record.line} CDR3 stop`) : -1;
+		if (cdr3Stop < -1) throw new Error(`Invalid CDR3 stop at IgBLAST auxiliary line ${record.line}.`);
+		const fwr4EndOffset = record.fields.length === 5 ? integerField(record.fields[4], `IgBLAST auxiliary line ${record.line} FWR4 end offset`) : void 0;
+		if (fwr4EndOffset !== void 0 && fwr4EndOffset < 0) throw new Error(`Invalid FWR4 end offset at IgBLAST auxiliary line ${record.line}.`);
+		entries.set(record.fields[0], {
+			frame,
+			chain: record.fields[2],
+			cdr3Stop,
+			fwr4EndOffset
+		});
+	}
+	if (!entries.size) throw new Error("The IgBLAST auxiliary file contains no annotation records.");
+	const prepared = prepareIgblastStyleGermlineFasta(fasta, "J");
+	let matched = 0;
+	let annotated = 0;
+	const unmatched = [];
+	const fwr4EndOffsets = {};
+	return {
+		fasta: parseFasta(prepared.fasta).map((record) => {
+			const name = germlineName(record.header);
+			const normalized = normalizeIndexSequence(record.rawSequence);
+			const locus = inferLocus(name);
+			const entry = entries.get(name);
+			if (!entry) {
+				unmatched.push(name);
+				return `>${name}\n${normalized.sequence}\n`;
+			}
+			assertChainLocus(name, locus, entry.chain, J_CHAIN_LOCI, "IgBLAST auxiliary data");
+			const metadata = compactMetadata(entry.frame, entry.cdr3Stop, EMPTY_BOUNDS, SOURCE_PROVIDED);
+			if (!validateMetadata(metadata, normalized.sequence.length, "J")) throw new Error(`IgBLAST auxiliary coordinates for ${name} exceed its ungapped J sequence.`);
+			matched += 1;
+			if (entry.cdr3Stop >= 0) annotated += 1;
+			if (entry.fwr4EndOffset !== void 0) fwr4EndOffsets[name] = entry.fwr4EndOffset;
+			return `>${name}${metadataHeader(metadata)}\n${normalized.sequence}\n`;
+		}).join(""),
+		matched,
+		annotated,
+		total: prepared.count,
+		unmatched,
+		fwr4EndOffsets
+	};
+}
+/** Apply the exact 0-based coding-frame-one starts in IgBLAST `-d_frame_data`. */
+function applyIgblastDFrameData(fasta, data) {
+	const entries = /* @__PURE__ */ new Map();
+	for (const record of annotationDataLines(data)) {
+		if (record.fields.length !== 2) throw new Error(`Invalid IgBLAST D-frame record at line ${record.line}; expected 2 fields.`);
+		const frame = integerField(record.fields[1], `IgBLAST D-frame line ${record.line} start`);
+		if (frame < -1 || frame > 2) throw new Error(`Invalid D-frame start at line ${record.line}.`);
+		entries.set(record.fields[0], frame);
+	}
+	if (!entries.size) throw new Error("The IgBLAST D-frame file contains no annotation records.");
+	const prepared = prepareIgblastStyleGermlineFasta(fasta, "D");
+	let matched = 0;
+	let annotated = 0;
+	const unmatched = [];
+	return {
+		fasta: parseFasta(prepared.fasta).map((record) => {
+			const name = germlineName(record.header);
+			const normalized = normalizeIndexSequence(record.rawSequence);
+			const frame = entries.get(name);
+			if (frame === void 0) {
+				unmatched.push(name);
+				return `>${name}\n${normalized.sequence}\n`;
+			}
+			matched += 1;
+			if (frame < 0) return `>${name}\n${normalized.sequence}\n`;
+			annotated += 1;
+			return `>${name}${metadataHeader(compactMetadata(frame, -1, EMPTY_BOUNDS, SOURCE_PROVIDED))}\n${normalized.sequence}\n`;
+		}).join(""),
+		matched,
+		annotated,
+		total: prepared.count,
+		unmatched
+	};
+}
+function preprocessGermlineFasta(text, segment, templates = [], allowedLoci = LOCI) {
+	const inputRecords = parseFasta(text);
+	const records = [];
+	const seen = /* @__PURE__ */ new Set();
+	const loci = /* @__PURE__ */ new Set();
+	const warnings = [];
+	let exactImgt = 0;
+	let transferred = 0;
+	let motifValidated = 0;
+	let ambiguousBases = 0;
+	for (const input of inputRecords) {
+		const name = germlineName(input.header);
+		if (!name) throw new Error(`A ${segment} germline record has an empty identifier.`);
+		if (seen.has(name)) throw new Error(`Duplicate ${segment} germline identifier: ${name}.`);
+		seen.add(name);
+		const locus = inferLocus(`${name} ${input.header}`);
+		if (!locus) throw new Error(`${name} does not identify one of the supported IG/TR loci.`);
+		if (!allowedLoci.includes(locus)) throw new Error(`${name} belongs to ${locus}, outside the selected ${allowedLoci.join("/")} search space.`);
+		const detectedSegment = inferSegment(name);
+		if (detectedSegment && detectedSegment !== segment) throw new Error(`${name} looks like a ${detectedSegment} gene, not a ${segment} gene.`);
+		const normalized = normalizeSequence(input.rawSequence);
+		if (!normalized.sequence) throw new Error(`${name} has an empty nucleotide sequence.`);
+		ambiguousBases += normalized.ambiguous;
+		const fields = parseImgtFields(input.header);
+		let metadata = metadataFromHeader(input.header);
+		if (metadata && !validateMetadata(metadata, normalized.sequence.length, segment)) throw new Error(`${name} contains invalid SWIGMETA coordinates.`);
+		if (metadata) metadata = [...metadata.slice(0, 12), metadata[12] || SOURCE_PROVIDED];
+		if (!metadata && segment === "V") metadata = imgtVMetadata(input.rawSequence, fields);
+		if (!metadata && segment === "V" && templates.length) metadata = transferMetadata(name, normalized.sequence, templates);
+		if (!metadata && segment === "J" && templates.length) metadata = transferJMetadata(name, normalized.sequence, templates);
+		if (!metadata && segment === "J") metadata = jMetadata(normalized.sequence, fields);
+		if (!metadata && segment === "D") {
+			const frame = imgtFrame(fields);
+			if (frame >= 0) metadata = compactMetadata(frame, -1, EMPTY_BOUNDS, SOURCE_IMGT_GAPPED);
+		}
+		if (metadata?.[12] === SOURCE_IMGT_GAPPED) exactImgt += 1;
+		if (metadata?.[12] === SOURCE_TRANSFERRED_IMGT || metadata?.[12] === SOURCE_TRANSFERRED_J) transferred += 1;
+		if (metadata?.[12] === SOURCE_VALIDATED_J_MOTIF) motifValidated += 1;
+		if (!annotationPresent(segment, metadata) && warnings.length < 8) warnings.push(`${name}: ${segment === "V" ? "no validated IMGT FWR/CDR delineation" : segment === "J" ? "no unique frame-consistent F/W-G J motif" : "no segment metadata"}.`);
+		loci.add(locus);
+		records.push({
+			header: input.header,
+			name,
+			rawSequence: input.rawSequence,
+			sequence: normalized.sequence,
+			locus,
+			metadata
+		});
+	}
+	const annotated = records.filter((record) => annotationPresent(segment, record.metadata)).length;
+	return {
+		fasta: records.map((record) => `>${record.name}${metadataHeader(record.metadata)}\n${record.sequence}\n`).join(""),
+		count: records.length,
+		annotated,
+		unannotated: records.length - annotated,
+		exactImgt,
+		transferred,
+		motifValidated,
+		ambiguousBases,
+		loci: [...loci].sort(),
+		warnings
+	};
+}
+/**
+* Apply the same progressively broadened template search used by the browser
+* worker. Existing valid SWIGMETA is retained, while records still lacking V
+* or J metadata are offered to each successive template tier.
+*/
+function preprocessGermlineFastaAcrossTiers(text, segment, templateTiers, allowedLoci = LOCI) {
+	let report;
+	for (const templates of templateTiers.length ? templateTiers : [[]]) {
+		report = preprocessGermlineFasta(report?.fasta ?? text, segment, [...templates], allowedLoci);
+		if (segment !== "V" && segment !== "J") break;
+		if (report.annotated === report.count) break;
+	}
+	return report;
+}
+function annotationCoverage(fasta, segment) {
+	const records = parseFasta(fasta);
+	let annotated = 0;
+	for (const record of records) {
+		const normalized = normalizeSequence(record.rawSequence);
+		const metadata = metadataFromHeader(record.header);
+		if (metadata && validateMetadata(metadata, normalized.sequence.length, segment) && annotationPresent(segment, metadata)) annotated += 1;
+	}
+	return {
+		annotated,
+		total: records.length
+	};
+}
+function alleleMetadataHeader(allele) {
+	return `>${allele[0]}${metadataHeader(allele[2])}\n${allele[1]}\n`;
+}
+//#endregion
 //#region src/post-analysis-record.ts
 /** Shared browser-worker/CLI conversion into the compact scientific record. */
 function airrRowToPostAnalysisRecord(row, intern = (value) => value) {
@@ -3994,84 +4639,6 @@ function denoiseVdjSequence(row) {
 	return row.values.sequence_alignment || raw;
 }
 //#endregion
-//#region src/germline-preprocess.ts
-function normalizeSequence(raw) {
-	const compact = raw.toUpperCase().replaceAll("U", "T").replace(/\s/g, "");
-	if (/[^ACGTNRYKMSWBDHV.\-]/.test(compact)) throw new Error("Germline FASTA contains characters outside the IUPAC nucleotide alphabet.");
-	const withoutGaps = compact.replace(/[.\-]/g, "");
-	const ambiguous = (withoutGaps.match(/[^ACGT]/g) ?? []).length;
-	return {
-		sequence: withoutGaps.replace(/[^ACGT]/g, "N"),
-		ambiguous
-	};
-}
-function parseFasta(text) {
-	const records = [];
-	let header = "";
-	let sequence = [];
-	for (const line of text.split(/\r?\n/)) if (line.startsWith(">")) {
-		if (header) records.push({
-			header,
-			rawSequence: sequence.join("")
-		});
-		header = line.slice(1).trim();
-		sequence = [];
-	} else if (header && line.trim()) sequence.push(line.trim());
-	else if (!header && line.trim()) throw new Error("Expected a FASTA header beginning with '>'.");
-	if (header) records.push({
-		header,
-		rawSequence: sequence.join("")
-	});
-	if (!records.length) throw new Error("No germline FASTA records were found.");
-	return records;
-}
-function metadataFromHeader(header) {
-	const match = /(?:^|\s)SWIGMETA=([\d,\-]+)/i.exec(header);
-	if (!match) return void 0;
-	const values = match[1].split(",").map(Number);
-	if (values.length !== 13 || values.some((value) => !Number.isInteger(value))) return void 0;
-	return values;
-}
-function metadataHeader(metadata) {
-	return metadata ? ` SWIGMETA=${metadata.join(",")}` : "";
-}
-function hasRegionMetadata(metadata) {
-	return Boolean(metadata && metadata.slice(2, 12).every((value) => value >= 0));
-}
-function hasJMetadata(metadata) {
-	return Boolean(metadata && metadata[0] >= 0 && metadata[1] >= 0);
-}
-function validateMetadata(metadata, sequenceLength, segment) {
-	if (metadata[0] < -1 || metadata[0] > 2 || metadata[1] < -1 || metadata[1] >= sequenceLength) return false;
-	if (segment === "V" && hasRegionMetadata(metadata)) {
-		const bounds = metadata.slice(2, 12);
-		if (bounds.some((value, index) => value < 0 || value > sequenceLength || index && value < bounds[index - 1])) return false;
-		for (let index = 0; index < bounds.length; index += 2) if (bounds[index + 1] <= bounds[index]) return false;
-	}
-	return true;
-}
-function annotationPresent(segment, metadata) {
-	if (segment === "V") return hasRegionMetadata(metadata);
-	if (segment === "J") return hasJMetadata(metadata);
-	return true;
-}
-function annotationCoverage(fasta, segment) {
-	const records = parseFasta(fasta);
-	let annotated = 0;
-	for (const record of records) {
-		const normalized = normalizeSequence(record.rawSequence);
-		const metadata = metadataFromHeader(record.header);
-		if (metadata && validateMetadata(metadata, normalized.sequence.length, segment) && annotationPresent(segment, metadata)) annotated += 1;
-	}
-	return {
-		annotated,
-		total: records.length
-	};
-}
-function alleleMetadataHeader(allele) {
-	return `>${allele[0]}${metadataHeader(allele[2])}\n${allele[1]}\n`;
-}
-//#endregion
 //#region src/reference-pack.ts
 const BCR_LOCI = [
 	"IGH",
@@ -4089,6 +4656,24 @@ function lociForScope(species, scope) {
 }
 function allelesForScope(species, scope, segment) {
 	return lociForScope(species, scope).flatMap((locus) => species.loci[locus]?.[segment] ?? []);
+}
+/** Exact species-first taxonomic template tiers used for custom V/J metadata transfer. */
+function germlineTemplateTiers(pack, selected, scope, segment) {
+	const baseTaxon = selected.name.split("_", 1)[0];
+	const genus = baseTaxon.split(" ", 1)[0];
+	const groups = [
+		[selected],
+		pack.species.filter((entry) => entry.name !== selected.name && entry.name.split("_", 1)[0] === baseTaxon),
+		pack.species.filter((entry) => entry.name.split("_", 1)[0] !== baseTaxon && entry.name.startsWith(`${genus} `)),
+		pack.species.filter((entry) => !entry.name.startsWith(`${genus} `))
+	];
+	const seen = /* @__PURE__ */ new Set();
+	return groups.map((group) => group.flatMap((entry) => allelesForScope(entry, scope, segment)).filter((allele) => {
+		const key = `${allele[0]}\u0000${allele[1]}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	})).filter((group) => group.length);
 }
 function allelesToFasta(alleles) {
 	return alleles.map(alleleMetadataHeader).join("");
@@ -4436,7 +5021,7 @@ var ShmAccumulator = class {
 };
 //#endregion
 //#region cli-src/swig-cli.mjs
-const VERSION = "0.30.0";
+const VERSION = "0.33.0";
 const CLI_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 function defaultCliAssets() {
 	const directory = join(CLI_DIRECTORY, "assets");
@@ -4446,11 +5031,15 @@ function defaultCliAssets() {
 	};
 }
 function usage() {
-	return `swig-cli ${VERSION}\n\nRun a complete non-phylogenetic Swig pipeline:\n  swig-cli run reads.fastq.gz --out swig-output\n  swig-cli run --config swig.config.json\n\nCreate an editable config:\n  swig-cli init swig.config.json\n\nSingle-input metadata options:\n  --sample SAMPLE_ID  --donor SUBJECT_ID  --dataset DATASET_ID\n\nSamples with the same subjectId/--donor are treated as the same donor.\nLineage phylogenetics is intentionally not run by swig-cli.`;
+	return `swig-cli ${VERSION}\n\nRun a complete non-phylogenetic Swig pipeline:\n  swig-cli run reads.fastq.gz --out swig-output\n  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N]\n\nRun only streaming V(D)J assignment (AIRR outfmt 19):\n  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -out calls.airr.tsv\n\nCreate an editable config:\n  swig-cli init swig.config.json\n\nSingle-input metadata options:\n  --sample SAMPLE_ID  --donor SUBJECT_ID  --dataset DATASET_ID\n\nSamples with the same subjectId/--donor are treated as the same donor.\nLineage phylogenetics is intentionally not run by swig-cli.`;
+}
+function vdjUsage() {
+	return `swig-cli ${VERSION} --vdj\n\nLow-overhead, streaming SwiftIG V(D)J assignment with IgBLAST-style option names.\n\nRequired:\n  -germline_db_V FASTA  -germline_db_J FASTA  -out AIRR_TSV\n\nInput and optional references:\n  -query FASTA            Query FASTA or '-' for stdin (default '-')\n  -germline_db_D FASTA    D germline FASTA\n  -c_region_db FASTA      Constant-region FASTA\n\nAnnotation modes (default: assignments only; CDR/FWR fields remain empty):\n  -custom_internal_data FILE  IgBLAST V .ndm.imgt data (1-based inclusive intervals)\n  -auxiliary_data FILE        IgBLAST J .aux data (0-based frame/CDR3 stop)\n  -d_frame_data FILE          IgBLAST D frame-one starts\n  --swigannots                Infer/validate metadata as in Swig Web\n\nExecution:\n  -num_threads N          Worker count; --workers N overrides it\n  --workers N             Exact workers, or 0 for automatic\n  --batch-records N       Records per bounded WASM batch (default 2000)\n  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\nThe germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\nnot IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally.`;
 }
 function argumentValue(args, name) {
 	const index = args.indexOf(name);
-	return index >= 0 ? args[index + 1] : void 0;
+	if (index >= 0) return args[index + 1];
+	return args.find((value) => value.startsWith(`${name}=`))?.slice(name.length + 1);
 }
 function hasFlag(args, name) {
 	return args.includes(name);
@@ -4459,7 +5048,7 @@ function positional(args) {
 	const value = [];
 	for (let i = 0; i < args.length; i += 1) {
 		if (args[i].startsWith("--")) {
-			if (!["--help", "--version"].includes(args[i])) i += 1;
+			if (!args[i].includes("=") && !["--help", "--version"].includes(args[i])) i += 1;
 			continue;
 		}
 		value.push(args[i]);
@@ -4468,6 +5057,91 @@ function positional(args) {
 }
 function cleanCell(value) {
 	return String(value ?? "").replace(/[\t\r\n]+/g, " ");
+}
+function parseIntegerOption(value, label, { minimum = 0, allowZero = true } = {}) {
+	if (value === void 0 || !/^\d+$/.test(value)) throw new Error(`${label} requires an integer value.`);
+	const parsed = Number(value);
+	if (!Number.isSafeInteger(parsed) || parsed < minimum || !allowZero && parsed === 0) throw new Error(`${label} has an invalid value: ${value}.`);
+	return parsed;
+}
+function parseFiniteOption(value, label) {
+	const parsed = Number(value);
+	if (value === void 0 || !Number.isFinite(parsed)) throw new Error(`${label} requires a numeric value.`);
+	return parsed;
+}
+function parseVdjArguments(rawArgs) {
+	const aliases = new Map([
+		["--query", "-query"],
+		["--output", "-out"],
+		["--out", "-out"],
+		["--germline-db-v", "-germline_db_V"],
+		["--germline-db-d", "-germline_db_D"],
+		["--germline-db-j", "-germline_db_J"],
+		["--c-region-db", "-c_region_db"]
+	]);
+	const valued = new Set([
+		"-query",
+		"-out",
+		"-germline_db_V",
+		"-germline_db_D",
+		"-germline_db_J",
+		"-c_region_db",
+		"-custom_internal_data",
+		"-auxiliary_data",
+		"-d_frame_data",
+		"-organism",
+		"-domain_system",
+		"-ig_seqtype",
+		"-strand",
+		"-outfmt",
+		"-num_threads",
+		"--workers",
+		"--batch-records",
+		"--minimum-identity",
+		"--assigner",
+		"--calling-profile",
+		"-min_D_match",
+		"-min_J_length",
+		"-num_alignments_D",
+		"-num_alignments_J",
+		"-D_penalty",
+		"-J_penalty"
+	]);
+	const flags = new Set(["--swigannots", "-show_translation"]);
+	const options = {};
+	for (let index = 0; index < rawArgs.length; index += 1) {
+		let token = rawArgs[index];
+		if (token === "--vdj") continue;
+		if ([
+			"-h",
+			"-help",
+			"--help"
+		].includes(token)) {
+			options.help = true;
+			continue;
+		}
+		if (["-version", "--version"].includes(token)) {
+			options.version = true;
+			continue;
+		}
+		const equals = token.indexOf("=");
+		let inline;
+		if (equals > 0) {
+			inline = token.slice(equals + 1);
+			token = token.slice(0, equals);
+		}
+		token = aliases.get(token) ?? token;
+		if (flags.has(token)) {
+			if (inline !== void 0) throw new Error(`${token} does not take a value.`);
+			options[token] = true;
+			continue;
+		}
+		if (!valued.has(token)) throw new Error(`Unsupported --vdj option ${token}.\n\n${vdjUsage()}`);
+		const value = inline !== void 0 ? inline : rawArgs[++index];
+		if (value === void 0) throw new Error(`${token} requires a value.`);
+		options[token] = value;
+	}
+	return options;
 }
 function resolveFrom(base, value) {
 	return isAbsolute(value) ? value : resolve(base, value);
@@ -4495,8 +5169,9 @@ function inputLines(input) {
 			crlfDelay: Infinity
 		});
 	}
+	if (input.path === "-" && range) throw new Error("Standard input cannot be combined with gzipRange.");
 	if (range && (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end) || range.start < 0 || range.end <= range.start)) throw new Error(`${input.path} has an invalid gzipRange.`);
-	const raw = createReadStream(input.path, range ? {
+	const raw = input.path === "-" ? process.stdin : createReadStream(input.path, range ? {
 		start: range.start,
 		end: range.end - 1
 	} : void 0);
@@ -4682,16 +5357,75 @@ function parseTable(headerText, bodyText) {
 		rows
 	};
 }
-function serializeRows(headers, rows) {
-	return `${headers.join("	")}\n${rows.map((row) => headers.map((header) => cleanCell(row[header])).join("	")).join("\n")}${rows.length ? "\n" : ""}`;
+function trimAuxiliaryFwr4(headerText, bodyText, endOffsets, jLengths) {
+	if (!Object.keys(endOffsets).length) return bodyText;
+	const headers = headerText.split("	");
+	const at = new Map(headers.map((header, index) => [header, index]));
+	if ([
+		"j_call",
+		"j_sequence_start",
+		"j_germline_start",
+		"j_sequence_alignment",
+		"j_germline_alignment",
+		"fwr4",
+		"fwr4_aa",
+		"fwr4_end"
+	].some((header) => !at.has(header))) return bodyText;
+	const lines = [];
+	for (const line of bodyText.split(/\r?\n/)) {
+		if (!line) continue;
+		const values = line.split("	");
+		const call = (values[at.get("j_call")] ?? "").split(",", 1)[0];
+		const offset = endOffsets[call], referenceLength = jLengths.get(call);
+		if (offset === void 0 || !referenceLength || offset === 0) {
+			lines.push(line);
+			continue;
+		}
+		const queryStart = Number(values[at.get("j_sequence_start")]);
+		const referenceStart = Number(values[at.get("j_germline_start")]);
+		const queryAlignment = values[at.get("j_sequence_alignment")] ?? "";
+		const germlineAlignment = values[at.get("j_germline_alignment")] ?? "";
+		const currentEnd = Number(values[at.get("fwr4_end")]);
+		const targetReferenceEnd = referenceLength - offset;
+		if (!Number.isFinite(queryStart) || !Number.isFinite(referenceStart) || !Number.isFinite(currentEnd) || targetReferenceEnd < referenceStart - 1) {
+			lines.push(line);
+			continue;
+		}
+		let queryPosition = queryStart - 1, referencePosition = referenceStart - 1;
+		const columns = Math.min(queryAlignment.length, germlineAlignment.length);
+		for (let column = 0; column < columns; column += 1) {
+			if (referencePosition >= targetReferenceEnd) break;
+			if (queryAlignment[column] !== "-") queryPosition += 1;
+			if (germlineAlignment[column] !== "-") referencePosition += 1;
+		}
+		if (referencePosition < targetReferenceEnd || queryPosition >= currentEnd) {
+			lines.push(line);
+			continue;
+		}
+		const trim = currentEnd - queryPosition;
+		const nucleotide = values[at.get("fwr4")] ?? "";
+		const kept = Math.max(0, nucleotide.length - trim);
+		values[at.get("fwr4")] = nucleotide.slice(0, kept);
+		values[at.get("fwr4_aa")] = (values[at.get("fwr4_aa")] ?? "").slice(0, Math.floor(kept / 3));
+		values[at.get("fwr4_end")] = String(queryPosition);
+		lines.push(values.join("	"));
+	}
+	return lines.length ? `${lines.join("\n")}\n` : "";
+}
+function serializeRowBody(headers, rows) {
+	return `${rows.map((row) => headers.map((header) => cleanCell(row[header])).join("	")).join("\n")}${rows.length ? "\n" : ""}`;
 }
 function addHeaders(headers, names) {
 	for (const name of names) if (!headers.includes(name)) headers.push(name);
 }
 async function loadReferences(config, base, referencePackPath) {
-	const species = JSON.parse(gunzipSync(readFileSync(referencePackPath)).toString("utf8")).species.find((entry) => entry.name === config.references.species);
+	const packed = JSON.parse(gunzipSync(readFileSync(referencePackPath)).toString("utf8"));
+	const species = packed.species.find((entry) => entry.name === config.references.species);
 	if (!species) throw new Error(`The bundled reference pack has no exact species named ${config.references.species}.`);
 	const overrides = { ...config.references.inline };
+	const preparation = {};
+	const allowedLoci = lociForScope(species, config.references.scope);
+	if (!allowedLoci.length) throw new Error(`The bundled reference pack has no ${config.references.scope} loci for ${config.references.species}.`);
 	for (const segment of [
 		"V",
 		"D",
@@ -4699,11 +5433,177 @@ async function loadReferences(config, base, referencePackPath) {
 		"C"
 	]) {
 		const path = config.references.files?.[segment];
-		if (path) overrides[segment] = (await readFile(resolveFrom(base, path))).toString("utf8");
+		if (!path) continue;
+		const raw = (await readFile(resolveFrom(base, path))).toString("utf8");
+		if (config.references.prepareMetadata) {
+			process.stderr.write(`Preparing custom ${segment} reference metadata from ${basename(path)}…\n`);
+			const report = preprocessGermlineFastaAcrossTiers(raw, segment, germlineTemplateTiers(packed, species, config.references.scope, segment), allowedLoci);
+			overrides[segment] = report.fasta;
+			const { fasta, ...summary } = report;
+			preparation[segment] = {
+				file: path,
+				...summary
+			};
+			const detail = segment === "V" ? `${report.annotated.toLocaleString()} with validated FWR/CDR metadata` : segment === "J" ? `${report.annotated.toLocaleString()} with validated frame/CDR3-anchor metadata` : "validated and normalized";
+			process.stderr.write(`Prepared ${report.count.toLocaleString()} ${segment} record${report.count === 1 ? "" : "s"}; ${detail}.\n`);
+			for (const warning of report.warnings) process.stderr.write(`Reference warning: ${warning}\n`);
+		} else overrides[segment] = raw;
 	}
 	const references = compileReferences(species, config.references.scope, overrides);
 	if (!references.V.trim() || !references.J.trim()) throw new Error("The selected reference composition must contain V and J records.");
-	return references;
+	return {
+		references,
+		preparation
+	};
+}
+async function readMaybeCompressedText(path, label) {
+	if (path === "-") throw new Error(`${label} must be a FASTA/data file; standard input is reserved for -query.`);
+	let bytes;
+	try {
+		bytes = await readFile(resolve(path));
+	} catch (error) {
+		if (error?.code === "ENOENT") throw new Error(`${label} was not found at ${path}. The IgBLAST-style germline options require source FASTA files, not makeblastdb prefixes.`);
+		throw error;
+	}
+	if (bytes[0] === 31 && bytes[1] === 139) bytes = gunzipSync(bytes);
+	return bytes.toString("utf8");
+}
+async function readVdjFasta(path, label) {
+	const text = await readMaybeCompressedText(path, label);
+	if (!text.trimStart().startsWith(">")) throw new Error(`${label} must point to a nucleotide FASTA file. Binary BLAST database files/prefixes are not decoded by swig-cli.`);
+	return text;
+}
+function vdjScope(options) {
+	const value = String(options["-ig_seqtype"] ?? "Ig").toUpperCase();
+	if (value === "IG") return "BCR";
+	if (value === "TCR") return "TCR";
+	throw new Error("-ig_seqtype must be Ig or TCR.");
+}
+function vdjSpecies(pack, requested) {
+	const aliases = {
+		human: "Homo sapiens",
+		mouse: "Mus musculus_C57BL/6",
+		rat: "Rattus norvegicus_BN; Sprague-Dawley",
+		rabbit: "Oryctolagus cuniculus",
+		rhesus_monkey: "Macaca mulatta_AG07107"
+	};
+	const value = String(requested ?? "human");
+	const target = aliases[value.toLowerCase()] ?? value;
+	const species = pack.species.find((entry) => entry.name.toLowerCase() === target.toLowerCase());
+	if (!species) throw new Error(`The embedded Swig reference pack has no species matching -organism ${value}. Use one of human, mouse, rat, rabbit, rhesus_monkey, or an exact pack species name.`);
+	return species;
+}
+function fastaLengths(fasta) {
+	const result = /* @__PURE__ */ new Map();
+	let name = "", sequence = "";
+	const finish = () => {
+		if (name) result.set(name, sequence.replace(/\s/g, "").length);
+	};
+	for (const line of fasta.split(/\r?\n/)) if (line.startsWith(">")) {
+		finish();
+		name = line.slice(1).trim().split(/\s+/, 1)[0];
+		sequence = "";
+	} else if (name) sequence += line.trim();
+	finish();
+	return result;
+}
+function unmatchedMessage(kind, application) {
+	const preview = application.unmatched.slice(0, 8).join(", ");
+	return `${kind} did not match ${application.unmatched.length.toLocaleString()} selected germline identifier${application.unmatched.length === 1 ? "" : "s"}${preview ? `: ${preview}${application.unmatched.length > 8 ? ", …" : ""}` : ""}.`;
+}
+async function prepareVdjReferences(options, assets) {
+	const paths = {
+		V: options["-germline_db_V"],
+		D: options["-germline_db_D"],
+		J: options["-germline_db_J"],
+		C: options["-c_region_db"]
+	};
+	if (!paths.V || !paths.J) throw new Error("--vdj requires -germline_db_V and -germline_db_J source FASTA files.");
+	const raw = {
+		V: await readVdjFasta(paths.V, "-germline_db_V"),
+		D: paths.D ? await readVdjFasta(paths.D, "-germline_db_D") : "",
+		J: await readVdjFasta(paths.J, "-germline_db_J"),
+		C: paths.C ? await readVdjFasta(paths.C, "-c_region_db") : ""
+	};
+	const useSwig = Boolean(options["--swigannots"]);
+	const internalPath = options["-custom_internal_data"];
+	const auxiliaryPath = options["-auxiliary_data"];
+	if (useSwig && (internalPath || auxiliaryPath)) throw new Error("--swigannots cannot be combined with -custom_internal_data or -auxiliary_data; choose one annotation source.");
+	const scope = vdjScope(options);
+	let pack;
+	let species;
+	let allowedLoci;
+	if (useSwig || Boolean(auxiliaryPath && !internalPath)) {
+		pack = JSON.parse(gunzipSync(readFileSync(assets.referencePackPath)).toString("utf8"));
+		species = vdjSpecies(pack, options["-organism"]);
+		allowedLoci = lociForScope(species, scope);
+		if (!allowedLoci.length) throw new Error(`The embedded reference pack has no ${scope} loci for ${species.name}.`);
+	}
+	const references = {
+		V: "",
+		D: "",
+		J: "",
+		C: ""
+	};
+	let mode = "assignments-only";
+	if (useSwig) {
+		mode = "swig-metadata";
+		for (const segment of [
+			"V",
+			"D",
+			"J",
+			"C"
+		]) {
+			if (!raw[segment]) continue;
+			const report = preprocessGermlineFastaAcrossTiers(raw[segment], segment, germlineTemplateTiers(pack, species, scope, segment), allowedLoci);
+			references[segment] = report.fasta;
+			process.stderr.write(`Swig metadata preparation: ${segment} ${report.annotated.toLocaleString()}/${report.count.toLocaleString()} annotated.\n`);
+			for (const warning of report.warnings) process.stderr.write(`Reference warning: ${warning}\n`);
+		}
+	} else for (const segment of [
+		"V",
+		"D",
+		"J",
+		"C"
+	]) if (raw[segment]) references[segment] = prepareIgblastStyleGermlineFasta(raw[segment], segment).fasta;
+	if (internalPath) {
+		mode = "igblast-data";
+		const application = applyIgblastInternalData(references.V, await readMaybeCompressedText(internalPath, "-custom_internal_data"));
+		if (application.matched !== application.total) throw new Error(`${unmatchedMessage("-custom_internal_data", application)} IgBLAST requires custom internal data for every selected V sequence.`);
+		references.V = application.fasta;
+		process.stderr.write(`IgBLAST internal data: ${application.matched.toLocaleString()}/${application.total.toLocaleString()} V records annotated.\n`);
+	} else if (auxiliaryPath) {
+		mode = "igblast-data";
+		const report = preprocessGermlineFastaAcrossTiers(raw.V, "V", germlineTemplateTiers(pack, species, scope, "V"), allowedLoci);
+		references.V = report.fasta;
+		process.stderr.write(`Embedded ${species.name} V metadata: ${report.annotated.toLocaleString()}/${report.count.toLocaleString()} records annotated.\n`);
+		for (const warning of report.warnings) process.stderr.write(`Reference warning: ${warning}\n`);
+	}
+	let fwr4EndOffsets = {};
+	if (auxiliaryPath) {
+		mode = "igblast-data";
+		const application = applyIgblastAuxiliaryData(references.J, await readMaybeCompressedText(auxiliaryPath, "-auxiliary_data"));
+		if (!application.matched) throw new Error("-auxiliary_data has no exact identifiers matching the selected J FASTA.");
+		references.J = application.fasta;
+		fwr4EndOffsets = application.fwr4EndOffsets ?? {};
+		process.stderr.write(`IgBLAST auxiliary data: ${application.annotated.toLocaleString()}/${application.total.toLocaleString()} J records have CDR3-stop annotations.\n`);
+		if (application.unmatched.length) process.stderr.write(`Reference warning: ${unmatchedMessage("-auxiliary_data", application)}\n`);
+	}
+	const dFramePath = options["-d_frame_data"];
+	if (dFramePath) {
+		if (!references.D) throw new Error("-d_frame_data requires -germline_db_D.");
+		const application = applyIgblastDFrameData(references.D, await readMaybeCompressedText(dFramePath, "-d_frame_data"));
+		if (!application.matched) throw new Error("-d_frame_data has no exact identifiers matching the selected D FASTA.");
+		references.D = application.fasta;
+		process.stderr.write(`IgBLAST D-frame data: ${application.annotated.toLocaleString()}/${application.total.toLocaleString()} D records annotated.\n`);
+		if (application.unmatched.length) process.stderr.write(`Reference warning: ${unmatchedMessage("-d_frame_data", application)}\n`);
+	}
+	return {
+		references,
+		mode,
+		fwr4EndOffsets,
+		jLengths: fastaLengths(references.J)
+	};
 }
 function compactAlleleResult(result) {
 	return {
@@ -4843,6 +5743,31 @@ function writeChunk(stream, chunk) {
 	if (stream.write(chunk)) return Promise.resolve();
 	return once(stream, "drain");
 }
+async function finishWritable(stream) {
+	stream.end();
+	await once(stream, "finish");
+}
+async function writeRowsFile(path, headers, rows, include = () => true) {
+	const stream = createWriteStream(path);
+	try {
+		await once(stream, "open");
+		await writeChunk(stream, `${headers.join("	")}\n`);
+		let batch = [];
+		for (let ordinal = 0; ordinal < rows.length; ordinal += 1) {
+			if (!include(rows[ordinal], ordinal)) continue;
+			batch.push(rows[ordinal]);
+			if (batch.length >= 2e3) {
+				await writeChunk(stream, serializeRowBody(headers, batch));
+				batch = [];
+			}
+		}
+		if (batch.length) await writeChunk(stream, serializeRowBody(headers, batch));
+		await finishWritable(stream);
+	} catch (error) {
+		stream.destroy();
+		throw error;
+	}
+}
 async function writeLineageStudy(path, manifestPath, headers, rows, activeMask, lineages, config, references, shm) {
 	const stream = createWriteStream(path);
 	const hash = createHash("sha256");
@@ -4948,7 +5873,9 @@ async function runPipeline(config, base, assets) {
 	if (!config.inputs.length) throw new Error("No input datasets were specified.");
 	const outputDirectory = resolveFrom(base, config.output.directory);
 	await mkdir(outputDirectory, { recursive: true });
-	const references = await loadReferences(config, base, assets.referencePackPath);
+	const prefix = config.output.prefix;
+	const loadedReferences = await loadReferences(config, base, assets.referencePackPath);
+	const references = loadedReferences.references;
 	if (config.annotation.airrMode === "preserve" && config.annotation.doubleD.mode !== "off" && config.inputs.some((input) => detectFormat(input.path, input.format) === "airr")) throw new Error("Double-D screening of AIRR input requires annotation.airrMode = \"reannotate\".");
 	const pool = config.inputs.some((input) => detectFormat(input.path, input.format) !== "airr" || config.annotation.airrMode === "reannotate") ? new WasmPool(config.annotation.workers, {
 		wasmPath: assets.wasmPath,
@@ -4957,6 +5884,8 @@ async function runPipeline(config, base, assets) {
 		assignerStrategy: config.annotation.assignerStrategy
 	}) : null;
 	if (pool) await pool.start();
+	const annotatedStream = config.output.writeAnnotatedAirr ? createWriteStream(join(outputDirectory, `${prefix}.annotated.airr.tsv`)) : null;
+	let annotatedOutputHeaders = null;
 	const rows = [];
 	const headers = [];
 	let annotatedRecords = 0;
@@ -4964,6 +5893,7 @@ async function runPipeline(config, base, assets) {
 	let eligibleRecords = 0;
 	let fastqFilterStats = emptyFastqQualityFilterStats(config.preprocessing.fastqFilter.enabled, false);
 	try {
+		if (annotatedStream) await once(annotatedStream, "open");
 		for (let datasetIndex = 0; datasetIndex < config.inputs.length; datasetIndex += 1) {
 			const input = config.inputs[datasetIndex];
 			const preserveAirr = detectFormat(input.path, input.format) === "airr" && config.annotation.airrMode === "preserve";
@@ -4991,14 +5921,23 @@ async function runPipeline(config, base, assets) {
 				const doubleDAnnotated = result.doubleDHeader ? annotateDoubleDBatch(result.doubleDHeader, result.doubleDBody, manifest) : null;
 				const doubleD = doubleDAnnotated ? parseTable(doubleDAnnotated.header, doubleDAnnotated.body) : null;
 				const ddById = new Map((doubleD?.rows ?? []).map((row) => [row.sequence_id, row]));
-				addHeaders(headers, table.headers);
+				const batchHeaders = [...table.headers];
+				if (doubleD) addHeaders(batchHeaders, doubleD.headers);
 				for (const row of table.rows) {
 					const dd = ddById.get(row.sequence_id);
-					if (dd) {
-						Object.assign(row, dd);
-						addHeaders(headers, Object.keys(dd));
-					}
+					if (dd) Object.assign(row, dd);
 					rows.push(row);
+				}
+				addHeaders(headers, batchHeaders);
+				if (annotatedStream) {
+					if (!annotatedOutputHeaders) {
+						annotatedOutputHeaders = batchHeaders;
+						await writeChunk(annotatedStream, `${annotatedOutputHeaders.join("	")}\n`);
+					} else {
+						const newHeaders = batchHeaders.filter((header) => !annotatedOutputHeaders.includes(header));
+						if (newHeaders.length) throw new Error(`Streaming annotated AIRR output cannot add columns after its header was written (${newHeaders.join(", ")}). Use matching AIRR schemas for all preserved inputs or reannotate them.`);
+					}
+					await writeChunk(annotatedStream, serializeRowBody(annotatedOutputHeaders, table.rows));
 				}
 				annotatedRecords += table.rows.length;
 			};
@@ -5028,14 +5967,16 @@ async function runPipeline(config, base, assets) {
 			eligibleRecords += preprocessingState.eligibleRecords;
 			fastqFilterStats = addFastqQualityFilterStats(fastqFilterStats, preprocessingState.fastqFilter);
 		}
+	} catch (error) {
+		annotatedStream?.destroy();
+		throw error;
 	} finally {
 		await pool?.close();
 	}
+	if (annotatedStream) await finishWritable(annotatedStream);
 	rows.forEach((row, ordinal) => {
 		if (!row.sequence_id) row.sequence_id = `swig_${ordinal + 1}`;
 	});
-	const prefix = config.output.prefix;
-	if (config.output.writeAnnotatedAirr) await writeFile(join(outputDirectory, `${prefix}.annotated.airr.tsv`), serializeRows(headers, rows));
 	let alleleResult = null;
 	if (config.pipeline.alleleRefinement.enabled) {
 		process.stderr.write("Fitting repertoire-level allele model…\n");
@@ -5136,8 +6077,7 @@ async function runPipeline(config, base, assets) {
 	rows.forEach((row, ordinal) => {
 		row.swig_retained = activeMask[ordinal] ? "T" : "F";
 	});
-	const processed = rows.filter((_, ordinal) => activeMask[ordinal]);
-	await writeFile(join(outputDirectory, `${prefix}.processed.airr.tsv`), serializeRows(headers, processed));
+	await writeRowsFile(join(outputDirectory, `${prefix}.processed.airr.tsv`), headers, rows, (_, ordinal) => Boolean(activeMask[ordinal]));
 	let lineageStudy = null;
 	if (config.output.writeLineageStudy && lineages) {
 		process.stderr.write("Writing lazy lineage-study bundle…\n");
@@ -5153,6 +6093,10 @@ async function runPipeline(config, base, assets) {
 		annotatedRecords,
 		retainedRecords: retained,
 		lineages: lineages?.lineageCount ?? 0,
+		references: { metadataPreparation: {
+			enabled: config.references.prepareMetadata,
+			segments: loadedReferences.preparation
+		} },
 		preprocessing: {
 			subsample: config.preprocessing.subsample,
 			fastqFilter: {
@@ -5190,8 +6134,164 @@ async function runPipeline(config, base, assets) {
 	await writeFile(join(outputDirectory, `${prefix}.resolved-config.json`), JSON.stringify(config, null, 2));
 	process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
 }
+function vdjTuning(options, callingProfile) {
+	if (![
+		"-min_D_match",
+		"-min_J_length",
+		"-num_alignments_D",
+		"-num_alignments_J",
+		"-D_penalty",
+		"-J_penalty"
+	].some((key) => options[key] !== void 0)) return void 0;
+	const agreement = callingProfile !== "truth_optimized";
+	const minD = options["-min_D_match"] === void 0 ? agreement ? 5 : 6 : parseIntegerOption(options["-min_D_match"], "-min_D_match", { minimum: 5 });
+	const minJ = options["-min_J_length"] === void 0 ? 10 : parseIntegerOption(options["-min_J_length"], "-min_J_length", { minimum: 0 });
+	const topD = options["-num_alignments_D"] === void 0 ? agreement ? 3 : 2 : parseIntegerOption(options["-num_alignments_D"], "-num_alignments_D", {
+		minimum: 1,
+		allowZero: false
+	});
+	const topJ = options["-num_alignments_J"] === void 0 ? 2 : parseIntegerOption(options["-num_alignments_J"], "-num_alignments_J", {
+		minimum: 1,
+		allowZero: false
+	});
+	const dMismatch = options["-D_penalty"] === void 0 ? agreement ? -4 : -3 : parseFiniteOption(options["-D_penalty"], "-D_penalty");
+	const jMismatch = options["-J_penalty"] === void 0 ? agreement ? -4 : -3 : parseFiniteOption(options["-J_penalty"], "-J_penalty");
+	if (options["-D_penalty"] !== void 0 && (!Number.isInteger(dMismatch) || dMismatch <= -5 || dMismatch >= 0)) throw new Error("-D_penalty must be an integer greater than -5 and less than 0.");
+	if (options["-J_penalty"] !== void 0 && (!Number.isInteger(jMismatch) || jMismatch <= -4 || jMismatch >= 0)) throw new Error("-J_penalty must be an integer greater than -4 and less than 0.");
+	return {
+		dMatch: 2,
+		dMismatch,
+		dGapOpen: agreement ? -11 : -13,
+		dGapExtend: -1,
+		topD,
+		minDMatch: minD,
+		jMatch: 2,
+		jMismatch,
+		jGapOpen: agreement ? -13 : -17,
+		jGapExtend: agreement ? -1 : -2,
+		topJ,
+		minJLength: Math.max(1, minJ)
+	};
+}
+async function runVdj(rawArgs, assets) {
+	const options = parseVdjArguments(rawArgs);
+	if (options.help) {
+		process.stdout.write(`${vdjUsage()}\n`);
+		return;
+	}
+	if (options.version) {
+		process.stdout.write(`${VERSION}\n`);
+		return;
+	}
+	const outputValue = options["-out"];
+	if (!outputValue) throw new Error("--vdj requires -out (or --out) so AIRR rows can be streamed to an explicit destination.");
+	if (String(options["-outfmt"] ?? "19").trim() !== "19") throw new Error("swig-cli --vdj currently emits only AIRR rearrangement format; use -outfmt 19.");
+	if (String(options["-domain_system"] ?? "imgt").toLowerCase() !== "imgt") throw new Error("swig-cli --vdj supports only -domain_system imgt; Kabat coordinates must not be labeled as IMGT/AIRR annotations.");
+	const strand = {
+		both: 0,
+		plus: 1,
+		minus: 2
+	}[String(options["-strand"] ?? "both").toLowerCase()];
+	if (strand === void 0) throw new Error("-strand must be both, plus, or minus.");
+	const minimumIdentity = options["--minimum-identity"] === void 0 ? .6 : parseFiniteOption(options["--minimum-identity"], "--minimum-identity");
+	if (minimumIdentity < 0 || minimumIdentity > 1) throw new Error("--minimum-identity must be between 0 and 1.");
+	const batchRecords = options["--batch-records"] === void 0 ? 2e3 : parseIntegerOption(options["--batch-records"], "--batch-records", {
+		minimum: 1,
+		allowZero: false
+	});
+	const threadValue = options["--workers"] ?? options["-num_threads"];
+	let workers = threadValue === void 0 ? Math.max(1, Math.min(4, availableParallelism())) : parseIntegerOption(threadValue, options["--workers"] !== void 0 ? "--workers" : "-num_threads", { minimum: 0 });
+	if (options["--workers"] === void 0 && threadValue !== void 0 && workers === 0) throw new Error("-num_threads must be at least 1; use --workers 0 for automatic selection.");
+	if (workers === 0) workers = Math.max(1, Math.min(8, availableParallelism()));
+	const assigner = String(options["--assigner"] ?? "aer");
+	if (![
+		"standard",
+		"riat_mp",
+		"aer"
+	].includes(assigner)) throw new Error("--assigner must be standard, riat_mp, or aer.");
+	const callingProfile = String(options["--calling-profile"] ?? "truth_optimized");
+	if (![
+		"truth_optimized",
+		"igblast_compatible",
+		"igblast_balanced"
+	].includes(callingProfile)) throw new Error("--calling-profile must be truth_optimized, igblast_compatible, or igblast_balanced.");
+	const queryValue = String(options["-query"] ?? "-");
+	const queryPath = queryValue === "-" ? "-" : resolve(queryValue);
+	const outputPath = String(outputValue) === "-" ? "-" : resolve(String(outputValue));
+	if (outputPath !== "-") await mkdir(dirname(outputPath), { recursive: true });
+	const prepared = await prepareVdjReferences(options, assets);
+	const tuning = vdjTuning(options, callingProfile);
+	const pool = new WasmPool(workers, {
+		wasmPath: assets.wasmPath,
+		references: prepared.references,
+		callingProfile,
+		assignerStrategy: assigner,
+		tuning
+	});
+	await pool.start();
+	const output = outputPath === "-" ? process.stdout : createWriteStream(outputPath);
+	let outputHeader = null;
+	let records = 0;
+	let completed = false;
+	try {
+		if (outputPath !== "-") await once(output, "open");
+		process.stderr.write(`Streaming SwiftIG V(D)J assignments (${prepared.mode}; ${workers} worker${workers === 1 ? "" : "s"}) to ${outputPath}.\n`);
+		const state = {
+			inputRecords: 0,
+			eligibleRecords: 0,
+			selectedRecords: 0,
+			fastqFilter: emptyFastqQualityFilterStats(false, false)
+		};
+		const pending = [];
+		const consume = async (item) => {
+			const result = await item.promise;
+			if (outputHeader === null) {
+				outputHeader = result.header;
+				await writeChunk(output, `${outputHeader}\n`);
+			} else if (result.header !== outputHeader) throw new Error("SwiftIG changed the AIRR schema between V(D)J batches.");
+			await writeChunk(output, trimAuxiliaryFwr4(result.header, result.body, prepared.fwr4EndOffsets, prepared.jLengths));
+			records += result.count;
+		};
+		const preprocessing = {
+			fastqFilter: {
+				...DEFAULT_CLI_CONFIG.preprocessing.fastqFilter,
+				trim3Prime: { ...DEFAULT_CLI_CONFIG.preprocessing.fastqFilter.trim3Prime }
+			},
+			subsample: {
+				...DEFAULT_CLI_CONFIG.preprocessing.subsample,
+				enabled: false
+			}
+		};
+		const input = {
+			path: queryPath,
+			format: "fasta"
+		};
+		for await (const batch of sequenceBatches(input, batchRecords, preprocessing, "reannotate", 0, state)) {
+			pending.push({ promise: pool.run({
+				text: batch.text,
+				count: batch.count,
+				format: 1,
+				minimumIdentity,
+				strand,
+				doubleD: { mode: "off" }
+			}) });
+			if (pending.length >= Math.max(2, workers * 2)) await consume(pending.shift());
+		}
+		while (pending.length) await consume(pending.shift());
+		if (outputPath !== "-") await finishWritable(output);
+		completed = true;
+	} finally {
+		if (!completed && outputPath !== "-") output.destroy();
+		await pool.close();
+	}
+	process.stderr.write(`Completed ${records.toLocaleString()} streaming V(D)J assignment${records === 1 ? "" : "s"}.\n`);
+}
 async function runCli(assets = defaultCliAssets()) {
 	const args = process.argv.slice(2);
+	if (args.includes("--vdj")) {
+		await runVdj(args, assets);
+		return;
+	}
 	const command = args[0] && !args[0].startsWith("-") ? args[0] : "run";
 	const rest = command === args[0] ? args.slice(1) : args;
 	if (hasFlag(args, "--help") || command === "help") {
@@ -5232,9 +6332,17 @@ async function runCli(assets = defaultCliAssets()) {
 		sampleId: index ? void 0 : argumentValue(rest, "--sample"),
 		subjectId: index ? void 0 : argumentValue(rest, "--donor")
 	}));
-	if (argumentValue(rest, "--out")) raw.output = {
+	const commandOutput = argumentValue(rest, "--out");
+	const configuredOutput = typeof raw.output?.directory === "string" && raw.output.directory.trim();
+	if (!commandOutput && !configuredOutput) throw new Error("The pipeline CLI requires an explicit output directory in output.directory or --out so results can be streamed to disk.");
+	if (commandOutput) raw.output = {
 		...raw.output ?? {},
-		directory: argumentValue(rest, "--out")
+		directory: commandOutput
+	};
+	const commandWorkers = argumentValue(rest, "--workers");
+	if (commandWorkers !== void 0) raw.annotation = {
+		...raw.annotation ?? {},
+		workers: parseIntegerOption(commandWorkers, "--workers", { minimum: 0 })
 	};
 	const config = normalizeCliConfig(raw);
 	if (config.annotation.workers === 0) config.annotation.workers = Math.max(1, Math.min(8, availableParallelism()));

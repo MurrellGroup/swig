@@ -1,6 +1,6 @@
 import type { AlignmentFrameOffset } from "./lineage-phylogeny.ts";
 
-export const ALIVIBE_BRIDGE_VERSION = 1;
+export const ALIVIBE_BRIDGE_VERSION = 2;
 export const ALIVIBE_SOURCE_REVISION = "cbcd02719dd0a5f1f05d3127666f00e8579f2423";
 
 export interface AlivibeNucleotideRecord {
@@ -23,7 +23,16 @@ export interface AlivibeSwigBridge {
   sourceRevision: string;
   loadNucleotideFasta: (text: string, frameOffset?: number) => unknown;
   snapshotNucleotide: () => unknown;
+  installMsaRunner: (runner: AlivibeMsaRunner) => void;
+  createMsaJob: (sequences: string[]) => AlivibeMsaJob | null;
 }
+
+export interface AlivibeMsaJob {
+  result: Promise<string[]>;
+  cancel: () => void;
+}
+
+export type AlivibeMsaRunner = (sequences: string[]) => AlivibeMsaJob;
 
 export interface AlivibeEditorWindow extends Window {
   swigAlivibeBridge?: AlivibeSwigBridge;
@@ -96,6 +105,8 @@ export function getAlivibeBridge(editor: AlivibeEditorWindow | null | undefined)
     || bridge.sourceRevision !== ALIVIBE_SOURCE_REVISION
     || typeof bridge.loadNucleotideFasta !== "function"
     || typeof bridge.snapshotNucleotide !== "function"
+    || typeof bridge.installMsaRunner !== "function"
+    || typeof bridge.createMsaJob !== "function"
   ) return undefined;
   return bridge;
 }

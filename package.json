@@ -1,6 +1,6 @@
 {
   "name": "swig-cli",
-  "version": "0.30.0",
+  "version": "0.33.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,13 +16,15 @@
     "test:germline": "node --experimental-strip-types --test tests/germline-preprocess.test.ts",
     "test:alignment": "node --experimental-strip-types --test tests/alignment-model.test.ts tests/balanced-calling-profile.test.ts",
     "test:post": "node --experimental-strip-types --test tests/post-analysis-core.test.ts tests/study-design.test.ts tests/pipeline-config.test.ts tests/lineage-study.test.ts tests/analysis-extensions.test.ts tests/alignment-provenance.test.ts tests/alivibe-roundtrip.test.ts tests/ui-regressions.test.ts tests/phylogeny.test.ts tests/lineage-phylogeny.test.ts tests/lineage-neighbours.test.ts tests/kabat-numbering.test.ts tests/chimera-view-model.test.ts tests/phylo-uca.test.ts tests/allele-refinement.test.ts",
-    "test:wasm": "node --experimental-strip-types --test tests/swiftig-wasm.test.mjs",
+    "test:wasm": "node --experimental-strip-types --test tests/swiftig-wasm.test.mjs tests/alivibe-msa-wasm.test.mjs",
     "test:cli": "node scripts/build-cli.mjs && node --test tests/cli-smoke.test.mjs",
     "benchmark:50k": "node tests/benchmark-wasm-pool.mjs",
     "benchmark:denoise-50k": "node --experimental-strip-types tests/benchmark-denoise-50k.mjs",
     "benchmark:indel-denoise-50k": "node --experimental-strip-types tests/benchmark-denoise-50k.mjs --indel",
     "benchmark:missing-v-50k": "node --expose-gc --experimental-strip-types tests/benchmark-missing-v-50k.ts",
-    "build:wasm": "bash scripts/build-swiftig-wasm.sh",
+    "benchmark:alivibe-msa": "node --experimental-strip-types tests/benchmark-alivibe-msa.mjs",
+    "build:wasm": "bash scripts/build-swiftig-wasm.sh && bash scripts/build-alivibe-msa-wasm.sh",
+    "build:alivibe-msa": "bash scripts/build-alivibe-msa-wasm.sh",
     "build:references": "node scripts/build-imgt-reference-pack.mjs"
   },
   "dependencies": {

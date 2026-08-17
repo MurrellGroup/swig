@@ -274,6 +274,7 @@
     <div class="spinner"></div>
     <div id="overlay-msg" style="margin-top:10px; font-weight:500;">Processing...</div>
     <div id="overlay-sub" style="margin-top:5px; font-size:12px; color:#666;"></div>
+    <button id="btn-cancel-task" type="button" style="display:none; margin-top:14px;">Cancel</button>
 </div>
 
 <div id="clean-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 10000;">
@@ -469,6 +470,7 @@ const dom = {
     overlay: document.getElementById('overlay'),
     overlayMsg: document.getElementById('overlay-msg'),
     overlaySub: document.getElementById('overlay-sub'),
+    btnCancelTask: document.getElementById('btn-cancel-task'),
     helpOverlay: document.getElementById('help-overlay'),
     ctxMenu: document.getElementById('ctx-menu'),
     ctxBtnRef: document.getElementById('ctx-btn-ref'),
@@ -517,6 +519,12 @@ function init() {
     dom.btnRealignSel.addEventListener('click', realignSelection);
     dom.btnStrip.addEventListener('click', stripGapsGlobal);
     dom.btnCleanFrame.addEventListener('click', showCleanModal);
+    dom.btnCancelTask.addEventListener('click', () => {
+        if(!activeMsaJob) return;
+        dom.btnCancelTask.disabled = true;
+        dom.overlayMsg.textContent = "Cancelling MSA alignment...";
+        activeMsaJob.cancel();
+    });
     document.getElementById('btn-run-clean').addEventListener('click', runFrameCleanTask);
 
     document.getElementById('sel-infer-method').addEventListener('change', (e) => {
@@ -884,14 +892,19 @@ function clearTreeOnly() {
 }
 
 // --- Async Alignment Logic (Global) ---
+let activeMsaJob = null;
+let msaRollback = null;
+
 function runAlignmentTask() {
     if(state.rawSequences.length < 2) return;
-    saveState();
+    const alignMode = dom.selAlignMode.value;
+    const previousHistory = alignMode === 'msa' ? state.history.slice() : null;
+    const rollbackSnapshot = saveState();
+    if(alignMode === 'msa') msaRollback = { snapshot: rollbackSnapshot, history: previousHistory };
     showOverlay(true);
     dom.overlayMsg.textContent = "Initializing...";
     dom.overlaySub.textContent = "";
 
-    const alignMode = dom.selAlignMode.value;
     if (alignMode === 'msa') {
         setTimeout(runMSAAlignment, 50);
     } else if (alignMode === 'kalign') {
@@ -1006,7 +1019,7 @@ async function runKalignAlignment() {
 }
 
 // --- MSA Alignment using multiSequenceAlign ---
-function runMSAAlignment() {
+async function runMSAAlignment() {
     const isAA = (state.mode === 'AA');
 
     dom.overlayMsg.textContent = "Running multiple sequence alignment...";
@@ -1034,8 +1047,21 @@ function runMSAAlignment() {
     }
 
     try {
-        // Call the MSA function
-        const alignedSeqs = refinedMSA(seqsToAlign);
+        // Swig injects a worker-backed WASM port of this exact refinedMSA path.
+        // A directly opened standalone Alivibe retains the original JavaScript
+        // implementation as a compatibility fallback.
+        const job = window.swigAlivibeBridge?.createMsaJob?.(seqsToAlign) || null;
+        let alignedSeqs;
+        if(job) {
+            activeMsaJob = job;
+            dom.btnCancelTask.disabled = false;
+            dom.btnCancelTask.style.display = '';
+            dom.overlaySub.textContent = "Alivibe-compatible WebAssembly worker";
+            alignedSeqs = await job.result;
+        } else {
+            dom.overlaySub.textContent = "JavaScript compatibility fallback";
+            alignedSeqs = refinedMSA(seqsToAlign);
+        }
 
         // Apply the aligned sequences back
         if (isAA) {
@@ -1077,10 +1103,21 @@ function runMSAAlignment() {
         }
 
         recalc();
-        showOverlay(false);
     } catch (err) {
         console.error("MSA error:", err);
-        alert("MSA alignment failed: " + err.message);
+        if(msaRollback) {
+            state.rawSequences = msaRollback.snapshot.seqs;
+            state.selection = msaRollback.snapshot.sel;
+            state.refIndex = msaRollback.snapshot.refIdx < state.rawSequences.length ? msaRollback.snapshot.refIdx : 0;
+            state.history = msaRollback.history;
+            recalc();
+        }
+        if(err?.name !== "AbortError") alert("MSA alignment failed: " + err.message);
+    } finally {
+        activeMsaJob = null;
+        msaRollback = null;
+        dom.btnCancelTask.disabled = false;
+        dom.btnCancelTask.style.display = 'none';
         showOverlay(false);
     }
 }
@@ -1485,6 +1522,7 @@ function saveState() {
     };
     state.history.push(snapshot);
     if(state.history.length > CONFIG.maxHistory) state.history.shift();
+    return snapshot;
 }
 
 function undo() {
@@ -2271,7 +2309,14 @@ function attemptMoveSelection(dir) {
 }
 
 // --- Render ---
-function showOverlay(b) { dom.overlay.classList.toggle('active', b); }
+function showOverlay(b) {
+    dom.overlay.classList.toggle('active', b);
+    if(b && !activeMsaJob) dom.btnCancelTask.style.display = 'none';
+    if(!b) {
+        dom.btnCancelTask.disabled = false;
+        dom.btnCancelTask.style.display = 'none';
+    }
+}
 
 function onResize() {
     dom.cvsNames.width = dom.areaNames.clientWidth;
@@ -2484,9 +2529,19 @@ function render() {
 // Stable same-origin interface used by Swig. The nucleotide snapshot is built
 // from the same state.viewSequences array used by the NT canvas and Alivibe's
 // own full-view FASTA export. It deliberately ignores the current selection.
+let swigMsaRunner = null;
 window.swigAlivibeBridge = Object.freeze({
-    version: 1,
+    version: 2,
     sourceRevision: "cbcd02719dd0a5f1f05d3127666f00e8579f2423",
+    installMsaRunner(runner) {
+        if(typeof runner !== 'function') throw new Error("Swig supplied an invalid Alivibe MSA runner.");
+        swigMsaRunner = runner;
+    },
+    createMsaJob(sequences) {
+        if(!swigMsaRunner) return null;
+        if(!Array.isArray(sequences)) throw new Error("Alivibe supplied an invalid MSA input.");
+        return swigMsaRunner(sequences.map(sequence => String(sequence)));
+    },
     loadNucleotideFasta(text, frameOffset = 0) {
         const offset = Number(frameOffset);
         if(!Number.isInteger(offset) || offset < 0 || offset > 2) {
@@ -2518,7 +2573,7 @@ window.swigAlivibeBridge = Object.freeze({
         }));
         const rows = records.map((_, index) => index);
         return {
-            version: 1,
+            version: 2,
             sourceRevision: this.sourceRevision,
             alphabet: "NT",
             mode: state.mode,

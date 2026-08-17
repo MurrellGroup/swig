@@ -33,6 +33,23 @@ export interface GermlinePreprocessReport {
   warnings: string[];
 }
 
+export interface GermlineNormalizationReport {
+  fasta: string;
+  count: number;
+  ambiguousBases: number;
+  loci: GermlineLocus[];
+}
+
+export interface IgblastAnnotationApplication {
+  fasta: string;
+  matched: number;
+  annotated: number;
+  total: number;
+  unmatched: string[];
+  /** IgBLAST .aux column five, keyed by exact J identifier. */
+  fwr4EndOffsets?: Record<string, number>;
+}
+
 interface ParsedRecord {
   header: string;
   name: string;
@@ -57,6 +74,13 @@ const SOURCE_TRANSFERRED_IMGT = 3;
 const SOURCE_VALIDATED_J_MOTIF = 4;
 const SOURCE_PROVIDED = 5;
 const SOURCE_TRANSFERRED_J = 6;
+
+const V_CHAIN_LOCI: Record<string, GermlineLocus> = {
+  VH: "IGH", VK: "IGK", VL: "IGL", VA: "TRA", VB: "TRB", VD: "TRD", VG: "TRG",
+};
+const J_CHAIN_LOCI: Record<string, GermlineLocus> = {
+  JH: "IGH", JK: "IGK", JL: "IGL", JA: "TRA", JB: "TRB", JD: "TRD", JG: "TRG",
+};
 
 export const METADATA_SOURCE_LABELS: Record<number, string> = {
   [SOURCE_IMGT_GAPPED]: "IMGT-gapped delineation",
@@ -106,6 +130,15 @@ function normalizeSequence(raw: string): { sequence: string; ambiguous: number }
   const withoutGaps = compact.replace(/[.\-]/g, "");
   const ambiguous = (withoutGaps.match(/[^ACGT]/g) ?? []).length;
   return { sequence: withoutGaps.replace(/[^ACGT]/g, "N"), ambiguous };
+}
+
+function normalizeIndexSequence(raw: string): { sequence: string; ambiguous: number } {
+  const compact = raw.toUpperCase().replaceAll("U", "T").replace(/\s/g, "");
+  if (/[^ACGTNRYKMSWBDHV.\-]/.test(compact)) {
+    throw new Error("Germline FASTA contains characters outside the IUPAC nucleotide alphabet.");
+  }
+  const sequence = compact.replace(/[.\-]/g, "");
+  return { sequence, ambiguous: (sequence.match(/[^ACGT]/g) ?? []).length };
 }
 
 function parseFasta(text: string): Array<{ header: string; rawSequence: string }> {
@@ -408,6 +441,205 @@ function annotationPresent(segment: GermlineSegment, metadata?: CompactMetadata)
   return true;
 }
 
+function integerField(value: string | undefined, context: string): number {
+  if (value === undefined || !/^-?\d+$/.test(value)) throw new Error(`${context} must be an integer.`);
+  return Number.parseInt(value, 10);
+}
+
+function annotationDataLines(text: string): Array<{ fields: string[]; line: number }> {
+  const result: Array<{ fields: string[]; line: number }> = [];
+  text.split(/\r?\n/).forEach((raw, index) => {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) return;
+    result.push({ fields: line.split(/\s+/), line: index + 1 });
+  });
+  return result;
+}
+
+function assertChainLocus(
+  name: string,
+  locus: GermlineLocus,
+  chain: string,
+  chainLoci: Record<string, GermlineLocus>,
+  source: string,
+): void {
+  const declared = chainLoci[chain.toUpperCase()];
+  if (declared && declared !== locus) {
+    throw new Error(`${source} declares ${name} as ${chain} (${declared}), but its germline identifier is ${locus}.`);
+  }
+}
+
+/**
+ * Perform the FASTA preparation done by IgBLAST's `edit_imgt_file.pl` where it
+ * is relevant to SwiftIG: canonicalize the germline identifier and remove IMGT
+ * alignment gaps before indexing. Existing SWIGMETA is deliberately removed.
+ */
+export function prepareIgblastStyleGermlineFasta(
+  text: string,
+  segment: GermlineSegment,
+  allowedLoci: readonly GermlineLocus[] = LOCI,
+): GermlineNormalizationReport {
+  const inputRecords = parseFasta(text);
+  const seen = new Set<string>();
+  const loci = new Set<GermlineLocus>();
+  let ambiguousBases = 0;
+  const fasta = inputRecords.map((input) => {
+    const name = germlineName(input.header);
+    if (!name) throw new Error(`A ${segment} germline record has an empty identifier.`);
+    if (seen.has(name)) throw new Error(`Duplicate ${segment} germline identifier: ${name}.`);
+    seen.add(name);
+    const locus = inferLocus(`${name} ${input.header}`);
+    if (!locus) throw new Error(`${name} does not identify one of the supported IG/TR loci.`);
+    if (!allowedLoci.includes(locus)) {
+      throw new Error(`${name} belongs to ${locus}, outside the selected ${allowedLoci.join("/")} search space.`);
+    }
+    const detectedSegment = inferSegment(name);
+    if (detectedSegment && detectedSegment !== segment) {
+      throw new Error(`${name} looks like a ${detectedSegment} gene, not a ${segment} gene.`);
+    }
+    const normalized = normalizeIndexSequence(input.rawSequence);
+    if (!normalized.sequence) throw new Error(`${name} has an empty nucleotide sequence.`);
+    ambiguousBases += normalized.ambiguous;
+    loci.add(locus);
+    return `>${name}\n${normalized.sequence}\n`;
+  }).join("");
+  return { fasta, count: inputRecords.length, ambiguousBases, loci: [...loci].sort() };
+}
+
+/** Apply the exact, 1-based inclusive V-domain coordinates in IgBLAST `.ndm.imgt` data. */
+export function applyIgblastInternalData(
+  fasta: string,
+  data: string,
+): IgblastAnnotationApplication {
+  type Entry = { bounds: number[]; chain: string; frame: number };
+  const entries = new Map<string, Entry>();
+  for (const record of annotationDataLines(data)) {
+    if (record.fields.length !== 13) {
+      throw new Error(`Invalid IgBLAST internal-data record at line ${record.line}; expected 13 fields.`);
+    }
+    const bounds: number[] = [];
+    for (let index = 0; index < 10; index += 2) {
+      const start = integerField(record.fields[index + 1], `IgBLAST internal-data line ${record.line} start`);
+      const stop = integerField(record.fields[index + 2], `IgBLAST internal-data line ${record.line} stop`);
+      if (start < 1 || stop < start) {
+        throw new Error(`Invalid 1-based FWR/CDR interval at IgBLAST internal-data line ${record.line}.`);
+      }
+      bounds.push(start - 1, stop);
+    }
+    const frame = integerField(record.fields[12], `IgBLAST internal-data line ${record.line} coding frame`);
+    if (frame < -1 || frame > 2) throw new Error(`Invalid coding frame at IgBLAST internal-data line ${record.line}.`);
+    entries.set(record.fields[0], { bounds, chain: record.fields[11], frame });
+  }
+  if (!entries.size) throw new Error("The IgBLAST internal-data file contains no annotation records.");
+
+  const prepared = prepareIgblastStyleGermlineFasta(fasta, "V");
+  let matched = 0;
+  const unmatched: string[] = [];
+  const output = parseFasta(prepared.fasta).map((record) => {
+    const name = germlineName(record.header);
+    const normalized = normalizeIndexSequence(record.rawSequence);
+    const locus = inferLocus(name)!;
+    const entry = entries.get(name);
+    if (!entry) { unmatched.push(name); return `>${name}\n${normalized.sequence}\n`; }
+    assertChainLocus(name, locus, entry.chain, V_CHAIN_LOCI, "IgBLAST internal data");
+    const metadata = compactMetadata(entry.frame, -1, entry.bounds, SOURCE_PROVIDED);
+    if (!validateMetadata(metadata, normalized.sequence.length, "V")) {
+      throw new Error(`IgBLAST internal-data coordinates for ${name} exceed or contradict its ungapped V sequence.`);
+    }
+    matched += 1;
+    return `>${name}${metadataHeader(metadata)}\n${normalized.sequence}\n`;
+  }).join("");
+  return { fasta: output, matched, annotated: matched, total: prepared.count, unmatched };
+}
+
+/**
+ * Apply IgBLAST J auxiliary data. Frame and CDR3-stop coordinates are 0-based;
+ * the optional fifth field is retained separately for FWR4 end trimming.
+ */
+export function applyIgblastAuxiliaryData(
+  fasta: string,
+  data: string,
+): IgblastAnnotationApplication {
+  type Entry = { frame: number; chain: string; cdr3Stop: number; fwr4EndOffset?: number };
+  const entries = new Map<string, Entry>();
+  for (const record of annotationDataLines(data)) {
+    if (record.fields.length < 3 || record.fields.length > 5) {
+      throw new Error(`Invalid IgBLAST auxiliary record at line ${record.line}; expected 3 to 5 fields.`);
+    }
+    const frame = integerField(record.fields[1], `IgBLAST auxiliary line ${record.line} coding frame`);
+    if (frame < -1 || frame > 2) throw new Error(`Invalid coding frame at IgBLAST auxiliary line ${record.line}.`);
+    const cdr3Stop = record.fields.length >= 4
+      ? integerField(record.fields[3], `IgBLAST auxiliary line ${record.line} CDR3 stop`) : -1;
+    if (cdr3Stop < -1) throw new Error(`Invalid CDR3 stop at IgBLAST auxiliary line ${record.line}.`);
+    const fwr4EndOffset = record.fields.length === 5
+      ? integerField(record.fields[4], `IgBLAST auxiliary line ${record.line} FWR4 end offset`) : undefined;
+    if (fwr4EndOffset !== undefined && fwr4EndOffset < 0) {
+      throw new Error(`Invalid FWR4 end offset at IgBLAST auxiliary line ${record.line}.`);
+    }
+    // IgBLAST itself stores these in maps, so a repeated identifier follows
+    // the last record. Its distributed human file contains such a duplicate.
+    entries.set(record.fields[0], { frame, chain: record.fields[2], cdr3Stop, fwr4EndOffset });
+  }
+  if (!entries.size) throw new Error("The IgBLAST auxiliary file contains no annotation records.");
+
+  const prepared = prepareIgblastStyleGermlineFasta(fasta, "J");
+  let matched = 0;
+  let annotated = 0;
+  const unmatched: string[] = [];
+  const fwr4EndOffsets: Record<string, number> = {};
+  const output = parseFasta(prepared.fasta).map((record) => {
+    const name = germlineName(record.header);
+    const normalized = normalizeIndexSequence(record.rawSequence);
+    const locus = inferLocus(name)!;
+    const entry = entries.get(name);
+    if (!entry) { unmatched.push(name); return `>${name}\n${normalized.sequence}\n`; }
+    assertChainLocus(name, locus, entry.chain, J_CHAIN_LOCI, "IgBLAST auxiliary data");
+    const metadata = compactMetadata(entry.frame, entry.cdr3Stop, EMPTY_BOUNDS, SOURCE_PROVIDED);
+    if (!validateMetadata(metadata, normalized.sequence.length, "J")) {
+      throw new Error(`IgBLAST auxiliary coordinates for ${name} exceed its ungapped J sequence.`);
+    }
+    matched += 1;
+    if (entry.cdr3Stop >= 0) annotated += 1;
+    if (entry.fwr4EndOffset !== undefined) fwr4EndOffsets[name] = entry.fwr4EndOffset;
+    return `>${name}${metadataHeader(metadata)}\n${normalized.sequence}\n`;
+  }).join("");
+  return { fasta: output, matched, annotated, total: prepared.count, unmatched, fwr4EndOffsets };
+}
+
+/** Apply the exact 0-based coding-frame-one starts in IgBLAST `-d_frame_data`. */
+export function applyIgblastDFrameData(
+  fasta: string,
+  data: string,
+): IgblastAnnotationApplication {
+  const entries = new Map<string, number>();
+  for (const record of annotationDataLines(data)) {
+    if (record.fields.length !== 2) {
+      throw new Error(`Invalid IgBLAST D-frame record at line ${record.line}; expected 2 fields.`);
+    }
+    const frame = integerField(record.fields[1], `IgBLAST D-frame line ${record.line} start`);
+    if (frame < -1 || frame > 2) throw new Error(`Invalid D-frame start at line ${record.line}.`);
+    entries.set(record.fields[0], frame);
+  }
+  if (!entries.size) throw new Error("The IgBLAST D-frame file contains no annotation records.");
+
+  const prepared = prepareIgblastStyleGermlineFasta(fasta, "D");
+  let matched = 0;
+  let annotated = 0;
+  const unmatched: string[] = [];
+  const output = parseFasta(prepared.fasta).map((record) => {
+    const name = germlineName(record.header);
+    const normalized = normalizeIndexSequence(record.rawSequence);
+    const frame = entries.get(name);
+    if (frame === undefined) { unmatched.push(name); return `>${name}\n${normalized.sequence}\n`; }
+    matched += 1;
+    if (frame < 0) return `>${name}\n${normalized.sequence}\n`;
+    annotated += 1;
+    const metadata = compactMetadata(frame, -1, EMPTY_BOUNDS, SOURCE_PROVIDED);
+    return `>${name}${metadataHeader(metadata)}\n${normalized.sequence}\n`;
+  }).join("");
+  return { fasta: output, matched, annotated, total: prepared.count, unmatched };
+}
+
 export function preprocessGermlineFasta(
   text: string,
   segment: GermlineSegment,
@@ -479,6 +711,26 @@ export function preprocessGermlineFasta(
     loci: [...loci].sort(),
     warnings,
   };
+}
+
+/**
+ * Apply the same progressively broadened template search used by the browser
+ * worker. Existing valid SWIGMETA is retained, while records still lacking V
+ * or J metadata are offered to each successive template tier.
+ */
+export function preprocessGermlineFastaAcrossTiers(
+  text: string,
+  segment: GermlineSegment,
+  templateTiers: readonly (readonly MetadataAllele[])[],
+  allowedLoci: readonly GermlineLocus[] = LOCI,
+): GermlinePreprocessReport {
+  let report: GermlinePreprocessReport | undefined;
+  for (const templates of templateTiers.length ? templateTiers : [[]]) {
+    report = preprocessGermlineFasta(report?.fasta ?? text, segment, [...templates], allowedLoci);
+    if (segment !== "V" && segment !== "J") break;
+    if (report.annotated === report.count) break;
+  }
+  return report!;
 }
 
 export function annotationCoverage(fasta: string, segment: GermlineSegment): { annotated: number; total: number } {

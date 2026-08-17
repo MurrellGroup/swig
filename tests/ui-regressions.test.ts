@@ -226,6 +226,19 @@ test("post-analysis skipping, richer lineage rows, CLI export, and lazy lineage 
   assert.match(release,/Smoke-test the actual executable/);
 });
 
+test("lineage alignment offers direct Alivibe-compatible MSA and retains manual round trip", () => {
+  const post = fs.readFileSync(new URL("../src/post-analysis.tsx", import.meta.url), "utf8");
+  const runtime = fs.readFileSync(new URL("../src/alivibe-msa-runtime.ts", import.meta.url), "utf8");
+  assert.match(post, /MSA lineage · Alivibe WASM/);
+  assert.match(post, /runDirectAlivibeMsa/);
+  assert.match(post, /runAlivibeMsaTask/);
+  assert.match(post, /record\.sequence\.replaceAll\("-", ""\)/);
+  assert.match(post, /Open \+ load in Alivibe/);
+  assert.match(post, /Read live Alivibe NT view/);
+  assert.match(runtime, /signal\?\.addEventListener\("abort", abort/);
+  assert.match(runtime, /job\.cancel\(\)/);
+});
+
 test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligned HMM tracks", () => {
   const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const component = fs.readFileSync(new URL("../src/probability-logo.tsx", import.meta.url), "utf8");

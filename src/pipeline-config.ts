@@ -33,6 +33,8 @@ export interface CliInputDataset {
 export interface CliReferenceConfig {
   species: string;
   scope: ScopeKey;
+  /** Prepare and validate local `files` references with the browser's metadata-transfer pipeline. */
+  prepareMetadata: boolean;
   /** Exact references exported by Swig Web. These take precedence over built-ins. */
   inline?: Partial<Record<"V" | "D" | "J" | "C", string>>;
   /** Optional local FASTA replacements, resolved relative to the config file. */
@@ -143,7 +145,7 @@ export const DEFAULT_CLI_CONFIG: SwigCliConfig = {
   studyName: "swig-study",
   studyDesign: "independent",
   inputs: [],
-  references: { species: "Homo sapiens", scope: "BCR" },
+  references: { species: "Homo sapiens", scope: "BCR", prepareMetadata: true },
   preprocessing: {
     fastqFilter: { ...DEFAULT_FASTQ_QUALITY_FILTER, trim3Prime: { ...DEFAULT_FASTQ_QUALITY_FILTER.trim3Prime } },
     subsample: { enabled: false, size: 10_000, seed: 1 },
@@ -219,7 +221,7 @@ export function normalizeCliConfig(value: PartialSwigCliConfig): SwigCliConfig {
     schema:SWIG_CLI_CONFIG_SCHEMA,
     application:"swig-cli",
     inputs,
-    references:{...DEFAULT_CLI_CONFIG.references,...value.references,inline:value.references?.inline?{...value.references.inline}:undefined,files:value.references?.files?{...value.references.files}:undefined},
+    references:{...DEFAULT_CLI_CONFIG.references,...value.references,prepareMetadata:value.references?.prepareMetadata!==false,inline:value.references?.inline?{...value.references.inline}:undefined,files:value.references?.files?{...value.references.files}:undefined},
     preprocessing:{
       fastqFilter:{...DEFAULT_CLI_CONFIG.preprocessing.fastqFilter,...fastqFilter,trim3Prime:{...DEFAULT_CLI_CONFIG.preprocessing.fastqFilter.trim3Prime,...trim3Prime}},
       subsample:normalizedSubsample,

@@ -28,8 +28,6 @@
  * Notes:
  *   - With a reference, this returns a REFERENCE-ANCHORED frame coordinate system.
  *   - Without a reference, it falls back to an occupancy-only HMM that does not know “true ancestry”.
- *
- * License: MIT (you can treat this as MIT for practical purposes)
  */
 
 (function (root, factory) {

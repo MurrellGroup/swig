@@ -3,6 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 
 import {
+  ALIVIBE_BRIDGE_VERSION,
   ALIVIBE_SOURCE_REVISION,
   assertAlivibeInitialLoad,
   assertAlivibeRoundTripTarget,
@@ -15,10 +16,12 @@ import {
 function editorWithSnapshot(snapshot: Record<string, unknown>): AlivibeEditorWindow {
   return {
     swigAlivibeBridge: {
-      version: 1,
+      version: ALIVIBE_BRIDGE_VERSION,
       sourceRevision: ALIVIBE_SOURCE_REVISION,
       loadNucleotideFasta: () => snapshot,
       snapshotNucleotide: () => snapshot,
+      installMsaRunner: () => undefined,
+      createMsaJob: () => null,
     },
   } as unknown as AlivibeEditorWindow;
 }
@@ -26,7 +29,7 @@ function editorWithSnapshot(snapshot: Record<string, unknown>): AlivibeEditorWin
 test("Alivibe returns the exact complete ordered NT rows, including manually placed gaps", () => {
   const fasta = ">germline_N_masked\nACGT---NN\n>member_1\nA-GTT--NN\n";
   const snapshot = {
-    version: 1,
+    version: ALIVIBE_BRIDGE_VERSION,
     sourceRevision: ALIVIBE_SOURCE_REVISION,
     alphabet: "NT",
     mode: "NT",
@@ -50,7 +53,7 @@ test("Alivibe returns the exact complete ordered NT rows, including manually pla
 
 test("Alivibe rejects stale, AA, empty, or internally inconsistent returns", () => {
   const base = {
-    version: 1,
+    version: ALIVIBE_BRIDGE_VERSION,
     sourceRevision: ALIVIBE_SOURCE_REVISION,
     alphabet: "NT",
     mode: "NT",
@@ -75,7 +78,7 @@ test("Alivibe rejects stale, AA, empty, or internally inconsistent returns", () 
 
 test("a nucleotide return cannot cross lineage or alignment boundaries", () => {
   const transfer = readAlivibeNucleotideFasta(editorWithSnapshot({
-    version: 1,
+    version: ALIVIBE_BRIDGE_VERSION,
     sourceRevision: ALIVIBE_SOURCE_REVISION,
     alphabet: "NT",
     mode: "NT",
@@ -101,7 +104,12 @@ test("a nucleotide return cannot cross lineage or alignment boundaries", () => {
 test("the bundled Alivibe bridge snapshots the same NT state used by its viewer/export and initializes controls first", () => {
   const source = fs.readFileSync(new URL("../public/tools/alivibe.html", import.meta.url), "utf8");
   assert.match(source, new RegExp(ALIVIBE_SOURCE_REVISION));
+  assert.match(source, new RegExp(`version:\\s*${ALIVIBE_BRIDGE_VERSION}`));
   assert.match(source, /window\.swigAlivibeBridge\s*=\s*Object\.freeze/);
+  assert.match(source, /installMsaRunner\(runner\)/);
+  assert.match(source, /createMsaJob\(sequences\)/);
+  assert.match(source, /Alivibe-compatible WebAssembly worker/);
+  assert.match(source, /activeMsaJob\.cancel\(\)/);
   assert.match(source, /setMode\('NT'\);\s*const records = state\.viewSequences\.map/);
   assert.match(source, /while\(entry\.seq\.length < width\)[\s\S]*entry\.seq\.push\('-'\)/);
   assert.match(source, /buildFastaContent\(rows, 0, null\)/);
@@ -109,4 +117,13 @@ test("the bundled Alivibe bridge snapshots the same NT state used by its viewer/
   const modeFunction = source.match(/function setMode\(m\) \{[\s\S]*?\n\}\n\nfunction recalc/)?.[0] ?? "";
   assert.match(modeFunction, /grpFrame\.style\.pointerEvents = 'auto'/);
   assert.doesNotMatch(modeFunction, /grpFrame\.style\.pointerEvents = 'none'/);
+});
+
+test("MurrellGroup components do not carry duplicate third-party license notices", () => {
+  assert.equal(fs.existsSync(new URL("../public/tools/WebWidgets-LICENSE.txt", import.meta.url)), false);
+  assert.equal(fs.existsSync(new URL("../wasm/LICENSE.swiftig", import.meta.url)), false);
+  const toolsReadme = fs.readFileSync(new URL("../public/tools/README.md", import.meta.url), "utf8");
+  const frameClean = fs.readFileSync(new URL("../public/tools/frameclean.js", import.meta.url), "utf8");
+  assert.doesNotMatch(toolsReadme, /WebWidgets-LICENSE|license is retained/i);
+  assert.doesNotMatch(frameClean, /License:\s*MIT/i);
 });

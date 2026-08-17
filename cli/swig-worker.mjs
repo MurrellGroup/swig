@@ -775,6 +775,11 @@ async function initialize(message) {
 	const profile = message.callingProfile === "truth_optimized" ? 0 : 1;
 	if (runtime.swig_set_calling_profile(profile) !== 0) throw new Error("SwiftIG rejected the calling profile.");
 	callingProfile = message.callingProfile;
+	if (message.tuning) {
+		if (typeof runtime.swig_set_tuning_options !== "function") throw new Error("This SwiftIG build does not expose the requested D/J compatibility controls.");
+		const tuning = message.tuning;
+		if (runtime.swig_set_tuning_options(tuning.dMatch, tuning.dMismatch, tuning.dGapOpen, tuning.dGapExtend, tuning.topD, tuning.minDMatch, tuning.jMatch, tuning.jMismatch, tuning.jGapOpen, tuning.jGapExtend, tuning.topJ, tuning.minJLength) !== 0) throw new Error("SwiftIG rejected the requested D/J compatibility controls.");
+	}
 	const allocations = [
 		message.references.V,
 		message.references.D,

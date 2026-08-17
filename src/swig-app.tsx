@@ -13,16 +13,16 @@ import { CommitNumberInput } from "./commit-number-input";
 import { CommitTextInput } from "./commit-text-input";
 import { FacetPicker, uniqueFacetItems } from "./facet-picker";
 import { callFacetItems } from "./call-facets";
-import { annotationCoverage, type GermlinePreprocessReport, type MetadataAllele } from "./germline-preprocess";
+import { annotationCoverage, type GermlinePreprocessReport } from "./germline-preprocess";
 import { preprocessGermlinesInWorker } from "./germline-preprocess-client";
 import { RepertoireDashboard } from "./repertoire-charts";
 import { PostAnalysisWorkbench, type PostAnalysisSessionHandle } from "./post-analysis";
 import { tableExtension, type TableExportFormat } from "./export-formats";
 import {
-  allelesForScope,
   allelesToFasta,
   availableScopes,
   compileReferences,
+  germlineTemplateTiers,
   loadReferencePack,
   lociForScope,
   makeDemoFasta,
@@ -198,7 +198,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.30.0";
+const APP_VERSION = "0.33.0";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -382,29 +382,6 @@ function favoriteSpecies(species: ReferenceSpecies[]): ReferenceSpecies[] {
     }
     return a.name.localeCompare(b.name);
   });
-}
-
-function templateTiers(
-  pack: ReferencePack,
-  selected: ReferenceSpecies,
-  scope: ScopeKey,
-  segment: SegmentKey,
-): MetadataAllele[][] {
-  const baseTaxon = selected.name.split("_", 1)[0];
-  const genus = baseTaxon.split(" ", 1)[0];
-  const groups = [
-    [selected],
-    pack.species.filter((entry) => entry.name !== selected.name && entry.name.split("_", 1)[0] === baseTaxon),
-    pack.species.filter((entry) => entry.name.split("_", 1)[0] !== baseTaxon && entry.name.startsWith(`${genus} `)),
-    pack.species.filter((entry) => !entry.name.startsWith(`${genus} `)),
-  ];
-  const seen = new Set<string>();
-  return groups.map((group) => group.flatMap((entry) => allelesForScope(entry, scope, segment)).filter((allele) => {
-    const key = `${allele[0]}\u0000${allele[1]}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  })).filter((group) => group.length);
 }
 
 function formatFromName(name: string): { format: InputFormat; formatCode: 1 | 2 | 3 } | null {
@@ -1999,7 +1976,7 @@ export default function SwigApp() {
     const report = await preprocessGermlinesInWorker(
       text,
       segment,
-      templateTiers(pack, species, referenceScope, segment),
+      germlineTemplateTiers(pack, species, referenceScope, segment),
       allowedLoci,
       signal,
     );

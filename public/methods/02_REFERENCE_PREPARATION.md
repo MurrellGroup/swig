@@ -10,6 +10,8 @@ The UI reports the exact number of active V/D/J/C records before a run. Per-cell
 
 Reference FASTA is parsed into named records, normalized to uppercase nucleotide sequences, and checked for empty/duplicate-invalid content. Segment preparation computes the metadata and indexes needed by SwiftIG in a worker. Online choices fetch only the chosen public FASTA; query data are not uploaded.
 
+The standalone CLI uses the same parsing, normalization, validation, taxonomic template tiers, nucleotide coordinate projection, and conserved-anchor checks for local FASTA supplied through `references.files`. This metadata preparation is enabled by default with `references.prepareMetadata: true`; setting it to `false` deliberately passes the local FASTA through without metadata transfer. The bundled fixed reference pack supplies the coordinate donors, so CLI preparation has no network dependency. Exact FASTA embedded in `references.inline` by Swig Web is already prepared and is retained byte-for-byte rather than compared again.
+
 Exact sequence-identical records may remain distinct labels for assignment output. The later repertoire allele model collapses sequence-identical labels into one unresolved inference node because no nucleotide evidence can distinguish them; this does not alter the initial database.
 
 Reference preparation is transactional at the UI level. A whole-database choice is displayed only after all required cells have downloaded, parsed, and prepared successfully. Cancelling terminates preparation/fetches and retains the previously committed matrix. Per-cell preparation follows the same rule.

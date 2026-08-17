@@ -10,6 +10,7 @@ import {
 
 import type { FastTreeRun } from "./biowasm-runtime";
 import { runCodonAwareKalignTask, runFastTreeTask, runKalignTask } from "./biowasm-task-runtime";
+import { createAlivibeMsaJob, runAlivibeMsaTask } from "./alivibe-msa-runtime";
 import {
   ALIVIBE_SOURCE_REVISION,
   assertAlivibeInitialLoad,
@@ -1768,6 +1769,43 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     }
   }
 
+  async function runDirectAlivibeMsa() {
+    if (!lineageRows.length) return;
+    setBusy("Running Alivibe-compatible POA MSA WASM");
+    setError("");
+    try {
+      const next = await runInActiveLock(async (signal) => {
+        const rows = stratifiedLineageRows(lineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
+        const input = lineageInputFasta(rows, lineageGermlineMethod);
+        const records = parseFasta(input.fasta, true);
+        const aligned = await runAlivibeMsaTask(
+          records.map((record) => record.sequence.replaceAll("-", "")),
+          signal,
+          3,
+        );
+        const fasta = records.map((record, index) => `>${record.name}\n${aligned[index]}`).join("\n") + "\n";
+        const anchor = records.findIndex((record) => record.name === input.frameAnchorName);
+        const derivedFrame = anchor >= 0
+          ? alignedSequenceFrameOffset(aligned[anchor], input.frameAnchorUngappedOffset)
+          : input.alignmentFrameOffset;
+        return { fasta, frameOffset: derivedFrame };
+      });
+      installAlignment(
+        next.fasta,
+        "Alivibe-compatible POA MSA · WASM · three refinement passes",
+        false,
+        selectedLineageIds,
+        next.frameOffset,
+      );
+      setAlignmentEditorStatus("");
+      setAlignmentEditorError("");
+    } catch (operationError) {
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
+    } finally {
+      if (!cancellationRecoveryRef.current) setBusy("");
+    }
+  }
+
   async function inferTree() {
     if (!alignment) return;
     setBusy("Running FastTree WASM and rooting on the N-masked germline");
@@ -1881,10 +1919,12 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         return;
       }
       try {
-        if (!getAlivibeBridge(popup)) {
+        const bridge = getAlivibeBridge(popup);
+        if (!bridge) {
           if (attempts < 240) return;
           throw new Error("The bundled Alivibe bridge did not become ready. Close the editor and try again.");
         }
+        bridge.installMsaRunner((sequences) => createAlivibeMsaJob(sequences, 3));
         const loaded = loadAlivibeNucleotideFasta(popup, session.baseline, session.frameOffset);
         assertAlivibeInitialLoad(session.baseline, loaded);
         const controls = popup.document.getElementById("controls");
@@ -2583,9 +2623,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         <div><b>{lineageGermline.inferredColumns.toLocaleString()}</b><span>N sites filled in comparison UCA</span></div>
         <div><b>{lineageGermlineMethod==="closest"&&lineageGermline.selectedVjIdentity!==undefined?`${(lineageGermline.selectedVjIdentity*100).toFixed(2)}%`:lineageGermline.conflictingColumns.toLocaleString()}</b><span>{lineageGermlineMethod==="closest"?"equal-weight V/J identity":"conflicting columns retained as N"}</span></div>
       </div>}
-      <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">Ref-anchored quick view · default</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><CommitNumberInput min="2" max="500" value={alignmentLimit} onCommit={setAlignmentLimit} /></label><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runAlignment()}>{alignmentMethod==="quick"?"Prepare quick view":"Align selected lineage"}</button>{savedEditedAlignment&&!alignmentEdited&&<button type="button" onClick={()=>installAlignment(savedEditedAlignment.fasta,savedEditedAlignment.source,true,savedEditedAlignment.lineageIds,savedEditedAlignment.frameOffset)}>Restore saved manual edit</button>}{alignment && <><label><span>AA reading frame</span><select value={alignmentFrameOffset} onChange={(event)=>changeAlignmentFrameOffset(Number(event.target.value) as AlignmentFrameOffset)}><option value="0">Start at nucleotide column 1</option><option value="1">Start at nucleotide column 2</option><option value="2">Start at nucleotide column 3</option></select></label><label><span>Alignment export</span><select value={alignmentExportFormat} onChange={(event)=>setAlignmentExportFormat(event.target.value as AlignmentExportFormat)}><option value="fasta">Aligned FASTA</option><option value="clustal">Clustal</option><option value="phylip">Relaxed PHYLIP</option><option value="stockholm">Stockholm</option><option value="nexus">NEXUS</option></select></label><button type="button" onClick={downloadCurrentAlignment}>Download alignment ↓</button></>}</div>
+      <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">Ref-anchored quick view · default</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><CommitNumberInput min="2" max="500" value={alignmentLimit} onCommit={setAlignmentLimit} /></label><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runAlignment()}>{alignmentMethod==="quick"?"Prepare quick view":"Align selected lineage"}</button><button type="button" disabled={Boolean(busy)} onClick={() => void runDirectAlivibeMsa()}>MSA lineage · Alivibe WASM</button>{savedEditedAlignment&&!alignmentEdited&&<button type="button" onClick={()=>installAlignment(savedEditedAlignment.fasta,savedEditedAlignment.source,true,savedEditedAlignment.lineageIds,savedEditedAlignment.frameOffset)}>Restore saved manual edit</button>}{alignment && <><label><span>AA reading frame</span><select value={alignmentFrameOffset} onChange={(event)=>changeAlignmentFrameOffset(Number(event.target.value) as AlignmentFrameOffset)}><option value="0">Start at nucleotide column 1</option><option value="1">Start at nucleotide column 2</option><option value="2">Start at nucleotide column 3</option></select></label><label><span>Alignment export</span><select value={alignmentExportFormat} onChange={(event)=>setAlignmentExportFormat(event.target.value as AlignmentExportFormat)}><option value="fasta">Aligned FASTA</option><option value="clustal">Clustal</option><option value="phylip">Relaxed PHYLIP</option><option value="stockholm">Stockholm</option><option value="nexus">NEXUS</option></select></label><button type="button" onClick={downloadCurrentAlignment}>Download alignment ↓</button></>}</div>
       {alignment && <>
-        <div className={`alignment-editor-transfer${alignmentEdited?" edited-saved":""}`}><div><span className="section-kicker">Manual correction</span><h4>Round trip through Alivibe</h4><p>Gap edits, deleted alignment columns, deleted nucleotide characters, and removal of bad biological rows are accepted. Added or renamed rows and nucleotide substitutions are rejected. Keep <code>{GERMLINE_OUTGROUP}</code> so rooting remains reproducible. The bundled editor returns the complete ordered records from the same nucleotide state used by Alivibe’s NT viewer and NT export; its AA frame is transferred separately.</p>{alignmentEdited?<strong className="session-preserved-badge">Manual alignment + AA frame · included in Save session</strong>:<small>Generated alignments are reproducible and omitted from sessions unless a tree needs their exact input. Any manually returned/imported correction is preserved.</small>}</div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={importFromAlivibe}>Read live Alivibe NT view</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label>{savedEditedAlignment&&<button type="button" onClick={()=>{setEditedAlignments((current)=>{const next=new Map(current);next.delete(selectedGroupKey);return next;});if(alignmentEdited)setAlignmentEdited(false);}}>Discard saved manual edit</button>}</div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>The live return never reads the system clipboard and is bound to the lineage/alignment from which the editor was opened. For a downloaded corrected FASTA, verify the adjacent AA reading-frame control because FASTA itself does not encode codon phase. Sequence data remain in the browser.</small></div>
+        <div className={`alignment-editor-transfer${alignmentEdited?" edited-saved":""}`}><div><span className="section-kicker">Optional manual correction</span><h4>Round trip through Alivibe</h4><p>The one-click Alivibe WASM button above performs the MSA entirely in Swig. Open this editor only when you want to inspect or curate that alignment manually. Gap edits, deleted alignment columns, deleted nucleotide characters, and removal of bad biological rows are accepted. Added or renamed rows and nucleotide substitutions are rejected. Keep <code>{GERMLINE_OUTGROUP}</code> so rooting remains reproducible. The bundled editor returns the complete ordered records from the same nucleotide state used by Alivibe’s NT viewer and NT export; its AA frame is transferred separately.</p>{alignmentEdited?<strong className="session-preserved-badge">Manual alignment + AA frame · included in Save session</strong>:<small>Generated alignments are reproducible and omitted from sessions unless a tree needs their exact input. Any manually returned/imported correction is preserved.</small>}</div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={importFromAlivibe}>Read live Alivibe NT view</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label>{savedEditedAlignment&&<button type="button" onClick={()=>{setEditedAlignments((current)=>{const next=new Map(current);next.delete(selectedGroupKey);return next;});if(alignmentEdited)setAlignmentEdited(false);}}>Discard saved manual edit</button>}</div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>The live return never reads the system clipboard and is bound to the lineage/alignment from which the editor was opened. For a downloaded corrected FASTA, verify the adjacent AA reading-frame control because FASTA itself does not encode codon phase. Sequence data remain in the browser.</small></div>
         <div className="alignment-view-controls"><div className="mode-toggle"><button className={alignmentMode === "nt" ? "active" : ""} type="button" onClick={() => setAlignmentMode("nt")}>Nucleotide</button><button className={alignmentMode === "aa" ? "active" : ""} type="button" onClick={() => setAlignmentMode("aa")}>Amino acid</button></div><span>{alignmentInfo?.rows.toLocaleString() ?? parseFasta(alignment, true).length.toLocaleString()} aligned rows · {alignmentInfo?.columns.toLocaleString() ?? "—"} columns · AA frame starts at nucleotide column {alignmentFrameOffset + 1} · {alignmentSource || "alignment"} · fingerprint {alignmentInfo?.fingerprint ?? "—"}</span></div>
         <AlignmentPreview fasta={alignment} mode={alignmentMode} frameOffset={alignmentFrameOffset} />
         <div ref={treeResultRef} className="tree-operation-region">

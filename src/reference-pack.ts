@@ -3,7 +3,7 @@ import {
   annotationCoverage,
   type CompactMetadata,
   type MetadataAllele,
-} from "./germline-preprocess";
+} from "./germline-preprocess.ts";
 
 export type SegmentKey = "V" | "D" | "J" | "C";
 export type LocusKey = "IGH" | "IGK" | "IGL" | "TRA" | "TRB" | "TRD" | "TRG";
@@ -85,6 +85,30 @@ export function allelesForScope(
   segment: SegmentKey,
 ): Allele[] {
   return lociForScope(species, scope).flatMap((locus) => species.loci[locus]?.[segment] ?? []);
+}
+
+/** Exact species-first taxonomic template tiers used for custom V/J metadata transfer. */
+export function germlineTemplateTiers(
+  pack: ReferencePack,
+  selected: ReferenceSpecies,
+  scope: ScopeKey,
+  segment: SegmentKey,
+): Allele[][] {
+  const baseTaxon = selected.name.split("_", 1)[0];
+  const genus = baseTaxon.split(" ", 1)[0];
+  const groups = [
+    [selected],
+    pack.species.filter((entry) => entry.name !== selected.name && entry.name.split("_", 1)[0] === baseTaxon),
+    pack.species.filter((entry) => entry.name.split("_", 1)[0] !== baseTaxon && entry.name.startsWith(`${genus} `)),
+    pack.species.filter((entry) => !entry.name.startsWith(`${genus} `)),
+  ];
+  const seen = new Set<string>();
+  return groups.map((group) => group.flatMap((entry) => allelesForScope(entry, scope, segment)).filter((allele) => {
+    const key = `${allele[0]}\u0000${allele[1]}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  })).filter((group) => group.length);
 }
 
 export function allelesToFasta(alleles: Allele[]): string {

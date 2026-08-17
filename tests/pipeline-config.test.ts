@@ -32,6 +32,8 @@ test("small CLI configs receive analysis defaults and explicit donor grouping",(
   assert.equal(config.pipeline.lineage.scope,"subject");
   assert.equal(config.pipeline.shm.enabled,true);
   assert.equal(config.annotation.workers,0,"zero means choose the host default at CLI startup");
+  assert.equal(config.references.prepareMetadata,true);
+  assert.equal(normalizeCliConfig({references:{prepareMetadata:false}}).references.prepareMetadata,false);
 });
 
 test("browser CLI export preserves exact references, methods, and sample-to-donor map",()=>{

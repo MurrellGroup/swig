@@ -10,4 +10,7 @@ loads nucleotide FASTA and snapshots every ordered row from Alivibe's
 by the nucleotide canvas and the full nucleotide FASTA export. It does not read
 the system clipboard or selected canvas cells.
 
-The WebWidgets MIT license is retained in `WebWidgets-LICENSE.txt`.
+For Swig-hosted editors, the bridge also injects a cancellable worker running
+`public/alivibe-msa.wasm`. That module is a behavior-preserving C++/WASM port of
+the pinned `refinedMSA` route in `nw.js`; standalone Alivibe keeps the original
+JavaScript function as its fallback.
