@@ -1,6 +1,6 @@
 import Aioli from "@biowasm/aioli";
 
-import { projectCodonAlignment } from "./alignment-model";
+import { projectCodonAlignment, translateCodonSequence } from "./alignment-model";
 import { prepareFastTreeInput } from "./fasttree-input";
 import { parseFasta, type FastaRecord } from "./post-analysis-core";
 import { extractNewick } from "./phylogeny";
@@ -50,27 +50,6 @@ async function writeInput(cli: AioliRuntime, path: string, value: string): Promi
   return path;
 }
 
-const CODONS: Record<string, string> = {
-  TTT: "F", TTC: "F", TTA: "L", TTG: "L", TCT: "S", TCC: "S", TCA: "S", TCG: "S",
-  TAT: "Y", TAC: "Y", TAA: "*", TAG: "*", TGT: "C", TGC: "C", TGA: "*", TGG: "W",
-  CTT: "L", CTC: "L", CTA: "L", CTG: "L", CCT: "P", CCC: "P", CCA: "P", CCG: "P",
-  CAT: "H", CAC: "H", CAA: "Q", CAG: "Q", CGT: "R", CGC: "R", CGA: "R", CGG: "R",
-  ATT: "I", ATC: "I", ATA: "I", ATG: "M", ACT: "T", ACC: "T", ACA: "T", ACG: "T",
-  AAT: "N", AAC: "N", AAA: "K", AAG: "K", AGT: "S", AGC: "S", AGA: "R", AGG: "R",
-  GTT: "V", GTC: "V", GTA: "V", GTG: "V", GCT: "A", GCC: "A", GCA: "A", GCG: "A",
-  GAT: "D", GAC: "D", GAA: "E", GAG: "E", GGT: "G", GGC: "G", GGA: "G", GGG: "G",
-};
-
-function translate(sequence: string, frame: number): string {
-  const clean = sequence.replaceAll("-", "").toUpperCase().replaceAll("U", "T");
-  let aa = "";
-  for (let index = frame; index + 2 < clean.length; index += 3) {
-    const codon = clean.slice(index, index + 3);
-    aa += CODONS[codon] ?? "X";
-  }
-  return aa;
-}
-
 export async function runKalign(fasta: string): Promise<string> {
   const records = parseFasta(fasta, true);
   if (records.length < 2) throw new Error("Kalign needs at least two sequences.");
@@ -86,7 +65,7 @@ export async function runCodonAwareKalign(fasta: string, frames?: number[]): Pro
   const records = parseFasta(fasta, true);
   if (records.length < 2) throw new Error("Codon-aware Kalign needs at least two sequences.");
   const normalizedFrames = records.map((_, index) => Math.max(0, Math.min(2, frames?.[index] ?? 0)));
-  const aminoAcids = records.map((record, index) => ({ name: String(index), sequence: translate(record.sequence, normalizedFrames[index]) }));
+  const aminoAcids = records.map((record, index) => ({ name: String(index), sequence: translateCodonSequence(record.sequence, normalizedFrames[index]) }));
   const cli = await tools();
   const path = await writeInput(cli, "/shared/data/swig_kalign_codon_aa.fa", aminoAcids.map((record) => `>${record.name}\n${record.sequence}`).join("\n") + "\n");
   const output = await cli.exec(`kalign ${path} -f fasta`);

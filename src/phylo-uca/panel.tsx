@@ -8,7 +8,7 @@ import { LineageTreeViewer } from "../lineage-tree-viewer.tsx";
 import { ProbabilityLogo, serializeProbabilityLogoSvg, type ProbabilityLogoAnnotation } from "../probability-logo.tsx";
 import type { CompiledReferences } from "../reference-pack.ts";
 import type { AirrDetailRow } from "../result-store.ts";
-import { alignmentRegionMap, type AlignmentFrameOffset, type VariableRegion } from "../lineage-phylogeny.ts";
+import { alignmentRegionMap, alignmentRetainedRows, type AlignmentFrameOffset, type VariableRegion } from "../lineage-phylogeny.ts";
 import { parseFasta } from "../post-analysis-core.ts";
 import type { SampleColorMap } from "../sample-colors.ts";
 import { defaultPhyloUcaOptions } from "./defaults.ts";
@@ -157,6 +157,7 @@ function PhyloUcaMcmcMixing({ diagnostics }: { diagnostics: PhyloUcaMcmcDiagnost
 
 export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel, locus, references, inputName, frameOffset, isTcr, sampleColors, multiplicityByOrdinal, lineageByOrdinal, observedTreeNewick, observedTreeSource, initialState, onStateChange }: Props) {
   const fingerprint = useMemo(() => inspectAlignment(alignment).fingerprint, [alignment]);
+  const retainedLineageRows = useMemo(() => alignmentRetainedRows(parseFasta(alignment, true), lineageRows), [alignment, lineageRows]);
   const suppliedObservedTree = observedTreeNewick?.trim() ?? "";
   const initialUsesUploadedTree = Boolean(suppliedObservedTree && (!initialState?.result || initialState.result.observedTreeNewick.trim() === suppliedObservedTree));
   const [observedTreeMode, setObservedTreeMode] = useState<"uploaded" | "fasttree">(initialUsesUploadedTree ? "uploaded" : "fasttree");
@@ -269,7 +270,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
         observedAlignmentFasta: observed.posteriorFasta,
         retainedColumns: observed.posteriorColumns,
         germlineGuideName: GERMLINE_OUTGROUP,
-        lineageRows: lineageRows.map((row) => ({ ordinal: row.record.ordinal, sequenceId: row.record.sequenceId, locus: row.values.locus || row.record.locus, values: { ...row.values } })),
+        lineageRows: retainedLineageRows.map((row) => ({ ordinal: row.record.ordinal, sequenceId: row.record.sequenceId, locus: row.values.locus || row.record.locus, values: { ...row.values } })),
         references: { V: references.V, D: references.D, J: references.J },
         locus,
         lineageLabel,
@@ -332,7 +333,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
   const annotationTracks = useMemo(() => collapseAndOrderHmmAnnotationTracks(result?.hmmAnnotations?.[annotationMode] ?? [], annotationMode), [annotationMode, result]);
   const logoBottomAnnotations = useMemo<ProbabilityLogoAnnotation[]>(() => {
     if (!result) return [];
-    const nucleotideRegions = alignmentRegionMap(parseFasta(alignment, true), lineageRows);
+    const nucleotideRegions = alignmentRegionMap(parseFasta(alignment, true), retainedLineageRows);
     const displayed: Array<VariableRegion | null> = logoMode === "nt"
       ? result.posterior.map((site) => nucleotideRegions[site.alignmentColumn - 1] ?? null)
       : (result.codonPosterior ?? []).map((codon) => {
@@ -354,7 +355,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
       start = end + 1;
     }
     return spans;
-  }, [alignment, lineageRows, logoMode, result]);
+  }, [alignment, retainedLineageRows, logoMode, result]);
   const logoContentWidth = logoColumns.length * logoColumnWidth;
   const displayedBranchGrid = useMemo(() => phyloUcaBranchLengthGrid(options.search), [options.search.branchGridPoints, options.search.maximumUcaBranchLength, options.search.minimumPositiveUcaBranchLength]);
   const priorPredictive = useMemo(() => phyloUcaPriorPredictiveSummary(
@@ -468,7 +469,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
       </section>
       {result.warnings.map((warning, index) => <div className="scientific-note" key={index}><span>i</span><p>{warning}</p></div>)}
       <div className="tree-output-switch"><div className="mode-toggle"><button className={treeMode === "nt" ? "active" : ""} type="button" onClick={() => setTreeMode("nt")}>Nucleotide</button><button className={treeMode === "aa" ? "active" : ""} type="button" onClick={() => setTreeMode("aa")}>Amino acid</button></div><span>Tree rooted at the inferred UCA; its named sequence carrier is zero length and the complete inferred branch lies on the observed-tree side.</span></div>
-      <LineageTreeViewer newick={result.placedTreeNewick} alignmentFasta={displayAlignment} rows={lineageRows} multiplicityByOrdinal={multiplicityByOrdinal} sampleColors={sampleColors} lineageByOrdinal={lineageByOrdinal} variant="rooted" collapsedEdges={0} collapseThreshold={0} mode={treeMode} onModeChange={setTreeMode} frameOffset={frameOffset} isTcr={isTcr} name={`${base}.tree`} />
+      <LineageTreeViewer newick={result.placedTreeNewick} alignmentFasta={displayAlignment} rows={retainedLineageRows} multiplicityByOrdinal={multiplicityByOrdinal} sampleColors={sampleColors} lineageByOrdinal={lineageByOrdinal} variant="rooted" collapsedEdges={0} collapseThreshold={0} mode={treeMode} onModeChange={setTreeMode} frameOffset={frameOffset} isTcr={isTcr} name={`${base}.tree`} />
     </div>}
   </section>;
 }

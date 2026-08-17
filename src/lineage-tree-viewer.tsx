@@ -171,6 +171,7 @@ export function LineageTreeViewer({
   const [treeWidth, setTreeWidth] = useState(620);
   const [rowHeight, setRowHeight] = useState(26);
   const [cellWidth, setCellWidth] = useState(13);
+  const [showNames, setShowNames] = useState(true);
   const [showMutations, setShowMutations] = useState(false);
   const [mutationLabelLimit, setMutationLabelLimit] = useState(2);
   const [mutationFontSize, setMutationFontSize] = useState(8);
@@ -263,7 +264,7 @@ export function LineageTreeViewer({
     return () => document.removeEventListener("fullscreenchange", changed);
   }, []);
 
-  const labelWidth = 208;
+  const labelWidth = showNames ? 208 : 12;
   const matrixX = treeWidth + labelWidth;
   const displayColumnX = spacedColumnOffsets(selectedColumns, cellWidth);
   const matrixWidth = selectedColumns.length ? displayColumnX.at(-1)! + cellWidth : cellWidth;
@@ -304,6 +305,7 @@ export function LineageTreeViewer({
       <div className="mode-toggle"><button className={mode === "nt" ? "active" : ""} type="button" onClick={() => onModeChange("nt")}>Nucleotide</button><button className={mode === "aa" ? "active" : ""} type="button" onClick={() => onModeChange("aa")}>Amino acid</button></div>
       <div className="mode-toggle"><button className={layoutMode === "phylogram" ? "active" : ""} type="button" onClick={() => setLayoutMode("phylogram")}>Branch lengths</button><button className={layoutMode === "cladogram" ? "active" : ""} type="button" onClick={() => setLayoutMode("cladogram")}>Topology</button></div>
       <label className="check-line"><input type="checkbox" checked={showMutations} disabled={!parsimony} onChange={(event) => setShowMutations(event.target.checked)} /><span>{mode === "nt" ? "Nucleotide branch mutations" : "AA replacements only"}</span></label>
+      <label className="check-line"><input type="checkbox" checked={showNames} onChange={(event) => setShowNames(event.target.checked)} /><span>Show tip names</span></label>
       <label className="tip-color-control"><span>Tip circles</span><select value={tipColorMode} onChange={(event)=>setTipColorMode(event.target.value as TipColorMode)}><option value="sample">Color by sample</option><option value="lineage">Color by original lineage</option><option value="isotype">Color by isotype</option><option value="constant">Color by constant gene</option><option value="subject">Color by donor / subject</option><option value="cohort">Color by cohort</option><option value="timepoint">Color by timepoint</option><option value="compartment">Color by compartment</option><option value="v_gene">Color by V gene</option><option value="j_gene">Color by J gene</option><option value="productive">Color by productivity</option><option value="double_d">Color by double-D status</option><option value="uniform">Uniform</option></select></label>
       {mode === "aa" && <div className="mode-toggle"><button className={numbering === "alignment" ? "active" : ""} type="button" onClick={() => setNumbering("alignment")}>Alignment positions</button><button className={numbering === "kabat" ? "active" : ""} type="button" disabled={isTcr} title={isTcr ? "Kabat numbering is defined for IGH, IGK and IGL, not TCR chains." : "Number IG variable domains with Kabat positions"} onClick={() => setNumbering("kabat")}>Kabat</button></div>}
     </div>
@@ -375,7 +377,7 @@ export function LineageTreeViewer({
         const category = tipCategory(row,tipColorMode,originalLineage);
         const tipFill = node.name === GERMLINE_OUTGROUP ? "#d49a19" : tipColorMode === "sample" ? sampleColor(category,sampleColors) : tipColorMode === "lineage" ? categoricalLineageColor(originalLineage) : tipColorMode === "uniform" ? "#08796f" : categoricalValueColor(category);
         return <g key={`node-${index}`}>
-          {leaf && <><line x1={node.x + radius + 2} x2={treeWidth + 6} y1={node.y} y2={node.y} stroke="#b3bdb8" strokeWidth="0.65" strokeDasharray="2 3" /><text x={treeWidth + 10} y={node.y + 3.4} fontFamily="ui-monospace,monospace" fontSize="9" fontWeight={node.name === GERMLINE_OUTGROUP ? "700" : "500"} fill="#263630">{shortName(node.name)}<title>{node.name} · multiplicity {multiplicity}</title></text></>}
+          {leaf && showNames && <><line x1={node.x + radius + 2} x2={treeWidth + 6} y1={node.y} y2={node.y} stroke="#b3bdb8" strokeWidth="0.65" strokeDasharray="2 3" /><text x={treeWidth + 10} y={node.y + 3.4} fontFamily="ui-monospace,monospace" fontSize="9" fontWeight={node.name === GERMLINE_OUTGROUP ? "700" : "500"} fill="#263630">{shortName(node.name)}<title>{node.name} · multiplicity {multiplicity}</title></text></>}
           <circle cx={node.x} cy={node.y} r={radius} fill={leaf ? tipFill : "#fbfaf5"} fillOpacity={leaf ? 0.9 : 1} stroke={leaf ? "#244d45" : "#3f5650"} strokeWidth={leaf ? 0.8 : 0.75}><title>{leaf ? `${node.name} · multiplicity ${multiplicity} · ${TIP_COLOR_LABELS[tipColorMode]}: ${category}${sample?` · sample ${sample}`:""}${originalLineage?` · original lineage ${originalLineage}`:""}${bubble.capped ? " · display radius capped" : ""}` : `Internal node · ${cladeSignature(node).split("\u0000").length} descendants`}</title></circle>
           {leaf && selectedColumns.map((column, displayIndex) => {
             const value = recordSequence[column] ?? "-";

@@ -1,6 +1,6 @@
 import type { AlignmentFrameOffset } from "./lineage-phylogeny.ts";
 
-export const ALIVIBE_BRIDGE_VERSION = 2;
+export const ALIVIBE_BRIDGE_VERSION = 4;
 export const ALIVIBE_SOURCE_REVISION = "cbcd02719dd0a5f1f05d3127666f00e8579f2423";
 
 export interface AlivibeNucleotideRecord {
@@ -32,7 +32,7 @@ export interface AlivibeMsaJob {
   cancel: () => void;
 }
 
-export type AlivibeMsaRunner = (sequences: string[]) => AlivibeMsaJob;
+export type AlivibeMsaRunner = (sequences: string[], scoringMode: "nucleotide" | "amino-acid") => AlivibeMsaJob;
 
 export interface AlivibeEditorWindow extends Window {
   swigAlivibeBridge?: AlivibeSwigBridge;

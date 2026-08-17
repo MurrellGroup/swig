@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { biologicalFrameOffset, biologicalSegmentAlignment, buildTrackFeatures, projectCodonAlignment } from "../src/alignment-model.ts";
+import { biologicalFrameOffset, biologicalSegmentAlignment, buildTrackFeatures, projectCodonAlignment, translateCodonSequence } from "../src/alignment-model.ts";
+import { isProductiveLineageRow } from "../src/lineage-alignment.ts";
+import { alignmentRetainedRows } from "../src/lineage-phylogeny.ts";
+import type { AirrDetailRow } from "../src/result-store.ts";
 
 test("the layered track model preserves AIRR region and germline coordinates", () => {
   const row = {
@@ -37,4 +40,33 @@ test("codon projection preserves phase and emits only complete triplet columns",
   const projected = projectCodonAlignment("AATGGGC", "-MG", 1);
   assert.equal(projected, "A-----ATGGGC---");
   assert.equal(projected.length % 3, 0);
+});
+
+test("AA-guided MSA translation uses X for ambiguous codons and back-translates gaps as codon triplets", () => {
+  assert.equal(translateCodonSequence("AATNNNTGC", 0), "NXC");
+  assert.equal(translateCodonSequence("AATGGGC", 1), "MG");
+  const dna = "ATGGGGCCC";
+  const projected = projectCodonAlignment(dna, "M-GP", 0);
+  assert.equal(projected.replaceAll("-", ""), dna);
+  assert.equal(projected.length % 3, 0);
+  assert.equal(projected.slice(6, 9), "---");
+});
+
+test("the lineage productivity filter requires an explicit AIRR productive value", () => {
+  const row = (value: string, fallback = "") => ({ values: { productive: value }, record: { productive: fallback } }) as unknown as AirrDetailRow;
+  assert.equal(isProductiveLineageRow(row("T")), true);
+  assert.equal(isProductiveLineageRow(row("true")), true);
+  assert.equal(isProductiveLineageRow(row("", "T")), true);
+  assert.equal(isProductiveLineageRow(row("F")), false);
+  assert.equal(isProductiveLineageRow(row("")), false);
+});
+
+test("AIRR metadata for a row deleted from the MSA cannot leak into UCA preparation", () => {
+  const rows = [4, 8, 12].map((ordinal) => ({ record: { ordinal }, values: {} })) as unknown as AirrDetailRow[];
+  const retained = alignmentRetainedRows([
+    { name: "member_a__5", sequence: "ACGT" },
+    { name: "member_c__13", sequence: "ACGT" },
+    { name: "__germline_N_masked__", sequence: "NNNN" },
+  ], rows);
+  assert.deepEqual(retained.map((row) => row.record.ordinal), [4, 12]);
 });

@@ -26,13 +26,18 @@ function oracleAlign(sequences, iterations = 3) {
   return Array.from(oracle(Array.from(sequences), iterations), (sequence) => String(sequence));
 }
 
-function wasmAlign(sequences, iterations = 3, validate = iterations === 3) {
+function wasmAlign(sequences, iterations = 3, validate = iterations === 3, scoringMode = "literal") {
   const input = new Uint8Array(encodeAlivibeMsaSequences(sequences));
   const pointer = runtime.alivibe_msa_alloc(input.byteLength);
   assert.ok(pointer || input.byteLength === 0);
   try {
     new Uint8Array(runtime.memory.buffer, pointer, input.byteLength).set(input);
-    const count = runtime.alivibe_msa_run(pointer, input.byteLength, iterations);
+    const run = scoringMode === "nucleotide"
+      ? runtime.alivibe_msa_run_nucleotide
+      : scoringMode === "amino-acid"
+        ? runtime.alivibe_msa_run_amino_acid
+        : runtime.alivibe_msa_run;
+    const count = run(pointer, input.byteLength, iterations);
     if (count < 0) {
       const message = new TextDecoder().decode(new Uint8Array(
         runtime.memory.buffer,
@@ -93,12 +98,58 @@ const fixtures = [
   ],
 ];
 
-test("Alivibe WASM port matches the pinned refinedMSA output exactly", () => {
+test("Alivibe WASM literal-scoring route matches the pinned refinedMSA output exactly", () => {
   fixtures.forEach((sequences, fixture) => {
     for (let iterations = 0; iterations <= 3; iterations += 1) {
       assert.deepEqual(wasmAlign(sequences, iterations), oracleAlign(sequences, iterations), `fixture ${fixture + 1}, pass ${iterations}`);
     }
   });
+});
+
+test("nucleotide MSA scores N as a symmetric wildcard without changing gap costs", () => {
+  const sequences = [
+    "GCCTCCTTTATTATTCGCCGCTAGGGATA",
+    "GCCTGCTTTATATTCACCGTTAAGGATA",
+    "ACCTCCTTGATTATTCACCGTTCAAGGATA",
+    "GCCTCCTTTATTATTCACCGNNNNNGATA",
+  ];
+  const literal = wasmAlign(sequences);
+  assert.deepEqual(literal, oracleAlign(sequences), "protein/literal mode must retain the pinned behavior");
+  const nucleotide = wasmAlign(sequences, 3, true, "nucleotide");
+  assert.deepEqual(nucleotide, [
+    "GCCTCCTTTATTATTCGCCGCT-AGGGATA",
+    "-GCCTGCTTTATATTCACCGTT-AAGGATA",
+    "ACCTCCTTGATTATTCACCGTTCAAGGATA",
+    "GCCTCCTTTATTATTCACCGNN-NNNGATA",
+  ]);
+  assert.notDeepEqual(nucleotide, literal, "wildcard N must affect an ambiguity-sensitive indel placement");
+  nucleotide.forEach((aligned, index) => assert.equal(aligned.replaceAll("-", ""), sequences[index]));
+});
+
+test("amino-acid MSA scores X as a wildcard while keeping asparagine N literal", () => {
+  const nucleotideLikeProteins = [
+    "GCCTCCTTTATTATTCGCCGCTAGGGATA",
+    "GCCTGCTTTATATTCACCGTTAAGGATA",
+    "ACCTCCTTGATTATTCACCGTTCAAGGATA",
+    "GCCTCCTTTATTATTCACCGXXXXXGATA",
+  ];
+  const literal = wasmAlign(nucleotideLikeProteins);
+  const aminoAcid = wasmAlign(nucleotideLikeProteins, 3, true, "amino-acid");
+  assert.deepEqual(aminoAcid, [
+    "GCCTCCTTTATTATTCGCCGCT-AGGGATA",
+    "-GCCTGCTTTATATTCACCGTT-AAGGATA",
+    "ACCTCCTTGATTATTCACCGTTCAAGGATA",
+    "GCCTCCTTTATTATTCACCGXX-XXXGATA",
+  ]);
+  assert.notDeepEqual(aminoAcid, literal, "wildcard X must affect an ambiguity-sensitive indel placement");
+  aminoAcid.forEach((aligned, index) => assert.equal(aligned.replaceAll("-", ""), nucleotideLikeProteins[index]));
+
+  const withAsparagine = nucleotideLikeProteins.map((sequence) => sequence.replaceAll("X", "N"));
+  assert.deepEqual(
+    wasmAlign(withAsparagine, 3, true, "amino-acid"),
+    wasmAlign(withAsparagine),
+    "the amino-acid route must not confuse asparagine N with unknown-residue X",
+  );
 });
 
 test("Alivibe WASM preserves the original order-sensitive behavior", () => {

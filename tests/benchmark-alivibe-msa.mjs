@@ -32,7 +32,7 @@ function wasmAlign(sequences) {
   const pointer = runtime.alivibe_msa_alloc(input.byteLength);
   try {
     new Uint8Array(runtime.memory.buffer, pointer, input.byteLength).set(input);
-    if (runtime.alivibe_msa_run(pointer, input.byteLength, 3) < 0) throw new Error("WASM MSA failed.");
+    if (runtime.alivibe_msa_run_nucleotide(pointer, input.byteLength, 3) < 0) throw new Error("WASM MSA failed.");
     return decodeAlivibeMsaSequences(new Uint8Array(
       runtime.memory.buffer,
       runtime.alivibe_msa_result_ptr(),

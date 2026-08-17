@@ -9,14 +9,26 @@
 #include <utility>
 #include <vector>
 
-// A behavior-preserving port of the refinedMSA path in MurrellGroup/WebWidgets
-// revision cbcd02719dd0a5f1f05d3127666f00e8579f2423. The unusual scoring,
-// order dependence, strict-greater-than tie breaking, POA column packing, and
-// three refinement passes are deliberate compatibility constraints.
+// A port of the refinedMSA path in MurrellGroup/WebWidgets revision
+// cbcd02719dd0a5f1f05d3127666f00e8579f2423. The unusual scoring, order
+// dependence, strict-greater-than tie breaking, POA column packing, and three
+// refinement passes are deliberate compatibility constraints. Swig's
+// nucleotide and amino-acid entry points each differ in one intentional way:
+// N or X, respectively, is a wildcard substitution match. The legacy entry
+// point retains literal scoring for differential compatibility tests.
 
 namespace {
 
 constexpr float kGraphNegative = -1.0e9F;
+char active_ambiguity_wildcard = '\0';
+
+bool substitution_match(char left, char right, bool nucleotide_n_wildcard) {
+    return left == right || (
+        nucleotide_n_wildcard
+        && active_ambiguity_wildcard != '\0'
+        && (left == active_ambiguity_wildcard || right == active_ambiguity_wildcard)
+    );
+}
 
 struct PairAlignment {
     std::string first;
@@ -63,7 +75,8 @@ PairAlignment affine_nw_align(
     double gap_extend = -0.2,
     double match_cost = 1.0,
     double mismatch_cost = -0.7,
-    double boundary_gap_factor = 10.0
+    double boundary_gap_factor = 10.0,
+    bool nucleotide_n_wildcard = false
 ) {
     const int n = static_cast<int>(s1.size());
     const int m = static_cast<int>(s2.size());
@@ -101,7 +114,11 @@ PairAlignment affine_nw_align(
 
     for (int i = 1; i <= n; ++i) {
         for (int j = 1; j <= m; ++j) {
-            const double substitution = s1[static_cast<std::size_t>(i - 1)] == s2[static_cast<std::size_t>(j - 1)]
+            const double substitution = substitution_match(
+                s1[static_cast<std::size_t>(i - 1)],
+                s2[static_cast<std::size_t>(j - 1)],
+                nucleotide_n_wildcard
+            )
                 ? match_cost : mismatch_cost;
             auto [m_value, m_trace] = find_max_3(
                 matrix_m[at(i - 1, j - 1)] + substitution,
@@ -179,7 +196,8 @@ PairAlignment constrained_nw_align(
     double mismatch_cost,
     double boundary_gap_factor,
     bool /* is_start */,
-    bool is_end
+    bool is_end,
+    bool nucleotide_n_wildcard
 ) {
     const int n = static_cast<int>(s1.size());
     const int m = static_cast<int>(s2.size());
@@ -221,7 +239,11 @@ PairAlignment constrained_nw_align(
 
     for (int i = 1; i <= n; ++i) {
         for (int j = 1; j <= m; ++j) {
-            const double substitution = s1[static_cast<std::size_t>(i - 1)] == s2[static_cast<std::size_t>(j - 1)]
+            const double substitution = substitution_match(
+                s1[static_cast<std::size_t>(i - 1)],
+                s2[static_cast<std::size_t>(j - 1)],
+                nucleotide_n_wildcard
+            )
                 ? match_cost : mismatch_cost;
             auto [m_value, m_trace] = find_max_3(
                 matrix_m[at(i - 1, j - 1)] + substitution,
@@ -323,7 +345,8 @@ PairAlignment stitch_alignments(
     double gap_extend,
     double match_cost,
     double mismatch_cost,
-    double boundary_gap_factor
+    double boundary_gap_factor,
+    bool nucleotide_n_wildcard
 ) {
     std::string final_1;
     std::string final_2;
@@ -336,7 +359,7 @@ PairAlignment stitch_alignments(
         if (!sub_1.empty() || !sub_2.empty()) {
             PairAlignment gap = constrained_nw_align(
                 sub_1, sub_2, gap_open, gap_extend, match_cost, mismatch_cost,
-                boundary_gap_factor, k == 0 && index_1 == 0, false
+                boundary_gap_factor, k == 0 && index_1 == 0, false, nucleotide_n_wildcard
             );
             final_1 += gap.first;
             final_2 += gap.second;
@@ -351,7 +374,8 @@ PairAlignment stitch_alignments(
         PairAlignment tail = constrained_nw_align(
             s1.substr(static_cast<std::size_t>(index_1)),
             s2.substr(static_cast<std::size_t>(index_2)),
-            gap_open, gap_extend, match_cost, mismatch_cost, boundary_gap_factor, false, true
+            gap_open, gap_extend, match_cost, mismatch_cost, boundary_gap_factor, false, true,
+            nucleotide_n_wildcard
         );
         final_1 += tail.first;
         final_2 += tail.second;
@@ -422,11 +446,15 @@ PairAlignment double_dp_nw_align(
     double gap_extend = -0.2,
     double match_cost = 1.0,
     double mismatch_cost = -0.7,
-    double boundary_gap_factor = 10.0
+    double boundary_gap_factor = 10.0,
+    bool nucleotide_n_wildcard = false
 ) {
     constexpr int kmer_size = 11;
     if (std::min(s1.size(), s2.size()) < static_cast<std::size_t>(3 * kmer_size)) {
-        return affine_nw_align(s1, s2, gap_open, gap_extend, match_cost, mismatch_cost, boundary_gap_factor);
+        return affine_nw_align(
+            s1, s2, gap_open, gap_extend, match_cost, mismatch_cost,
+            boundary_gap_factor, nucleotide_n_wildcard
+        );
     }
 
     std::unordered_map<std::string, std::vector<int>> positions;
@@ -441,7 +469,10 @@ PairAlignment double_dp_nw_align(
         for (int i : found->second) matches.push_back({i, j, kmer_size});
     }
     if (matches.empty()) {
-        return affine_nw_align(s1, s2, gap_open, gap_extend, match_cost, mismatch_cost, boundary_gap_factor);
+        return affine_nw_align(
+            s1, s2, gap_open, gap_extend, match_cost, mismatch_cost,
+            boundary_gap_factor, nucleotide_n_wildcard
+        );
     }
     std::stable_sort(matches.begin(), matches.end(), [](const Match& left, const Match& right) {
         if (left.i != right.i) return left.i < right.i;
@@ -487,7 +518,8 @@ PairAlignment double_dp_nw_align(
     std::reverse(chain.begin(), chain.end());
     return stitch_alignments(
         s1, s2, merge_and_erode_anchors(chain, kmer_size),
-        gap_open, gap_extend, match_cost, mismatch_cost, boundary_gap_factor
+        gap_open, gap_extend, match_cost, mismatch_cost, boundary_gap_factor,
+        nucleotide_n_wildcard
     );
 }
 
@@ -681,7 +713,8 @@ std::vector<GraphOperation> sequence_to_graph_dp(
     double gap_open,
     double gap_extend,
     double match_cost,
-    double mismatch_cost
+    double mismatch_cost,
+    bool nucleotide_n_wildcard
 ) {
     const int sequence_length = static_cast<int>(sequence.size());
     const int node_count = static_cast<int>(graph_nodes.size());
@@ -731,7 +764,8 @@ std::vector<GraphOperation> sequence_to_graph_dp(
         for (int u = 0; u < node_count; ++u) {
             const int real = graph_nodes[static_cast<std::size_t>(u)];
             const PoaNode& node = graph.nodes[static_cast<std::size_t>(real)];
-            const double substitution = character == node.character ? match_cost : mismatch_cost;
+            const double substitution = substitution_match(character, node.character, nucleotide_n_wildcard)
+                ? match_cost : mismatch_cost;
             bool connected_to_start = false;
             for (int previous : node.previous) {
                 if (previous >= static_cast<int>(real_to_sub.size()) || real_to_sub[static_cast<std::size_t>(previous)] == -1) {
@@ -864,7 +898,7 @@ int apply_alignment_to_graph(PoaGraph& graph, const std::vector<GraphOperation>&
     return current;
 }
 
-void add_sequence_to_graph(PoaGraph& graph, const std::string& sequence) {
+void add_sequence_to_graph(PoaGraph& graph, const std::string& sequence, bool nucleotide_n_wildcard) {
     const int sequence_index = static_cast<int>(graph.sequences.size());
     graph.sequences.push_back(sequence);
     const PoaGraph::Consensus consensus = graph.consensus_path();
@@ -899,7 +933,8 @@ void add_sequence_to_graph(PoaGraph& graph, const std::string& sequence) {
             );
             if (!sub_sequence.empty() || !subgraph.empty()) {
                 const std::vector<GraphOperation> path = sequence_to_graph_dp(
-                    sub_sequence, subgraph, graph, -10.0, -1.0, 1.0, -1.0
+                    sub_sequence, subgraph, graph, -10.0, -1.0, 1.0, -1.0,
+                    nucleotide_n_wildcard
                 );
                 previous_node = apply_alignment_to_graph(graph, path, previous_node, sequence_index);
             }
@@ -970,12 +1005,17 @@ std::vector<std::string> generate_msa_from_graph(const PoaGraph& graph) {
     return result;
 }
 
-std::vector<std::string> multiple_sequence_align(const std::vector<std::string>& sequences) {
+std::vector<std::string> multiple_sequence_align(
+    const std::vector<std::string>& sequences,
+    bool nucleotide_n_wildcard
+) {
     if (sequences.empty()) return {};
     if (sequences.size() == 1) return sequences;
     PoaGraph graph;
     graph.initialize_first(sequences.front());
-    for (std::size_t i = 1; i < sequences.size(); ++i) add_sequence_to_graph(graph, sequences[i]);
+    for (std::size_t i = 1; i < sequences.size(); ++i) {
+        add_sequence_to_graph(graph, sequences[i], nucleotide_n_wildcard);
+    }
     return generate_msa_from_graph(graph);
 }
 
@@ -1042,7 +1082,10 @@ std::vector<RefinementBlock> identify_refinement_blocks(const std::vector<std::s
     return blocks;
 }
 
-std::vector<std::string> refine_block_slice(const std::vector<std::string>& slice) {
+std::vector<std::string> refine_block_slice(
+    const std::vector<std::string>& slice,
+    bool nucleotide_n_wildcard
+) {
     const int sequence_count = static_cast<int>(slice.size());
     std::vector<std::string> raw(slice.size());
     bool every_empty = true;
@@ -1084,7 +1127,10 @@ std::vector<std::string> refine_block_slice(const std::vector<std::string>& slic
         }
         const std::string& query = raw[static_cast<std::size_t>(row)];
         if (query.empty()) continue;
-        const PairAlignment aligned = double_dp_nw_align(reference, query, -10.0, -0.2, 1.0, -0.7, 10.0);
+        const PairAlignment aligned = double_dp_nw_align(
+            reference, query, -10.0, -0.2, 1.0, -0.7, 10.0,
+            nucleotide_n_wildcard
+        );
         int reference_position = 0;
         std::string active_insertion;
         for (std::size_t k = 0; k < aligned.first.size(); ++k) {
@@ -1134,8 +1180,12 @@ std::vector<std::string> refine_block_slice(const std::vector<std::string>& slic
     return result;
 }
 
-std::vector<std::string> refined_msa(const std::vector<std::string>& sequences, int iterations) {
-    std::vector<std::string> current = multiple_sequence_align(sequences);
+std::vector<std::string> refined_msa(
+    const std::vector<std::string>& sequences,
+    int iterations,
+    bool nucleotide_n_wildcard
+) {
+    std::vector<std::string> current = multiple_sequence_align(sequences, nucleotide_n_wildcard);
     if (current.size() <= 1) return current;
     for (int iteration = 0; iteration < iterations; ++iteration) {
         current = remove_gap_only_columns(current);
@@ -1146,7 +1196,9 @@ std::vector<std::string> refined_msa(const std::vector<std::string>& sequences, 
             for (std::size_t row = 0; row < current.size(); ++row) {
                 block_slice[row] = current[row].substr(block.start, block.end - block.start);
             }
-            const std::vector<std::string> resolved = block.refine ? refine_block_slice(block_slice) : block_slice;
+            const std::vector<std::string> resolved = block.refine
+                ? refine_block_slice(block_slice, nucleotide_n_wildcard)
+                : block_slice;
             for (std::size_t row = 0; row < next.size(); ++row) next[row] += resolved[row];
         }
         current = std::move(next);
@@ -1246,10 +1298,11 @@ ALIVIBE_EXPORT("alivibe_msa_free") void alivibe_msa_free(std::uint8_t* pointer) 
     std::free(pointer);
 }
 
-ALIVIBE_EXPORT("alivibe_msa_run") std::int32_t alivibe_msa_run(
+std::int32_t run_msa(
     const std::uint8_t* input,
     std::uint32_t length,
-    std::int32_t iterations
+    std::int32_t iterations,
+    char ambiguity_wildcard
 ) {
     error_text.clear();
     result_bytes.clear();
@@ -1259,13 +1312,46 @@ ALIVIBE_EXPORT("alivibe_msa_run") std::int32_t alivibe_msa_run(
     }
     std::vector<std::string> sequences;
     if (!decode_sequences(input, length, sequences)) return -1;
-    const std::vector<std::string> result = refined_msa(sequences, iterations);
+    active_ambiguity_wildcard = ambiguity_wildcard;
+    const std::vector<std::string> result = refined_msa(sequences, iterations, ambiguity_wildcard != '\0');
+    active_ambiguity_wildcard = '\0';
     if (result.size() != sequences.size()) {
         error_text = "Alivibe MSA returned the wrong number of rows.";
         return -1;
     }
     if (!encode_sequences(result)) return -1;
     return static_cast<std::int32_t>(result.size());
+}
+
+// Literal scoring retained for ABI compatibility and exact oracle tests.
+ALIVIBE_EXPORT("alivibe_msa_run") std::int32_t alivibe_msa_run(
+    const std::uint8_t* input,
+    std::uint32_t length,
+    std::int32_t iterations
+) {
+    return run_msa(input, length, iterations, '\0');
+}
+
+// Nucleotide-mode Swig route: N receives the ordinary match score against any
+// non-gap residue. Gap costs are unchanged because gaps are DP transitions,
+// not substitution characters.
+ALIVIBE_EXPORT("alivibe_msa_run_nucleotide") std::int32_t alivibe_msa_run_nucleotide(
+    const std::uint8_t* input,
+    std::uint32_t length,
+    std::int32_t iterations
+) {
+    return run_msa(input, length, iterations, 'N');
+}
+
+// Amino-acid Swig route: X is an unknown-residue wildcard. Asparagine N
+// remains an ordinary literal amino acid, and gaps retain the same affine and
+// POA transition costs as the pinned Alivibe implementation.
+ALIVIBE_EXPORT("alivibe_msa_run_amino_acid") std::int32_t alivibe_msa_run_amino_acid(
+    const std::uint8_t* input,
+    std::uint32_t length,
+    std::int32_t iterations
+) {
+    return run_msa(input, length, iterations, 'X');
 }
 
 ALIVIBE_EXPORT("alivibe_msa_result_ptr") const std::uint8_t* alivibe_msa_result_ptr() {

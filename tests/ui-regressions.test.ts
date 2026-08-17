@@ -255,7 +255,15 @@ test("post-analysis skipping, richer lineage rows, CLI export, and lazy lineage 
 test("lineage alignment offers direct Alivibe-compatible MSA and retains manual round trip", () => {
   const post = fs.readFileSync(new URL("../src/post-analysis.tsx", import.meta.url), "utf8");
   const runtime = fs.readFileSync(new URL("../src/alivibe-msa-runtime.ts", import.meta.url), "utf8");
+  const tree = fs.readFileSync(new URL("../src/lineage-tree-viewer.tsx", import.meta.url), "utf8");
+  const styles = fs.readFileSync(new URL("../src/globals.css", import.meta.url), "utf8");
   assert.match(post, /MSA lineage · Alivibe WASM/);
+  assert.match(post, /AA MSA · Alivibe WASM/);
+  assert.match(post, /runDirectAlivibeAaMsa/);
+  assert.match(post, /Drop non-productive/);
+  assert.match(post, /workbenchLineageRows/);
+  assert.match(post, /translateCodonSequence/);
+  assert.match(post, /projectCodonAlignment/);
   assert.match(post, /runDirectAlivibeMsa/);
   assert.match(post, /runAlivibeMsaTask/);
   assert.match(post, /record\.sequence\.replaceAll\("-", ""\)/);
@@ -263,6 +271,11 @@ test("lineage alignment offers direct Alivibe-compatible MSA and retains manual 
   assert.match(post, /Read live Alivibe NT view/);
   assert.match(runtime, /signal\?\.addEventListener\("abort", abort/);
   assert.match(runtime, /job\.cancel\(\)/);
+  assert.match(runtime, /scoringMode: AlivibeMsaScoringMode = "nucleotide"/);
+  assert.match(post, /Show sequence names/);
+  assert.match(tree, /Show tip names/);
+  assert.match(tree, /const labelWidth = showNames \? 208 : 12/);
+  assert.match(styles, /\.lineage-alignment-preview\.names-hidden > div \{ grid-template-columns: max-content; \}/);
 });
 
 test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligned HMM tracks", () => {
@@ -292,6 +305,8 @@ test("phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligne
   assert.match(panel, /serializePhyloUcaTrackLogoSvg/);
   assert.match(panel, /bottomAnnotations=\{logoBottomAnnotations\}/);
   assert.match(panel, /PhyloUcaPlacementMap/);
+  assert.match(panel, /alignmentRetainedRows/);
+  assert.match(panel, /retainedLineageRows\.map/);
   assert.match(panel, /V\/J nucleotide mixture · default/);
   assert.match(panel, /"Full-HMM edges"[\s\S]{0,120}?\(0 = all\)/);
   assert.match(panel, /Conditional ML · fastest/);

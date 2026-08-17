@@ -1876,10 +1876,22 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
 .lineage-germline-method .double-d-root-status b { font: 700 8px/1.2 "SFMono-Regular",Consolas,monospace; letter-spacing: .04em; text-transform: uppercase; }
 .lineage-germline-method .double-d-root-status span { margin: 0; font: 7px/1.45 "SFMono-Regular",Consolas,monospace; color: var(--muted); }
 .lineage-germline-method .double-d-root-status.unresolved { border-left-color: var(--gold); }
-.alignment-controls { display: grid; grid-template-columns: minmax(220px,1fr) 150px auto auto; gap: 9px; align-items: end; padding: 20px 28px; }
+.alignment-population-filter { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 18px; align-items: center; margin: 18px 28px; padding: 14px 16px; border: 1px solid var(--line); border-left: 4px solid #b8aa96; border-radius: 4px; background: var(--surface-soft); }
+.alignment-population-filter.active { border-left-color: var(--teal); background: var(--lime-soft); }
+.alignment-population-filter > div { display: grid; min-width: 0; gap: 4px; }
+.alignment-population-filter strong { font: 650 15px Georgia,serif; }
+.alignment-population-filter small { max-width: 920px; color: var(--muted); font-size: 8px; line-height: 1.45; }
+.alignment-population-filter > button { min-height: 36px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); font-size: 8px; font-weight: 800; white-space: nowrap; }
+.alignment-population-filter.active > button { color: white; border-color: var(--teal); background: var(--teal); }
+.alignment-controls { display: grid; grid-template-columns: minmax(220px,1fr) 150px auto auto auto; gap: 9px; align-items: end; padding: 20px 28px; }
 .alignment-view-controls { display: flex; justify-content: space-between; align-items: center; padding: 12px 28px; border-top: 1px solid var(--line); border-bottom: 1px solid #40504b; color: #9eaaa6; background: #172622; font-size: 8px; }
+.lineage-alignment-preview-shell { background: #0f1c19; }
+.lineage-plot-display-controls { display: flex; min-height: 38px; align-items: center; gap: 12px; padding: 6px 12px; border-bottom: 1px solid #334741; color: #bdc9c4; background: #172622; }
+.lineage-plot-display-controls .check-line { margin: 0; }
+.lineage-plot-display-controls small { color: #83938d; font-size: 8px; }
 .lineage-alignment-preview { max-height: 620px; overflow: auto; color: #d6e2dc; background: #0f1c19; }
 .lineage-alignment-preview > div { display: grid; grid-template-columns: 190px max-content; min-width: 100%; border-bottom: 0; }
+.lineage-alignment-preview.names-hidden > div { grid-template-columns: max-content; }
 .lineage-alignment-preview strong { position: sticky; left: 0; z-index: 2; display: flex; width: 190px; padding: 0 12px; overflow: hidden; align-items: center; border-right: 1px solid #3b4b46; background: #172622; color: #a9b8b2; font: 8px/1.25 "SFMono-Regular",Consolas,monospace; text-overflow: ellipsis; white-space: nowrap; }
 .lineage-alignment-preview code { color: #dce8e2; font-size: 9px; line-height: 1; white-space: pre; }
 .lineage-alignment-preview .colored-sequence { padding: 0 12px; background: transparent; line-height: 1; }
@@ -2573,6 +2585,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
   .control-grid.five { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .post-chart-grid { grid-template-columns: 1fr; }
   .alignment-controls { grid-template-columns: 1fr 160px; }
+  .alignment-population-filter { grid-template-columns: 1fr; }
   .tree-controls { grid-template-columns: 1fr 1fr; }
   .tree-controls > div:first-child { grid-column: 1 / -1; }
   .member-strip { grid-template-columns: 1fr; }
@@ -2644,6 +2657,7 @@ input[type="range"] { width: 100%; accent-color: var(--teal); }
   .post-stat-grid article { border-right: 0; border-bottom: 1px solid var(--line); }
   .post-stat-grid article:last-child { border-bottom: 0; }
   .alignment-controls,
+  .alignment-population-filter,
   .tree-controls { grid-template-columns: 1fr; padding: 18px; }
   .tree-controls > div:first-child { grid-column: auto; }
   .alignment-view-controls { align-items: flex-start; flex-direction: column; gap: 8px; padding: 12px 18px; }

@@ -7,6 +7,8 @@ interface AlivibeMsaExports extends WebAssembly.Exports {
   alivibe_msa_alloc: (size: number) => number;
   alivibe_msa_free: (pointer: number) => void;
   alivibe_msa_run: (pointer: number, length: number, iterations: number) => number;
+  alivibe_msa_run_nucleotide: (pointer: number, length: number, iterations: number) => number;
+  alivibe_msa_run_amino_acid: (pointer: number, length: number, iterations: number) => number;
   alivibe_msa_result_ptr: () => number;
   alivibe_msa_result_len: () => number;
   alivibe_msa_error_ptr: () => number;
@@ -17,6 +19,7 @@ interface AlignRequest {
   type: "align";
   input: ArrayBuffer;
   iterations: number;
+  scoringMode: "literal" | "nucleotide" | "amino-acid";
 }
 
 const decoder = new TextDecoder();
@@ -47,7 +50,12 @@ async function align(request: AlignRequest): Promise<void> {
   if (!pointer && input.byteLength) throw new Error("Alivibe MSA ran out of WebAssembly memory.");
   try {
     new Uint8Array(runtime.memory.buffer, pointer, input.byteLength).set(input);
-    const count = runtime.alivibe_msa_run(pointer, input.byteLength, request.iterations);
+    const run = request.scoringMode === "nucleotide"
+      ? runtime.alivibe_msa_run_nucleotide
+      : request.scoringMode === "amino-acid"
+        ? runtime.alivibe_msa_run_amino_acid
+        : runtime.alivibe_msa_run;
+    const count = run(pointer, input.byteLength, request.iterations);
     if (count < 0) {
       throw new Error(readText(
         runtime,

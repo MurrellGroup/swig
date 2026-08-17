@@ -9,6 +9,8 @@ export interface AlivibeMsaJob {
   cancel: () => void;
 }
 
+export type AlivibeMsaScoringMode = "literal" | "nucleotide" | "amino-acid";
+
 /**
  * Run one Alivibe-compatible MSA worker as an abortable Swig task. The worker
  * owns all mutable alignment state, so aborting before resolution cannot
@@ -18,8 +20,9 @@ export async function runAlivibeMsaTask(
   sequences: readonly string[],
   signal?: AbortSignal,
   iterations = 3,
+  scoringMode: AlivibeMsaScoringMode = "nucleotide",
 ): Promise<string[]> {
-  const job = createAlivibeMsaJob(sequences, iterations);
+  const job = createAlivibeMsaJob(sequences, iterations, scoringMode);
   const abort = () => job.cancel();
   if (signal?.aborted) abort();
   else signal?.addEventListener("abort", abort, { once: true });
@@ -30,7 +33,11 @@ export async function runAlivibeMsaTask(
   }
 }
 
-export function createAlivibeMsaJob(sequences: readonly string[], iterations = 3): AlivibeMsaJob {
+export function createAlivibeMsaJob(
+  sequences: readonly string[],
+  iterations = 3,
+  scoringMode: AlivibeMsaScoringMode = "nucleotide",
+): AlivibeMsaJob {
   const inputSequences = sequences.map((sequence) => String(sequence));
   const input = encodeAlivibeMsaSequences(inputSequences);
   const worker = new Worker(new URL("./alivibe-msa-worker.ts", import.meta.url), { type: "module" });
@@ -65,7 +72,7 @@ export function createAlivibeMsaJob(sequences: readonly string[], iterations = 3
       worker.terminate();
       reject(new Error(event.message || "The Alivibe MSA worker stopped unexpectedly."));
     };
-    worker.postMessage({ type: "align", input, iterations }, [input]);
+    worker.postMessage({ type: "align", input, iterations, scoringMode }, [input]);
   });
   return {
     result,

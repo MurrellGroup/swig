@@ -7,6 +7,12 @@ export const GERMLINE_OUTGROUP = "__germline_N_masked__";
 
 export type LineageGermlineMethod = "closest" | "consensus";
 
+/** AIRR productivity is explicit; blank/unresolved rows are not assumed in-frame. */
+export function isProductiveLineageRow(row: AirrDetailRow): boolean {
+  const value = (row.values.productive || row.record.productive || "").trim();
+  return /^(?:T|TRUE)$/i.test(value);
+}
+
 function frameOffset(value: number): AlignmentFrameOffset {
   const normalized = ((Math.trunc(value) % 3) + 3) % 3;
   return normalized as AlignmentFrameOffset;

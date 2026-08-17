@@ -11,6 +11,9 @@ by the nucleotide canvas and the full nucleotide FASTA export. It does not read
 the system clipboard or selected canvas cells.
 
 For Swig-hosted editors, the bridge also injects a cancellable worker running
-`public/alivibe-msa.wasm`. That module is a behavior-preserving C++/WASM port of
-the pinned `refinedMSA` route in `nw.js`; standalone Alivibe keeps the original
-JavaScript function as its fallback.
+`public/alivibe-msa.wasm`. That module is a C++/WASM port of the pinned
+`refinedMSA` route in `nw.js`. Its nucleotide entry point intentionally scores
+`N` as a wildcard match, while its amino-acid entry point scores unknown `X`
+the same way and keeps asparagine `N` literal. Both retain ordinary gap costs.
+The separate literal entry point remains the pinned differential oracle.
+Standalone Alivibe keeps the original JavaScript function as its fallback.

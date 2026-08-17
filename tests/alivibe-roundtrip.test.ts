@@ -108,6 +108,7 @@ test("the bundled Alivibe bridge snapshots the same NT state used by its viewer/
   assert.match(source, /window\.swigAlivibeBridge\s*=\s*Object\.freeze/);
   assert.match(source, /installMsaRunner\(runner\)/);
   assert.match(source, /createMsaJob\(sequences\)/);
+  assert.match(source, /swigMsaRunner\(sequences\.map\(sequence => String\(sequence\)\), state\.mode === 'NT' \? 'nucleotide' : 'amino-acid'\)/);
   assert.match(source, /Alivibe-compatible WebAssembly worker/);
   assert.match(source, /activeMsaJob\.cancel\(\)/);
   assert.match(source, /setMode\('NT'\);\s*const records = state\.viewSequences\.map/);

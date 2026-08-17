@@ -71,8 +71,10 @@ export interface PostAnalysisSessionSnapshot {
   alignment?: { fasta: string; source: string; selectedLineageId?: number; frameOffset?: AlignmentFrameOffset };
   /** Shared nucleotide-column offset used for codon translation in the current lineage MSA. */
   alignmentFrameOffset?: AlignmentFrameOffset;
+  /** True when the lineage workbench excludes AIRR rows not explicitly marked productive. */
+  alignmentProductiveOnly?: boolean;
   /** Only manual/corrected alignments are retained; generated alignments are reproducible from AIRR rows. */
-  editedAlignments?: Array<{ key: string; lineageIds: number[]; fasta: string; source: string; frameOffset?: AlignmentFrameOffset; savedAt: string }>;
+  editedAlignments?: Array<{ key: string; lineageIds: number[]; productiveOnly?: boolean; fasta: string; source: string; frameOffset?: AlignmentFrameOffset; savedAt: string }>;
   lineageMerges?: Array<{ id: string; label: string; originalLineageIds: number[]; createdAt: string }>;
   tree?: { rawNewick: string; rootedNewick: string; stableNewick: string; source: string; lineageIds?: number[]; run?: Record<string, unknown> };
   /** Full result is retained because it depends on a searched placement posterior, not only the ordinary lineage tree. */

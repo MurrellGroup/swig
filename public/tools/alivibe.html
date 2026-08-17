@@ -1047,7 +1047,9 @@ async function runMSAAlignment() {
     }
 
     try {
-        // Swig injects a worker-backed WASM port of this exact refinedMSA path.
+        // Swig injects a worker-backed WASM port of this refinedMSA path. Its
+        // nucleotide and amino-acid modes treat N and X, respectively, as an
+        // unknown-residue wildcard substitution.
         // A directly opened standalone Alivibe retains the original JavaScript
         // implementation as a compatibility fallback.
         const job = window.swigAlivibeBridge?.createMsaJob?.(seqsToAlign) || null;
@@ -2531,7 +2533,7 @@ function render() {
 // own full-view FASTA export. It deliberately ignores the current selection.
 let swigMsaRunner = null;
 window.swigAlivibeBridge = Object.freeze({
-    version: 2,
+    version: 4,
     sourceRevision: "cbcd02719dd0a5f1f05d3127666f00e8579f2423",
     installMsaRunner(runner) {
         if(typeof runner !== 'function') throw new Error("Swig supplied an invalid Alivibe MSA runner.");
@@ -2540,7 +2542,7 @@ window.swigAlivibeBridge = Object.freeze({
     createMsaJob(sequences) {
         if(!swigMsaRunner) return null;
         if(!Array.isArray(sequences)) throw new Error("Alivibe supplied an invalid MSA input.");
-        return swigMsaRunner(sequences.map(sequence => String(sequence)));
+        return swigMsaRunner(sequences.map(sequence => String(sequence)), state.mode === 'NT' ? 'nucleotide' : 'amino-acid');
     },
     loadNucleotideFasta(text, frameOffset = 0) {
         const offset = Number(frameOffset);
@@ -2573,7 +2575,7 @@ window.swigAlivibeBridge = Object.freeze({
         }));
         const rows = records.map((_, index) => index);
         return {
-            version: 2,
+            version: 3,
             sourceRevision: this.sourceRevision,
             alphabet: "NT",
             mode: state.mode,

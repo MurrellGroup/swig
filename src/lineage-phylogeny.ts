@@ -242,6 +242,15 @@ export function ordinalFromAlignmentName(name: string): number | null {
   return match ? Number(match[1]) - 1 : null;
 }
 
+/** Keep AIRR metadata only for biological records still present in an MSA. */
+export function alignmentRetainedRows(records: readonly FastaRecord[], rows: readonly AirrDetailRow[]): AirrDetailRow[] {
+  const ordinals = new Set(records.flatMap((record) => {
+    const ordinal = ordinalFromAlignmentName(record.name);
+    return ordinal === null ? [] : [ordinal];
+  }));
+  return rows.filter((row) => ordinals.has(row.record.ordinal));
+}
+
 function numeric(row: AirrDetailRow, key: string): number | null {
   const value = Number(row.values[key]);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;

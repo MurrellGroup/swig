@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import type { FastTreeRun } from "./biowasm-runtime";
+import { projectCodonAlignment, translateCodonSequence } from "./alignment-model";
 import { runCodonAwareKalignTask, runFastTreeTask, runKalignTask } from "./biowasm-task-runtime";
 import { createAlivibeMsaJob, runAlivibeMsaTask } from "./alivibe-msa-runtime";
 import {
@@ -38,7 +39,7 @@ import {
 } from "./chmmairra-runtime";
 import { alignmentExtension, alignmentText, tableExtension, tableHeader, tableRow, treeNexus, type AlignmentExportFormat, type TableExportFormat } from "./export-formats";
 import { MissingAlleleAccumulator, DEFAULT_MISSING_ALLELE_OPTIONS, type MissingAlleleDashboard, type MissingAlleleOptions } from "./germline-evidence";
-import { GERMLINE_OUTGROUP, alignedSequenceFrameOffset, inferLineageGermline, lineageInputFasta, type LineageGermlineMethod } from "./lineage-alignment";
+import { GERMLINE_OUTGROUP, alignedSequenceFrameOffset, inferLineageGermline, isProductiveLineageRow, lineageInputFasta, type LineageGermlineMethod } from "./lineage-alignment";
 import {
   buildLineageGermlineSketchIndex,
   scoreGermlineCandidate,
@@ -167,6 +168,7 @@ const POST_MODULE_ORDER: PostModuleId[] = ["alleles", "dedup", "chimera", "selec
 interface EditedAlignmentState {
   key: string;
   lineageIds: number[];
+  productiveOnly?: boolean;
   fasta: string;
   source: string;
   frameOffset?: AlignmentFrameOffset;
@@ -215,6 +217,11 @@ type LineageShmFilterStatistic = "mean" | "maximum" | "p95";
 
 function lineageGroupKey(lineageIds: Iterable<number>): string {
   return [...new Set(lineageIds)].filter((value)=>value>0).sort((left,right)=>left-right).join("+");
+}
+
+function lineageAlignmentKey(lineageIds: Iterable<number>, productiveOnly = false): string {
+  const group = lineageGroupKey(lineageIds);
+  return group && productiveOnly ? `${group}|productive` : group;
 }
 
 function stratifiedLineageRows(rows: AirrDetailRow[], lineageByOrdinal: ReadonlyMap<number, number>, limit: number): AirrDetailRow[] {
@@ -328,10 +335,14 @@ function BarChart({ title, subtitle, data, color, name, controls }: {
 }
 
 function AlignmentPreview({ fasta, mode, frameOffset }: { fasta: string; mode: "nt" | "aa"; frameOffset: AlignmentFrameOffset }) {
+  const [showNames, setShowNames] = useState(true);
   const records = parseFasta(fasta, true);
-  return <div className="lineage-alignment-preview">
-    <div className="alignment-ruler"><span>Name</span><span>{mode === "nt" ? "Nucleotide alignment" : "Codon translation"} · showing {Math.min(80, records.length)} of {records.length}</span></div>
-    {records.slice(0, 80).map((record) => <div className={record.name === GERMLINE_OUTGROUP ? "germline-row" : ""} key={record.name}><strong title={record.name}>{record.name}</strong><ColoredSequence sequence={mode === "nt" ? record.sequence : translateAlignedNucleotides(record.sequence, frameOffset)} alphabet={mode} /></div>)}
+  return <div className="lineage-alignment-preview-shell">
+    <div className="lineage-plot-display-controls"><label className="check-line"><input type="checkbox" checked={showNames} onChange={(event) => setShowNames(event.target.checked)} /><span>Show sequence names</span></label><small>Hidden-name space is reassigned to the alignment viewport.</small></div>
+    <div className={`lineage-alignment-preview${showNames ? "" : " names-hidden"}`}>
+      <div className="alignment-ruler">{showNames && <span>Name</span>}<span>{mode === "nt" ? "Nucleotide alignment" : "Codon translation"} · showing {Math.min(80, records.length)} of {records.length}</span></div>
+      {records.slice(0, 80).map((record) => <div className={record.name === GERMLINE_OUTGROUP ? "germline-row" : ""} key={record.name}>{showNames && <strong title={record.name}>{record.name}</strong>}<ColoredSequence sequence={mode === "nt" ? record.sequence : translateAlignedNucleotides(record.sequence, frameOffset)} alphabet={mode} /></div>)}
+    </div>
   </div>;
 }
 
@@ -528,6 +539,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [selectedLineage, setSelectedLineage] = useState<LineageSummary | null>(null);
   const [selectedLineageIds, setSelectedLineageIds] = useState<number[]>([]);
   const [lineageRows, setLineageRows] = useState<AirrDetailRow[]>([]);
+  const [alignmentProductiveOnly, setAlignmentProductiveOnly] = useState(Boolean(initialSession?.alignmentProductiveOnly));
   const [lineageMultiplicity, setLineageMultiplicity] = useState<Map<number, number>>(new Map());
   const [originalLineageByOrdinal, setOriginalLineageByOrdinal] = useState<Map<number,number>>(new Map());
   const [lineageTotal, setLineageTotal] = useState(0);
@@ -558,7 +570,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     if (!alignment) return null;
     try { return inspectAlignment(alignment); } catch { return null; }
   }, [alignment]);
-  const selectedGroupKey = useMemo(()=>lineageGroupKey(selectedLineageIds),[selectedLineageIds]);
+  const productiveLineageRows = useMemo(()=>lineageRows.filter(isProductiveLineageRow),[lineageRows]);
+  const workbenchLineageRows = alignmentProductiveOnly ? productiveLineageRows : lineageRows;
+  const excludedNonProductiveRows = lineageRows.length - productiveLineageRows.length;
+  const selectedGroupKey = useMemo(()=>lineageAlignmentKey(selectedLineageIds,alignmentProductiveOnly),[alignmentProductiveOnly,selectedLineageIds]);
   const selectedGroupKeyRef = useRef(selectedGroupKey);
   useEffect(() => { alignmentRef.current = alignment; }, [alignment]);
   useEffect(() => { selectedGroupKeyRef.current = selectedGroupKey; }, [selectedGroupKey]);
@@ -580,7 +595,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setPhyloUcaState(null);
   }
 
-  function installAlignment(next: string, source: string, edited = false, lineageIds: number[] = selectedLineageIds, frameOffset?: AlignmentFrameOffset) {
+  function installAlignment(next: string, source: string, edited = false, lineageIds: number[] = selectedLineageIds, frameOffset?: AlignmentFrameOffset, productiveOnly = alignmentProductiveOnly) {
     const inspected = inspectAlignment(next);
     const resolvedFrameOffset = frameOffset ?? inferAlignedReadingFrame(inspected.records.map((record) => record.sequence)).offset;
     alignmentRevisionRef.current += 1;
@@ -591,9 +606,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setTreeRun(null);
     setTreeError("");
     setPhyloUcaState(null);
-    const key=lineageGroupKey(lineageIds);
+    const key=lineageAlignmentKey(lineageIds,productiveOnly);
     if(edited&&key){
-      const entry:EditedAlignmentState={key,lineageIds:[...new Set(lineageIds)].sort((a,b)=>a-b),fasta:inspected.fasta,source,frameOffset:resolvedFrameOffset,savedAt:new Date().toISOString()};
+      const entry:EditedAlignmentState={key,lineageIds:[...new Set(lineageIds)].sort((a,b)=>a-b),productiveOnly,fasta:inspected.fasta,source,frameOffset:resolvedFrameOffset,savedAt:new Date().toISOString()};
       setEditedAlignments((current)=>{const updated=new Map(current);updated.set(key,entry);return updated;});
     }
     return inspected;
@@ -725,9 +740,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     : <button className="module-skip-step" type="button" onClick={()=>skipModule(module)}>Skip step</button>;
   const moduleClass=(module:PostModuleId,base:string)=>`${base}${openModules.has(module)?" is-open":" is-collapsed"}${skippedModules.has(module)?" is-skipped":""}`;
   const lineageGermline = useMemo(() => {
-    if (!lineageRows.length) return null;
-    try { return inferLineageGermline(lineageRows, lineageGermlineMethod); } catch { return null; }
-  }, [lineageRows, lineageGermlineMethod]);
+    if (!workbenchLineageRows.length) return null;
+    try { return inferLineageGermline(workbenchLineageRows, lineageGermlineMethod); } catch { return null; }
+  }, [workbenchLineageRows, lineageGermlineMethod]);
 
   useEffect(() => {
     if (directLineage || !autoPipeline?.enabled || initialSession || pipelineRunRef.current) return;
@@ -997,7 +1012,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       if(signal?.aborted)throw new DOMException("Session saving was cancelled.","AbortError");
       const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
       return {skippedModules:[...skippedModules],workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,alleleRefinement:alleleRefinement?saveAlleleRefinement(alleleRefinement,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior):undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
-        alignmentFrameOffset,
+        alignmentFrameOffset,alignmentProductiveOnly,
         query:{queryText,queryTarget,queryMetric,queryIdentity,queryLimit,queryLocus,queryV,queryJ,queryConstraintMode,queryResultMode,queryInference,queryHits,queryLineageHits,expanded},
         editedAlignments:[...editedAlignments.values()].map((entry)=>({...entry,lineageIds:[...entry.lineageIds]})),
         lineageMerges:lineageMerges.map((merge)=>({...merge,originalLineageIds:[...merge.originalLineageIds]})),
@@ -1015,7 +1030,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     const reason=treeRun?"phylogeny_changed":editedAlignments.size?"edited_alignment_changed":alignment?"lineage_alignment_changed":missingAlleles?"missing_allele_screen_changed":shmDashboard?"shm_changed":lineages?"lineages_changed":chmm?"chimera_state_changed":dedup?"collapse_state_changed":selectionApplied||selectionPreview?"repertoire_selection_changed":"post_analysis_state_changed";
     sessionChangeCallbackRef.current?.(reason);
   },[
-    alignment,alignmentFrameOffset,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior,alleleOptions,alleleRefinement,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
+    alignment,alignmentFrameOffset,alignmentProductiveOnly,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior,alleleOptions,alleleRefinement,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
     missingAlleleOptions,missingAlleles,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
     queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,skippedModules,
     selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,phyloUcaState,workingStages,
@@ -1076,15 +1091,17 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         setLineageMultiplicity(multiplicity);
         setActiveWorkspace("workbench");
 
-        const restoredEdit = initialSession?.editedAlignments?.find((entry) => entry.lineageIds.includes(1));
+        const restoredEdit = initialSession?.editedAlignments?.find((entry) => entry.lineageIds.includes(1) && Boolean(entry.productiveOnly) === alignmentProductiveOnly);
         const savedFrameOffset = validAlignmentFrameOffset(initialSession?.alignmentFrameOffset);
         if (restoredEdit) {
-          installAlignment(restoredEdit.fasta, restoredEdit.source, true, [1], validAlignmentFrameOffset(restoredEdit.frameOffset) ?? savedFrameOffset);
-          setEditedAlignments(new Map([[lineageGroupKey([1]), { ...restoredEdit, key: lineageGroupKey([1]), lineageIds: [1], frameOffset: validAlignmentFrameOffset(restoredEdit.frameOffset) }]]));
+          installAlignment(restoredEdit.fasta, restoredEdit.source, true, [1], validAlignmentFrameOffset(restoredEdit.frameOffset) ?? savedFrameOffset, alignmentProductiveOnly);
+          const key=lineageAlignmentKey([1],alignmentProductiveOnly);
+          setEditedAlignments(new Map([[key, { ...restoredEdit, key, lineageIds: [1], productiveOnly:alignmentProductiveOnly, frameOffset: validAlignmentFrameOffset(restoredEdit.frameOffset) }]]));
         } else if (initialSession?.tree?.run && typeof initialSession.tree.run.alignmentFasta === "string") {
           installAlignment(initialSession.tree.run.alignmentFasta, initialSession.tree.source || "Saved tree input", false, [1], validAlignmentFrameOffset(initialSession.tree.run.frameOffset) ?? savedFrameOffset);
-        } else if (rows.length >= 2) {
-          const selectedRows = stratifiedLineageRows(rows, lineageByOrdinal, Math.min(200, rows.length));
+        } else if ((alignmentProductiveOnly ? rows.filter(isProductiveLineageRow) : rows).length >= 2) {
+          const workspaceRows = alignmentProductiveOnly ? rows.filter(isProductiveLineageRow) : rows;
+          const selectedRows = stratifiedLineageRows(workspaceRows, lineageByOrdinal, Math.min(200, workspaceRows.length));
           const input = lineageInputFasta(selectedRows, lineageGermlineMethod);
           const records = parseFasta(input.fasta, true);
           const maximum = Math.max(...records.map((record) => record.sequence.length));
@@ -1112,6 +1129,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         await runInActiveLock(async(signal)=>{
         const active=initialSession.activeMask?unpackSessionVector(initialSession.activeMask) as Uint8Array:null;
         if(initialSession.lineageGermlineMethod==="closest"||initialSession.lineageGermlineMethod==="consensus")setLineageGermlineMethod(initialSession.lineageGermlineMethod);
+        setAlignmentProductiveOnly(Boolean(initialSession.alignmentProductiveOnly));
         const collapse=initialSession.collapse;const lineage=initialSession.lineage;
         const dedupState=collapse?.counts&&collapse.representatives&&collapse.dashboard?{dashboard:collapse.dashboard as unknown as DedupDashboard,counts:unpackSessionVector(collapse.counts) as Uint32Array,representatives:unpackSessionVector(collapse.representatives) as Int32Array}:undefined;
         const lineageState=lineage?.assignments&&lineage.dashboard?{dashboard:lineage.dashboard as unknown as LineageDashboard,assignments:unpackSessionVector(lineage.assignments) as Int32Array}:undefined;
@@ -1127,8 +1145,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         const restoredMerges=(initialSession.lineageMerges??[]).map((merge)=>({...merge,originalLineageIds:[...new Set(merge.originalLineageIds)].filter((value)=>value>0).sort((a,b)=>a-b)}));
         setLineageMerges(restoredMerges);
         const restoredEdited=new Map<string,EditedAlignmentState>();
-        for(const entry of initialSession.editedAlignments??[]){const key=lineageGroupKey(entry.lineageIds);if(key)restoredEdited.set(key,{...entry,key,lineageIds:[...new Set(entry.lineageIds)].sort((a,b)=>a-b),frameOffset:validAlignmentFrameOffset(entry.frameOffset)});}
-        if(initialSession.alignment&&/(corrected|manual|alivibe|edited)/i.test(initialSession.alignment.source)){const lineageIds=initialSession.alignment.selectedLineageId?[initialSession.alignment.selectedLineageId]:[];const key=lineageGroupKey(lineageIds);if(key&&!restoredEdited.has(key))restoredEdited.set(key,{key,lineageIds,fasta:initialSession.alignment.fasta,source:initialSession.alignment.source,frameOffset:validAlignmentFrameOffset(initialSession.alignment.frameOffset),savedAt:new Date().toISOString()});}
+        for(const entry of initialSession.editedAlignments??[]){const productiveOnly=Boolean(entry.productiveOnly);const key=lineageAlignmentKey(entry.lineageIds,productiveOnly);if(key)restoredEdited.set(key,{...entry,key,productiveOnly,lineageIds:[...new Set(entry.lineageIds)].sort((a,b)=>a-b),frameOffset:validAlignmentFrameOffset(entry.frameOffset)});}
+        if(initialSession.alignment&&/(corrected|manual|alivibe|edited)/i.test(initialSession.alignment.source)){const lineageIds=initialSession.alignment.selectedLineageId?[initialSession.alignment.selectedLineageId]:[];const productiveOnly=Boolean(initialSession.alignmentProductiveOnly);const key=lineageAlignmentKey(lineageIds,productiveOnly);if(key&&!restoredEdited.has(key))restoredEdited.set(key,{key,lineageIds,productiveOnly,fasta:initialSession.alignment.fasta,source:initialSession.alignment.source,frameOffset:validAlignmentFrameOffset(initialSession.alignment.frameOffset),savedAt:new Date().toISOString()});}
         setEditedAlignments(restoredEdited);
         const chimera=initialSession.chimera;if(chimera?.dashboard&&chimera.probabilities&&chimera.dfr&&chimera.msa){const dashboard={...chimera.dashboard,probabilities:unpackSessionVector(chimera.probabilities) as Float32Array,dfr:unpackSessionVector(chimera.dfr) as Uint16Array} as unknown as ChmmDashboard;const rawOptions=chimera.options;const options=rawOptions as unknown as ChmmRunOptions;const inputMask=chimera.retainedMask?unpackSessionVector(chimera.retainedMask) as Uint8Array:null;setChmm(dashboard);setChmmRun({msa:chimera.msa,options,inputMask});setPreparedMsa(chimera.msa);setChmmFilterThreshold(chimera.filterThreshold);setChmmSegment(options.segment);if(rawOptions.chmmSource==="selected"||rawOptions.chmmSource==="upload")setChmmSource(rawOptions.chmmSource);if(typeof rawOptions.uploadedMsaName==="string")setUploadedMsaName(rawOptions.uploadedMsaName);if(rawOptions.chmmSource==="upload")setUploadedMsa(chimera.msa);}
         if(initialSession.shm){setShmMetric(initialSession.shm.metric);setShmDashboard(initialSession.shm.dashboard);if(initialSession.shm.sampleOrder?.length)setShmSampleOrder([...initialSession.shm.sampleOrder]);}if(initialSession.missingAlleles){setMissingAlleleOptions({...DEFAULT_MISSING_ALLELE_OPTIONS,...initialSession.missingAlleles.options,unit:"lineage"});setMissingAlleles(initialSession.missingAlleles.dashboard?.validationPasses===2?initialSession.missingAlleles.dashboard:null);setSelectedMissingAlleleIds(new Set(initialSession.missingAlleles.selectedCandidateIds??[]));}
@@ -1148,10 +1166,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             const originalByOrdinal=new Map<number,number>();memberGroups.forEach((group)=>group.ordinals.forEach((ordinal)=>originalByOrdinal.set(ordinal,group.lineageId)));
             setSelectedLineage(summary);setSelectedLineageIds(restoredSelectedIds);setLineageRows(rows);setLineageTotal(memberGroups.reduce((sum,group)=>sum+group.total,0));setOriginalLineageByOrdinal(originalByOrdinal);setLineageMultiplicity(new Map(rows.map(row=>{const imported=Number(row.values.duplicate_count);const count=counts?.[row.record.ordinal]||(Number.isFinite(imported)&&imported>0?imported:1);return [row.record.ordinal,Math.max(1,Math.floor(count))] as const;})));
           }
-          const key=lineageGroupKey(restoredSelectedIds);const restored=restoredEdited.get(key);
+          const restoredProductiveOnly=Boolean(initialSession.alignmentProductiveOnly);const key=lineageAlignmentKey(restoredSelectedIds,restoredProductiveOnly);const restored=restoredEdited.get(key);
           const savedFrameOffset=validAlignmentFrameOffset(initialSession.alignmentFrameOffset);
-          if(restored)installAlignment(restored.fasta,restored.source,true,restored.lineageIds,restored.frameOffset??savedFrameOffset);
-          else if(initialSession.tree?.run&&typeof initialSession.tree.run.alignmentFasta==="string")installAlignment(initialSession.tree.run.alignmentFasta,initialSession.tree.source||"Saved tree input",false,restoredSelectedIds,validAlignmentFrameOffset(initialSession.tree.run.frameOffset)??savedFrameOffset);
+          if(restored)installAlignment(restored.fasta,restored.source,true,restored.lineageIds,restored.frameOffset??savedFrameOffset,restoredProductiveOnly);
+          else if(initialSession.tree?.run&&typeof initialSession.tree.run.alignmentFasta==="string")installAlignment(initialSession.tree.run.alignmentFasta,initialSession.tree.source||"Saved tree input",false,restoredSelectedIds,validAlignmentFrameOffset(initialSession.tree.run.frameOffset)??savedFrameOffset,restoredProductiveOnly);
         }
         if(initialSession.tree?.run)setTreeRun(initialSession.tree.run as unknown as TreeSnapshot);if(initialSession.phyloUca)setPhyloUcaState(initialSession.phyloUca);
         if(signal.aborted)throw new DOMException("Session restoration was cancelled.","AbortError");
@@ -1320,6 +1338,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setSelectedLineage(null);
     setSelectedLineageIds([]);
     setLineageRows([]);
+    setAlignmentProductiveOnly(false);
     setLineageMultiplicity(new Map());
     setOriginalLineageByOrdinal(new Map());
     setEditedAlignments(new Map());
@@ -1568,6 +1587,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       setNeighbourCdr3Identity(Math.max(0.5, identity - 0.05));
       setSelectedLineage(null);
       setLineageRows([]);
+      setAlignmentProductiveOnly(false);
       setLineageMultiplicity(new Map());
       setSelectedLineageIds([]);
       setOriginalLineageByOrdinal(new Map());
@@ -1656,12 +1676,13 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       setSelectedLineage(summary);
       setSelectedLineageIds(lineageIds);
       setLineageRows(loaded.rows);
+      setAlignmentProductiveOnly(false);
       setOriginalLineageByOrdinal(loaded.lineageByOrdinal);
       setLineageMultiplicity(loaded.multiplicity);
       setLineageTotal(loaded.memberGroups.reduce((sum, group) => sum + group.total, 0));
       clearAlignmentArtifacts();
-      const restored = editedAlignments.get(lineageGroupKey(lineageIds));
-      if (restored) installAlignment(restored.fasta, restored.source, true, restored.lineageIds, restored.frameOffset);
+      const restored = editedAlignments.get(lineageAlignmentKey(lineageIds, false));
+      if (restored) installAlignment(restored.fasta, restored.source, true, restored.lineageIds, restored.frameOffset, false);
       setAlignmentEditorStatus("");
       setAlignmentEditorError("");
       clearNeighbourResults();
@@ -1824,13 +1845,26 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     await loadLineageGroup(selectedLineage, lineageIds);
   }
 
+  function toggleAlignmentProductiveFilter() {
+    const next = !alignmentProductiveOnly;
+    setAlignmentProductiveOnly(next);
+    clearAlignmentArtifacts();
+    setAlignmentEditorError("");
+    setAlignmentEditorStatus(next
+      ? `Dropped ${excludedNonProductiveRows.toLocaleString()} non-productive or unresolved row${excludedNonProductiveRows===1?"":"s"} from the lineage alignment workspace. Re-run the desired MSA; repertoire data and lineage assignments were not changed.`
+      : "Restored the complete loaded lineage population. Re-run the desired MSA.");
+  }
+
   async function runAlignment() {
-    if (!lineageRows.length) return;
+    if (workbenchLineageRows.length < 2) {
+      setError("A lineage MSA needs at least two biological rows after the current productivity filter.");
+      return;
+    }
     setBusy(alignmentMethod === "quick" ? "Preparing AIRR-anchored alignment" : alignmentMethod === "codon" ? "Running codon-aware Kalign WASM" : "Running Kalign WASM");
     setError("");
     try {
       const next = await runInActiveLock(async (signal) => {
-        const rows = stratifiedLineageRows(lineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
+        const rows = stratifiedLineageRows(workbenchLineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
         const input = lineageInputFasta(rows, lineageGermlineMethod);
         if (alignmentMethod === "quick") {
           const records = parseFasta(input.fasta, true);
@@ -1859,18 +1893,22 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   }
 
   async function runDirectAlivibeMsa() {
-    if (!lineageRows.length) return;
+    if (workbenchLineageRows.length < 2) {
+      setError("A lineage MSA needs at least two biological rows after the current productivity filter.");
+      return;
+    }
     setBusy("Running Alivibe-compatible POA MSA WASM");
     setError("");
     try {
       const next = await runInActiveLock(async (signal) => {
-        const rows = stratifiedLineageRows(lineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
+        const rows = stratifiedLineageRows(workbenchLineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
         const input = lineageInputFasta(rows, lineageGermlineMethod);
         const records = parseFasta(input.fasta, true);
         const aligned = await runAlivibeMsaTask(
           records.map((record) => record.sequence.replaceAll("-", "")),
           signal,
           3,
+          "nucleotide",
         );
         const fasta = records.map((record, index) => `>${record.name}\n${aligned[index]}`).join("\n") + "\n";
         const anchor = records.findIndex((record) => record.name === input.frameAnchorName);
@@ -1881,7 +1919,46 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       });
       installAlignment(
         next.fasta,
-        "Alivibe-compatible POA MSA · WASM · three refinement passes",
+        "Alivibe-compatible POA MSA · nucleotide N wildcard · WASM · three refinement passes",
+        false,
+        selectedLineageIds,
+        next.frameOffset,
+      );
+      setAlignmentEditorStatus("");
+      setAlignmentEditorError("");
+    } catch (operationError) {
+      if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
+    } finally {
+      if (!cancellationRecoveryRef.current) setBusy("");
+    }
+  }
+
+  async function runDirectAlivibeAaMsa() {
+    if (workbenchLineageRows.length < 2) {
+      setError("A lineage MSA needs at least two biological rows after the current productivity filter.");
+      return;
+    }
+    setBusy("Running frame-preserving amino-acid Alivibe-compatible MSA WASM");
+    setError("");
+    try {
+      const next = await runInActiveLock(async (signal) => {
+        const rows = stratifiedLineageRows(workbenchLineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
+        const input = lineageInputFasta(rows, lineageGermlineMethod);
+        const records = parseFasta(input.fasta, true);
+        const aminoAcids = records.map((record, index) => translateCodonSequence(record.sequence, input.frames[index] ?? 0));
+        const alignedAminoAcids = await runAlivibeMsaTask(aminoAcids, signal, 3, "amino-acid");
+        const projected = records.map((record, index) => projectCodonAlignment(
+          record.sequence,
+          alignedAminoAcids[index],
+          input.frames[index] ?? 0,
+        ));
+        const maximum = Math.max(...projected.map((sequence) => sequence.length));
+        const fasta = records.map((record, index) => `>${record.name}\n${projected[index].padEnd(maximum, "-")}`).join("\n") + "\n";
+        return { fasta, frameOffset: 0 as AlignmentFrameOffset };
+      });
+      installAlignment(
+        next.fasta,
+        "Alivibe-compatible AA POA MSA · X wildcard · codon back-translation · WASM · three refinement passes",
         false,
         selectedLineageIds,
         next.frameOffset,
@@ -2035,7 +2112,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     const baseline = alignment;
     const baselineFingerprint = inspectAlignment(baseline).fingerprint;
     const lineageIds = [...new Set(selectedLineageIds)].sort((left, right) => left - right);
-    const groupKey = lineageGroupKey(lineageIds);
+    const groupKey = selectedGroupKey;
     const session: AlivibeRoundTripSession = { token, popup, baseline, baselineFingerprint, lineageIds, groupKey, frameOffset: alignmentFrameOffset };
     alivibeSessionRef.current = session;
     let attempts = 0;
@@ -2053,7 +2130,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           if (attempts < 240) return;
           throw new Error("The bundled Alivibe bridge did not become ready. Close the editor and try again.");
         }
-        bridge.installMsaRunner((sequences) => createAlivibeMsaJob(sequences, 3));
+        bridge.installMsaRunner((sequences, scoringMode) => createAlivibeMsaJob(sequences, 3, scoringMode));
         const loaded = loadAlivibeNucleotideFasta(popup, session.baseline, session.frameOffset);
         assertAlivibeInitialLoad(session.baseline, loaded);
         const controls = popup.document.getElementById("controls");
@@ -2718,8 +2795,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     {selectedLineage && <section ref={workbenchRef} className={moduleClass("workbench","post-module lineage-workbench")} tabIndex={-1}>
-      <header><div className="module-number dark">{directLineage ? "01" : "07"}</div><div><span className="section-kicker">{directLineage ? "Complete uploaded input · one lineage" : selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>{directLineage ? "Lineage alignment, phylogeny and UCA" : "Lineage neighbours, alignment and rooted phylogeny"}</h3><p>{lineageTotal.toLocaleString()} input rows · {selectedLineage.locus}{directLineage ? " · lineage clustering was bypassed" : ` · original assignments ${selectedLineageIds.map((id) => `L${id}`).join(", ")}`}</p></div><a href="./methods/11_ALIGNMENT_AND_PHYLOGENY.md" target="_blank" rel="noreferrer">Method details ↗</a>{!directLineage && <>{skipStepButton("workbench")}<button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></>}</header>
-      <div className="member-strip"><div><strong>{lineageRows.length.toLocaleString()}</strong><span>active rows loaded</span><small>{lineageTotal > lineageRows.length ? `${lineageRows.length} stratified members loaded from ${lineageTotal.toLocaleString()}; analysis remains bounded` : "complete selected lineage working set"}</small></div><div className="member-pills">{lineageRows.slice(0, 18).map((row) => {const sample=row.values.sample_id||row.record.sampleId||"";const original=originalLineageByOrdinal.get(row.record.ordinal);const cdr3=row.values.cdr3_aa||row.values.cdr3||"CDR3 —";return <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)} title={`${sample||"sample unassigned"}${original?` · original lineage ${original}`:""} · ${cdr3}`}><i style={{background:sampleColor(sample,sampleColors)}}/><span><b>{row.record.sequenceId}</b><small>{cdr3}</small></span></button>;})}</div></div>
+      <header><div className="module-number dark">{directLineage ? "01" : "07"}</div><div><span className="section-kicker">{directLineage ? "Complete uploaded input · one lineage" : selectedLineageIds.length > 1 ? `Combined view · ${selectedLineageIds.length} original lineages` : `Selected lineage ${selectedLineage.id}`} · {selectedLineage.studyGroup}</span><h3>{directLineage ? "Lineage alignment, phylogeny and UCA" : "Lineage neighbours, alignment and rooted phylogeny"}</h3><p>{lineageTotal.toLocaleString()} input rows · {selectedLineage.locus}{directLineage ? " · lineage clustering was bypassed" : ` · original assignments ${selectedLineageIds.map((id) => `L${id}`).join(", ")}`}</p></div><a href="./methods/11_ALIGNMENT_AND_PHYLOGENY.md" target="_blank" rel="noreferrer">Method details ↗</a>{!directLineage && <>{skipStepButton("workbench")}<button type="button" onClick={() => { setSelectedLineage(null); setSelectedLineageIds([]); setLineageRows([]); setAlignmentProductiveOnly(false); setLineageMultiplicity(new Map()); setOriginalLineageByOrdinal(new Map()); clearNeighbourResults(); setActiveWorkspace("lineage"); }}>Close lineage</button><button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("workbench")} onClick={()=>toggleModule("workbench")}>{openModules.has("workbench")?"Collapse ↑":"Expand ↓"}</button></>}</header>
+      <div className="member-strip"><div><strong>{workbenchLineageRows.length.toLocaleString()}</strong><span>active workspace rows</span><small>{alignmentProductiveOnly?`${excludedNonProductiveRows.toLocaleString()} non-productive or unresolved loaded rows excluded`:lineageTotal > lineageRows.length ? `${lineageRows.length} stratified members loaded from ${lineageTotal.toLocaleString()}; analysis remains bounded` : "complete selected lineage working set"}</small></div><div className="member-pills">{workbenchLineageRows.slice(0, 18).map((row) => {const sample=row.values.sample_id||row.record.sampleId||"";const original=originalLineageByOrdinal.get(row.record.ordinal);const cdr3=row.values.cdr3_aa||row.values.cdr3||"CDR3 —";return <button type="button" key={row.record.ordinal} onClick={() => onInspect(row.record.ordinal)} title={`${sample||"sample unassigned"}${original?` · original lineage ${original}`:""} · ${cdr3}`}><i style={{background:sampleColor(sample,sampleColors)}}/><span><b>{row.record.sequenceId}</b><small>{cdr3}</small></span></button>;})}</div></div>
       {!directLineage && <div className="lineage-neighbour-explorer">
         <header><div><span className="section-kicker">Exploratory boundary review</span><h4>Lineage neighbours</h4><p>Find separate assigned lineages with CDR3 links below the clustering cutoff, similar inferred lineage germlines, or either criterion. Search is read-only until you explicitly merge.</p></div><span className="neighbour-source-chip">Source {selectedLineageIds.map((id)=>`L${id}`).join(" + ")}</span></header>
         <div className="control-grid five">
@@ -2734,6 +2811,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         {(neighbourResult||germlineNeighbourScores.length>0)&&<><div className="neighbour-search-stats"><span>{combinedNeighbourHits.length.toLocaleString()} displayed candidates</span>{neighbourResult&&<span>{neighbourResult.candidateComparisons.toLocaleString()} exact CDR3 comparisons</span>}{germlineSketchIndex&&<span>{germlineSketchIndex.representedLineages.toLocaleString()} lineage germline sketches</span>}<span>{selectedNeighbourIds.size.toLocaleString()} selected</span></div><div className="lineage-table-wrap neighbour-table"><table><thead><tr><th>Select</th><th>Original lineage</th><th>Best source</th><th>CDR3 identity</th><th>Inferred germline identity</th><th>Members / abundance</th><th>Boundary</th></tr></thead><tbody>{combinedNeighbourHits.map((hit)=><tr key={hit.lineageId} className={selectedNeighbourIds.has(hit.lineageId)?"selected":""}><td><input aria-label={`Select lineage ${hit.lineageId}`} type="checkbox" checked={selectedNeighbourIds.has(hit.lineageId)} onChange={(event)=>setNeighbourSelected(hit.lineageId,event.target.checked)}/></td><td><strong>L{hit.lineageId}</strong>{mergedIdByOriginal.get(hit.lineageId)&&<small>{mergedIdByOriginal.get(hit.lineageId)}</small>}</td><td>L{hit.cdr3?.sourceLineageId??hit.germline?.sourceLineageId??"—"}</td><td>{hit.cdr3?`${(hit.cdr3.cdr3Identity*100).toFixed(2)}%`:"—"}</td><td>{hit.germline?`${(hit.germline.germlineIdentity*100).toFixed(2)}%`:"—"}</td><td>{hit.cdr3?`${hit.cdr3.uniqueMembers.toLocaleString()} / ${hit.cdr3.abundance.toLocaleString()}`:hit.germline?`${hit.germline.candidateTotalRows.toLocaleString()} / —`:"—"}</td><td>{hit.cdr3?.studyGroup||"same selected boundary"}</td></tr>)}</tbody></table></div></>}
         {(neighbourResult&&neighbourResult.hits.length===0&&!germlineNeighbourScores.length)&&<div className="method-placeholder small"><span>∅</span><h4>No candidate met the selected neighbour criteria</h4><p>Lower the exploratory threshold or broaden the search boundary; original assignments remain unchanged.</p></div>}
       </div>}
+      <div className={`alignment-population-filter${alignmentProductiveOnly?" active":""}`}>
+        <div><span className="section-kicker">Alignment population</span><strong>{workbenchLineageRows.length.toLocaleString()} of {lineageRows.length.toLocaleString()} loaded rows included</strong><small>{alignmentProductiveOnly?"Only AIRR rows explicitly marked productive are used for germline construction, MSA, tree metadata, and UCA inference.":"All loaded rows currently contribute to the lineage workspace."} The repertoire and lineage assignment are never modified.</small></div>
+        <button type="button" disabled={Boolean(busy)||(!alignmentProductiveOnly&&excludedNonProductiveRows===0)} onClick={toggleAlignmentProductiveFilter}>{alignmentProductiveOnly?"Restore all loaded rows":excludedNonProductiveRows?`Drop non-productive (${excludedNonProductiveRows.toLocaleString()})`:"All loaded rows productive"}</button>
+      </div>
       {lineageGermline&&<div className="lineage-germline-method">
         <div>
           <span className="section-kicker">Lineage root construction</span>
@@ -2752,9 +2833,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         <div><b>{lineageGermline.inferredColumns.toLocaleString()}</b><span>N sites filled in comparison UCA</span></div>
         <div><b>{lineageGermlineMethod==="closest"&&lineageGermline.selectedVjIdentity!==undefined?`${(lineageGermline.selectedVjIdentity*100).toFixed(2)}%`:lineageGermline.conflictingColumns.toLocaleString()}</b><span>{lineageGermlineMethod==="closest"?"equal-weight V/J identity":"conflicting columns retained as N"}</span></div>
       </div>}
-      <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">Ref-anchored quick view · default</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><CommitNumberInput min="2" max="500" value={alignmentLimit} onCommit={setAlignmentLimit} /></label><button className="post-primary" type="button" disabled={Boolean(busy)} onClick={() => void runAlignment()}>{alignmentMethod==="quick"?"Prepare quick view":"Align selected lineage"}</button><button type="button" disabled={Boolean(busy)} onClick={() => void runDirectAlivibeMsa()}>MSA lineage · Alivibe WASM</button>{savedEditedAlignment&&!alignmentEdited&&<button type="button" onClick={()=>installAlignment(savedEditedAlignment.fasta,savedEditedAlignment.source,true,savedEditedAlignment.lineageIds,savedEditedAlignment.frameOffset)}>Restore saved manual edit</button>}{alignment && <><label><span>AA reading frame</span><select value={alignmentFrameOffset} onChange={(event)=>changeAlignmentFrameOffset(Number(event.target.value) as AlignmentFrameOffset)}><option value="0">Start at nucleotide column 1</option><option value="1">Start at nucleotide column 2</option><option value="2">Start at nucleotide column 3</option></select></label><label><span>Alignment export</span><select value={alignmentExportFormat} onChange={(event)=>setAlignmentExportFormat(event.target.value as AlignmentExportFormat)}><option value="fasta">Aligned FASTA</option><option value="clustal">Clustal</option><option value="phylip">Relaxed PHYLIP</option><option value="stockholm">Stockholm</option><option value="nexus">NEXUS</option></select></label><button type="button" onClick={downloadCurrentAlignment}>Download alignment ↓</button></>}</div>
+      <div className="alignment-controls"><label><span>Alignment method</span><select value={alignmentMethod} onChange={(event) => setAlignmentMethod(event.target.value as "quick" | "kalign" | "codon")}><option value="quick">Ref-anchored quick view · default</option><option value="kalign">Kalign 3.3.1 WASM · nucleotide</option><option value="codon">Kalign 3.3.1 WASM · codon-aware</option></select></label><label><span>Maximum sequences</span><CommitNumberInput min="2" max="500" value={alignmentLimit} onCommit={setAlignmentLimit} /></label><button className="post-primary" type="button" disabled={Boolean(busy)||workbenchLineageRows.length<2} onClick={() => void runAlignment()}>{alignmentMethod==="quick"?"Prepare quick view":"Align selected lineage"}</button><button type="button" title="Align nucleotides directly. N receives the full nucleotide match score; ordinary gap penalties remain in force." disabled={Boolean(busy)||workbenchLineageRows.length<2} onClick={() => void runDirectAlivibeMsa()}>MSA lineage · Alivibe WASM</button><button type="button" title="Translate each row in its AIRR-derived frame, align amino acids with X as an unknown-residue wildcard, then project every amino-acid gap back as three nucleotide gaps." disabled={Boolean(busy)||workbenchLineageRows.length<2} onClick={() => void runDirectAlivibeAaMsa()}>AA MSA · Alivibe WASM</button>{savedEditedAlignment&&!alignmentEdited&&<button type="button" onClick={()=>installAlignment(savedEditedAlignment.fasta,savedEditedAlignment.source,true,savedEditedAlignment.lineageIds,savedEditedAlignment.frameOffset,savedEditedAlignment.productiveOnly)}>Restore saved manual edit</button>}{alignment && <><label><span>AA reading frame</span><select value={alignmentFrameOffset} onChange={(event)=>changeAlignmentFrameOffset(Number(event.target.value) as AlignmentFrameOffset)}><option value="0">Start at nucleotide column 1</option><option value="1">Start at nucleotide column 2</option><option value="2">Start at nucleotide column 3</option></select></label><label><span>Alignment export</span><select value={alignmentExportFormat} onChange={(event)=>setAlignmentExportFormat(event.target.value as AlignmentExportFormat)}><option value="fasta">Aligned FASTA</option><option value="clustal">Clustal</option><option value="phylip">Relaxed PHYLIP</option><option value="stockholm">Stockholm</option><option value="nexus">NEXUS</option></select></label><button type="button" onClick={downloadCurrentAlignment}>Download alignment ↓</button></>}</div>
       {alignment && <>
-        <div className={`alignment-editor-transfer${alignmentEdited?" edited-saved":""}`}><div><span className="section-kicker">Optional manual correction</span><h4>Round trip through Alivibe</h4><p>The one-click Alivibe WASM button above performs the MSA entirely in Swig. Open this editor only when you want to inspect or curate that alignment manually. Gap edits, deleted alignment columns, deleted nucleotide characters, and removal of bad biological rows are accepted. Added or renamed rows and nucleotide substitutions are rejected. Keep <code>{GERMLINE_OUTGROUP}</code> so rooting remains reproducible. The bundled editor returns the complete ordered records from the same nucleotide state used by Alivibe’s NT viewer and NT export; its AA frame is transferred separately.</p>{alignmentEdited?<strong className="session-preserved-badge">Manual alignment + AA frame · included in Save session</strong>:<small>Generated alignments are reproducible and omitted from sessions unless a tree needs their exact input. Any manually returned/imported correction is preserved.</small>}</div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={importFromAlivibe}>Read live Alivibe NT view</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label>{savedEditedAlignment&&<button type="button" onClick={()=>{setEditedAlignments((current)=>{const next=new Map(current);next.delete(selectedGroupKey);return next;});if(alignmentEdited)setAlignmentEdited(false);}}>Discard saved manual edit</button>}</div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>The live return never reads the system clipboard and is bound to the lineage/alignment from which the editor was opened. For a downloaded corrected FASTA, verify the adjacent AA reading-frame control because FASTA itself does not encode codon phase. Sequence data remain in the browser.</small></div>
+        <div className={`alignment-editor-transfer${alignmentEdited?" edited-saved":""}`}><div><span className="section-kicker">Optional manual correction</span><h4>Round trip through Alivibe</h4><p>The nucleotide and AA Alivibe WASM buttons above perform their MSA entirely in Swig. Open this editor only when you want to inspect or curate that alignment manually. Gap edits, deleted alignment columns, deleted nucleotide characters, and removal of bad biological rows are accepted. Added or renamed rows and nucleotide substitutions are rejected. Keep <code>{GERMLINE_OUTGROUP}</code> so rooting remains reproducible. The bundled editor returns the complete ordered records from the same nucleotide state used by Alivibe’s NT viewer and NT export; its AA frame is transferred separately. Deleted biological rows are also removed from the AIRR metadata used by downstream UCA preparation.</p>{alignmentEdited?<strong className="session-preserved-badge">Manual alignment + AA frame · included in Save session</strong>:<small>Generated alignments are reproducible and omitted from sessions unless a tree needs their exact input. Any manually returned/imported correction is preserved.</small>}</div><div className="result-actions"><button type="button" onClick={openAlivibeEditor}>Open + load in Alivibe ↗</button><button type="button" onClick={importFromAlivibe}>Read live Alivibe NT view</button><label className="file-button">Import corrected FASTA<input type="file" accept=".fa,.fasta,.fas,.aln,.txt" onChange={(event) => void acceptEditedAlignment(event)} /></label>{savedEditedAlignment&&<button type="button" onClick={()=>{setEditedAlignments((current)=>{const next=new Map(current);next.delete(selectedGroupKey);return next;});if(alignmentEdited)setAlignmentEdited(false);}}>Discard saved manual edit</button>}</div>{alignmentEditorStatus && <p className="editor-status">{alignmentEditorStatus}</p>}{alignmentEditorError && <div className="inline-method-error" role="alert">{alignmentEditorError}</div>}<small>The live return never reads the system clipboard and is bound to the lineage/alignment from which the editor was opened. For a downloaded corrected FASTA, verify the adjacent AA reading-frame control because FASTA itself does not encode codon phase. Sequence data remain in the browser.</small></div>
         <div className="alignment-view-controls"><div className="mode-toggle"><button className={alignmentMode === "nt" ? "active" : ""} type="button" onClick={() => setAlignmentMode("nt")}>Nucleotide</button><button className={alignmentMode === "aa" ? "active" : ""} type="button" onClick={() => setAlignmentMode("aa")}>Amino acid</button></div><span>{alignmentInfo?.rows.toLocaleString() ?? parseFasta(alignment, true).length.toLocaleString()} aligned rows · {alignmentInfo?.columns.toLocaleString() ?? "—"} columns · AA frame starts at nucleotide column {alignmentFrameOffset + 1} · {alignmentSource || "alignment"} · fingerprint {alignmentInfo?.fingerprint ?? "—"}</span></div>
         <AlignmentPreview fasta={alignment} mode={alignmentMode} frameOffset={alignmentFrameOffset} />
         <div ref={treeResultRef} className="tree-operation-region">
@@ -2766,7 +2847,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             <LineageTreeViewer
               newick={treeViewMode === "stable" ? treeRun.stableNewick : treeViewMode === "rooted" ? treeRun.rootedNewick : treeRun.newick}
               alignmentFasta={treeRun.alignmentFasta}
-              rows={lineageRows}
+              rows={workbenchLineageRows}
               multiplicityByOrdinal={lineageMultiplicity}
               sampleColors={sampleColors}
               lineageByOrdinal={originalLineageByOrdinal}
@@ -2783,10 +2864,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         </div>
         <PhyloUcaPanel
           alignment={alignment}
-          lineageRows={lineageRows}
+          lineageRows={workbenchLineageRows}
           lineageIds={selectedLineageIds}
           lineageLabel={selectedLineageIds.length > 1 ? `lineages-${selectedLineageIds.join("-")}` : `lineage-${selectedLineage.id}`}
-          locus={selectedLineage.locus || lineageRows[0]?.values.locus || ""}
+          locus={selectedLineage.locus || workbenchLineageRows[0]?.values.locus || ""}
           references={references}
           inputName={inputName}
           frameOffset={alignmentFrameOffset}

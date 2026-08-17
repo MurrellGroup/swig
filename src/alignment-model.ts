@@ -59,6 +59,22 @@ export function projectCodonAlignment(dna: string, alignedAminoAcids: string, fr
   return result + clean.slice(position).padEnd(3, "-");
 }
 
+/**
+ * Translate the ungapped nucleotide input used by codon-preserving aligners.
+ * Any non-canonical codon—including every codon containing N—becomes X.
+ * This keeps unknown germline junction residues explicit instead of guessing a
+ * nucleotide or amino acid before alignment.
+ */
+export function translateCodonSequence(sequence: string, frame: number): string {
+  const clean = sequence.replaceAll("-", "").toUpperCase().replaceAll("U", "T");
+  const offset = Math.max(0, Math.min(2, Math.trunc(frame) || 0));
+  let aminoAcids = "";
+  for (let index = offset; index + 2 < clean.length; index += 3) {
+    aminoAcids += CODONS[clean.slice(index, index + 3)] ?? "X";
+  }
+  return aminoAcids;
+}
+
 function translateAligned(sequence: string): string {
   let protein = "";
   for (let index = 0; index + 2 < sequence.length; index += 3) {
