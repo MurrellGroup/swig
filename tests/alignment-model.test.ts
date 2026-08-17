@@ -38,7 +38,7 @@ test("per-segment amino-acid alignment uses the rearrangement frame rather than 
 
 test("codon projection preserves phase and emits only complete triplet columns", () => {
   const projected = projectCodonAlignment("AATGGGC", "-MG", 1);
-  assert.equal(projected, "A-----ATGGGC---");
+  assert.equal(projected, "A-----ATGGGC");
   assert.equal(projected.length % 3, 0);
 });
 
@@ -47,9 +47,11 @@ test("AA-guided MSA translation uses X for ambiguous codons and back-translates 
   assert.equal(translateCodonSequence("AATGGGC", 1), "MG");
   const dna = "ATGGGGCCC";
   const projected = projectCodonAlignment(dna, "M-GP", 0);
+  assert.equal(projected, "ATG---GGGCCC");
   assert.equal(projected.replaceAll("-", ""), dna);
   assert.equal(projected.length % 3, 0);
-  assert.equal(projected.slice(6, 9), "---");
+  assert.equal(projected.slice(3, 6), "---");
+  assert.doesNotMatch(projected, /^(?:---)|(?:---)$/);
 });
 
 test("the lineage productivity filter requires an explicit AIRR productive value", () => {

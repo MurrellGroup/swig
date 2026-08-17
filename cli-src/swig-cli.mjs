@@ -50,7 +50,7 @@ import {
 } from "../src/sequence-stream.ts";
 import { annotateAirrBatch, annotateDoubleDBatch, stableDatasetSeed } from "../src/study-design.ts";
 
-const VERSION="0.35.2";
+const VERSION="0.35.3";
 const CLI_DIRECTORY=dirname(fileURLToPath(import.meta.url));
 
 export function defaultCliAssets(){

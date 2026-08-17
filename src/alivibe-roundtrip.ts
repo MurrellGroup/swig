@@ -1,6 +1,7 @@
 import type { AlignmentFrameOffset } from "./lineage-phylogeny.ts";
 
 export const ALIVIBE_BRIDGE_VERSION = 4;
+export const ALIVIBE_OLDEST_COMPATIBLE_SNAPSHOT_VERSION = 3;
 export const ALIVIBE_SOURCE_REVISION = "cbcd02719dd0a5f1f05d3127666f00e8579f2423";
 
 export interface AlivibeNucleotideRecord {
@@ -57,7 +58,10 @@ function exactFasta(records: AlivibeNucleotideRecord[]): string {
 function validateSnapshot(value: unknown): AlivibeNucleotideTransfer {
   if (!value || typeof value !== "object") throw new Error("Alivibe returned no nucleotide snapshot.");
   const snapshot = value as Partial<AlivibeNucleotideSnapshot>;
-  if (snapshot.version !== ALIVIBE_BRIDGE_VERSION || snapshot.sourceRevision !== ALIVIBE_SOURCE_REVISION) {
+  const compatibleSnapshot = typeof snapshot.version === "number"
+    && snapshot.version >= ALIVIBE_OLDEST_COMPATIBLE_SNAPSHOT_VERSION
+    && snapshot.version <= ALIVIBE_BRIDGE_VERSION;
+  if (!compatibleSnapshot || snapshot.sourceRevision !== ALIVIBE_SOURCE_REVISION) {
     throw new Error("The open Alivibe editor does not match this Swig release. Close it and reopen it from Swig.");
   }
   if (snapshot.alphabet !== "NT" || snapshot.mode !== "NT") {
@@ -111,6 +115,18 @@ export function getAlivibeBridge(editor: AlivibeEditorWindow | null | undefined)
   return bridge;
 }
 
+function getCompatibleSnapshotBridge(editor: AlivibeEditorWindow | null | undefined): Pick<AlivibeSwigBridge, "snapshotNucleotide"> | undefined {
+  const bridge = editor?.swigAlivibeBridge;
+  if (
+    typeof bridge?.version !== "number"
+    || bridge.version < ALIVIBE_OLDEST_COMPATIBLE_SNAPSHOT_VERSION
+    || bridge.version > ALIVIBE_BRIDGE_VERSION
+    || bridge.sourceRevision !== ALIVIBE_SOURCE_REVISION
+    || typeof bridge.snapshotNucleotide !== "function"
+  ) return undefined;
+  return bridge;
+}
+
 export function assertAlivibeInitialLoad(expectedFasta: string, loaded: AlivibeNucleotideTransfer): void {
   if (loaded.fasta !== expectedFasta) {
     throw new Error("Alivibe did not load the exact Swig nucleotide alignment. The round trip was stopped.");
@@ -139,7 +155,7 @@ export function loadAlivibeNucleotideFasta(
 
 /** Read exactly the complete, ordered nucleotide rows used by Alivibe's NT viewer and NT export. */
 export function readAlivibeNucleotideFasta(editor: AlivibeEditorWindow): AlivibeNucleotideTransfer {
-  const bridge = getAlivibeBridge(editor);
-  if (!bridge) throw new Error("The bundled Alivibe bridge is not ready.");
+  const bridge = getCompatibleSnapshotBridge(editor);
+  if (!bridge) throw new Error("The open Alivibe editor cannot provide a compatible nucleotide snapshot.");
   return validateSnapshot(bridge.snapshotNucleotide());
 }

@@ -58,7 +58,7 @@ For each row, Swig removes gaps, translates from the AIRR-derived frame offset, 
 The lineage alignment view keeps two separate Alivibe-compatible actions:
 
 - **MSA lineage · Alivibe WASM** strips pre-existing gaps and aligns nucleotide rows directly. `N` receives the ordinary match score against every non-gap nucleotide.
-- **AA MSA · Alivibe WASM** translates every ungapped row from its AIRR-derived frame. Every non-canonical codon, including any germline codon containing `N`, becomes `X`. The amino-acid strings are aligned with `X` receiving the ordinary match score against every non-gap amino acid, after which each amino-acid gap is projected back as exactly `---`. Amino-acid `N` remains literal asparagine.
+- **AA MSA · Alivibe WASM** translates every ungapped row from its AIRR-derived frame. Every non-canonical codon, including any germline codon containing `N`, becomes `X`. The amino-acid strings are aligned with `X` receiving the ordinary match score against every non-gap amino acid, after which each amino-acid gap is projected back as exactly `---`. Amino-acid `N` remains literal asparagine. Back-projection emits a padded partial-codon block only when 1–2 genuine pre-frame or residual nucleotides exist; an empty prefix or suffix never manufactures an all-gap triplet.
 
 Both routes send the bounded biological rows plus the N-masked germline guide to a dedicated worker and install a nucleotide MSA without opening another window. Cancellation terminates that worker and leaves the preceding alignment unchanged.
 
@@ -84,6 +84,8 @@ Swig opens a pinned Alivibe build and exchanges the exact ordered nucleotide rec
 It may not add, rename, or reorder nucleotide content, insert a new nucleotide, or substitute one nucleotide for another. The `__germline_N_masked__` row must remain because ordinary rooting depends on it. Swig verifies equal aligned width, unique names, the nucleotide alphabet, and that every returned ungapped row is a subsequence of its original. The manually selected amino-acid frame is stored separately.
 
 The round trip remains available after any Swig-generated alignment when manual inspection or curation is needed. In a Swig-hosted editor, Alivibe's own **MSA** action uses the same cancellable WASM core as the direct lineage button, including its amino-acid-to-codon projection when the editor is in AA mode. A directly opened standalone Alivibe falls back to the pinned JavaScript implementation. Swig's unchanged return validator rejects any pathological manual result that adds, substitutes, or reorders biological characters.
+
+The editor URL includes the bridge ABI and pinned source revision as cache keys. A v3 editor can still return its unchanged nucleotide snapshot to v4 Swig so existing manual edits are recoverable, but its obsolete boolean MSA-runner protocol is not installed or executed.
 
 Biological rows deleted in Alivibe are removed from the exact FastTree input and phylogenetic likelihood. Before UCA preparation, Swig also intersects AIRR metadata with the biological row names retained in that corrected FASTA, so deleted rows cannot re-enter V/J candidate screening, segment-boundary estimation, region annotation, or UCA tree metadata.
 

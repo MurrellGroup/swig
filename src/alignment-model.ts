@@ -47,8 +47,10 @@ export function biologicalFrameOffset(queryStartOneBased: number, sequenceFrameO
 
 export function projectCodonAlignment(dna: string, alignedAminoAcids: string, frame: number): string {
   const clean = dna.replaceAll("-", "").toUpperCase().replaceAll("U", "T");
-  let result = clean.slice(0, frame).padEnd(3, "-");
-  let position = frame;
+  const offset = Math.max(0, Math.min(2, Math.trunc(frame) || 0));
+  const prefix = clean.slice(0, offset);
+  let result = prefix ? prefix.padEnd(3, "-") : "";
+  let position = offset;
   for (const aminoAcid of alignedAminoAcids) {
     if (aminoAcid === "-") result += "---";
     else {
@@ -56,7 +58,8 @@ export function projectCodonAlignment(dna: string, alignedAminoAcids: string, fr
       position += 3;
     }
   }
-  return result + clean.slice(position).padEnd(3, "-");
+  const suffix = clean.slice(position);
+  return result + (suffix ? suffix.padEnd(3, "-") : "");
 }
 
 /**

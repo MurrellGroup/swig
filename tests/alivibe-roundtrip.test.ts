@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   ALIVIBE_BRIDGE_VERSION,
+  ALIVIBE_OLDEST_COMPATIBLE_SNAPSHOT_VERSION,
   ALIVIBE_SOURCE_REVISION,
   assertAlivibeInitialLoad,
   assertAlivibeRoundTripTarget,
@@ -13,10 +14,10 @@ import {
   type AlivibeEditorWindow,
 } from "../src/alivibe-roundtrip.ts";
 
-function editorWithSnapshot(snapshot: Record<string, unknown>): AlivibeEditorWindow {
+function editorWithSnapshot(snapshot: Record<string, unknown>, bridgeVersion = ALIVIBE_BRIDGE_VERSION): AlivibeEditorWindow {
   return {
     swigAlivibeBridge: {
-      version: ALIVIBE_BRIDGE_VERSION,
+      version: bridgeVersion,
       sourceRevision: ALIVIBE_SOURCE_REVISION,
       loadNucleotideFasta: () => snapshot,
       snapshotNucleotide: () => snapshot,
@@ -74,6 +75,22 @@ test("Alivibe rejects stale, AA, empty, or internally inconsistent returns", () 
     () => readAlivibeNucleotideFasta(editorWithSnapshot({ ...base, records: [] })),
     /empty nucleotide alignment/i,
   );
+});
+
+test("an older editor can return its unchanged nucleotide snapshot but cannot run the current MSA bridge", () => {
+  const version = ALIVIBE_OLDEST_COMPATIBLE_SNAPSHOT_VERSION;
+  const snapshot = {
+    version,
+    sourceRevision: ALIVIBE_SOURCE_REVISION,
+    alphabet: "NT",
+    mode: "NT",
+    frameOffset: 1,
+    records: [{ name: "member__1", sequence: "AC-G" }],
+    fasta: ">member__1\nAC-G\n",
+  };
+  const editor = editorWithSnapshot(snapshot, version);
+  assert.equal(getAlivibeBridge(editor), undefined, "the old boolean MSA-runner protocol must remain disabled");
+  assert.equal(readAlivibeNucleotideFasta(editor).fasta, snapshot.fasta, "existing nucleotide edits must remain recoverable");
 });
 
 test("a nucleotide return cannot cross lineage or alignment boundaries", () => {

@@ -269,6 +269,8 @@ test("lineage alignment offers direct Alivibe-compatible MSA and retains manual 
   assert.match(post, /record\.sequence\.replaceAll\("-", ""\)/);
   assert.match(post, /Open \+ load in Alivibe/);
   assert.match(post, /Read live Alivibe NT view/);
+  assert.match(post, /searchParams\.set\("swigBridge", String\(ALIVIBE_BRIDGE_VERSION\)\)/);
+  assert.match(post, /searchParams\.set\("source", ALIVIBE_SOURCE_REVISION\.slice\(0, 12\)\)/);
   assert.match(runtime, /signal\?\.addEventListener\("abort", abort/);
   assert.match(runtime, /job\.cancel\(\)/);
   assert.match(runtime, /scoringMode: AlivibeMsaScoringMode = "nucleotide"/);

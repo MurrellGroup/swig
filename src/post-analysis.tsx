@@ -13,6 +13,7 @@ import { projectCodonAlignment, translateCodonSequence } from "./alignment-model
 import { runCodonAwareKalignTask, runFastTreeTask, runKalignTask } from "./biowasm-task-runtime";
 import { createAlivibeMsaJob, runAlivibeMsaTask } from "./alivibe-msa-runtime";
 import {
+  ALIVIBE_BRIDGE_VERSION,
   ALIVIBE_SOURCE_REVISION,
   assertAlivibeInitialLoad,
   assertAlivibeRoundTripTarget,
@@ -2103,6 +2104,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setAlignmentEditorStatus("Opening the bundled Alivibe editor…");
     const base = import.meta.env.BASE_URL.endsWith("/") ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
     const editorUrl = new URL(`${base}tools/alivibe.html`, window.location.origin);
+    editorUrl.searchParams.set("swigBridge", String(ALIVIBE_BRIDGE_VERSION));
+    editorUrl.searchParams.set("source", ALIVIBE_SOURCE_REVISION.slice(0, 12));
     const token = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const popup = window.open(editorUrl.href, `swig-alivibe-${token}`, "popup,width=1500,height=920") as AlivibeEditorWindow | null;
     if (!popup) {
