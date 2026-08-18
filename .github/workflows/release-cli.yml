@@ -55,7 +55,7 @@ jobs:
       - name: Compile one self-contained executable
         run: |
           node -e "require('node:fs').mkdirSync('release', { recursive: true })"
-          bun build cli-src/swig-cli-standalone.mjs cli-src/swig-worker.mjs --compile --minify --bytecode --target=${{ matrix.target }} --outfile=release/${{ matrix.artifact }}
+          bun build cli-src/swig-cli-standalone.mjs cli-src/swig-worker.mjs --compile --minify --target=${{ matrix.target }} --outfile=release/${{ matrix.artifact }}
       - name: Smoke-test the actual executable
         if: matrix.target != 'bun-windows-x64-baseline'
         env:
