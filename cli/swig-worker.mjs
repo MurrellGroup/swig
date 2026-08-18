@@ -51,7 +51,7 @@ var Event = class {
 	}
 };
 //#endregion
-//#region node_modules/@bjorn3/browser_wasi_shim/dist/debug.js
+//#region ../swig-flow-refactor/node_modules/@bjorn3/browser_wasi_shim/dist/debug.js
 let Debug = class Debug {
 	enable(enabled) {
 		this.log = createLogger(enabled === void 0 ? true : enabled, this.prefix);
@@ -71,7 +71,7 @@ function createLogger(enabled, prefix) {
 }
 const debug = new Debug(false);
 //#endregion
-//#region node_modules/@bjorn3/browser_wasi_shim/dist/wasi.js
+//#region ../swig-flow-refactor/node_modules/@bjorn3/browser_wasi_shim/dist/wasi.js
 var WASIProcExit = class extends Error {
 	constructor(code) {
 		super("exit with exit code " + code);
@@ -545,7 +545,7 @@ let WASI = class WASI {
 	}
 };
 //#endregion
-//#region node_modules/@bjorn3/browser_wasi_shim/dist/fd.js
+//#region ../swig-flow-refactor/node_modules/@bjorn3/browser_wasi_shim/dist/fd.js
 var Inode = class Inode {
 	static issue_ino() {
 		return Inode.next_ino++;
@@ -770,21 +770,20 @@ async function initialize(message) {
 	const instance = await WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport });
 	wasi.initialize(instance);
 	runtime = instance.exports;
-	const strategy = message.assignerStrategy === "riat_mp" ? 1 : message.assignerStrategy === "aer" ? 2 : 0;
+	const strategy = message.assignerStrategy === "standard" ? 0 : message.assignerStrategy === "aer" ? 2 : 1;
 	if (runtime.swig_set_assigner_strategy(strategy) !== 0) throw new Error("SwiftIG rejected the assignment strategy.");
 	const profile = message.callingProfile === "truth_optimized" ? 0 : 1;
 	if (runtime.swig_set_calling_profile(profile) !== 0) throw new Error("SwiftIG rejected the calling profile.");
 	callingProfile = message.callingProfile;
-	if (message.tuning) {
+	if (message.hasTuning) {
 		if (typeof runtime.swig_set_tuning_options !== "function") throw new Error("This SwiftIG build does not expose the requested D/J compatibility controls.");
-		const tuning = message.tuning;
-		if (runtime.swig_set_tuning_options(tuning.dMatch, tuning.dMismatch, tuning.dGapOpen, tuning.dGapExtend, tuning.topD, tuning.minDMatch, tuning.jMatch, tuning.jMismatch, tuning.jGapOpen, tuning.jGapExtend, tuning.topJ, tuning.minJLength) !== 0) throw new Error("SwiftIG rejected the requested D/J compatibility controls.");
+		if (runtime.swig_set_tuning_options(message.tuningDMatch, message.tuningDMismatch, message.tuningDGapOpen, message.tuningDGapExtend, message.tuningTopD, message.tuningMinDMatch, message.tuningJMatch, message.tuningJMismatch, message.tuningJGapOpen, message.tuningJGapExtend, message.tuningTopJ, message.tuningMinJLength) !== 0) throw new Error("SwiftIG rejected the requested D/J compatibility controls.");
 	}
 	const allocations = [
-		message.references.V,
-		message.references.D,
-		message.references.J,
-		message.references.C
+		message.referenceV,
+		message.referenceD,
+		message.referenceJ,
+		message.referenceC
 	].map((value) => put(encoder.encode(value || "")));
 	try {
 		const genes = runtime.swig_init_database(...allocations.flat());
@@ -798,8 +797,7 @@ function annotate(message) {
 	const [pointer, size] = put(encoder.encode(message.text));
 	let count;
 	try {
-		const option = message.doubleD;
-		count = option && option.mode !== "off" ? runtime.swig_annotate_double_d(pointer, size, message.format, Math.round(message.minimumIdentity * 1e3), message.strand, option.mode === "all" ? 1 : 2, Math.round(option.minimumVjSpan), Math.round(option.seedLength), Math.round(option.pseudoTrim), Math.round(option.maximumPseudoMismatches), Math.round(option.minimumScoreGain)) : runtime.swig_annotate(pointer, size, message.format, Math.round(message.minimumIdentity * 1e3), message.strand);
+		count = message.doubleDMode !== "off" ? runtime.swig_annotate_double_d(pointer, size, message.format, Math.round(message.minimumIdentity * 1e3), message.strand, message.doubleDMode === "all" ? 1 : 2, Math.round(message.doubleDMinimumVjSpan), Math.round(message.doubleDSeedLength), Math.round(message.doubleDPseudoTrim), Math.round(message.doubleDMaximumPseudoMismatches), Math.round(message.doubleDMinimumScoreGain)) : runtime.swig_annotate(pointer, size, message.format, Math.round(message.minimumIdentity * 1e3), message.strand);
 	} finally {
 		runtime.swig_free(pointer);
 	}
@@ -809,7 +807,7 @@ function annotate(message) {
 	const newline = result.indexOf(10);
 	if (newline < 0) throw new Error("SwiftIG returned an invalid AIRR table.");
 	const header = decoder.decode(result.subarray(0, newline)).replace(/\r$/, "");
-	let body = result.slice(newline + 1);
+	let body = result.subarray(newline + 1);
 	const balanced = callingProfile === "igblast_balanced" ? applyBalancedDFilter(header, body) : null;
 	if (balanced) body = balanced.body;
 	const response = {
@@ -819,7 +817,7 @@ function annotate(message) {
 		doubleDHeader: "",
 		doubleDBody: ""
 	};
-	if (message.doubleD?.mode !== "off") {
+	if (message.doubleDMode !== "off") {
 		const dd = new Uint8Array(runtime.memory.buffer, runtime.swig_double_d_result_ptr(), runtime.swig_double_d_result_len());
 		const ddNewline = dd.indexOf(10);
 		if (ddNewline < 0) throw new Error("SwiftIG returned invalid double-D evidence.");
@@ -836,7 +834,7 @@ const receive = async (message) => {
 		const result = message.type === "init" ? await initialize(message) : annotate(message);
 		send({
 			id: message.id,
-			result
+			...result
 		});
 	} catch (error) {
 		send({

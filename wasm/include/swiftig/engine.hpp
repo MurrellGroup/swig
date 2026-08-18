@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "swiftig/alignment.hpp"
 #include "swiftig/index.hpp"
 #include "swiftig/statistics.hpp"
 #include "swiftig/types.hpp"
@@ -47,6 +48,7 @@ private:
     ReferenceDatabaseStatistics d_statistics_;
     ReferenceDatabaseStatistics j_statistics_;
     ReferenceDatabaseStatistics c_statistics_;
+    mutable AlignmentWorkspace alignment_workspace_;
 
     [[nodiscard]] OrientationResult annotate_orientation(
         const std::string& sequence,
@@ -63,11 +65,14 @@ private:
         const std::string& query,
         std::size_t top_n,
         const Scoring& scoring,
-        std::size_t min_length) const;
+        std::size_t min_length,
+        const std::vector<Candidate>* candidate_hints = nullptr) const;
     void annotate_junction(Annotation& annotation) const;
     void annotate_v_regions(Annotation& annotation) const;
     void stitch_alignment(Annotation& annotation) const;
-    [[nodiscard]] std::uint32_t orientation_seed_strength(const std::string& sequence) const;
+    [[nodiscard]] OrientationHints orientation_hints(const std::string& sequence) const;
+    [[nodiscard]] static std::uint32_t orientation_seed_strength(
+        const OrientationHints& hints) noexcept;
 };
 
 }  // namespace swiftig

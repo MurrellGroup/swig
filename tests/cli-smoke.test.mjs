@@ -40,6 +40,8 @@ test("the CLI pipeline runs annotation through lazy lineage-study export",async(
     assert.equal(summary.annotatedRecords,2);
     assert.equal(summary.retainedRecords,1);
     assert.equal(summary.lineages,1);
+    const resolved=JSON.parse(await readFile(join(output,"smoke.resolved-config.json"),"utf8"));
+    assert.equal(resolved.annotation.assignerStrategy,"riat_mp");
     const airr=await readFile(join(output,"smoke.lineages.airr.tsv"));
     const headers=airr.toString("utf8").split("\n",1)[0].split("\t");
     for(const field of ["v_support","d_support","j_support","c_support"])assert.ok(headers.includes(field));
@@ -219,7 +221,7 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
 
     const plainPath=join(temporary,"plain.airr.tsv");
     const plain=runRawCli(root,[...common,"-out",plainPath]);
-    assert.equal(plain.status,0,plain.stderr);assert.match(plain.stderr,/assignments-only; 1 worker/);
+    assert.equal(plain.status,0,plain.stderr);assert.match(plain.stderr,/assignments-only; 1 worker/);assert.match(plain.stderr,/RIAT-MP/);
     const plainRow=await readRow(plainPath);
     assert.equal(plainRow.v_call,v[0]);assert.equal(plainRow.j_call,j[0]);assert.equal(plainRow.cdr1,"");assert.equal(plainRow.cdr3,"");assert.equal(plainRow.region_definition,"");
     assert.ok(plainRow.v_support&&Number.isFinite(Number(plainRow.v_support))&&Number(plainRow.v_support)>=0);
@@ -228,8 +230,8 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
     assert.equal(plainRow.c_support,"");
 
     const igblastPath=join(temporary,"igblast-data.airr.tsv");
-    const igblast=runRawCli(root,[...common,"-custom_internal_data",internalPath,"-auxiliary_data",auxPath,"-out",igblastPath]);
-    assert.equal(igblast.status,0,igblast.stderr);assert.match(igblast.stderr,/IgBLAST internal data/);assert.match(igblast.stderr,/IgBLAST auxiliary data/);
+    const igblast=runRawCli(root,[...common,"--assigner","aer","-custom_internal_data",internalPath,"-auxiliary_data",auxPath,"-out",igblastPath]);
+    assert.equal(igblast.status,0,igblast.stderr);assert.match(igblast.stderr,/AER/);assert.match(igblast.stderr,/IgBLAST internal data/);assert.match(igblast.stderr,/IgBLAST auxiliary data/);
     const igblastRow=await readRow(igblastPath);
     assert.ok(igblastRow.cdr1);assert.ok(igblastRow.cdr3);assert.equal(igblastRow.region_definition,"IMGT");
     assert.equal(Number(igblastRow.j_sequence_end)-Number(igblastRow.fwr4_end),1);
@@ -238,7 +240,73 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
     const swig=runRawCli(root,[...common,"--swigannots","-organism","human","-ig_seqtype","Ig","-out",swigPath]);
     assert.equal(swig.status,0,swig.stderr);assert.match(swig.stderr,/Swig metadata preparation/);
     const swigRow=await readRow(swigPath);assert.ok(swigRow.cdr1);assert.ok(swigRow.cdr3);
+
+    const multiQueryPath=join(temporary,"multi-query.fasta"),serialPath=join(temporary,"serial.airr.tsv"),parallelPath=join(temporary,"parallel.airr.tsv");
+    const rearrangement=`${v[1]}AACCGG${d[1]}TTG${j[1]}`;
+    await writeFile(multiQueryPath,Array.from({length:7},(_,index)=>`>multi-${index+1}\n${rearrangement}\n`).join(""));
+    const references=["--vdj","-query",multiQueryPath,"-germline_db_V",vPath,"-germline_db_D",dPath,"-germline_db_J",jPath,"-outfmt","19"];
+    const serial=runRawCli(root,[...references,"--workers","1","--batch-records","1","-out",serialPath]);
+    const parallel=runRawCli(root,[...references,"--workers","3","--batch-records","0","-out",parallelPath]);
+    assert.equal(serial.status,0,serial.stderr);assert.equal(parallel.status,0,parallel.stderr);
+    assert.deepEqual(await readFile(parallelPath),await readFile(serialPath));
+    assert.match(parallel.stderr,/1,000 records\/batch/);
     assert.deepEqual((await readdir(temporary)).filter((name)=>/summary|resolved-config|processed|lineage/i.test(name)),[]);
+  }finally{await rm(temporary,{recursive:true,force:true});}
+});
+
+test("prepare-reference persists diagnostics and a hash-checked manifest reusable by --vdj",async()=>{
+  const root=resolve(import.meta.dirname,"..");
+  const temporary=await mkdtemp(join(root,"tmp-cli-prepared-reference-"));
+  try{
+    const pack=JSON.parse(gunzipSync(await readFile(join(root,"public/references/imgt-202632-7-swig-0.7.json.gz"))).toString("utf8"));
+    const human=pack.species.find((entry)=>entry.name==="Homo sapiens");
+    const v=human.loci.IGH.V.find((entry)=>entry[2]?.slice(2,12).every((value)=>value>=0));
+    const d=human.loci.IGH.D[0];
+    const j=human.loci.IGH.J.find((entry)=>entry[2]?.[0]>=0&&entry[2]?.[1]>=0);
+    assert.ok(v&&d&&j);
+    const vPath=join(temporary,"V.fasta"),dPath=join(temporary,"D.fasta"),jPath=join(temporary,"J.fasta");
+    const auxPath=join(temporary,"human_gl.aux"),queryPath=join(temporary,"query.fasta"),prefix=join(temporary,"prepared","human-igh");
+    await writeFile(vPath,`>${v[0]}\n${v[1]}\n`);
+    await writeFile(dPath,`>${d[0]}\n${d[1]}\n`);
+    await writeFile(jPath,`>${j[0]}\n${j[1]}\n`);
+    await writeFile(auxPath,`${j[0]} ${j[2][0]} JH ${j[2][1]} 1\n`);
+    await writeFile(queryPath,`>read-1\n${v[1]}AACCGG${d[1]}TTG${j[1]}\n`);
+    const prepared=runRawCli(root,["prepare-reference","-germline_db_V",vPath,"-germline_db_D",dPath,"-germline_db_J",jPath,"-auxiliary_data",auxPath,"-organism","human","-ig_seqtype","Ig","--match-mode","permissive","--out-prefix",prefix]);
+    assert.equal(prepared.status,0,prepared.stderr);
+    assert.match(prepared.stderr,/\[prepare:V\]/);
+    const manifestPath=`${prefix}.swig-reference.json`;
+    const manifest=JSON.parse(await readFile(manifestPath,"utf8"));
+    assert.equal(manifest.application,"Swig prepared germline reference");
+    assert.equal(manifest.match.mode,"permissive");
+    assert.equal(manifest.complete,true);
+    assert.equal(manifest.fwr4EndOffsets[j[0]],1);
+    for(const segment of ["V","D","J"])assert.match(await readFile(`${prefix}.${segment}.fasta`,"utf8"),/^>/);
+    const diagnostics=await readFile(`${prefix}.annotation-diagnostics.tsv`,"utf8");
+    assert.match(diagnostics,/annotation_source/);assert.match(diagnostics,new RegExp(v[0].replace(/[.*+?^${}()|[\]\\]/g,"\\$&")));
+
+    const output=join(temporary,"prepared.airr.tsv");
+    const run=runRawCli(root,["--vdj","-query",queryPath,"--prepared-reference",manifestPath,"-out",output,"--workers","1","--batch-records","1"]);
+    assert.equal(run.status,0,run.stderr);assert.match(run.stderr,/prepared-reference:V/);
+    const [header,line]=String(await readFile(output,"utf8")).trimEnd().split("\n");
+    const names=header.split("\t"),values=line.split("\t"),row=Object.fromEntries(names.map((name,index)=>[name,values[index]??""]));
+    assert.ok(row.cdr1);assert.ok(row.cdr3);assert.equal(Number(row.j_sequence_end)-Number(row.fwr4_end),1);
+  }finally{await rm(temporary,{recursive:true,force:true});}
+});
+
+test("prepare-reference logs allele-level rejection reasons and can require complete metadata",async()=>{
+  const root=resolve(import.meta.dirname,"..");
+  const temporary=await mkdtemp(join(root,"tmp-cli-prepared-failure-"));
+  try{
+    const pack=JSON.parse(gunzipSync(await readFile(join(root,"public/references/imgt-202632-7-swig-0.7.json.gz"))).toString("utf8"));
+    const human=pack.species.find((entry)=>entry.name==="Homo sapiens");
+    const j=human.loci.IGH.J.find((entry)=>entry[2]?.[0]>=0&&entry[2]?.[1]>=0);assert.ok(j);
+    const vPath=join(temporary,"V.fasta"),jPath=join(temporary,"J.fasta"),prefix=join(temporary,"failed","reference");
+    await writeFile(vPath,`>IGHV_FAKE*01\n${"A".repeat(320)}\n`);
+    await writeFile(jPath,`>${j[0]}\n${j[1]}\n`);
+    const result=runRawCli(root,["prepare-reference","-germline_db_V",vPath,"-germline_db_J",jPath,"-organism","human","-ig_seqtype","Ig","--out-prefix",prefix,"--require-complete"]);
+    assert.notEqual(result.status,0);assert.match(result.stderr,/\[prepare:V\] unresolved IGHV_FAKE\*01/);assert.match(result.stderr,/below_identity/);assert.match(result.stderr,/inspect .*annotation-diagnostics\.tsv/);
+    const diagnostics=await readFile(`${prefix}.annotation-diagnostics.tsv`,"utf8");assert.match(diagnostics,/IGHV_FAKE\*01\tIGH\tunresolved/);assert.match(diagnostics,/below_identity:/);
+    const manifest=JSON.parse(await readFile(`${prefix}.swig-reference.json`,"utf8"));assert.equal(manifest.complete,false);
   }finally{await rm(temporary,{recursive:true,force:true});}
 });
 

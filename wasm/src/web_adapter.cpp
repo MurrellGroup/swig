@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -29,6 +30,8 @@ std::unique_ptr<GermlineDatabase> g_database;
 std::optional<EngineOptions> g_engine_options_override;
 int g_calling_profile = 0;
 AssignerStrategy g_assigner_strategy = AssignerStrategy::Standard;
+bool g_optimized_kernels = true;
+bool g_optimized_output = true;
 std::string g_result;
 std::string g_double_d_result;
 int g_double_d_count = 0;
@@ -295,6 +298,7 @@ EngineOptions configured_options(int minimum_identity_per_mille, int strand) {
         options.top_j = 2;
     }
     options.assigner_strategy = g_assigner_strategy;
+    options.optimized_kernels = g_optimized_kernels;
     options.min_identity = std::clamp(minimum_identity_per_mille, 0, 1000) / 1000.0;
     options.search_forward = strand != 2;
     options.search_reverse = strand != 1;
@@ -323,6 +327,22 @@ int swig_set_assigner_strategy(int strategy) noexcept {
     if (strategy < static_cast<int>(AssignerStrategy::Standard) ||
         strategy > static_cast<int>(AssignerStrategy::Aer)) return -1;
     g_assigner_strategy = static_cast<AssignerStrategy>(strategy);
+    return 0;
+}
+
+// Diagnostic switch used by equivalence tests and native profiling. Normal
+// web/CLI callers never need to set it; optimized AER/RIAT kernels are default.
+__attribute__((export_name("swig_set_optimized_kernels")))
+int swig_set_optimized_kernels(int enabled) noexcept {
+    if (enabled != 0 && enabled != 1) return -1;
+    g_optimized_kernels = enabled != 0;
+    return 0;
+}
+
+__attribute__((export_name("swig_set_optimized_output")))
+int swig_set_optimized_output(int enabled) noexcept {
+    if (enabled != 0 && enabled != 1) return -1;
+    g_optimized_output = enabled != 0;
     return 0;
 }
 
@@ -379,12 +399,24 @@ int swig_annotate(
     if (!parse_queries(query_input, format, records)) return -1;
     const auto options = configured_options(minimum_identity_per_mille, strand);
     AnnotationEngine engine(*g_database, options);
-    std::ostringstream output;
-    swiftig::write_airr_header(output);
-    for (const auto& record : records) {
-        swiftig::write_airr_record(output, engine.annotate(record));
+    if (g_optimized_output) {
+        g_result.clear();
+        if (query_size <=
+            (std::numeric_limits<std::size_t>::max() - 4096) / 6) {
+            g_result.reserve(query_size * 6 + 4096);
+        }
+        swiftig::append_airr_header(g_result);
+        for (const auto& record : records) {
+            swiftig::append_airr_record(g_result, engine.annotate(record));
+        }
+    } else {
+        std::ostringstream output;
+        swiftig::write_airr_header(output);
+        for (const auto& record : records) {
+            swiftig::write_airr_record(output, engine.annotate(record));
+        }
+        g_result = std::move(output).str();
     }
-    g_result = std::move(output).str();
     g_double_d_result.clear();
     g_double_d_count = 0;
     return static_cast<int>(records.size());
@@ -429,20 +461,30 @@ int swig_annotate_double_d(
         maximum_pseudo_mismatches, 0, 24);
     double_d_options.minimum_score_gain = std::clamp(minimum_score_gain, 0, 1000);
     swiftig::DoubleDScreener screener(*g_database, double_d_options);
-    std::ostringstream output;
+    std::ostringstream reference_airr_output;
     std::ostringstream double_d_output;
-    swiftig::write_airr_header(output);
+    g_result.clear();
+    if (g_optimized_output) {
+        if (query_size <=
+            (std::numeric_limits<std::size_t>::max() - 4096) / 6) {
+            g_result.reserve(query_size * 6 + 4096);
+        }
+        swiftig::append_airr_header(g_result);
+    } else {
+        swiftig::write_airr_header(reference_airr_output);
+    }
     swiftig::write_double_d_header(double_d_output);
     for (std::size_t record_index = 0; record_index < records.size(); ++record_index) {
         const auto annotation = engine.annotate(records[record_index]);
-        swiftig::write_airr_record(output, annotation);
+        if (g_optimized_output) swiftig::append_airr_record(g_result, annotation);
+        else swiftig::write_airr_record(reference_airr_output, annotation);
         if (const auto call = screener.screen(annotation)) {
             swiftig::write_double_d_record(
                 double_d_output, annotation, *call, double_d_options, record_index);
             ++g_double_d_count;
         }
     }
-    g_result = std::move(output).str();
+    if (!g_optimized_output) g_result = std::move(reference_airr_output).str();
     g_double_d_result = std::move(double_d_output).str();
     return static_cast<int>(records.size());
 }

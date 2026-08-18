@@ -18,8 +18,12 @@ jobs:
         include:
           - os: ubuntu-latest
             target: bun-linux-x64-baseline
-            label: Linux x86-64
+            label: Linux x86-64 baseline
             artifact: swig-cli-linux-x64
+          - os: ubuntu-latest
+            target: bun-linux-x64-modern
+            label: Linux x86-64 modern (Haswell/AVX2)
+            artifact: swig-cli-linux-x64-modern
           - os: ubuntu-24.04-arm
             target: bun-linux-arm64
             label: Linux ARM64
@@ -51,7 +55,7 @@ jobs:
       - name: Compile one self-contained executable
         run: |
           node -e "require('node:fs').mkdirSync('release', { recursive: true })"
-          bun build cli-src/swig-cli-standalone.mjs cli-src/swig-worker.mjs --compile --target=${{ matrix.target }} --outfile=release/${{ matrix.artifact }}
+          bun build cli-src/swig-cli-standalone.mjs cli-src/swig-worker.mjs --compile --minify --bytecode --target=${{ matrix.target }} --outfile=release/${{ matrix.artifact }}
       - name: Smoke-test the actual executable
         if: matrix.target != 'bun-windows-x64-baseline'
         env:

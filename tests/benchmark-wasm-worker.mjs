@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { parentPort } from "node:worker_threads";
+import { parentPort, workerData } from "node:worker_threads";
 
 import { WASI } from "@bjorn3/browser_wasi_shim";
 
@@ -29,6 +29,17 @@ async function initialize(references) {
   const instance = await WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport });
   wasi.initialize(instance);
   runtime = instance.exports;
+  const strategy = workerData?.strategy === "riat_mp" ? 1 :
+    workerData?.strategy === "aer" ? 2 : 0;
+  if (runtime.swig_set_assigner_strategy(strategy) !== 0) {
+    throw new Error("SwiftIG rejected the benchmark assignment strategy");
+  }
+  if (workerData?.reference && runtime.swig_set_optimized_kernels) {
+    runtime.swig_set_optimized_kernels(0);
+  }
+  if (workerData?.referenceOutput && runtime.swig_set_optimized_output) {
+    runtime.swig_set_optimized_output(0);
+  }
   const allocations = [references.V, references.D, references.J, references.C].map((value) => put(encoder.encode(value)));
   const genes = runtime.swig_init_database(...allocations.flat());
   allocations.forEach(([pointer]) => runtime.swig_free(pointer));

@@ -152,9 +152,9 @@ export const DEFAULT_CLI_CONFIG: SwigCliConfig = {
   },
   annotation: {
     workers: 0,
-    batchRecords: 2_000,
+    batchRecords: 0,
     callingProfile: "truth_optimized",
-    assignerStrategy: "aer",
+    assignerStrategy: "riat_mp",
     minimumIdentity: 0.6,
     strand: 0,
     airrMode: "preserve",
@@ -209,7 +209,7 @@ export function normalizeCliConfig(value: PartialSwigCliConfig): SwigCliConfig {
   });
   const annotation={...DEFAULT_CLI_CONFIG.annotation,...value.annotation,doubleD:{...DEFAULT_CLI_CONFIG.annotation.doubleD,...value.annotation?.doubleD}};
   annotation.workers=Math.max(0,Math.floor(finite(annotation.workers,0)));
-  annotation.batchRecords=Math.max(1,Math.floor(finite(annotation.batchRecords,2_000)));
+  annotation.batchRecords=Math.max(0,Math.floor(finite(annotation.batchRecords,0)));
   annotation.minimumIdentity=Math.max(0,Math.min(1,finite(annotation.minimumIdentity,0.6)));
   const normalizedSubsample={...DEFAULT_CLI_CONFIG.preprocessing.subsample,...subsample};
   normalizedSubsample.enabled=Boolean(normalizedSubsample.enabled);

@@ -12,15 +12,19 @@ The minimum identity control is an acceptance floor for candidate alignments, no
 
 The strategy changes V candidate retrieval/refinement only. D and J use the selected calling profile in every strategy.
 
-Swig Web starts all three front-page workflows with RIAT-MP. The command-line config and `swig-cli --vdj` retain AER as their default for backward compatibility. Either surface can select any strategy explicitly, and a browser-exported config records the web selection.
+RIAT-MP is the default for all three front-page workflows, hand-written/normalized CLI configs, and the direct `swig-cli --vdj` route. Either surface can select any strategy explicitly, and a browser-exported config records the web selection.
 
 ### AER—Adaptive Exact Refinement
 
 AER begins from the complete V-allele seed index. It exactly aligns the leading candidates and increases exact affine-alignment depth only when the leading 9-mer vote ranking is ambiguous: within 5% relative vote count or 8 weighted votes, up to 16 candidates. It never substitutes a propagated approximate score for the final retained exact alignment.
 
-### RIAT-MP (Swig Web default)
+The production AER kernel evaluates independent affine recurrences in four exact SIMD128 lanes. A score-only pass over a wide safety pool omits trace storage but uses the same recurrence; full DP/traceback continues through every raw-score group capable of entering the retained top-N set. The scalar affine implementation remains the executable reference path used by equivalence tests.
+
+### RIAT-MP (Swig default)
 
 RIAT-MP groups close V alleles into root-indexed trees. It aligns up to three representative roots and propagates sparse descendant differences without performing a full descendant alignment. When the provisional winner contains an indel, it tests at most two root traceback geometries within four raw-score units, with a 1,024-state traceback cap. This is a Swig/SwiftIG algorithm, not a literature package.
+
+Production root alignments use the same exact four-lane SIMD kernel. Tree child links are precomputed once, and alternative partial tracebacks use parent-linked arena nodes; neither changes the path priority, traceback cap, or sparse descendant score. The complete 0.37.0 profile and reference-equivalence protocol are in [`BENCHMARK_SWIFTIG_KERNELS_0.37.0.md`](../../BENCHMARK_SWIFTIG_KERNELS_0.37.0.md).
 
 ### Standard SwiftIG
 
@@ -53,6 +57,12 @@ The \(\lambda,K,\alpha,\beta\) constants were fitted offline by deterministic un
 
 The mathematical form follows Karlin and Altschul's [local-alignment statistics](https://doi.org/10.1073/pnas.87.6.2264) and the gapped-search treatment used by BLAST ([Altschul et al. 1997](https://doi.org/10.1093/nar/25.17.3389)). The numbers are calibrated to SwiftIG's scores and searched spans. They are therefore interpretable E-values but are **not expected to be numerically identical to IgBLAST E-values**, because IgBLAST uses different scoring/search pipelines, databases, query ranges, and hit construction. Calibration and held-out null checks are recorded in [`BENCHMARK_AIRR_SUPPORT_0.34.0.md`](../../BENCHMARK_AIRR_SUPPORT_0.34.0.md).
 
+## Reference metadata versus read assignment
+
+FWR/CDR coordinate transfer for a custom germline is a reference-preparation operation, not part of read-to-allele mapping. Strict, permissive, and best-guess metadata matching select an annotated template from which to project V-region boundaries or J frame/CDR3-anchor information into `SWIGMETA`. They do not alter the custom allele's nucleotide sequence, add or remove reference alleles, or enter the V/D/J seed, affine-alignment, score, or call-selection calculations.
+
+After assignment, the chosen allele's `SWIGMETA` is projected through its already-selected read alignment to create FWR/CDR sequences, junction/CDR3 boundaries, reading frame, translation, and productivity. Thus a permissive metadata choice can change those annotation-derived fields and analyses that subsequently filter/group on them, but cannot change the underlying V/D/J alignment or call. `swig-cli prepare-reference` persists this schema once; the associated diagnostics report the transfer template, identity, structural checks, and unresolved reason for every allele.
+
 ## Output and record detail
 
 Swig writes an AIRR rearrangement table plus `swig_*` study/provenance fields. The interactive record view is a rendering of those committed fields: query and germline coordinates, FWR/CDR intervals, stitched V(D)J alignment, individual segment alignments, segment E-values, junction decomposition, and retained candidate evidence. It does not rerun assignment when opened.
@@ -62,6 +72,8 @@ The schema follows the AIRR Rearrangement representation so downstream tools can
 ## Performance and cancellation
 
 Reference indexes are built once per worker. Records are processed in bounded batches, and results are appended to browser storage or a user-selected writable stream. Cancellation aborts input reading, terminates the worker pool, aborts unfinalized output, and clears the temporary result store; no partial run is opened as a completed analysis.
+
+AER/RIAT production indexes use direct-address CSR k-mer hits and reusable generation-stamped vote workspaces; their original unordered-map candidate implementation is retained for byte-equivalence tests. AIRR production output is appended directly with byte-identical numeric formatting, while the original ostream writer is likewise retained as a reference. These are execution optimizations only: scoring, search breadth, band choice, tie handling, and output fields are unchanged.
 
 ## Limitations
 

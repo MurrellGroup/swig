@@ -22,6 +22,14 @@ public:
         std::size_t limit,
         std::size_t max_seed_frequency = 96,
         std::size_t stride = 1) const;
+    // Allocation-light, result-equivalent candidate search used by the AER
+    // and RIAT-MP production kernels. `candidates` above is deliberately kept
+    // as the reference implementation for equivalence testing.
+    [[nodiscard]] std::vector<Candidate> candidates_fast(
+        const std::string& query,
+        std::size_t limit,
+        std::size_t max_seed_frequency = 96,
+        std::size_t stride = 1) const;
     [[nodiscard]] const std::vector<Gene>& genes() const noexcept { return genes_; }
     [[nodiscard]] std::vector<Gene>& mutable_genes() noexcept { return genes_; }
     [[nodiscard]] std::uint32_t kmer_size() const noexcept { return kmer_size_; }
@@ -36,8 +44,16 @@ private:
     std::vector<Gene> genes_;
     std::uint32_t kmer_size_ = 0;
     std::uint32_t fallback_kmer_size_ = 0;
+    std::size_t maximum_gene_length_ = 0;
+    // The unordered maps are retained for the reference candidate kernel.
+    // Production AER/RIAT lookups use compact direct-address CSR tables when
+    // k is small enough (all bundled indexes currently use k <= 9).
     std::unordered_map<std::uint64_t, std::vector<SeedHit>> seeds_;
     std::unordered_map<std::uint64_t, std::vector<SeedHit>> fallback_seeds_;
+    std::vector<std::uint32_t> fast_seed_offsets_;
+    std::vector<SeedHit> fast_seed_hits_;
+    std::vector<std::uint32_t> fast_fallback_seed_offsets_;
+    std::vector<SeedHit> fast_fallback_seed_hits_;
     void rebuild();
 };
 

@@ -54,6 +54,27 @@ test("V coordinate transfer retains boundaries across a sequence-level frameshif
   assert.equal(report.transferred, 1);
 });
 
+test("best-guess metadata matching removes identity rejection but preserves structural validation", () => {
+  const template = firstAnnotated(humanIghV, "V");
+  const anchorStart = template[2]![11] - 3;
+  const changed = template[1].split("").map((base, index) => {
+    if (index >= anchorStart && index < anchorStart + 3) return base;
+    if (index % 3 !== 0) return base;
+    return base === "A" ? "C" : "A";
+  }).join("");
+  const input = `>${template[0]}_S_best_guess\n${changed}\n`;
+  const strict = preprocessGermlineFasta(input, "V", [template], ["IGH"], { includeDiagnostics: true });
+  assert.equal(strict.annotated, 0);
+  assert.ok((strict.diagnostics?.[0].rejectionCounts?.below_identity ?? 0) > 0);
+
+  const guessed = preprocessGermlineFasta(input, "V", [template], ["IGH"], { mode: "best_guess", includeDiagnostics: true });
+  assert.equal(guessed.annotated, 1);
+  assert.equal(guessed.transferred, 1);
+  assert.equal(guessed.diagnostics?.[0].status, "transferred");
+  assert.equal(guessed.diagnostics?.[0].template, template[0]);
+  assert.ok((guessed.diagnostics?.[0].identity ?? 1) < 0.8);
+});
+
 test("a V sequence that does not span the mapped IMGT intervals is not assigned fabricated boundaries", () => {
   const template = firstAnnotated(humanIghV, "V");
   const report = preprocessGermlineFasta(`>${template[0]}_S9997\n${template[1].slice(0, 90)}\n`, "V", humanIghV, ["IGH"]);

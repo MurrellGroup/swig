@@ -63,6 +63,14 @@ async function makeRuntime() {
     return exports.swig_set_assigner_strategy(value);
   }
 
+  function setOptimizedKernels(enabled) {
+    return exports.swig_set_optimized_kernels(enabled ? 1 : 0);
+  }
+
+  function setOptimizedOutput(enabled) {
+    return exports.swig_set_optimized_output(enabled ? 1 : 0);
+  }
+
   function annotate(query, format, strand = 0) {
     const [pointer, size] = put(query);
     const count = exports.swig_annotate(pointer, size, format, 600, strand);
@@ -125,7 +133,15 @@ async function makeRuntime() {
     };
   }
 
-  return { initialize, annotate, annotateDoubleD, setCallingProfile, setAssignerStrategy };
+  return {
+    initialize,
+    annotate,
+    annotateDoubleD,
+    setCallingProfile,
+    setAssignerStrategy,
+    setOptimizedKernels,
+    setOptimizedOutput,
+  };
 }
 
 function referenceFor(locus, customJName) {
@@ -264,6 +280,66 @@ test("standard, RIAT-MP, and AER assignment strategies initialize explicitly", a
   }
   assert.equal((await makeRuntime()).setAssignerStrategy(3), -1);
   assert.deepEqual(observed.get("aer"), observed.get("standard"));
+});
+
+test("optimized RIAT-MP/AER kernels and AIRR writer are byte-identical to retained reference implementations", { timeout: 45_000 }, async () => {
+  const human = pack.species.find((entry) => entry.name === "Homo sapiens");
+  assert.ok(human?.loci.IGH);
+  const references = {
+    V: asFasta(human.loci.IGH.V.slice(0, 48)),
+    D: asFasta(human.loci.IGH.D),
+    J: asFasta(human.loci.IGH.J),
+    C: asFasta(human.loci.IGH.C.slice(0, 4)),
+  };
+  const mutate = (base) => ({ A: "C", C: "G", G: "T", T: "A" })[base] ?? "N";
+  const records = [];
+  for (let index = 0; index < 64; index += 1) {
+    const v = human.loci.IGH.V[index % 48][1];
+    const d = human.loci.IGH.D[index % human.loci.IGH.D.length][1];
+    const j = human.loci.IGH.J[index % human.loci.IGH.J.length][1];
+    const c = human.loci.IGH.C[index % 4][1];
+    let sequence = `${v}${"ACGTN".slice(0, index % 5)}${d}${"TGCA".slice(0, index % 4)}${j}${c}`;
+    if (index % 6 === 1) {
+      const at = Math.min(31, sequence.length - 1);
+      sequence = `${sequence.slice(0, at)}${mutate(sequence[at])}${sequence.slice(at + 1)}`;
+    } else if (index % 6 === 2) {
+      sequence = `${sequence.slice(0, 27)}NNN${sequence.slice(30)}`;
+    } else if (index % 6 === 3) {
+      sequence = `${sequence.slice(0, 43)}ACT${sequence.slice(43)}`;
+    } else if (index % 6 === 4) {
+      sequence = `${sequence.slice(0, 55)}${sequence.slice(57)}`;
+    } else if (index % 6 === 5) {
+      sequence = reverseComplement(sequence);
+    }
+    records.push(`>equivalence_${index}\n${sequence}\n`);
+  }
+  const query = records.join("");
+
+  for (const strategy of ["riat_mp", "aer"]) {
+    const runtime = await makeRuntime();
+    assert.equal(runtime.setAssignerStrategy(strategy), 0);
+    runtime.initialize(references);
+
+    assert.equal(runtime.setOptimizedKernels(false), 0);
+    assert.equal(runtime.setOptimizedOutput(false), 0);
+    const reference = runtime.annotate(query, 1).tsv;
+
+    assert.equal(runtime.setOptimizedKernels(true), 0);
+    const optimizedKernels = runtime.annotate(query, 1).tsv;
+    assert.equal(
+      optimizedKernels,
+      reference,
+      `${strategy} optimized compute kernels changed AIRR bytes`,
+    );
+
+    assert.equal(runtime.setOptimizedOutput(true), 0);
+    const optimizedOutput = runtime.annotate(query, 1).tsv;
+    assert.equal(
+      optimizedOutput,
+      reference,
+      `${strategy} direct AIRR writer changed AIRR bytes`,
+    );
+  }
 });
 
 test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, and J-only swaps", async () => {

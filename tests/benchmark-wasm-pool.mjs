@@ -5,10 +5,11 @@ import { performance } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
 import zlib from "node:zlib";
 
-const TOTAL = 50_000;
+const TOTAL = Number(process.env.SWIG_BENCH_TOTAL || 50_000);
 const BATCH_SIZE = Number(process.env.SWIG_BENCH_BATCH || 1000);
 const requestedWorkers = Number(process.env.SWIG_BENCH_WORKERS || 0);
 const WORKERS = requestedWorkers || Math.max(1, Math.min(8, os.availableParallelism() - 1));
+const STRATEGY = process.env.SWIG_BENCH_STRATEGY || "standard";
 const encoder = new TextEncoder();
 
 const pack = JSON.parse(zlib.gunzipSync(
@@ -35,7 +36,13 @@ const template = `${templateV[1]}AACCGG${locus.D?.[0]?.[1] || ""}TTG${templateJ[
 class Client {
   constructor(index) {
     this.index = index;
-    this.worker = new Worker(new URL("./benchmark-wasm-worker.mjs", import.meta.url));
+    this.worker = new Worker(new URL("./benchmark-wasm-worker.mjs", import.meta.url), {
+      workerData: {
+        strategy: STRATEGY,
+        reference: process.env.SWIG_BENCH_REFERENCE === "1",
+        referenceOutput: process.env.SWIG_BENCH_REFERENCE_OUTPUT === "1",
+      },
+    });
     this.pending = new Map();
     this.worker.on("message", (message) => {
       if (message.type === "ready") {
@@ -109,6 +116,7 @@ assert.equal(completed, TOTAL);
 const summary = {
   records: completed,
   workers: WORKERS,
+  strategy: STRATEGY,
   germlineAllelesPerWorker: genes[0],
   batchSize: BATCH_SIZE,
   seconds: Number(seconds.toFixed(3)),

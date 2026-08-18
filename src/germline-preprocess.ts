@@ -20,6 +20,57 @@ export type CompactMetadata = [
 
 export type MetadataAllele = [name: string, sequence: string, metadata?: CompactMetadata];
 
+export type GermlineMatchMode = "strict" | "permissive" | "best_guess";
+
+export interface GermlineMatchOptions {
+  /** Named presets; explicit thresholds below override the selected preset. */
+  mode?: GermlineMatchMode;
+  vSameGeneMinIdentity?: number;
+  vNearestMinIdentity?: number;
+  jSameGeneMinIdentity?: number;
+  jNearestMinIdentity?: number;
+  /** Number of k-mer-ranked non-gene candidates to align after named candidates fail. */
+  nearestCandidates?: number;
+  /** Include one structured diagnostic record per input allele. */
+  includeDiagnostics?: boolean;
+  /** Internal provenance index used by the progressively broadened tier search. */
+  taxonomicTier?: number;
+}
+
+export interface ResolvedGermlineMatchOptions {
+  mode: GermlineMatchMode;
+  vSameGeneMinIdentity: number;
+  vNearestMinIdentity: number;
+  jSameGeneMinIdentity: number;
+  jNearestMinIdentity: number;
+  nearestCandidates: number;
+  includeDiagnostics: boolean;
+}
+
+export type GermlineDiagnosticStatus =
+  | "retained"
+  | "imgt"
+  | "transferred"
+  | "motif"
+  | "normalized"
+  | "unresolved";
+
+export interface GermlineRecordDiagnostic {
+  segment: GermlineSegment;
+  name: string;
+  locus: GermlineLocus;
+  status: GermlineDiagnosticStatus;
+  source: string;
+  template?: string;
+  identity?: number;
+  matchKind?: "same_allele" | "same_gene" | "nearest";
+  taxonomicTier?: number;
+  attemptedCandidates: number;
+  bestCandidate?: string;
+  bestIdentity?: number;
+  rejectionCounts?: Record<string, number>;
+}
+
 export interface GermlinePreprocessReport {
   fasta: string;
   count: number;
@@ -31,6 +82,7 @@ export interface GermlinePreprocessReport {
   ambiguousBases: number;
   loci: GermlineLocus[];
   warnings: string[];
+  diagnostics?: GermlineRecordDiagnostic[];
 }
 
 export interface GermlineNormalizationReport {
@@ -65,6 +117,17 @@ interface Alignment {
   identity: number;
 }
 
+interface TransferResult {
+  metadata?: CompactMetadata;
+  template?: string;
+  identity?: number;
+  matchKind?: "same_allele" | "same_gene" | "nearest";
+  attemptedCandidates: number;
+  bestCandidate?: string;
+  bestIdentity?: number;
+  rejectionCounts: Record<string, number>;
+}
+
 const LOCI: GermlineLocus[] = ["IGH", "IGK", "IGL", "TRA", "TRB", "TRD", "TRG"];
 const IMGT_V_GAPPED_ENDS = [78, 114, 165, 195, 312] as const;
 const EMPTY_BOUNDS = [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1] as const;
@@ -74,6 +137,60 @@ const SOURCE_TRANSFERRED_IMGT = 3;
 const SOURCE_VALIDATED_J_MOTIF = 4;
 const SOURCE_PROVIDED = 5;
 const SOURCE_TRANSFERRED_J = 6;
+
+const MATCH_PRESETS: Record<GermlineMatchMode, Omit<ResolvedGermlineMatchOptions, "mode" | "includeDiagnostics">> = {
+  strict: {
+    vSameGeneMinIdentity: 0.80,
+    vNearestMinIdentity: 0.72,
+    jSameGeneMinIdentity: 0.75,
+    jNearestMinIdentity: 0.68,
+    nearestCandidates: 12,
+  },
+  permissive: {
+    vSameGeneMinIdentity: 0.65,
+    vNearestMinIdentity: 0.55,
+    jSameGeneMinIdentity: 0.60,
+    jNearestMinIdentity: 0.50,
+    nearestCandidates: 32,
+  },
+  best_guess: {
+    // Identity is deliberately not a rejection criterion in this mode. Motif,
+    // coordinate, and frame checks remain hard invariants: emitting internally
+    // contradictory SWIGMETA would be worse than reporting an unresolved allele.
+    vSameGeneMinIdentity: 0,
+    vNearestMinIdentity: 0,
+    jSameGeneMinIdentity: 0,
+    jNearestMinIdentity: 0,
+    nearestCandidates: 64,
+  },
+};
+
+function identityOption(value: number | undefined, fallback: number, label: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isFinite(resolved) || resolved < 0 || resolved > 1) {
+    throw new Error(`${label} must be between 0 and 1.`);
+  }
+  return resolved;
+}
+
+export function resolveGermlineMatchOptions(options: GermlineMatchOptions = {}): ResolvedGermlineMatchOptions {
+  const mode = options.mode ?? "strict";
+  const preset = MATCH_PRESETS[mode];
+  if (!preset) throw new Error(`Unsupported germline metadata match mode: ${String(mode)}.`);
+  const nearestCandidates = options.nearestCandidates ?? preset.nearestCandidates;
+  if (!Number.isSafeInteger(nearestCandidates) || nearestCandidates < 1 || nearestCandidates > 10_000) {
+    throw new Error("nearestCandidates must be an integer between 1 and 10000.");
+  }
+  return {
+    mode,
+    vSameGeneMinIdentity: identityOption(options.vSameGeneMinIdentity, preset.vSameGeneMinIdentity, "vSameGeneMinIdentity"),
+    vNearestMinIdentity: identityOption(options.vNearestMinIdentity, preset.vNearestMinIdentity, "vNearestMinIdentity"),
+    jSameGeneMinIdentity: identityOption(options.jSameGeneMinIdentity, preset.jSameGeneMinIdentity, "jSameGeneMinIdentity"),
+    jNearestMinIdentity: identityOption(options.jNearestMinIdentity, preset.jNearestMinIdentity, "jNearestMinIdentity"),
+    nearestCandidates,
+    includeDiagnostics: Boolean(options.includeDiagnostics),
+  };
+}
 
 const V_CHAIN_LOCI: Record<string, GermlineLocus> = {
   VH: "IGH", VK: "IGK", VL: "IGL", VA: "TRA", VB: "TRB", VD: "TRD", VG: "TRG",
@@ -320,6 +437,19 @@ function kmerSet(sequence: string, size = 9): Set<string> {
   return output;
 }
 
+// Reference alleles are immutable tuples from the fixed pack. Reusing their
+// k-mer sets avoids rebuilding the same hundreds of sets for every custom
+// allele, which was the dominant cost of large CLI metadata-preparation jobs.
+const TEMPLATE_KMER_CACHE = new WeakMap<MetadataAllele, Set<string>>();
+
+function templateKmerSet(template: MetadataAllele): Set<string> {
+  const cached = TEMPLATE_KMER_CACHE.get(template);
+  if (cached) return cached;
+  const kmers = kmerSet(template[1]);
+  TEMPLATE_KMER_CACHE.set(template, kmers);
+  return kmers;
+}
+
 function nearestTemplates(
   query: string,
   templates: MetadataAllele[],
@@ -328,7 +458,7 @@ function nearestTemplates(
   const queryKmers = kmerSet(query);
   return templates
     .map((template) => {
-      const templateKmers = kmerSet(template[1]);
+      const templateKmers = templateKmerSet(template);
       let shared = 0;
       for (const kmer of templateKmers) if (queryKmers.has(kmer)) shared += 1;
       const union = queryKmers.size + templateKmers.size - shared;
@@ -340,12 +470,15 @@ function nearestTemplates(
     .map(({ template }) => template);
 }
 
-function templateCandidateTiers(
+function templateCandidateGroups(
   queryName: string,
-  query: string,
   templates: MetadataAllele[],
   eligible: (metadata?: CompactMetadata) => boolean = hasRegionMetadata,
-): MetadataAllele[][] {
+): {
+  preferred: MetadataAllele[];
+  preferredKind: "same_allele" | "same_gene";
+  remaining: MetadataAllele[];
+} {
   // Functional/pseudogene labels are deliberately irrelevant here. Any locus-matched
   // template with a complete IMGT delineation may transfer coordinates after the
   // sequence-level validation below.
@@ -356,8 +489,11 @@ function templateCandidateTiers(
   const exactGene = delineated.filter(([name]) => canonicalGene(name) === geneName);
   const preferred = exactAllele.length ? exactAllele : exactGene;
   const preferredKeys = new Set(preferred.map(([name, sequence]) => `${name}\u0000${sequence}`));
-  const nearest = nearestTemplates(query, delineated.filter(([name, sequence]) => !preferredKeys.has(`${name}\u0000${sequence}`)));
-  return [preferred, nearest].filter((tier) => tier.length);
+  return {
+    preferred,
+    preferredKind: exactAllele.length ? "same_allele" : "same_gene",
+    remaining: delineated.filter(([name, sequence]) => !preferredKeys.has(`${name}\u0000${sequence}`)),
+  };
 }
 
 function mapReferenceCoordinates(alignment: Alignment, referenceLength: number): number[] {
@@ -381,58 +517,146 @@ function mapReferenceCoordinates(alignment: Alignment, referenceLength: number):
   return mapped;
 }
 
-function transferMetadata(name: string, sequence: string, templates: MetadataAllele[]): CompactMetadata | undefined {
-  for (const candidates of templateCandidateTiers(name, sequence, templates)) {
-    let selected: { metadata: CompactMetadata; identity: number } | undefined;
-    for (const template of candidates) {
+function incrementRejection(result: TransferResult, reason: string): void {
+  result.rejectionCounts[reason] = (result.rejectionCounts[reason] ?? 0) + 1;
+}
+
+function updateBest(result: TransferResult, template: MetadataAllele, identity: number): void {
+  if (result.bestIdentity === undefined || identity > result.bestIdentity) {
+    result.bestIdentity = identity;
+    result.bestCandidate = template[0];
+  }
+}
+
+function matchKind(name: string, templateName: string, fallback: "same_allele" | "same_gene" | "nearest"):
+"same_allele" | "same_gene" | "nearest" {
+  if (canonicalAllele(templateName) === canonicalAllele(name)) return "same_allele";
+  if (canonicalGene(templateName) === canonicalGene(name)) return "same_gene";
+  return fallback;
+}
+
+function transferMetadata(
+  name: string,
+  sequence: string,
+  templates: MetadataAllele[],
+  options: ResolvedGermlineMatchOptions,
+): TransferResult {
+  const result: TransferResult = { attemptedCandidates: 0, rejectionCounts: {} };
+  const groups = templateCandidateGroups(name, templates);
+  const candidates = [
+    { values: groups.preferred, fallback: groups.preferredKind },
+    // Compute the broad k-mer ranking only if every named candidate failed.
+    { values: null, fallback: "nearest" as const },
+  ];
+  for (const group of candidates) {
+    const values = group.values ?? nearestTemplates(sequence, groups.remaining, options.nearestCandidates);
+    if (!values.length) continue;
+    let selected: { metadata: CompactMetadata; identity: number; template: string; matchKind: "same_allele" | "same_gene" | "nearest" } | undefined;
+    for (const template of values) {
       const alignment = globalAlignment(sequence, template[1]);
       const named = canonicalGene(template[0]) === canonicalGene(name);
-      if (alignment.identity < (named ? 0.80 : 0.72)) continue;
+      const relation = matchKind(name, template[0], group.fallback);
+      result.attemptedCandidates += 1;
+      updateBest(result, template, alignment.identity);
+      if (alignment.identity < (named ? options.vSameGeneMinIdentity : options.vNearestMinIdentity)) {
+        incrementRejection(result, "below_identity");
+        continue;
+      }
       const templateMetadata = template[2]!;
       const templateBounds = templateMetadata.slice(2, 12);
       const mapped = mapReferenceCoordinates(alignment, template[1].length);
       const bounds = templateBounds.map((boundary) => mapped[boundary]);
-      if (bounds.some((value, index) => value < 0 || value > sequence.length || (index && value < bounds[index - 1]))) continue;
+      if (bounds.some((value, index) => value < 0 || value > sequence.length || (index && value < bounds[index - 1]))) {
+        incrementRejection(result, "unmapped_or_nonmonotonic_boundary");
+        continue;
+      }
       let valid = true;
       for (let index = 0; index < bounds.length; index += 2) {
         if (bounds[index + 1] <= bounds[index]) valid = false;
       }
-      if (!valid) continue;
+      if (!valid) {
+        incrementRejection(result, "empty_region");
+        continue;
+      }
       const templateFrame = templateMetadata[0] >= 0 ? templateMetadata[0] : templateBounds[0] % 3;
       const frame = positiveModulo(bounds[0] + templateFrame - templateBounds[0], 3);
       const anchorEnd = nearestFrameCysEnd(sequence, bounds[9], frame, 24);
-      if (!anchorEnd || anchorEnd <= bounds[8]) continue;
+      if (!anchorEnd || anchorEnd <= bounds[8]) {
+        incrementRejection(result, "missing_frame_consistent_v_anchor");
+        continue;
+      }
       bounds[9] = anchorEnd;
       const metadata = compactMetadata(frame, -1, bounds, SOURCE_TRANSFERRED_IMGT);
-      if (!validateMetadata(metadata, sequence.length, "V")) continue;
-      if (!selected || alignment.identity > selected.identity) selected = { metadata, identity: alignment.identity };
+      if (!validateMetadata(metadata, sequence.length, "V")) {
+        incrementRejection(result, "invalid_projected_metadata");
+        continue;
+      }
+      if (!selected || alignment.identity > selected.identity) {
+        selected = { metadata, identity: alignment.identity, template: template[0], matchKind: relation };
+      }
     }
-    if (selected) return selected.metadata;
+    if (selected) return { ...result, ...selected };
   }
-  return undefined;
+  if (!result.attemptedCandidates) incrementRejection(result, "no_annotated_template_candidates");
+  return result;
 }
 
-function transferJMetadata(name: string, sequence: string, templates: MetadataAllele[]): CompactMetadata | undefined {
-  for (const candidates of templateCandidateTiers(name, sequence, templates, hasJMetadata)) {
-    let selected: { metadata: CompactMetadata; identity: number } | undefined;
-    for (const template of candidates) {
+function transferJMetadata(
+  name: string,
+  sequence: string,
+  templates: MetadataAllele[],
+  options: ResolvedGermlineMatchOptions,
+): TransferResult {
+  const result: TransferResult = { attemptedCandidates: 0, rejectionCounts: {} };
+  const groups = templateCandidateGroups(name, templates, hasJMetadata);
+  const candidates = [
+    { values: groups.preferred, fallback: groups.preferredKind },
+    { values: null, fallback: "nearest" as const },
+  ];
+  for (const group of candidates) {
+    const values = group.values ?? nearestTemplates(sequence, groups.remaining, options.nearestCandidates);
+    if (!values.length) continue;
+    let selected: { metadata: CompactMetadata; identity: number; template: string; matchKind: "same_allele" | "same_gene" | "nearest" } | undefined;
+    for (const template of values) {
       const alignment = globalAlignment(sequence, template[1]);
       const named = canonicalGene(template[0]) === canonicalGene(name);
-      if (alignment.identity < (named ? 0.75 : 0.68)) continue;
+      const relation = matchKind(name, template[0], group.fallback);
+      result.attemptedCandidates += 1;
+      updateBest(result, template, alignment.identity);
+      if (alignment.identity < (named ? options.jSameGeneMinIdentity : options.jNearestMinIdentity)) {
+        incrementRejection(result, "below_identity");
+        continue;
+      }
       const metadata = template[2]!;
       const referenceAnchor = metadata[1] + 1;
-      if (referenceAnchor < 0 || referenceAnchor + 6 > template[1].length) continue;
+      if (referenceAnchor < 0 || referenceAnchor + 6 > template[1].length) {
+        incrementRejection(result, "invalid_template_j_anchor");
+        continue;
+      }
       const mapped = mapReferenceCoordinates(alignment, template[1].length);
       const anchor = mapped[referenceAnchor];
       const anchorEnd = mapped[referenceAnchor + 6];
-      if (anchor < 0 || anchorEnd - anchor !== 6 || !isJAnchor(sequence, anchor)) continue;
+      if (anchor < 0 || anchorEnd - anchor !== 6) {
+        incrementRejection(result, "incomplete_j_anchor_projection");
+        continue;
+      }
+      if (!isJAnchor(sequence, anchor)) {
+        incrementRejection(result, "target_j_motif_mismatch");
+        continue;
+      }
       const transferred = compactMetadata(anchor % 3, anchor - 1, EMPTY_BOUNDS, SOURCE_TRANSFERRED_J);
-      if (!validateMetadata(transferred, sequence.length, "J")) continue;
-      if (!selected || alignment.identity > selected.identity) selected = { metadata: transferred, identity: alignment.identity };
+      if (!validateMetadata(transferred, sequence.length, "J")) {
+        incrementRejection(result, "invalid_projected_metadata");
+        continue;
+      }
+      if (!selected || alignment.identity > selected.identity) {
+        selected = { metadata: transferred, identity: alignment.identity, template: template[0], matchKind: relation };
+      }
     }
-    if (selected) return selected.metadata;
+    if (selected) return { ...result, ...selected };
   }
-  return undefined;
+  if (!result.attemptedCandidates) incrementRejection(result, "no_annotated_template_candidates");
+  return result;
 }
 
 function annotationPresent(segment: GermlineSegment, metadata?: CompactMetadata): boolean {
@@ -497,7 +721,9 @@ export function prepareIgblastStyleGermlineFasta(
     if (detectedSegment && detectedSegment !== segment) {
       throw new Error(`${name} looks like a ${detectedSegment} gene, not a ${segment} gene.`);
     }
-    const normalized = normalizeIndexSequence(input.rawSequence);
+    let normalized: { sequence: string; ambiguous: number };
+    try { normalized = normalizeIndexSequence(input.rawSequence); }
+    catch (error) { throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`); }
     if (!normalized.sequence) throw new Error(`${name} has an empty nucleotide sequence.`);
     ambiguousBases += normalized.ambiguous;
     loci.add(locus);
@@ -645,9 +871,12 @@ export function preprocessGermlineFasta(
   segment: GermlineSegment,
   templates: MetadataAllele[] = [],
   allowedLoci: readonly GermlineLocus[] = LOCI,
+  match: GermlineMatchOptions = {},
 ): GermlinePreprocessReport {
+  const matchOptions = resolveGermlineMatchOptions(match);
   const inputRecords = parseFasta(text);
   const records: ParsedRecord[] = [];
+  const diagnostics: GermlineRecordDiagnostic[] = [];
   const seen = new Set<string>();
   const loci = new Set<GermlineLocus>();
   const warnings: string[] = [];
@@ -670,23 +899,45 @@ export function preprocessGermlineFasta(
     if (detectedSegment && detectedSegment !== segment) {
       throw new Error(`${name} looks like a ${detectedSegment} gene, not a ${segment} gene.`);
     }
-    const normalized = normalizeSequence(input.rawSequence);
+    let normalized: { sequence: string; ambiguous: number };
+    try { normalized = normalizeSequence(input.rawSequence); }
+    catch (error) { throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`); }
     if (!normalized.sequence) throw new Error(`${name} has an empty nucleotide sequence.`);
     ambiguousBases += normalized.ambiguous;
     const fields = parseImgtFields(input.header);
     let metadata = metadataFromHeader(input.header);
+    let status: GermlineDiagnosticStatus = metadata ? "retained" : "unresolved";
+    let transfer: TransferResult | undefined;
     if (metadata && !validateMetadata(metadata, normalized.sequence.length, segment)) {
       throw new Error(`${name} contains invalid SWIGMETA coordinates.`);
     }
     if (metadata) metadata = [...metadata.slice(0, 12), metadata[12] || SOURCE_PROVIDED] as CompactMetadata;
-    if (!metadata && segment === "V") metadata = imgtVMetadata(input.rawSequence, fields);
-    if (!metadata && segment === "V" && templates.length) metadata = transferMetadata(name, normalized.sequence, templates);
-    if (!metadata && segment === "J" && templates.length) metadata = transferJMetadata(name, normalized.sequence, templates);
-    if (!metadata && segment === "J") metadata = jMetadata(normalized.sequence, fields);
+    if (!metadata && segment === "V") {
+      metadata = imgtVMetadata(input.rawSequence, fields);
+      if (metadata) status = "imgt";
+    }
+    if (!metadata && segment === "V" && templates.length) {
+      transfer = transferMetadata(name, normalized.sequence, templates, matchOptions);
+      metadata = transfer.metadata;
+      if (metadata) status = "transferred";
+    }
+    if (!metadata && segment === "J" && templates.length) {
+      transfer = transferJMetadata(name, normalized.sequence, templates, matchOptions);
+      metadata = transfer.metadata;
+      if (metadata) status = "transferred";
+    }
+    if (!metadata && segment === "J") {
+      metadata = jMetadata(normalized.sequence, fields);
+      if (metadata) status = "motif";
+    }
     if (!metadata && segment === "D") {
       const frame = imgtFrame(fields);
-      if (frame >= 0) metadata = compactMetadata(frame, -1, EMPTY_BOUNDS, SOURCE_IMGT_GAPPED);
+      if (frame >= 0) {
+        metadata = compactMetadata(frame, -1, EMPTY_BOUNDS, SOURCE_IMGT_GAPPED);
+        status = "imgt";
+      }
     }
+    if (!metadata && (segment === "D" || segment === "C")) status = "normalized";
     if (metadata?.[12] === SOURCE_IMGT_GAPPED) exactImgt += 1;
     if (metadata?.[12] === SOURCE_TRANSFERRED_IMGT || metadata?.[12] === SOURCE_TRANSFERRED_J) transferred += 1;
     if (metadata?.[12] === SOURCE_VALIDATED_J_MOTIF) motifValidated += 1;
@@ -695,6 +946,23 @@ export function preprocessGermlineFasta(
     }
     loci.add(locus);
     records.push({ header: input.header, name, rawSequence: input.rawSequence, sequence: normalized.sequence, locus, metadata });
+    if (matchOptions.includeDiagnostics) {
+      diagnostics.push({
+        segment,
+        name,
+        locus,
+        status,
+        source: metadataSource(metadata),
+        template: transfer?.template,
+        identity: transfer?.identity,
+        matchKind: transfer?.matchKind,
+        taxonomicTier: transfer?.metadata ? match.taxonomicTier : undefined,
+        attemptedCandidates: transfer?.attemptedCandidates ?? 0,
+        bestCandidate: transfer?.bestCandidate,
+        bestIdentity: transfer?.bestIdentity,
+        rejectionCounts: transfer && Object.keys(transfer.rejectionCounts).length ? transfer.rejectionCounts : undefined,
+      });
+    }
   }
 
   const annotated = records.filter((record) => annotationPresent(segment, record.metadata)).length;
@@ -710,6 +978,31 @@ export function preprocessGermlineFasta(
     ambiguousBases,
     loci: [...loci].sort(),
     warnings,
+    diagnostics: matchOptions.includeDiagnostics ? diagnostics : undefined,
+  };
+}
+
+function mergeDiagnosticHistory(
+  previous: GermlineRecordDiagnostic | undefined,
+  current: GermlineRecordDiagnostic,
+): GermlineRecordDiagnostic {
+  if (!previous) return current;
+  // A metadata record written by an earlier tier is parsed as "retained" on
+  // the next pass. Preserve the original transfer source and template.
+  if (current.status === "retained" && previous.status !== "unresolved") return previous;
+  const rejectionCounts = { ...(previous.rejectionCounts ?? {}) };
+  for (const [reason, count] of Object.entries(current.rejectionCounts ?? {})) {
+    rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + count;
+  }
+  const previousBest = previous.bestIdentity ?? -1;
+  const currentBest = current.bestIdentity ?? -1;
+  const latest = current.status !== "unresolved" ? current : previous;
+  return {
+    ...latest,
+    attemptedCandidates: previous.attemptedCandidates + current.attemptedCandidates,
+    bestCandidate: currentBest > previousBest ? current.bestCandidate : previous.bestCandidate,
+    bestIdentity: Math.max(previousBest, currentBest) >= 0 ? Math.max(previousBest, currentBest) : undefined,
+    rejectionCounts: Object.keys(rejectionCounts).length ? rejectionCounts : undefined,
   };
 }
 
@@ -723,13 +1016,24 @@ export function preprocessGermlineFastaAcrossTiers(
   segment: GermlineSegment,
   templateTiers: readonly (readonly MetadataAllele[])[],
   allowedLoci: readonly GermlineLocus[] = LOCI,
+  match: GermlineMatchOptions = {},
 ): GermlinePreprocessReport {
   let report: GermlinePreprocessReport | undefined;
-  for (const templates of templateTiers.length ? templateTiers : [[]]) {
-    report = preprocessGermlineFasta(report?.fasta ?? text, segment, [...templates], allowedLoci);
+  const diagnosticHistory = new Map<string, GermlineRecordDiagnostic>();
+  const tiers = templateTiers.length ? templateTiers : [[]];
+  for (let tier = 0; tier < tiers.length; tier += 1) {
+    report = preprocessGermlineFasta(report?.fasta ?? text, segment, [...tiers[tier]], allowedLoci, {
+      ...match,
+      includeDiagnostics: Boolean(match.includeDiagnostics),
+      taxonomicTier: tier,
+    });
+    for (const diagnostic of report.diagnostics ?? []) {
+      diagnosticHistory.set(diagnostic.name, mergeDiagnosticHistory(diagnosticHistory.get(diagnostic.name), diagnostic));
+    }
     if (segment !== "V" && segment !== "J") break;
     if (report.annotated === report.count) break;
   }
+  if (match.includeDiagnostics) report!.diagnostics = [...diagnosticHistory.values()];
   return report!;
 }
 

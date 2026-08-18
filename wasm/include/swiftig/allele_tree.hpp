@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <vector>
 
 #include "swiftig/types.hpp"
@@ -21,6 +22,8 @@ struct AlleleTreeNode {
     std::uint32_t gene_index = 0;
     std::uint32_t parent = 0;
     std::vector<AlleleTreeMutation> edge_mutations;
+    std::uint32_t first_child = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t next_sibling = std::numeric_limits<std::uint32_t>::max();
 };
 
 struct AlleleTreeCluster {

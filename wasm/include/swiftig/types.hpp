@@ -151,6 +151,9 @@ struct Annotation {
 
 struct EngineOptions {
     AssignerStrategy assigner_strategy = AssignerStrategy::Standard;
+    // AER and RIAT-MP use result-equivalent allocation-light kernels by
+    // default. The reference kernels remain selectable for validation.
+    bool optimized_kernels = true;
     Scoring v_scoring{2, -3, -5, -1};
     // Jointly calibrated on the supplied low-SHM and IgG simulations. D uses
     // a six-base exact-support floor; the strong gap-open penalty avoids

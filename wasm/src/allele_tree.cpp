@@ -160,6 +160,16 @@ void AlleleTreeIndex::reset(const std::vector<Gene>& genes, std::size_t cluster_
                 ++tree_size;
             }
 
+            // Persist the DFS adjacency once. The hot RIAT-MP search used to
+            // allocate a vector-of-vectors and rebuild this identical topology
+            // for every read and every selected root alignment.
+            for (std::size_t node_index = cluster.nodes.size(); node_index-- > 1;) {
+                auto& node = cluster.nodes[node_index];
+                auto& parent = cluster.nodes[node.parent];
+                node.next_sibling = parent.first_child;
+                parent.first_child = static_cast<std::uint32_t>(node_index);
+            }
+
             root_genes.push_back(genes[root_gene_index]);
             clusters_.push_back(std::move(cluster));
         }

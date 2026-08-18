@@ -523,8 +523,12 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
     const std::size_t pool_size = std::max<std::size_t>(top_n * 4, 16);
     const std::size_t candidate_limit = std::min(
         index.genes().size(), pool_size * (locus_filter.empty() ? 1 : 2));
-    auto candidates = candidate_hints && !candidate_hints->empty()
-        ? *candidate_hints : index.candidates(query, candidate_limit);
+    auto candidates = candidate_hints
+        ? *candidate_hints
+        : (options_.optimized_kernels &&
+                options_.assigner_strategy != AssignerStrategy::Standard
+            ? index.candidates_fast(query, candidate_limit)
+            : index.candidates(query, candidate_limit));
     std::vector<Candidate> work;
     work.reserve(candidates.empty() ? index.genes().size() : candidates.size());
     for (const auto& candidate : candidates) {
@@ -564,19 +568,128 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
     }
     std::vector<SegmentHit> hits;
     hits.reserve(work.size());
-    for (const auto& candidate : work) {
-        const auto& gene = index.genes()[candidate.gene_index];
+    const auto adaptive_band_for = [&](const Candidate& candidate) {
         const bool seeded = candidate.diagonal != std::numeric_limits<int>::max();
-        const int adaptive_band = seeded
+        return seeded
             ? std::max(options_.band_width, std::min(
                 options_.max_band_width, candidate.diagonal_span + 8)) : -1;
-        auto alignment = local_align_affine(
-            query, gene.sequence, scoring,
-            seeded ? candidate.diagonal : 0,
-            adaptive_band);
+    };
+    const auto accept_alignment = [&](const Candidate& candidate, Alignment alignment) {
+        const auto& gene = index.genes()[candidate.gene_index];
         if (!alignment.valid() || aligned_bases(alignment) < min_length ||
-            alignment.identity() < options_.min_identity) continue;
+            alignment.identity() < options_.min_identity) return;
         hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name, query.size()});
+    };
+    const auto align_batch = [&](const std::array<const Candidate*, 4>& batch,
+                                 std::size_t count) {
+        count = std::min<std::size_t>(count, 4);
+        const bool optimized = options_.optimized_kernels &&
+            options_.assigner_strategy != AssignerStrategy::Standard;
+        if (optimized && count > 1) {
+            std::array<AlignmentScoreRequest, 4> requests{};
+            for (std::size_t lane = 0; lane < count; ++lane) {
+                const auto& candidate = *batch[lane];
+                requests[lane] = AlignmentScoreRequest{
+                    &index.genes()[candidate.gene_index].sequence,
+                    candidate.diagonal == std::numeric_limits<int>::max()
+                        ? 0 : candidate.diagonal,
+                    adaptive_band_for(candidate),
+                };
+            }
+            auto alignments = local_align_affine_fast4(
+                query, requests, count, scoring, alignment_workspace_);
+            for (std::size_t lane = 0; lane < count; ++lane) {
+                accept_alignment(*batch[lane], std::move(alignments[lane]));
+            }
+            return;
+        }
+        for (std::size_t lane = 0; lane < count; ++lane) {
+            const auto& candidate = *batch[lane];
+            const auto& gene = index.genes()[candidate.gene_index];
+            const bool seeded = candidate.diagonal != std::numeric_limits<int>::max();
+            const int adaptive_band = adaptive_band_for(candidate);
+            auto alignment = optimized
+                ? local_align_affine_fast(
+                    query, gene.sequence, scoring,
+                    seeded ? candidate.diagonal : 0,
+                    adaptive_band, alignment_workspace_)
+                : local_align_affine(
+                    query, gene.sequence, scoring,
+                    seeded ? candidate.diagonal : 0,
+                    adaptive_band);
+            accept_alignment(candidate, std::move(alignment));
+        }
+    };
+
+    // Candidate generation intentionally retains a wide safety pool on hard
+    // reads and near-tied AER V calls. Four-way SIMD score screening computes
+    // the exact same affine likelihood for every candidate, then performs full
+    // traceback only through the score group that can enter top_n. Invalid
+    // high-scoring alignments are handled by continuing to lower groups.
+    const bool use_score_screen = options_.optimized_kernels &&
+        options_.assigner_strategy != AssignerStrategy::Standard &&
+        work.size() > top_n + 1;
+    if (use_score_screen) {
+        struct ScoredCandidate {
+            const Candidate* candidate = nullptr;
+            int score = 0;
+        };
+        std::vector<ScoredCandidate> scored;
+        scored.reserve(work.size());
+        for (std::size_t start = 0; start < work.size(); start += 4) {
+            std::array<AlignmentScoreRequest, 4> requests{};
+            const auto count = std::min<std::size_t>(4, work.size() - start);
+            for (std::size_t lane = 0; lane < count; ++lane) {
+                const auto& candidate = work[start + lane];
+                requests[lane] = AlignmentScoreRequest{
+                    &index.genes()[candidate.gene_index].sequence,
+                    candidate.diagonal == std::numeric_limits<int>::max()
+                        ? 0 : candidate.diagonal,
+                    adaptive_band_for(candidate),
+                };
+            }
+            const auto scores = local_align_affine_scores4(
+                query, requests, count, scoring, alignment_workspace_);
+            for (std::size_t lane = 0; lane < count; ++lane) {
+                scored.push_back(ScoredCandidate{&work[start + lane], scores[lane]});
+            }
+        }
+        std::sort(scored.begin(), scored.end(), [](const auto& left, const auto& right) {
+            if (left.score != right.score) return left.score > right.score;
+            return left.candidate->gene_index < right.candidate->gene_index;
+        });
+        for (std::size_t start = 0; start < scored.size(); start += 4) {
+            if (scored[start].score <= 0) break;
+            std::array<const Candidate*, 4> batch{};
+            std::size_t count = 0;
+            while (count < 4 && start + count < scored.size() &&
+                   scored[start + count].score > 0) {
+                batch[count] = scored[start + count].candidate;
+                ++count;
+            }
+            align_batch(batch, count);
+            const auto end = start + count;
+            if (hits.size() >= top_n) {
+                std::vector<int> accepted_scores;
+                accepted_scores.reserve(hits.size());
+                for (const auto& hit : hits) accepted_scores.push_back(hit.alignment.score);
+                std::nth_element(
+                    accepted_scores.begin(), accepted_scores.begin() + (top_n - 1),
+                    accepted_scores.end(), std::greater<int>{});
+                const int cutoff = accepted_scores[top_n - 1];
+                if (end >= scored.size() || scored[end].score < cutoff) break;
+            }
+            if (count < 4) break;
+        }
+    } else {
+        for (std::size_t start = 0; start < work.size(); start += 4) {
+            std::array<const Candidate*, 4> batch{};
+            const auto count = std::min<std::size_t>(4, work.size() - start);
+            for (std::size_t lane = 0; lane < count; ++lane) {
+                batch[lane] = &work[start + lane];
+            }
+            align_batch(batch, count);
+        }
     }
     std::sort(hits.begin(), hits.end(), [](const SegmentHit& a, const SegmentHit& b) {
         if (a.alignment.score != b.alignment.score) return a.alignment.score > b.alignment.score;
@@ -596,7 +709,8 @@ std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
     const std::string& query,
     std::size_t top_n,
     const Scoring& scoring,
-    std::size_t min_length) const {
+    std::size_t min_length,
+    const std::vector<Candidate>* candidate_hints) const {
     std::vector<SegmentHit> hits;
     AlleleTreeSearchStats stats;
     stats.queries = 1;
@@ -617,7 +731,11 @@ std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
     }
 
     const auto candidate_limit = std::min<std::size_t>(root_index.genes().size(), 16);
-    auto candidates = root_index.candidates(query, candidate_limit);
+    auto candidates = candidate_hints
+        ? *candidate_hints
+        : (options_.optimized_kernels
+            ? root_index.candidates_fast(query, candidate_limit)
+            : root_index.candidates(query, candidate_limit));
     if (candidates.empty()) {
         candidates.reserve(root_index.genes().size());
         for (std::uint32_t index = 0; index < root_index.genes().size(); ++index) {
@@ -642,21 +760,10 @@ std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
     };
     std::vector<RootAlignment> root_alignments;
     root_alignments.reserve(root_limit);
-    for (std::size_t candidate_index = 0; candidate_index < root_limit; ++candidate_index) {
-        const auto& candidate = candidates[candidate_index];
-        if (candidate.gene_index >= tree.clusters().size()) continue;
+    const auto accept_root = [&](const Candidate& candidate, Alignment alignment) {
         const auto& cluster = tree.clusters()[candidate.gene_index];
         const auto& root = database_.v.genes()[cluster.root_gene_index];
-        const bool seeded = candidate.diagonal != std::numeric_limits<int>::max();
-        const int adaptive_band = seeded
-            ? std::max(options_.band_width, std::min(
-                options_.max_band_width, candidate.diagonal_span + 8)) : -1;
-        auto alignment = local_align_affine(
-            query, root.sequence, scoring,
-            seeded ? candidate.diagonal : 0,
-            adaptive_band);
-        ++stats.root_alignments;
-        if (!alignment.valid() || aligned_bases(alignment) < min_length) continue;
+        if (!alignment.valid() || aligned_bases(alignment) < min_length) return;
         ++stats.root_tracebacks;
         root_alignments.push_back(RootAlignment{
             candidate.gene_index,
@@ -666,6 +773,61 @@ std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
         });
         root_alignments.back().path = extend_fixed_path(
             query, root, root_alignments.back().alignment);
+    };
+    if (options_.optimized_kernels) {
+        for (std::size_t start = 0; start < root_limit;) {
+            std::array<const Candidate*, 4> batch{};
+            std::array<AlignmentScoreRequest, 4> requests{};
+            std::size_t count = 0;
+            while (start < root_limit && count < 4) {
+                const auto& candidate = candidates[start++];
+                if (candidate.gene_index >= tree.clusters().size()) continue;
+                const auto& cluster = tree.clusters()[candidate.gene_index];
+                const auto& root = database_.v.genes()[cluster.root_gene_index];
+                const bool seeded = candidate.diagonal != std::numeric_limits<int>::max();
+                const int adaptive_band = seeded
+                    ? std::max(options_.band_width, std::min(
+                        options_.max_band_width, candidate.diagonal_span + 8)) : -1;
+                batch[count] = &candidate;
+                requests[count] = AlignmentScoreRequest{
+                    &root.sequence,
+                    seeded ? candidate.diagonal : 0,
+                    adaptive_band,
+                };
+                ++count;
+            }
+            if (!count) continue;
+            if (count == 1) {
+                const auto& candidate = *batch[0];
+                accept_root(candidate, local_align_affine_fast(
+                    query, *requests[0].reference, scoring,
+                    requests[0].estimated_diagonal, requests[0].band_width,
+                    alignment_workspace_));
+            } else {
+                auto alignments = local_align_affine_fast4(
+                    query, requests, count, scoring, alignment_workspace_);
+                for (std::size_t lane = 0; lane < count; ++lane) {
+                    accept_root(*batch[lane], std::move(alignments[lane]));
+                }
+            }
+            stats.root_alignments += static_cast<std::uint32_t>(count);
+        }
+    } else {
+        for (std::size_t candidate_index = 0; candidate_index < root_limit; ++candidate_index) {
+            const auto& candidate = candidates[candidate_index];
+            if (candidate.gene_index >= tree.clusters().size()) continue;
+            const auto& cluster = tree.clusters()[candidate.gene_index];
+            const auto& root = database_.v.genes()[cluster.root_gene_index];
+            const bool seeded = candidate.diagonal != std::numeric_limits<int>::max();
+            const int adaptive_band = seeded
+                ? std::max(options_.band_width, std::min(
+                    options_.max_band_width, candidate.diagonal_span + 8)) : -1;
+            ++stats.root_alignments;
+            accept_root(candidate, local_align_affine(
+                query, root.sequence, scoring,
+                seeded ? candidate.diagonal : 0,
+                adaptive_band));
+        }
     }
 
     struct ProxyHit {
@@ -681,10 +843,6 @@ std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
         ++stats.clusters_scored;
         stats.nodes_scored += static_cast<std::uint32_t>(cluster.nodes.size());
         FixedPathScorer scorer(root.path, scoring);
-        std::vector<std::vector<std::size_t>> children(cluster.nodes.size());
-        for (std::size_t node_index = 1; node_index < cluster.nodes.size(); ++node_index) {
-            children[cluster.nodes[node_index].parent].push_back(node_index);
-        }
         const auto visit = [&](auto&& self, std::size_t node_index) -> void {
             const auto& node = cluster.nodes[node_index];
             proxies.push_back(ProxyHit{
@@ -692,7 +850,9 @@ std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
                 node.gene_index,
                 scorer.best(),
             });
-            for (const auto child_index : children[node_index]) {
+            for (auto child_index = node.first_child;
+                 child_index != std::numeric_limits<std::uint32_t>::max();
+                 child_index = cluster.nodes[child_index].next_sibling) {
                 const auto& child = cluster.nodes[child_index];
                 for (const auto& mutation : child.edge_mutations) {
                     ++stats.mutation_updates;
@@ -800,10 +960,15 @@ std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
         const int adaptive_band = seeded
             ? std::max(options_.band_width, std::min(
                 options_.max_band_width, root.candidate.diagonal_span + 8)) : -1;
-        auto alignment = local_align_affine(
-            query, gene.sequence, scoring,
-            seeded ? root.candidate.diagonal : 0,
-            adaptive_band);
+        auto alignment = options_.optimized_kernels
+            ? local_align_affine_fast(
+                query, gene.sequence, scoring,
+                seeded ? root.candidate.diagonal : 0,
+                adaptive_band, alignment_workspace_)
+            : local_align_affine(
+                query, gene.sequence, scoring,
+                seeded ? root.candidate.diagonal : 0,
+                adaptive_band);
         ++stats.final_realignments;
         if (!alignment.valid() || aligned_bases(alignment) < min_length ||
             alignment.identity() < options_.min_identity) continue;
@@ -834,10 +999,15 @@ std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
         const int adaptive_band = seeded
             ? std::max(options_.band_width, std::min(
                 options_.max_band_width, root.candidate.diagonal_span + 8)) : -1;
-        auto alignment = local_align_affine(
-            query, gene.sequence, scoring,
-            seeded ? root.candidate.diagonal : 0,
-            adaptive_band);
+        auto alignment = options_.optimized_kernels
+            ? local_align_affine_fast(
+                query, gene.sequence, scoring,
+                seeded ? root.candidate.diagonal : 0,
+                adaptive_band, alignment_workspace_)
+            : local_align_affine(
+                query, gene.sequence, scoring,
+                seeded ? root.candidate.diagonal : 0,
+                adaptive_band);
         ++stats.final_realignments;
 #else
         auto alignment = materialize_fixed_tree_alignment(
@@ -873,7 +1043,8 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation(
     result.oriented_sequence = sequence;
     auto v_hits = options_.assigner_strategy == AssignerStrategy::RiatMp
         ? align_v_allele_tree(
-            sequence, options_.top_v, options_.v_scoring, options_.min_v_length)
+            sequence, options_.top_v, options_.v_scoring, options_.min_v_length,
+            hints ? &hints->v : nullptr)
         : align_candidates(
             sequence, database_.v, options_.top_v, options_.v_scoring,
             options_.min_v_length, "", hints ? &hints->v : nullptr);
@@ -986,16 +1157,22 @@ Annotation AnnotationEngine::annotate(const SequenceRecord& record, const Annota
     const std::string reversed = options_.search_reverse ? reverse_complement(record.sequence) : std::string{};
     bool run_forward = options_.search_forward;
     bool run_reverse = options_.search_reverse;
+    std::optional<OrientationHints> forward_hints;
+    std::optional<OrientationHints> reverse_hints;
     if (run_forward && run_reverse && hints == nullptr) {
-        const auto forward_strength = orientation_seed_strength(record.sequence);
-        const auto reverse_strength = orientation_seed_strength(reversed);
+        forward_hints = orientation_hints(record.sequence);
+        reverse_hints = orientation_hints(reversed);
+        const auto forward_strength = orientation_seed_strength(*forward_hints);
+        const auto reverse_strength = orientation_seed_strength(*reverse_hints);
         if (forward_strength >= 6 && forward_strength > reverse_strength * 2 + 4) run_reverse = false;
         else if (reverse_strength >= 6 && reverse_strength > forward_strength * 2 + 4) run_forward = false;
     }
     if (run_forward) chosen = annotate_orientation(
-        record.sequence, hints ? &hints->forward : nullptr);
+        record.sequence, hints ? &hints->forward
+            : (forward_hints ? &*forward_hints : nullptr));
     if (run_reverse) {
-        auto reverse = annotate_orientation(reversed, hints ? &hints->reverse : nullptr);
+        auto reverse = annotate_orientation(reversed, hints ? &hints->reverse
+            : (reverse_hints ? &*reverse_hints : nullptr));
         if (!run_forward || reverse.rank_score > chosen.rank_score) {
             chosen = std::move(reverse);
             annotation.rev_comp = true;
@@ -1084,14 +1261,28 @@ void AnnotationEngine::annotate_v_regions(Annotation& annotation) const {
     }
 }
 
-std::uint32_t AnnotationEngine::orientation_seed_strength(const std::string& sequence) const {
+OrientationHints AnnotationEngine::orientation_hints(const std::string& sequence) const {
+    OrientationHints hints;
+    const auto& v_index = options_.assigner_strategy == AssignerStrategy::RiatMp
+        ? database_.v_tree.roots() : database_.v;
+    const auto v_limit = std::min<std::size_t>(v_index.genes().size(), 16);
+    const auto j_limit = std::min<std::size_t>(database_.j.genes().size(), 16);
+    if (options_.optimized_kernels &&
+        options_.assigner_strategy != AssignerStrategy::Standard) {
+        hints.v = v_index.candidates_fast(sequence, v_limit);
+        hints.j = database_.j.candidates_fast(sequence, j_limit);
+    } else {
+        hints.v = v_index.candidates(sequence, v_limit);
+        hints.j = database_.j.candidates(sequence, j_limit);
+    }
+    return hints;
+}
+
+std::uint32_t AnnotationEngine::orientation_seed_strength(
+    const OrientationHints& hints) noexcept {
     std::uint32_t strength = 0;
-    const auto v = options_.assigner_strategy == AssignerStrategy::RiatMp
-        ? database_.v_tree.roots().candidates(sequence, 1)
-        : database_.v.candidates(sequence, 1);
-    const auto j = database_.j.candidates(sequence, 1);
-    if (!v.empty()) strength += v.front().votes;
-    if (!j.empty()) strength += j.front().votes;
+    if (!hints.v.empty()) strength += hints.v.front().votes;
+    if (!hints.j.empty()) strength += hints.j.front().votes;
     return strength;
 }
 

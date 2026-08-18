@@ -1,6 +1,7 @@
 #include "swiftig/airr.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <iomanip>
 #include <ostream>
@@ -147,6 +148,156 @@ void write_row(std::ostream& output, const std::vector<std::string>& values) {
     output.put('\n');
 }
 
+class FastRow {
+public:
+    explicit FastRow(std::string& output) : output_(output) {}
+
+    void field(std::string_view value) {
+        separator();
+        output_.append(value.data(), value.size());
+    }
+
+    void field(bool value) { field(value ? std::string_view{"T"} : std::string_view{"F"}); }
+
+    template <typename Integer>
+    void integer(Integer value) {
+        separator();
+        append_integer(value);
+    }
+
+    void optional_boolean(const std::optional<bool>& value) {
+        if (value) field(*value);
+        else field(std::string_view{});
+    }
+
+    template <typename Integer>
+    void optional_integer(const std::optional<Integer>& value) {
+        if (value) integer(*value);
+        else field(std::string_view{});
+    }
+
+    void identity(double value) {
+        separator();
+        append_identity(value);
+    }
+
+    void alternatives(const std::vector<SegmentHit>& hits) {
+        separator();
+        for (std::size_t i = 0; i < hits.size(); ++i) {
+            if (i) output_.push_back(';');
+            const auto& hit = hits[i];
+            output_.append(hit.gene->name);
+            output_.push_back('|');
+            append_integer(hit.alignment.score);
+            output_.push_back('|');
+            append_identity(hit.alignment.identity());
+            output_.push_back('|');
+            append_integer(hit.alignment.query_start + 1);
+            output_.push_back('|');
+            append_integer(hit.alignment.query_end);
+            output_.push_back('|');
+            append_integer(hit.alignment.reference_start + 1);
+            output_.push_back('|');
+            append_integer(hit.alignment.reference_end);
+        }
+    }
+
+    void support(double value) {
+        separator();
+        char buffer[48];
+        const int written = std::snprintf(buffer, sizeof(buffer), "%.6e", value);
+        if (written > 0 && static_cast<std::size_t>(written) < sizeof(buffer)) {
+            output_.append(buffer, buffer + written);
+        }
+    }
+
+    void finish() { output_.push_back('\n'); }
+
+private:
+    template <typename Integer>
+    void append_integer(Integer value) {
+        char buffer[32];
+        const auto converted = std::to_chars(std::begin(buffer), std::end(buffer), value);
+        if (converted.ec == std::errc{}) output_.append(buffer, converted.ptr);
+    }
+
+    void append_identity(double value) {
+        char buffer[64];
+        const int written = std::snprintf(buffer, sizeof(buffer), "%.6f", value);
+        if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(buffer)) return;
+        char* end = buffer + written;
+        while (end > buffer && end[-1] == '0') --end;
+        if (end > buffer && end[-1] == '.') --end;
+        output_.append(buffer, end);
+    }
+    void separator() {
+        if (!first_) output_.push_back('\t');
+        first_ = false;
+    }
+
+    std::string& output_;
+    bool first_ = true;
+};
+
+void fast_hit_name(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit) row.field(hit->call.empty() ? hit->gene->name : hit->call);
+    else row.field(std::string_view{});
+}
+
+void fast_hit_score(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit) row.integer(hit->alignment.score);
+    else row.field(std::string_view{});
+}
+
+void fast_hit_identity(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit) row.identity(hit->alignment.identity());
+    else row.field(std::string_view{});
+}
+
+void fast_hit_support(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit && hit->support) row.support(*hit->support);
+    else row.field(std::string_view{});
+}
+
+void fast_hit_cigar(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit) row.field(hit->alignment.cigar);
+    else row.field(std::string_view{});
+}
+
+void fast_query_start(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit) row.integer(hit->alignment.query_start + 1);
+    else row.field(std::string_view{});
+}
+
+void fast_query_end(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit) row.integer(hit->alignment.query_end);
+    else row.field(std::string_view{});
+}
+
+void fast_reference_start(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit) row.integer(hit->alignment.reference_start + 1);
+    else row.field(std::string_view{});
+}
+
+void fast_reference_end(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit) row.integer(hit->alignment.reference_end);
+    else row.field(std::string_view{});
+}
+
+void fast_query_alignment(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit) row.field(hit->alignment.aligned_query);
+    else row.field(std::string_view{});
+}
+
+void fast_germline_alignment(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit) row.field(hit->alignment.aligned_reference);
+    else row.field(std::string_view{});
+}
+
+void fast_alternatives(FastRow& row, const std::vector<SegmentHit>& hits) {
+    row.alternatives(hits);
+}
+
 }  // namespace
 
 void write_airr_header(std::ostream& output) { write_row(output, columns()); }
@@ -189,6 +340,72 @@ void write_airr_record(std::ostream& output, const Annotation& a) {
         alternative_evidence(a.v_alternatives), alternative_evidence(a.d_alternatives),
         alternative_evidence(a.j_alternatives), alternative_evidence(a.c_alternatives)};
     write_row(output, values);
+}
+
+void append_airr_header(std::string& output) {
+    FastRow row(output);
+    for (const auto& column : columns()) row.field(column);
+    row.finish();
+}
+
+void append_airr_record(std::string& output, const Annotation& a) {
+    FastRow row(output);
+    row.field(a.sequence_id); row.field(a.sequence); row.field(a.quality); row.field(a.sequence_aa);
+    row.field(a.rev_comp); row.optional_boolean(a.productive); row.optional_boolean(a.vj_in_frame);
+    row.optional_boolean(a.stop_codon); row.optional_boolean(a.complete_vdj); row.field(a.locus);
+    fast_hit_name(row, a.v); fast_hit_name(row, a.d); fast_hit_name(row, a.j); fast_hit_name(row, a.c);
+    row.field(a.sequence_alignment); row.field(a.sequence_alignment_aa); row.field(a.germline_alignment);
+    row.field(a.germline_alignment_aa); row.field(a.junction); row.field(a.junction_aa);
+    row.field(a.np1); row.field(a.np2);
+    row.field(a.cdr1.sequence); row.field(a.cdr1.sequence_aa);
+    row.field(a.cdr2.sequence); row.field(a.cdr2.sequence_aa); row.field(a.cdr3); row.field(a.cdr3_aa);
+    row.field(a.fwr1.sequence); row.field(a.fwr1.sequence_aa);
+    row.field(a.fwr2.sequence); row.field(a.fwr2.sequence_aa);
+    row.field(a.fwr3.sequence); row.field(a.fwr3.sequence_aa);
+    row.field(a.fwr4.sequence); row.field(a.fwr4.sequence_aa);
+    fast_hit_score(row, a.v); fast_hit_identity(row, a.v); fast_hit_support(row, a.v); fast_hit_cigar(row, a.v);
+    fast_hit_score(row, a.d); fast_hit_identity(row, a.d); fast_hit_support(row, a.d); fast_hit_cigar(row, a.d);
+    fast_hit_score(row, a.j); fast_hit_identity(row, a.j); fast_hit_support(row, a.j); fast_hit_cigar(row, a.j);
+    fast_hit_score(row, a.c); fast_hit_identity(row, a.c); fast_hit_support(row, a.c); fast_hit_cigar(row, a.c);
+    fast_query_start(row, a.v); fast_query_end(row, a.v); fast_reference_start(row, a.v); fast_reference_end(row, a.v);
+    fast_query_start(row, a.d); fast_query_end(row, a.d); fast_reference_start(row, a.d); fast_reference_end(row, a.d);
+    fast_query_start(row, a.j); fast_query_end(row, a.j); fast_reference_start(row, a.j); fast_reference_end(row, a.j);
+    fast_query_start(row, a.c); fast_query_end(row, a.c); fast_reference_start(row, a.c); fast_reference_end(row, a.c);
+    row.optional_integer(a.cdr1.start); row.optional_integer(a.cdr1.end);
+    row.optional_integer(a.cdr2.start); row.optional_integer(a.cdr2.end);
+    row.optional_integer(a.cdr3_start); row.optional_integer(a.cdr3_end);
+    row.optional_integer(a.fwr1.start); row.optional_integer(a.fwr1.end);
+    row.optional_integer(a.fwr2.start); row.optional_integer(a.fwr2.end);
+    row.optional_integer(a.fwr3.start); row.optional_integer(a.fwr3.end);
+    row.optional_integer(a.fwr4.start); row.optional_integer(a.fwr4.end);
+    fast_query_alignment(row, a.v); fast_query_alignment(row, a.d);
+    fast_query_alignment(row, a.j); fast_query_alignment(row, a.c);
+    fast_germline_alignment(row, a.v); fast_germline_alignment(row, a.d);
+    fast_germline_alignment(row, a.j); fast_germline_alignment(row, a.c);
+    if (a.junction.empty()) row.field(std::string_view{}); else row.integer(a.junction.size());
+    if (a.junction_aa.empty()) row.field(std::string_view{}); else row.integer(a.junction_aa.size());
+    if (!a.v || !a.j) row.field(std::string_view{});
+    else if (a.d) {
+        const auto left = a.v->alignment.query_end;
+        const auto right = a.d->alignment.query_start;
+        row.integer(right > left ? right - left : 0);
+    } else {
+        const auto left = a.v->alignment.query_end;
+        const auto right = a.j->alignment.query_start;
+        row.integer(right > left ? right - left : 0);
+    }
+    if (!a.d || !a.j) row.field(std::string_view{});
+    else {
+        const auto left = a.d->alignment.query_end;
+        const auto right = a.j->alignment.query_start;
+        row.integer(right > left ? right - left : 0);
+    }
+    row.optional_boolean(a.v_frameshift); row.optional_boolean(a.j_frameshift);
+    row.optional_integer(a.d_frame); row.optional_integer(a.sequence_frame);
+    row.field(a.region_definition); row.field(a.v_annotation_source); row.field(a.j_annotation_source);
+    fast_alternatives(row, a.v_alternatives); fast_alternatives(row, a.d_alternatives);
+    fast_alternatives(row, a.j_alternatives); fast_alternatives(row, a.c_alternatives);
+    row.finish();
 }
 
 }  // namespace swiftig

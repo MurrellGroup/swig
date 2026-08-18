@@ -3758,9 +3758,9 @@ const DEFAULT_CLI_CONFIG = {
 	},
 	annotation: {
 		workers: 0,
-		batchRecords: 2e3,
+		batchRecords: 0,
 		callingProfile: "truth_optimized",
-		assignerStrategy: "aer",
+		assignerStrategy: "riat_mp",
 		minimumIdentity: .6,
 		strand: 0,
 		airrMode: "preserve",
@@ -3879,7 +3879,7 @@ function normalizeCliConfig(value) {
 		}
 	};
 	annotation.workers = Math.max(0, Math.floor(finite(annotation.workers, 0)));
-	annotation.batchRecords = Math.max(1, Math.floor(finite(annotation.batchRecords, 2e3)));
+	annotation.batchRecords = Math.max(0, Math.floor(finite(annotation.batchRecords, 0)));
 	annotation.minimumIdentity = Math.max(0, Math.min(1, finite(annotation.minimumIdentity, .6)));
 	const normalizedSubsample = {
 		...DEFAULT_CLI_CONFIG.preprocessing.subsample,
@@ -3989,10 +3989,55 @@ const EMPTY_BOUNDS = [
 	-1
 ];
 const SOURCE_IMGT_GAPPED = 1;
+const SOURCE_AIRR_C = 2;
 const SOURCE_TRANSFERRED_IMGT = 3;
 const SOURCE_VALIDATED_J_MOTIF = 4;
 const SOURCE_PROVIDED = 5;
 const SOURCE_TRANSFERRED_J = 6;
+const MATCH_PRESETS = {
+	strict: {
+		vSameGeneMinIdentity: .8,
+		vNearestMinIdentity: .72,
+		jSameGeneMinIdentity: .75,
+		jNearestMinIdentity: .68,
+		nearestCandidates: 12
+	},
+	permissive: {
+		vSameGeneMinIdentity: .65,
+		vNearestMinIdentity: .55,
+		jSameGeneMinIdentity: .6,
+		jNearestMinIdentity: .5,
+		nearestCandidates: 32
+	},
+	best_guess: {
+		vSameGeneMinIdentity: 0,
+		vNearestMinIdentity: 0,
+		jSameGeneMinIdentity: 0,
+		jNearestMinIdentity: 0,
+		nearestCandidates: 64
+	}
+};
+function identityOption(value, fallback, label) {
+	const resolved = value ?? fallback;
+	if (!Number.isFinite(resolved) || resolved < 0 || resolved > 1) throw new Error(`${label} must be between 0 and 1.`);
+	return resolved;
+}
+function resolveGermlineMatchOptions(options = {}) {
+	const mode = options.mode ?? "strict";
+	const preset = MATCH_PRESETS[mode];
+	if (!preset) throw new Error(`Unsupported germline metadata match mode: ${String(mode)}.`);
+	const nearestCandidates = options.nearestCandidates ?? preset.nearestCandidates;
+	if (!Number.isSafeInteger(nearestCandidates) || nearestCandidates < 1 || nearestCandidates > 1e4) throw new Error("nearestCandidates must be an integer between 1 and 10000.");
+	return {
+		mode,
+		vSameGeneMinIdentity: identityOption(options.vSameGeneMinIdentity, preset.vSameGeneMinIdentity, "vSameGeneMinIdentity"),
+		vNearestMinIdentity: identityOption(options.vNearestMinIdentity, preset.vNearestMinIdentity, "vNearestMinIdentity"),
+		jSameGeneMinIdentity: identityOption(options.jSameGeneMinIdentity, preset.jSameGeneMinIdentity, "jSameGeneMinIdentity"),
+		jNearestMinIdentity: identityOption(options.jNearestMinIdentity, preset.jNearestMinIdentity, "jNearestMinIdentity"),
+		nearestCandidates,
+		includeDiagnostics: Boolean(options.includeDiagnostics)
+	};
+}
 const V_CHAIN_LOCI = {
 	VH: "IGH",
 	VK: "IGK",
@@ -4010,6 +4055,14 @@ const J_CHAIN_LOCI = {
 	JB: "TRB",
 	JD: "TRD",
 	JG: "TRG"
+};
+const METADATA_SOURCE_LABELS = {
+	[SOURCE_IMGT_GAPPED]: "IMGT-gapped delineation",
+	[SOURCE_AIRR_C]: "AIRR-C annotation",
+	[SOURCE_TRANSFERRED_IMGT]: "validated IMGT-boundary transfer",
+	[SOURCE_VALIDATED_J_MOTIF]: "frame-validated J motif",
+	[SOURCE_PROVIDED]: "provided annotation",
+	[SOURCE_TRANSFERRED_J]: "validated J-anchor transfer"
 };
 function positiveModulo(value, modulus) {
 	return (value % modulus + modulus) % modulus;
@@ -4223,10 +4276,18 @@ function kmerSet(sequence, size = 9) {
 	}
 	return output;
 }
+const TEMPLATE_KMER_CACHE = /* @__PURE__ */ new WeakMap();
+function templateKmerSet(template) {
+	const cached = TEMPLATE_KMER_CACHE.get(template);
+	if (cached) return cached;
+	const kmers = kmerSet(template[1]);
+	TEMPLATE_KMER_CACHE.set(template, kmers);
+	return kmers;
+}
 function nearestTemplates(query, templates, limit = 12) {
 	const queryKmers = kmerSet(query);
 	return templates.map((template) => {
-		const templateKmers = kmerSet(template[1]);
+		const templateKmers = templateKmerSet(template);
 		let shared = 0;
 		for (const kmer of templateKmers) if (queryKmers.has(kmer)) shared += 1;
 		const union = queryKmers.size + templateKmers.size - shared;
@@ -4237,7 +4298,7 @@ function nearestTemplates(query, templates, limit = 12) {
 		};
 	}).sort((a, b) => b.similarity - a.similarity || a.lengthDelta - b.lengthDelta).slice(0, limit).map(({ template }) => template);
 }
-function templateCandidateTiers(queryName, query, templates, eligible = hasRegionMetadata) {
+function templateCandidateGroups(queryName, templates, eligible = hasRegionMetadata) {
 	const delineated = templates.filter((template) => eligible(template[2]));
 	const alleleName = canonicalAllele(queryName);
 	const geneName = canonicalGene(queryName);
@@ -4245,7 +4306,11 @@ function templateCandidateTiers(queryName, query, templates, eligible = hasRegio
 	const exactGene = delineated.filter(([name]) => canonicalGene(name) === geneName);
 	const preferred = exactAllele.length ? exactAllele : exactGene;
 	const preferredKeys = new Set(preferred.map(([name, sequence]) => `${name}\u0000${sequence}`));
-	return [preferred, nearestTemplates(query, delineated.filter(([name, sequence]) => !preferredKeys.has(`${name}\u0000${sequence}`)))].filter((tier) => tier.length);
+	return {
+		preferred,
+		preferredKind: exactAllele.length ? "same_allele" : "same_gene",
+		remaining: delineated.filter(([name, sequence]) => !preferredKeys.has(`${name}\u0000${sequence}`))
+	};
 }
 function mapReferenceCoordinates(alignment, referenceLength) {
 	const mapped = new Array(referenceLength + 1).fill(-1);
@@ -4266,58 +4331,151 @@ function mapReferenceCoordinates(alignment, referenceLength) {
 	}
 	return mapped;
 }
-function transferMetadata(name, sequence, templates) {
-	for (const candidates of templateCandidateTiers(name, sequence, templates)) {
+function incrementRejection(result, reason) {
+	result.rejectionCounts[reason] = (result.rejectionCounts[reason] ?? 0) + 1;
+}
+function updateBest(result, template, identity) {
+	if (result.bestIdentity === void 0 || identity > result.bestIdentity) {
+		result.bestIdentity = identity;
+		result.bestCandidate = template[0];
+	}
+}
+function matchKind(name, templateName, fallback) {
+	if (canonicalAllele(templateName) === canonicalAllele(name)) return "same_allele";
+	if (canonicalGene(templateName) === canonicalGene(name)) return "same_gene";
+	return fallback;
+}
+function transferMetadata(name, sequence, templates, options) {
+	const result = {
+		attemptedCandidates: 0,
+		rejectionCounts: {}
+	};
+	const groups = templateCandidateGroups(name, templates);
+	const candidates = [{
+		values: groups.preferred,
+		fallback: groups.preferredKind
+	}, {
+		values: null,
+		fallback: "nearest"
+	}];
+	for (const group of candidates) {
+		const values = group.values ?? nearestTemplates(sequence, groups.remaining, options.nearestCandidates);
+		if (!values.length) continue;
 		let selected;
-		for (const template of candidates) {
+		for (const template of values) {
 			const alignment = globalAlignment(sequence, template[1]);
 			const named = canonicalGene(template[0]) === canonicalGene(name);
-			if (alignment.identity < (named ? .8 : .72)) continue;
+			const relation = matchKind(name, template[0], group.fallback);
+			result.attemptedCandidates += 1;
+			updateBest(result, template, alignment.identity);
+			if (alignment.identity < (named ? options.vSameGeneMinIdentity : options.vNearestMinIdentity)) {
+				incrementRejection(result, "below_identity");
+				continue;
+			}
 			const templateMetadata = template[2];
 			const templateBounds = templateMetadata.slice(2, 12);
 			const mapped = mapReferenceCoordinates(alignment, template[1].length);
 			const bounds = templateBounds.map((boundary) => mapped[boundary]);
-			if (bounds.some((value, index) => value < 0 || value > sequence.length || index && value < bounds[index - 1])) continue;
+			if (bounds.some((value, index) => value < 0 || value > sequence.length || index && value < bounds[index - 1])) {
+				incrementRejection(result, "unmapped_or_nonmonotonic_boundary");
+				continue;
+			}
 			let valid = true;
 			for (let index = 0; index < bounds.length; index += 2) if (bounds[index + 1] <= bounds[index]) valid = false;
-			if (!valid) continue;
+			if (!valid) {
+				incrementRejection(result, "empty_region");
+				continue;
+			}
 			const templateFrame = templateMetadata[0] >= 0 ? templateMetadata[0] : templateBounds[0] % 3;
 			const frame = positiveModulo(bounds[0] + templateFrame - templateBounds[0], 3);
 			const anchorEnd = nearestFrameCysEnd(sequence, bounds[9], frame, 24);
-			if (!anchorEnd || anchorEnd <= bounds[8]) continue;
+			if (!anchorEnd || anchorEnd <= bounds[8]) {
+				incrementRejection(result, "missing_frame_consistent_v_anchor");
+				continue;
+			}
 			bounds[9] = anchorEnd;
 			const metadata = compactMetadata(frame, -1, bounds, SOURCE_TRANSFERRED_IMGT);
-			if (!validateMetadata(metadata, sequence.length, "V")) continue;
+			if (!validateMetadata(metadata, sequence.length, "V")) {
+				incrementRejection(result, "invalid_projected_metadata");
+				continue;
+			}
 			if (!selected || alignment.identity > selected.identity) selected = {
 				metadata,
-				identity: alignment.identity
+				identity: alignment.identity,
+				template: template[0],
+				matchKind: relation
 			};
 		}
-		if (selected) return selected.metadata;
+		if (selected) return {
+			...result,
+			...selected
+		};
 	}
+	if (!result.attemptedCandidates) incrementRejection(result, "no_annotated_template_candidates");
+	return result;
 }
-function transferJMetadata(name, sequence, templates) {
-	for (const candidates of templateCandidateTiers(name, sequence, templates, hasJMetadata)) {
+function transferJMetadata(name, sequence, templates, options) {
+	const result = {
+		attemptedCandidates: 0,
+		rejectionCounts: {}
+	};
+	const groups = templateCandidateGroups(name, templates, hasJMetadata);
+	const candidates = [{
+		values: groups.preferred,
+		fallback: groups.preferredKind
+	}, {
+		values: null,
+		fallback: "nearest"
+	}];
+	for (const group of candidates) {
+		const values = group.values ?? nearestTemplates(sequence, groups.remaining, options.nearestCandidates);
+		if (!values.length) continue;
 		let selected;
-		for (const template of candidates) {
+		for (const template of values) {
 			const alignment = globalAlignment(sequence, template[1]);
 			const named = canonicalGene(template[0]) === canonicalGene(name);
-			if (alignment.identity < (named ? .75 : .68)) continue;
+			const relation = matchKind(name, template[0], group.fallback);
+			result.attemptedCandidates += 1;
+			updateBest(result, template, alignment.identity);
+			if (alignment.identity < (named ? options.jSameGeneMinIdentity : options.jNearestMinIdentity)) {
+				incrementRejection(result, "below_identity");
+				continue;
+			}
 			const referenceAnchor = template[2][1] + 1;
-			if (referenceAnchor < 0 || referenceAnchor + 6 > template[1].length) continue;
+			if (referenceAnchor < 0 || referenceAnchor + 6 > template[1].length) {
+				incrementRejection(result, "invalid_template_j_anchor");
+				continue;
+			}
 			const mapped = mapReferenceCoordinates(alignment, template[1].length);
 			const anchor = mapped[referenceAnchor];
 			const anchorEnd = mapped[referenceAnchor + 6];
-			if (anchor < 0 || anchorEnd - anchor !== 6 || !isJAnchor(sequence, anchor)) continue;
+			if (anchor < 0 || anchorEnd - anchor !== 6) {
+				incrementRejection(result, "incomplete_j_anchor_projection");
+				continue;
+			}
+			if (!isJAnchor(sequence, anchor)) {
+				incrementRejection(result, "target_j_motif_mismatch");
+				continue;
+			}
 			const transferred = compactMetadata(anchor % 3, anchor - 1, EMPTY_BOUNDS, SOURCE_TRANSFERRED_J);
-			if (!validateMetadata(transferred, sequence.length, "J")) continue;
+			if (!validateMetadata(transferred, sequence.length, "J")) {
+				incrementRejection(result, "invalid_projected_metadata");
+				continue;
+			}
 			if (!selected || alignment.identity > selected.identity) selected = {
 				metadata: transferred,
-				identity: alignment.identity
+				identity: alignment.identity,
+				template: template[0],
+				matchKind: relation
 			};
 		}
-		if (selected) return selected.metadata;
+		if (selected) return {
+			...result,
+			...selected
+		};
 	}
+	if (!result.attemptedCandidates) incrementRejection(result, "no_annotated_template_candidates");
+	return result;
 }
 function annotationPresent(segment, metadata) {
 	if (segment === "V") return hasRegionMetadata(metadata);
@@ -4365,7 +4523,12 @@ function prepareIgblastStyleGermlineFasta(text, segment, allowedLoci = LOCI) {
 			if (!allowedLoci.includes(locus)) throw new Error(`${name} belongs to ${locus}, outside the selected ${allowedLoci.join("/")} search space.`);
 			const detectedSegment = inferSegment(name);
 			if (detectedSegment && detectedSegment !== segment) throw new Error(`${name} looks like a ${detectedSegment} gene, not a ${segment} gene.`);
-			const normalized = normalizeIndexSequence(input.rawSequence);
+			let normalized;
+			try {
+				normalized = normalizeIndexSequence(input.rawSequence);
+			} catch (error) {
+				throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+			}
 			if (!normalized.sequence) throw new Error(`${name} has an empty nucleotide sequence.`);
 			ambiguousBases += normalized.ambiguous;
 			loci.add(locus);
@@ -4508,9 +4671,11 @@ function applyIgblastDFrameData(fasta, data) {
 		unmatched
 	};
 }
-function preprocessGermlineFasta(text, segment, templates = [], allowedLoci = LOCI) {
+function preprocessGermlineFasta(text, segment, templates = [], allowedLoci = LOCI, match = {}) {
+	const matchOptions = resolveGermlineMatchOptions(match);
 	const inputRecords = parseFasta(text);
 	const records = [];
+	const diagnostics = [];
 	const seen = /* @__PURE__ */ new Set();
 	const loci = /* @__PURE__ */ new Set();
 	const warnings = [];
@@ -4528,21 +4693,46 @@ function preprocessGermlineFasta(text, segment, templates = [], allowedLoci = LO
 		if (!allowedLoci.includes(locus)) throw new Error(`${name} belongs to ${locus}, outside the selected ${allowedLoci.join("/")} search space.`);
 		const detectedSegment = inferSegment(name);
 		if (detectedSegment && detectedSegment !== segment) throw new Error(`${name} looks like a ${detectedSegment} gene, not a ${segment} gene.`);
-		const normalized = normalizeSequence(input.rawSequence);
+		let normalized;
+		try {
+			normalized = normalizeSequence(input.rawSequence);
+		} catch (error) {
+			throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+		}
 		if (!normalized.sequence) throw new Error(`${name} has an empty nucleotide sequence.`);
 		ambiguousBases += normalized.ambiguous;
 		const fields = parseImgtFields(input.header);
 		let metadata = metadataFromHeader(input.header);
+		let status = metadata ? "retained" : "unresolved";
+		let transfer;
 		if (metadata && !validateMetadata(metadata, normalized.sequence.length, segment)) throw new Error(`${name} contains invalid SWIGMETA coordinates.`);
 		if (metadata) metadata = [...metadata.slice(0, 12), metadata[12] || SOURCE_PROVIDED];
-		if (!metadata && segment === "V") metadata = imgtVMetadata(input.rawSequence, fields);
-		if (!metadata && segment === "V" && templates.length) metadata = transferMetadata(name, normalized.sequence, templates);
-		if (!metadata && segment === "J" && templates.length) metadata = transferJMetadata(name, normalized.sequence, templates);
-		if (!metadata && segment === "J") metadata = jMetadata(normalized.sequence, fields);
+		if (!metadata && segment === "V") {
+			metadata = imgtVMetadata(input.rawSequence, fields);
+			if (metadata) status = "imgt";
+		}
+		if (!metadata && segment === "V" && templates.length) {
+			transfer = transferMetadata(name, normalized.sequence, templates, matchOptions);
+			metadata = transfer.metadata;
+			if (metadata) status = "transferred";
+		}
+		if (!metadata && segment === "J" && templates.length) {
+			transfer = transferJMetadata(name, normalized.sequence, templates, matchOptions);
+			metadata = transfer.metadata;
+			if (metadata) status = "transferred";
+		}
+		if (!metadata && segment === "J") {
+			metadata = jMetadata(normalized.sequence, fields);
+			if (metadata) status = "motif";
+		}
 		if (!metadata && segment === "D") {
 			const frame = imgtFrame(fields);
-			if (frame >= 0) metadata = compactMetadata(frame, -1, EMPTY_BOUNDS, SOURCE_IMGT_GAPPED);
+			if (frame >= 0) {
+				metadata = compactMetadata(frame, -1, EMPTY_BOUNDS, SOURCE_IMGT_GAPPED);
+				status = "imgt";
+			}
 		}
+		if (!metadata && (segment === "D" || segment === "C")) status = "normalized";
 		if (metadata?.[12] === SOURCE_IMGT_GAPPED) exactImgt += 1;
 		if (metadata?.[12] === SOURCE_TRANSFERRED_IMGT || metadata?.[12] === SOURCE_TRANSFERRED_J) transferred += 1;
 		if (metadata?.[12] === SOURCE_VALIDATED_J_MOTIF) motifValidated += 1;
@@ -4556,6 +4746,21 @@ function preprocessGermlineFasta(text, segment, templates = [], allowedLoci = LO
 			locus,
 			metadata
 		});
+		if (matchOptions.includeDiagnostics) diagnostics.push({
+			segment,
+			name,
+			locus,
+			status,
+			source: metadataSource(metadata),
+			template: transfer?.template,
+			identity: transfer?.identity,
+			matchKind: transfer?.matchKind,
+			taxonomicTier: transfer?.metadata ? match.taxonomicTier : void 0,
+			attemptedCandidates: transfer?.attemptedCandidates ?? 0,
+			bestCandidate: transfer?.bestCandidate,
+			bestIdentity: transfer?.bestIdentity,
+			rejectionCounts: transfer && Object.keys(transfer.rejectionCounts).length ? transfer.rejectionCounts : void 0
+		});
 	}
 	const annotated = records.filter((record) => annotationPresent(segment, record.metadata)).length;
 	return {
@@ -4568,7 +4773,23 @@ function preprocessGermlineFasta(text, segment, templates = [], allowedLoci = LO
 		motifValidated,
 		ambiguousBases,
 		loci: [...loci].sort(),
-		warnings
+		warnings,
+		diagnostics: matchOptions.includeDiagnostics ? diagnostics : void 0
+	};
+}
+function mergeDiagnosticHistory(previous, current) {
+	if (!previous) return current;
+	if (current.status === "retained" && previous.status !== "unresolved") return previous;
+	const rejectionCounts = { ...previous.rejectionCounts ?? {} };
+	for (const [reason, count] of Object.entries(current.rejectionCounts ?? {})) rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + count;
+	const previousBest = previous.bestIdentity ?? -1;
+	const currentBest = current.bestIdentity ?? -1;
+	return {
+		...current.status !== "unresolved" ? current : previous,
+		attemptedCandidates: previous.attemptedCandidates + current.attemptedCandidates,
+		bestCandidate: currentBest > previousBest ? current.bestCandidate : previous.bestCandidate,
+		bestIdentity: Math.max(previousBest, currentBest) >= 0 ? Math.max(previousBest, currentBest) : void 0,
+		rejectionCounts: Object.keys(rejectionCounts).length ? rejectionCounts : void 0
 	};
 }
 /**
@@ -4576,13 +4797,21 @@ function preprocessGermlineFasta(text, segment, templates = [], allowedLoci = LO
 * worker. Existing valid SWIGMETA is retained, while records still lacking V
 * or J metadata are offered to each successive template tier.
 */
-function preprocessGermlineFastaAcrossTiers(text, segment, templateTiers, allowedLoci = LOCI) {
+function preprocessGermlineFastaAcrossTiers(text, segment, templateTiers, allowedLoci = LOCI, match = {}) {
 	let report;
-	for (const templates of templateTiers.length ? templateTiers : [[]]) {
-		report = preprocessGermlineFasta(report?.fasta ?? text, segment, [...templates], allowedLoci);
+	const diagnosticHistory = /* @__PURE__ */ new Map();
+	const tiers = templateTiers.length ? templateTiers : [[]];
+	for (let tier = 0; tier < tiers.length; tier += 1) {
+		report = preprocessGermlineFasta(report?.fasta ?? text, segment, [...tiers[tier]], allowedLoci, {
+			...match,
+			includeDiagnostics: Boolean(match.includeDiagnostics),
+			taxonomicTier: tier
+		});
+		for (const diagnostic of report.diagnostics ?? []) diagnosticHistory.set(diagnostic.name, mergeDiagnosticHistory(diagnosticHistory.get(diagnostic.name), diagnostic));
 		if (segment !== "V" && segment !== "J") break;
 		if (report.annotated === report.count) break;
 	}
+	if (match.includeDiagnostics) report.diagnostics = [...diagnosticHistory.values()];
 	return report;
 }
 function annotationCoverage(fasta, segment) {
@@ -4600,6 +4829,9 @@ function annotationCoverage(fasta, segment) {
 }
 function alleleMetadataHeader(allele) {
 	return `>${allele[0]}${metadataHeader(allele[2])}\n${allele[1]}\n`;
+}
+function metadataSource(metadata) {
+	return metadata ? METADATA_SOURCE_LABELS[metadata[12]] ?? "unclassified annotation" : "none";
 }
 //#endregion
 //#region src/post-analysis-record.ts
@@ -5021,7 +5253,9 @@ var ShmAccumulator = class {
 };
 //#endregion
 //#region cli-src/swig-cli.mjs
-const VERSION = "0.35.3";
+const VERSION = "0.37.1";
+const CLI_STREAM_HIGH_WATER_MARK = 8 * 1024 * 1024;
+const CLI_GZIP_CHUNK_SIZE = 1024 * 1024;
 const CLI_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 function defaultCliAssets() {
 	const directory = join(CLI_DIRECTORY, "assets");
@@ -5031,10 +5265,13 @@ function defaultCliAssets() {
 	};
 }
 function usage() {
-	return `swig-cli ${VERSION}\n\nRun a complete non-phylogenetic Swig pipeline:\n  swig-cli run reads.fastq.gz --out swig-output\n  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N]\n\nRun only streaming V(D)J assignment (AIRR outfmt 19):\n  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -out calls.airr.tsv\n\nDisplay bundled-data attribution and license:\n  swig-cli notices\n\nCreate an editable config:\n  swig-cli init swig.config.json\n\nSingle-input metadata options:\n  --sample SAMPLE_ID  --donor SUBJECT_ID  --dataset DATASET_ID\n\nSamples with the same subjectId/--donor are treated as the same donor.\nLineage phylogenetics is intentionally not run by swig-cli.`;
+	return `swig-cli ${VERSION}\n\nRun a complete non-phylogenetic Swig pipeline:\n  swig-cli run reads.fastq.gz --out swig-output\n  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N]\n\nRun only streaming V(D)J assignment (AIRR outfmt 19):\n  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -out calls.airr.tsv\n\nPrepare custom germlines once and reuse their inferred annotations:\n  swig-cli prepare-reference -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -organism human -ig_seqtype Ig --out-prefix refs/custom\n\nDisplay bundled-data attribution and license:\n  swig-cli notices\n\nCreate an editable config:\n  swig-cli init swig.config.json\n\nSingle-input metadata options:\n  --sample SAMPLE_ID  --donor SUBJECT_ID  --dataset DATASET_ID\n\nSamples with the same subjectId/--donor are treated as the same donor.\nLineage phylogenetics is intentionally not run by swig-cli.`;
+}
+function prepareReferenceUsage() {
+	return `swig-cli ${VERSION} prepare-reference\n\nInfer, validate, and persist reusable SWIGMETA germline annotations.\n\nRequired:\n  -germline_db_V FASTA  -germline_db_J FASTA  --out-prefix PREFIX\n\nOptional references and exact metadata:\n  -germline_db_D FASTA  -c_region_db FASTA\n  -custom_internal_data FILE  -auxiliary_data FILE  -d_frame_data FILE\n  -organism NAME (default human)  -ig_seqtype Ig|TCR (default Ig)\n\nMatching controls:\n  --match-mode strict|permissive|best-guess  (default strict)\n  --best-guess             Alias for --match-mode best-guess; disables identity floors\n  --nearest-candidates N   Non-gene candidates aligned after named candidates fail\n  --v-same-gene-min-identity X  --v-nearest-min-identity X\n  --j-same-gene-min-identity X  --j-nearest-min-identity X\n  --require-complete       Exit nonzero if any V/J record remains unresolved\n\nOutputs are PREFIX.V/D/J/C.fasta, PREFIX.swig-reference.json, and\nPREFIX.annotation-diagnostics.tsv. The manifest can be passed directly to\nswig-cli --vdj with --prepared-reference.`;
 }
 function vdjUsage() {
-	return `swig-cli ${VERSION} --vdj\n\nLow-overhead, streaming SwiftIG V(D)J assignment with IgBLAST-style option names.\n\nRequired:\n  -germline_db_V FASTA  -germline_db_J FASTA  -out AIRR_TSV\n\nInput and optional references:\n  -query FASTA            Query FASTA or '-' for stdin (default '-')\n  -germline_db_D FASTA    D germline FASTA\n  -c_region_db FASTA      Constant-region FASTA\n\nAnnotation modes (default: assignments only; CDR/FWR fields remain empty):\n  -custom_internal_data FILE  IgBLAST V .ndm.imgt data (1-based inclusive intervals)\n  -auxiliary_data FILE        IgBLAST J .aux data (0-based frame/CDR3 stop)\n  -d_frame_data FILE          IgBLAST D frame-one starts\n  --swigannots                Infer/validate metadata as in Swig Web\n\nExecution:\n  -num_threads N          Worker count; --workers N overrides it\n  --workers N             Exact workers, or 0 for automatic\n  --batch-records N       Records per bounded WASM batch (default 2000)\n  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\nThe germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\nnot IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally.`;
+	return `swig-cli ${VERSION} --vdj\n\nLow-overhead, streaming SwiftIG V(D)J assignment with IgBLAST-style option names.\n\nRequired:\n  -out AIRR_TSV, plus either --prepared-reference MANIFEST or\n  -germline_db_V FASTA and -germline_db_J FASTA\n\nInput and optional references:\n  -query FASTA            Query FASTA or '-' for stdin (default '-')\n  -germline_db_D FASTA    D germline FASTA\n  -c_region_db FASTA      Constant-region FASTA\n\nAnnotation modes (default: assignments only; CDR/FWR fields remain empty):\n  -custom_internal_data FILE  IgBLAST V .ndm.imgt data (1-based inclusive intervals)\n  -auxiliary_data FILE        IgBLAST J .aux data (0-based frame/CDR3 stop)\n  -d_frame_data FILE          IgBLAST D frame-one starts\n  --swigannots                Infer/validate metadata as in Swig Web\n\n  --prepared-reference FILE   Reuse a prepare-reference manifest and its FASTAs\n  --match-mode MODE           Metadata transfer only: strict, permissive, best-guess\n  --best-guess                Disable metadata-transfer identity floors (not read mapping)\nExecution:\n  -num_threads N          Exact worker count; --workers N overrides it\n  --workers N             Exact workers with no CLI cap; 0 chooses up to 8\n  --batch-records N       Records per bounded WASM batch; 0/omitted selects 2000, 1000,\n                          or 500 according to worker count\n  --assigner NAME         riat_mp (default), aer, or standard\n  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\nThe germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\nnot IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally.`;
 }
 function thirdPartyNotices() {
 	return "Bundled IMGT/GENE-DB reference data\n\nSource: IMGT/GENE-DB release 202632-7, retrieved 2026-08-08.\nCopyright © 1995-2026 IMGT®, the international ImMunoGeneTics information system®.\nAttribution: IMGT®, the international ImMunoGeneTics information system®, https://www.imgt.org/, Institute of Human Genetics, Université de Montpellier and CNRS.\nLicense: CC BY 4.0, https://creativecommons.org/licenses/by/4.0/\nTerms: https://www.imgt.org/about/termsofuse.php\nCitation: Giudicelli V, Chaume D, Lefranc M-P. Nucleic Acids Research. 2005;33:D593-D597. https://doi.org/10.1093/nar/gki010\n\nSwig modifies the source data by selecting and reorganizing IG/TR V/D/J/C records, normalizing and ungapping nucleotide sequences, deriving compact coordinate metadata, selecting one source sequence per allele identifier, and joining selected coding IGH/TR constant exons. Membrane-only and untranslated constant exons are omitted. IMGT, Université de Montpellier, and CNRS do not endorse Swig or warrant the modified pack or its use.";
@@ -5072,7 +5309,7 @@ function parseFiniteOption(value, label) {
 	if (value === void 0 || !Number.isFinite(parsed)) throw new Error(`${label} requires a numeric value.`);
 	return parsed;
 }
-function parseVdjArguments(rawArgs) {
+function parseVdjArguments(rawArgs, context = "vdj") {
 	const aliases = new Map([
 		["--query", "-query"],
 		["--output", "-out"],
@@ -5080,7 +5317,8 @@ function parseVdjArguments(rawArgs) {
 		["--germline-db-v", "-germline_db_V"],
 		["--germline-db-d", "-germline_db_D"],
 		["--germline-db-j", "-germline_db_J"],
-		["--c-region-db", "-c_region_db"]
+		["--c-region-db", "-c_region_db"],
+		["--out-prefix", "-out"]
 	]);
 	const valued = new Set([
 		"-query",
@@ -5108,13 +5346,29 @@ function parseVdjArguments(rawArgs) {
 		"-num_alignments_D",
 		"-num_alignments_J",
 		"-D_penalty",
-		"-J_penalty"
+		"-J_penalty",
+		"--prepared-reference",
+		"--match-mode",
+		"--nearest-candidates",
+		"--v-same-gene-min-identity",
+		"--v-nearest-min-identity",
+		"--j-same-gene-min-identity",
+		"--j-nearest-min-identity"
 	]);
-	const flags = new Set(["--swigannots", "-show_translation"]);
+	const flags = new Set([
+		"--swigannots",
+		"-show_translation",
+		"--best-guess",
+		"--require-complete"
+	]);
 	const options = {};
 	for (let index = 0; index < rawArgs.length; index += 1) {
 		let token = rawArgs[index];
-		if (token === "--vdj") continue;
+		if ([
+			"--vdj",
+			"--precompute_aux",
+			"--precompute-aux"
+		].includes(token)) continue;
 		if ([
 			"-h",
 			"-help",
@@ -5139,12 +5393,32 @@ function parseVdjArguments(rawArgs) {
 			options[token] = true;
 			continue;
 		}
-		if (!valued.has(token)) throw new Error(`Unsupported --vdj option ${token}.\n\n${vdjUsage()}`);
+		if (!valued.has(token)) throw new Error(`Unsupported ${context === "prepare" ? "prepare-reference" : "--vdj"} option ${token}.\n\n${context === "prepare" ? prepareReferenceUsage() : vdjUsage()}`);
 		const value = inline !== void 0 ? inline : rawArgs[++index];
 		if (value === void 0) throw new Error(`${token} requires a value.`);
 		options[token] = value;
 	}
 	return options;
+}
+function germlineMatchOptions(options, { diagnostics = false } = {}) {
+	let mode = String(options["--match-mode"] ?? "strict").replaceAll("-", "_");
+	if (options["--best-guess"]) {
+		if (options["--match-mode"] && mode !== "best_guess") throw new Error("--best-guess conflicts with a different --match-mode value.");
+		mode = "best_guess";
+	}
+	const optionalIdentity = (name) => options[name] === void 0 ? void 0 : parseFiniteOption(options[name], name);
+	return resolveGermlineMatchOptions({
+		mode,
+		nearestCandidates: options["--nearest-candidates"] === void 0 ? void 0 : parseIntegerOption(options["--nearest-candidates"], "--nearest-candidates", {
+			minimum: 1,
+			allowZero: false
+		}),
+		vSameGeneMinIdentity: optionalIdentity("--v-same-gene-min-identity"),
+		vNearestMinIdentity: optionalIdentity("--v-nearest-min-identity"),
+		jSameGeneMinIdentity: optionalIdentity("--j-same-gene-min-identity"),
+		jNearestMinIdentity: optionalIdentity("--j-nearest-min-identity"),
+		includeDiagnostics: diagnostics
+	});
 }
 function resolveFrom(base, value) {
 	return isAbsolute(value) ? value : resolve(base, value);
@@ -5174,12 +5448,14 @@ function inputLines(input) {
 	}
 	if (input.path === "-" && range) throw new Error("Standard input cannot be combined with gzipRange.");
 	if (range && (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end) || range.start < 0 || range.end <= range.start)) throw new Error(`${input.path} has an invalid gzipRange.`);
-	const raw = input.path === "-" ? process.stdin : createReadStream(input.path, range ? {
+	const readOptions = range ? {
 		start: range.start,
-		end: range.end - 1
-	} : void 0);
+		end: range.end - 1,
+		highWaterMark: CLI_GZIP_CHUNK_SIZE
+	} : { highWaterMark: CLI_GZIP_CHUNK_SIZE };
+	const raw = input.path === "-" ? process.stdin : createReadStream(input.path, readOptions);
 	return createInterface({
-		input: /\.gz$/i.test(input.path) || range ? raw.pipe(createGunzip()) : raw,
+		input: /\.gz$/i.test(input.path) || range ? raw.pipe(createGunzip({ chunkSize: CLI_GZIP_CHUNK_SIZE })) : raw,
 		crlfDelay: Infinity
 	});
 }
@@ -5282,9 +5558,11 @@ var WasmPool = class {
 		this.size = size;
 		this.init = init;
 		this.workers = [];
+		this.available = [];
+		this.queued = [];
 		this.pending = /* @__PURE__ */ new Map();
 		this.nextId = 1;
-		this.nextWorker = 0;
+		this.failed = null;
 	}
 	async start() {
 		for (let index = 0; index < this.size; index += 1) {
@@ -5294,14 +5572,19 @@ var WasmPool = class {
 				const pending = this.pending.get(message.id);
 				if (!pending) return;
 				this.pending.delete(message.id);
-				if (message.error) pending.reject(new Error(message.error));
-				else pending.resolve(message.result);
+				const { id, error, ...result } = message;
+				if (error) pending.reject(new Error(error));
+				else pending.resolve(result);
+				if (pending.release) this.release(worker);
 			};
 			const fail = (error) => {
-				for (const [id, pending] of this.pending) if (pending.worker === worker) {
+				const failure = error instanceof Error ? error : new Error(error?.message ?? String(error));
+				this.failed = failure;
+				for (const [id, pending] of this.pending) {
 					this.pending.delete(id);
-					pending.reject(error instanceof Error ? error : new Error(error?.message ?? String(error)));
+					pending.reject(failure);
 				}
+				while (this.queued.length) this.queued.shift().reject(failure);
 			};
 			if (webWorker) {
 				worker.addEventListener("message", (event) => receive(event.data));
@@ -5316,14 +5599,16 @@ var WasmPool = class {
 			type: "init",
 			...this.init
 		})));
+		this.available.push(...this.workers);
 	}
-	request(worker, message) {
+	request(worker, message, release = false) {
 		const id = this.nextId++;
 		return new Promise((resolvePromise, reject) => {
 			this.pending.set(id, {
 				resolve: resolvePromise,
 				reject,
-				worker
+				worker,
+				release
 			});
 			worker.postMessage({
 				id,
@@ -5331,18 +5616,88 @@ var WasmPool = class {
 			});
 		});
 	}
-	run(message) {
-		const worker = this.workers[this.nextWorker++ % this.workers.length];
-		return this.request(worker, {
+	dispatch(worker, job) {
+		const id = this.nextId++;
+		this.pending.set(id, {
+			resolve: job.resolve,
+			reject: job.reject,
+			worker,
+			release: true
+		});
+		worker.postMessage({
+			id,
 			type: "annotate",
-			...message
+			...job.message
+		});
+	}
+	release(worker) {
+		const job = this.queued.shift();
+		if (job) this.dispatch(worker, job);
+		else this.available.push(worker);
+	}
+	run(message) {
+		if (this.failed) return Promise.reject(this.failed);
+		return new Promise((resolvePromise, reject) => {
+			const job = {
+				message,
+				resolve: resolvePromise,
+				reject
+			};
+			const worker = this.available.shift();
+			if (worker) this.dispatch(worker, job);
+			else this.queued.push(job);
 		});
 	}
 	async close() {
+		const error = /* @__PURE__ */ new Error("SwiftIG worker pool closed before queued work completed.");
+		while (this.queued.length) this.queued.shift().reject(error);
 		for (const worker of this.workers) await worker.terminate();
 		this.workers = [];
+		this.available = [];
 	}
 };
+function workerInitialization(wasmPath, references, callingProfile, assignerStrategy, tuning) {
+	return {
+		wasmPath,
+		referenceV: references.V,
+		referenceD: references.D,
+		referenceJ: references.J,
+		referenceC: references.C,
+		callingProfile,
+		assignerStrategy,
+		hasTuning: Boolean(tuning),
+		tuningDMatch: tuning?.dMatch ?? 0,
+		tuningDMismatch: tuning?.dMismatch ?? 0,
+		tuningDGapOpen: tuning?.dGapOpen ?? 0,
+		tuningDGapExtend: tuning?.dGapExtend ?? 0,
+		tuningTopD: tuning?.topD ?? 0,
+		tuningMinDMatch: tuning?.minDMatch ?? 0,
+		tuningJMatch: tuning?.jMatch ?? 0,
+		tuningJMismatch: tuning?.jMismatch ?? 0,
+		tuningJGapOpen: tuning?.jGapOpen ?? 0,
+		tuningJGapExtend: tuning?.jGapExtend ?? 0,
+		tuningTopJ: tuning?.topJ ?? 0,
+		tuningMinJLength: tuning?.minJLength ?? 0
+	};
+}
+function workerAnnotation(text, count, format, minimumIdentity, strand, doubleD) {
+	return {
+		text,
+		count,
+		format,
+		minimumIdentity,
+		strand,
+		doubleDMode: doubleD.mode,
+		doubleDMinimumVjSpan: doubleD.minimumVjSpan ?? 0,
+		doubleDSeedLength: doubleD.seedLength ?? 0,
+		doubleDPseudoTrim: doubleD.pseudoTrim ?? 0,
+		doubleDMaximumPseudoMismatches: doubleD.maximumPseudoMismatches ?? 0,
+		doubleDMinimumScoreGain: doubleD.minimumScoreGain ?? 0
+	};
+}
+function automaticBatchRecords(workers) {
+	return workers <= 2 ? 2e3 : workers <= 4 ? 1e3 : 500;
+}
 function parseTable(headerText, bodyText) {
 	const headers = headerText.replace(/\r$/, "").split("	");
 	const rows = [];
@@ -5514,7 +5869,266 @@ function unmatchedMessage(kind, application) {
 	const preview = application.unmatched.slice(0, 8).join(", ");
 	return `${kind} did not match ${application.unmatched.length.toLocaleString()} selected germline identifier${application.unmatched.length === 1 ? "" : "s"}${preview ? `: ${preview}${application.unmatched.length > 8 ? ", …" : ""}` : ""}.`;
 }
+function sha256(value) {
+	return createHash("sha256").update(value).digest("hex");
+}
+function diagnosticTsv(diagnostics) {
+	const header = [
+		"segment",
+		"name",
+		"locus",
+		"status",
+		"annotation_source",
+		"taxonomic_tier",
+		"match_kind",
+		"template",
+		"identity",
+		"attempted_candidates",
+		"best_candidate",
+		"best_identity",
+		"rejections"
+	];
+	const rows = diagnostics.map((item) => [
+		item.segment,
+		item.name,
+		item.locus,
+		item.status,
+		item.source,
+		item.taxonomicTier ?? "",
+		item.matchKind ?? "",
+		item.template ?? "",
+		item.identity === void 0 ? "" : item.identity.toFixed(6),
+		item.attemptedCandidates,
+		item.bestCandidate ?? "",
+		item.bestIdentity === void 0 ? "" : item.bestIdentity.toFixed(6),
+		Object.entries(item.rejectionCounts ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([reason, count]) => `${reason}:${count}`).join(";")
+	].map(cleanCell).join("	"));
+	return `${header.join("	")}\n${rows.join("\n")}${rows.length ? "\n" : ""}`;
+}
+function referencePreparationSummary(report) {
+	const statusCounts = {};
+	for (const diagnostic of report.diagnostics ?? []) statusCounts[diagnostic.status] = (statusCounts[diagnostic.status] ?? 0) + 1;
+	const { fasta, diagnostics, ...summary } = report;
+	return {
+		...summary,
+		statusCounts
+	};
+}
+function logReferenceFailures(segment, report) {
+	for (const diagnostic of report.diagnostics ?? []) {
+		if (diagnostic.status !== "unresolved") continue;
+		const best = diagnostic.bestCandidate ? `; best candidate ${diagnostic.bestCandidate}${diagnostic.bestIdentity === void 0 ? "" : ` at ${(diagnostic.bestIdentity * 100).toFixed(1)}% identity`}` : "; no annotated candidate";
+		const failures = Object.entries(diagnostic.rejectionCounts ?? {}).sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])).map(([reason, count]) => `${reason}=${count}`).join(", ");
+		process.stderr.write(`[prepare:${segment}] unresolved ${diagnostic.name}${best}${failures ? `; rejected: ${failures}` : ""}.\n`);
+	}
+}
+async function runPrepareReference(rawArgs, assets) {
+	const options = parseVdjArguments(rawArgs, "prepare");
+	if (options.help) {
+		process.stdout.write(`${prepareReferenceUsage()}\n`);
+		return;
+	}
+	if (options.version) {
+		process.stdout.write(`${VERSION}\n`);
+		return;
+	}
+	const outputValue = options["-out"];
+	if (!outputValue || outputValue === "-") throw new Error("prepare-reference requires --out-prefix with a filesystem path.");
+	const paths = {
+		V: options["-germline_db_V"],
+		D: options["-germline_db_D"],
+		J: options["-germline_db_J"],
+		C: options["-c_region_db"]
+	};
+	if (!paths.V || !paths.J) throw new Error("prepare-reference requires -germline_db_V and -germline_db_J source FASTA files.");
+	const packBytes = readFileSync(assets.referencePackPath);
+	const pack = JSON.parse(gunzipSync(packBytes).toString("utf8"));
+	const species = vdjSpecies(pack, options["-organism"]);
+	const scope = vdjScope(options);
+	const allowedLoci = lociForScope(species, scope);
+	if (!allowedLoci.length) throw new Error(`The embedded reference pack has no ${scope} loci for ${species.name}.`);
+	const match = germlineMatchOptions(options, { diagnostics: true });
+	const outputPrefix = resolve(String(outputValue));
+	await mkdir(dirname(outputPrefix), { recursive: true });
+	process.stderr.write(`[prepare] ${species.name} ${scope}; loci ${allowedLoci.join(",")}; ${match.mode.replaceAll("_", "-")} matching; ${match.nearestCandidates} nearest candidates.\n`);
+	process.stderr.write(`[prepare] V identity floors same-gene=${match.vSameGeneMinIdentity.toFixed(3)}, nearest=${match.vNearestMinIdentity.toFixed(3)}; J same-gene=${match.jSameGeneMinIdentity.toFixed(3)}, nearest=${match.jNearestMinIdentity.toFixed(3)}.\n`);
+	if (match.mode === "best_guess") process.stderr.write("[prepare] Best-guess mode disables identity rejection; coordinate, frame, and conserved-anchor validation remain mandatory.\n");
+	const exactData = {
+		V: options["-custom_internal_data"] ? await readMaybeCompressedText(options["-custom_internal_data"], "-custom_internal_data") : null,
+		J: options["-auxiliary_data"] ? await readMaybeCompressedText(options["-auxiliary_data"], "-auxiliary_data") : null,
+		D: options["-d_frame_data"] ? await readMaybeCompressedText(options["-d_frame_data"], "-d_frame_data") : null
+	};
+	if (exactData.D && !paths.D) throw new Error("-d_frame_data requires -germline_db_D.");
+	const references = {
+		V: "",
+		D: "",
+		J: "",
+		C: ""
+	};
+	const files = {};
+	const segments = {};
+	const allDiagnostics = [];
+	let fwr4EndOffsets = {};
+	for (const segment of [
+		"V",
+		"D",
+		"J",
+		"C"
+	]) {
+		const path = paths[segment];
+		if (!path) continue;
+		const raw = await readVdjFasta(path, segment === "C" ? "-c_region_db" : `-germline_db_${segment}`);
+		let input = raw;
+		process.stderr.write(`[prepare:${segment}] Reading and validating ${basename(path)}.\n`);
+		if (segment === "V" && exactData.V) {
+			const application = applyIgblastInternalData(input, exactData.V);
+			input = application.fasta;
+			process.stderr.write(`[prepare:V] IgBLAST internal data matched ${application.matched.toLocaleString()}/${application.total.toLocaleString()} records; unmatched records continue to homology transfer.\n`);
+		}
+		if (segment === "J" && exactData.J) {
+			const application = applyIgblastAuxiliaryData(input, exactData.J);
+			input = application.fasta;
+			fwr4EndOffsets = application.fwr4EndOffsets ?? {};
+			process.stderr.write(`[prepare:J] IgBLAST auxiliary data matched ${application.matched.toLocaleString()}/${application.total.toLocaleString()} records and annotated ${application.annotated.toLocaleString()} CDR3 stops; unmatched records continue to homology/motif inference.\n`);
+		}
+		if (segment === "D" && exactData.D) {
+			const application = applyIgblastDFrameData(input, exactData.D);
+			input = application.fasta;
+			process.stderr.write(`[prepare:D] IgBLAST D-frame data matched ${application.matched.toLocaleString()}/${application.total.toLocaleString()} records.\n`);
+		}
+		const started = performance.now();
+		const report = preprocessGermlineFastaAcrossTiers(input, segment, germlineTemplateTiers(pack, species, scope, segment), allowedLoci, match);
+		const seconds = (performance.now() - started) / 1e3;
+		references[segment] = report.fasta;
+		allDiagnostics.push(...report.diagnostics ?? []);
+		logReferenceFailures(segment, report);
+		files[segment] = {
+			path: basename(`${outputPrefix}.${segment}.fasta`),
+			sha256: sha256(report.fasta),
+			records: report.count,
+			annotated: report.annotated
+		};
+		segments[segment] = {
+			source: basename(path),
+			sourceSha256: sha256(raw),
+			...referencePreparationSummary(report),
+			seconds: Number(seconds.toFixed(3))
+		};
+		process.stderr.write(`[prepare:${segment}] ${report.annotated.toLocaleString()}/${report.count.toLocaleString()} annotated; ${report.unannotated.toLocaleString()} unresolved; ${seconds.toFixed(2)} s.\n`);
+	}
+	const diagnosticsText = diagnosticTsv(allDiagnostics);
+	const diagnosticsPath = `${outputPrefix}.annotation-diagnostics.tsv`;
+	const manifestPath = `${outputPrefix}.swig-reference.json`;
+	const incomplete = (segments.V?.unannotated ?? 0) + (segments.J?.unannotated ?? 0);
+	const manifest = {
+		schema: 1,
+		application: "Swig prepared germline reference",
+		applicationVersion: VERSION,
+		createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+		complete: incomplete === 0,
+		species: species.name,
+		scope,
+		loci: allowedLoci,
+		referencePack: {
+			source: pack.source,
+			release: pack.release,
+			retrieved: pack.retrieved,
+			sha256: sha256(packBytes)
+		},
+		match: {
+			...match,
+			includeDiagnostics: void 0
+		},
+		files,
+		diagnostics: {
+			path: basename(diagnosticsPath),
+			sha256: sha256(diagnosticsText),
+			records: allDiagnostics.length
+		},
+		segments,
+		fwr4EndOffsets
+	};
+	for (const segment of Object.keys(files)) await writeFile(join(dirname(outputPrefix), files[segment].path), references[segment]);
+	await writeFile(diagnosticsPath, diagnosticsText);
+	await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+	process.stderr.write(`[prepare] Wrote ${Object.keys(files).length} prepared FASTA${Object.keys(files).length === 1 ? "" : "s"}, ${basename(diagnosticsPath)}, and ${basename(manifestPath)}.\n`);
+	process.stdout.write(`${JSON.stringify({
+		manifest: manifestPath,
+		diagnostics: diagnosticsPath,
+		complete: manifest.complete,
+		segments: Object.fromEntries(Object.entries(segments).map(([segment, value]) => [segment, {
+			count: value.count,
+			annotated: value.annotated,
+			unannotated: value.unannotated,
+			seconds: value.seconds
+		}]))
+	}, null, 2)}\n`);
+	if (options["--require-complete"] && incomplete) throw new Error(`${incomplete.toLocaleString()} V/J germline record${incomplete === 1 ? " remains" : "s remain"} unresolved; inspect ${diagnosticsPath}.`);
+}
+async function loadPreparedReference(path) {
+	const manifestPath = resolve(path);
+	let manifest;
+	try {
+		manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+	} catch (error) {
+		throw new Error(`Could not read prepared-reference manifest ${path}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (manifest?.schema !== 1 || manifest?.application !== "Swig prepared germline reference") throw new Error(`${path} is not a supported Swig prepared-reference manifest.`);
+	const base = dirname(manifestPath);
+	const references = {
+		V: "",
+		D: "",
+		J: "",
+		C: ""
+	};
+	for (const segment of [
+		"V",
+		"D",
+		"J",
+		"C"
+	]) {
+		const entry = manifest.files?.[segment];
+		if (!entry) continue;
+		const relative = typeof entry === "string" ? entry : entry.path;
+		if (typeof relative !== "string" || !relative) throw new Error(`Prepared-reference manifest has no valid ${segment} FASTA path.`);
+		const fasta = await readVdjFasta(resolve(base, relative), `prepared ${segment} reference`);
+		const expected = typeof entry === "object" ? entry.sha256 : void 0;
+		if (expected && sha256(fasta) !== expected) throw new Error(`Prepared ${segment} FASTA failed its SHA-256 check: ${resolve(base, relative)}.`);
+		references[segment] = fasta;
+		process.stderr.write(`[prepared-reference:${segment}] Loaded and verified ${basename(relative)}.\n`);
+	}
+	if (!references.V || !references.J) throw new Error("Prepared-reference manifest must provide V and J FASTAs.");
+	if (manifest.complete === false) process.stderr.write("Reference warning: this prepared-reference manifest contains unresolved V/J metadata; assignments remain available but some region annotations may be blank.\n");
+	return {
+		references,
+		mode: "prepared-reference",
+		fwr4EndOffsets: manifest.fwr4EndOffsets ?? {},
+		jLengths: fastaLengths(references.J)
+	};
+}
 async function prepareVdjReferences(options, assets) {
+	const preparedPath = options["--prepared-reference"];
+	if (preparedPath) {
+		const conflicts = [
+			"-germline_db_V",
+			"-germline_db_D",
+			"-germline_db_J",
+			"-c_region_db",
+			"-custom_internal_data",
+			"-auxiliary_data",
+			"-d_frame_data",
+			"--swigannots",
+			"--match-mode",
+			"--best-guess",
+			"--nearest-candidates",
+			"--v-same-gene-min-identity",
+			"--v-nearest-min-identity",
+			"--j-same-gene-min-identity",
+			"--j-nearest-min-identity"
+		].filter((name) => options[name]);
+		if (conflicts.length) throw new Error(`--prepared-reference cannot be combined with ${conflicts.join(", ")}.`);
+		return loadPreparedReference(preparedPath);
+	}
 	const paths = {
 		V: options["-germline_db_V"],
 		D: options["-germline_db_D"],
@@ -5533,6 +6147,7 @@ async function prepareVdjReferences(options, assets) {
 	const auxiliaryPath = options["-auxiliary_data"];
 	if (useSwig && (internalPath || auxiliaryPath)) throw new Error("--swigannots cannot be combined with -custom_internal_data or -auxiliary_data; choose one annotation source.");
 	const scope = vdjScope(options);
+	const match = germlineMatchOptions(options);
 	let pack;
 	let species;
 	let allowedLoci;
@@ -5558,7 +6173,7 @@ async function prepareVdjReferences(options, assets) {
 			"C"
 		]) {
 			if (!raw[segment]) continue;
-			const report = preprocessGermlineFastaAcrossTiers(raw[segment], segment, germlineTemplateTiers(pack, species, scope, segment), allowedLoci);
+			const report = preprocessGermlineFastaAcrossTiers(raw[segment], segment, germlineTemplateTiers(pack, species, scope, segment), allowedLoci, match);
 			references[segment] = report.fasta;
 			process.stderr.write(`Swig metadata preparation: ${segment} ${report.annotated.toLocaleString()}/${report.count.toLocaleString()} annotated.\n`);
 			for (const warning of report.warnings) process.stderr.write(`Reference warning: ${warning}\n`);
@@ -5577,7 +6192,7 @@ async function prepareVdjReferences(options, assets) {
 		process.stderr.write(`IgBLAST internal data: ${application.matched.toLocaleString()}/${application.total.toLocaleString()} V records annotated.\n`);
 	} else if (auxiliaryPath) {
 		mode = "igblast-data";
-		const report = preprocessGermlineFastaAcrossTiers(raw.V, "V", germlineTemplateTiers(pack, species, scope, "V"), allowedLoci);
+		const report = preprocessGermlineFastaAcrossTiers(raw.V, "V", germlineTemplateTiers(pack, species, scope, "V"), allowedLoci, match);
 		references.V = report.fasta;
 		process.stderr.write(`Embedded ${species.name} V metadata: ${report.annotated.toLocaleString()}/${report.count.toLocaleString()} records annotated.\n`);
 		for (const warning of report.warnings) process.stderr.write(`Reference warning: ${warning}\n`);
@@ -5746,12 +6361,15 @@ function writeChunk(stream, chunk) {
 	if (stream.write(chunk)) return Promise.resolve();
 	return once(stream, "drain");
 }
+function createCliWriteStream(path) {
+	return createWriteStream(path, { highWaterMark: CLI_STREAM_HIGH_WATER_MARK });
+}
 async function finishWritable(stream) {
 	stream.end();
 	await once(stream, "finish");
 }
 async function writeRowsFile(path, headers, rows, include = () => true) {
-	const stream = createWriteStream(path);
+	const stream = createCliWriteStream(path);
 	try {
 		await once(stream, "open");
 		await writeChunk(stream, `${headers.join("	")}\n`);
@@ -5772,7 +6390,7 @@ async function writeRowsFile(path, headers, rows, include = () => true) {
 	}
 }
 async function writeLineageStudy(path, manifestPath, headers, rows, activeMask, lineages, config, references, shm) {
-	const stream = createWriteStream(path);
+	const stream = createCliWriteStream(path);
 	const hash = createHash("sha256");
 	let offset = 0;
 	const append = async (text) => {
@@ -5880,14 +6498,14 @@ async function runPipeline(config, base, assets) {
 	const loadedReferences = await loadReferences(config, base, assets.referencePackPath);
 	const references = loadedReferences.references;
 	if (config.annotation.airrMode === "preserve" && config.annotation.doubleD.mode !== "off" && config.inputs.some((input) => detectFormat(input.path, input.format) === "airr")) throw new Error("Double-D screening of AIRR input requires annotation.airrMode = \"reannotate\".");
-	const pool = config.inputs.some((input) => detectFormat(input.path, input.format) !== "airr" || config.annotation.airrMode === "reannotate") ? new WasmPool(config.annotation.workers, {
-		wasmPath: assets.wasmPath,
-		references,
-		callingProfile: config.annotation.callingProfile,
-		assignerStrategy: config.annotation.assignerStrategy
-	}) : null;
-	if (pool) await pool.start();
-	const annotatedStream = config.output.writeAnnotatedAirr ? createWriteStream(join(outputDirectory, `${prefix}.annotated.airr.tsv`)) : null;
+	const needsAnnotation = config.inputs.some((input) => detectFormat(input.path, input.format) !== "airr" || config.annotation.airrMode === "reannotate");
+	const annotationBatchRecords = config.annotation.batchRecords || automaticBatchRecords(config.annotation.workers);
+	const pool = needsAnnotation ? new WasmPool(config.annotation.workers, workerInitialization(assets.wasmPath, references, config.annotation.callingProfile, config.annotation.assignerStrategy)) : null;
+	if (pool) {
+		process.stderr.write(`Starting SwiftIG pool (${config.annotation.workers} worker${config.annotation.workers === 1 ? "" : "s"}; ${annotationBatchRecords.toLocaleString()} records/batch).\n`);
+		await pool.start();
+	}
+	const annotatedStream = config.output.writeAnnotatedAirr ? createCliWriteStream(join(outputDirectory, `${prefix}.annotated.airr.tsv`)) : null;
 	let annotatedOutputHeaders = null;
 	const rows = [];
 	const headers = [];
@@ -5944,21 +6562,14 @@ async function runPipeline(config, base, assets) {
 				}
 				annotatedRecords += table.rows.length;
 			};
-			for await (const batch of sequenceBatches(input, config.annotation.batchRecords, config.preprocessing, config.annotation.airrMode, datasetIndex, preprocessingState)) {
+			for await (const batch of sequenceBatches(input, annotationBatchRecords, config.preprocessing, config.annotation.airrMode, datasetIndex, preprocessingState)) {
 				const promise = batch.format === "airr" && config.annotation.airrMode === "preserve" ? Promise.resolve({
 					direct: true,
 					header: batch.header,
 					body: batch.body,
 					doubleDHeader: "",
 					doubleDBody: ""
-				}) : pool.run({
-					text: batch.text,
-					count: batch.count,
-					format: batch.format === "fasta" ? 1 : batch.format === "fastq" ? 2 : 3,
-					minimumIdentity: config.annotation.minimumIdentity,
-					strand: config.annotation.strand,
-					doubleD: config.annotation.doubleD
-				});
+				}) : pool.run(workerAnnotation(batch.text, batch.count, batch.format === "fasta" ? 1 : batch.format === "fastq" ? 2 : 3, config.annotation.minimumIdentity, config.annotation.strand, config.annotation.doubleD));
 				pending.push({
 					promise,
 					count: batch.count
@@ -6198,15 +6809,12 @@ async function runVdj(rawArgs, assets) {
 	if (strand === void 0) throw new Error("-strand must be both, plus, or minus.");
 	const minimumIdentity = options["--minimum-identity"] === void 0 ? .6 : parseFiniteOption(options["--minimum-identity"], "--minimum-identity");
 	if (minimumIdentity < 0 || minimumIdentity > 1) throw new Error("--minimum-identity must be between 0 and 1.");
-	const batchRecords = options["--batch-records"] === void 0 ? 2e3 : parseIntegerOption(options["--batch-records"], "--batch-records", {
-		minimum: 1,
-		allowZero: false
-	});
 	const threadValue = options["--workers"] ?? options["-num_threads"];
 	let workers = threadValue === void 0 ? Math.max(1, Math.min(4, availableParallelism())) : parseIntegerOption(threadValue, options["--workers"] !== void 0 ? "--workers" : "-num_threads", { minimum: 0 });
 	if (options["--workers"] === void 0 && threadValue !== void 0 && workers === 0) throw new Error("-num_threads must be at least 1; use --workers 0 for automatic selection.");
 	if (workers === 0) workers = Math.max(1, Math.min(8, availableParallelism()));
-	const assigner = String(options["--assigner"] ?? "aer");
+	const batchRecords = (options["--batch-records"] === void 0 ? 0 : parseIntegerOption(options["--batch-records"], "--batch-records", { minimum: 0 })) || automaticBatchRecords(workers);
+	const assigner = String(options["--assigner"] ?? "riat_mp");
 	if (![
 		"standard",
 		"riat_mp",
@@ -6224,21 +6832,16 @@ async function runVdj(rawArgs, assets) {
 	if (outputPath !== "-") await mkdir(dirname(outputPath), { recursive: true });
 	const prepared = await prepareVdjReferences(options, assets);
 	const tuning = vdjTuning(options, callingProfile);
-	const pool = new WasmPool(workers, {
-		wasmPath: assets.wasmPath,
-		references: prepared.references,
-		callingProfile,
-		assignerStrategy: assigner,
-		tuning
-	});
+	const pool = new WasmPool(workers, workerInitialization(assets.wasmPath, prepared.references, callingProfile, assigner, tuning));
 	await pool.start();
-	const output = outputPath === "-" ? process.stdout : createWriteStream(outputPath);
+	const output = outputPath === "-" ? process.stdout : createCliWriteStream(outputPath);
 	let outputHeader = null;
 	let records = 0;
 	let completed = false;
 	try {
 		if (outputPath !== "-") await once(output, "open");
-		process.stderr.write(`Streaming SwiftIG V(D)J assignments (${prepared.mode}; ${workers} worker${workers === 1 ? "" : "s"}) to ${outputPath}.\n`);
+		const assignerLabel = assigner === "riat_mp" ? "RIAT-MP" : assigner === "aer" ? "AER" : "standard SwiftIG";
+		process.stderr.write(`Streaming SwiftIG V(D)J assignments (${prepared.mode}; ${workers} worker${workers === 1 ? "" : "s"}; ${batchRecords.toLocaleString()} records/batch; ${assignerLabel}) to ${outputPath}.\n`);
 		const state = {
 			inputRecords: 0,
 			eligibleRecords: 0,
@@ -6270,14 +6873,7 @@ async function runVdj(rawArgs, assets) {
 			format: "fasta"
 		};
 		for await (const batch of sequenceBatches(input, batchRecords, preprocessing, "reannotate", 0, state)) {
-			pending.push({ promise: pool.run({
-				text: batch.text,
-				count: batch.count,
-				format: 1,
-				minimumIdentity,
-				strand,
-				doubleD: { mode: "off" }
-			}) });
+			pending.push({ promise: pool.run(workerAnnotation(batch.text, batch.count, 1, minimumIdentity, strand, { mode: "off" })) });
 			if (pending.length >= Math.max(2, workers * 2)) await consume(pending.shift());
 		}
 		while (pending.length) await consume(pending.shift());
@@ -6291,12 +6887,20 @@ async function runVdj(rawArgs, assets) {
 }
 async function runCli(assets = defaultCliAssets()) {
 	const args = process.argv.slice(2);
+	if (args.includes("--precompute_aux") || args.includes("--precompute-aux")) {
+		await runPrepareReference(args, assets);
+		return;
+	}
 	if (args.includes("--vdj")) {
 		await runVdj(args, assets);
 		return;
 	}
 	const command = args[0] && !args[0].startsWith("-") ? args[0] : "run";
 	const rest = command === args[0] ? args.slice(1) : args;
+	if (command === "prepare-reference") {
+		await runPrepareReference(rest, assets);
+		return;
+	}
 	if (hasFlag(args, "--help") || command === "help") {
 		process.stdout.write(`${usage()}\n`);
 		return;
