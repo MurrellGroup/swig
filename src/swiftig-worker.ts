@@ -11,6 +11,13 @@ import {
   sequenceSourceSize,
 } from "./sequence-stream";
 import type { AssignerStrategy, CallingProfile, DoubleDScreenOptions } from "./swiftig-runtime";
+import {
+  ASSIGNMENT_TELEMETRY_INTERVAL_MS,
+  initializingAssignmentTelemetry,
+  updateQueriesPerSecondEma,
+  type AssignmentPhase,
+  type AssignmentTelemetry,
+} from "./assignment-telemetry";
 
 interface StartRequest {
   type: "start";
@@ -59,6 +66,17 @@ const encoder = new TextEncoder();
 
 function postProgress(id: number, stage: string, value: number) {
   self.postMessage({ id, type: "progress", stage, value });
+}
+
+function postInitializationTelemetry(id: number, totalWorkers: number, activeWorkers: number) {
+  self.postMessage({
+    id,
+    type: "telemetry",
+    telemetry: {
+      ...initializingAssignmentTelemetry(totalWorkers),
+      activeWorkers: Math.max(0, Math.min(totalWorkers, activeWorkers)),
+    },
+  });
 }
 
 function waitForAcknowledgement(id: number, batch: number): Promise<void> {
@@ -161,17 +179,32 @@ function annotate(slot: ComputeSlot, batch: SequenceBatch, request: StartRequest
 
 async function handleRequest(request: StartRequest) {
   const slots: ComputeSlot[] = [];
+  let telemetryTimer: number | undefined;
   try {
     const workerCount = effectiveWorkerCount(request);
     postProgress(request.id, `Loading WebAssembly for ${workerCount} parallel worker${workerCount === 1 ? "" : "s"}`, 0.03);
+    postInitializationTelemetry(request.id, workerCount, 0);
     const module = await compileCore();
     postProgress(request.id, `Indexing germlines in ${workerCount} worker${workerCount === 1 ? "" : "s"}`, 0.08);
-    slots.push(...await Promise.all(Array.from(
+    // Each compute worker receives its own SwiftIG instance and germline index.
+    // The initializations are launched together, which is the expected brief
+    // all-core burst at the start of every browser dataset.
+    let activeInitializers = workerCount;
+    postInitializationTelemetry(request.id, workerCount, activeInitializers);
+    const initializationTasks = Array.from(
       { length: workerCount },
-      (_, index) => initializeSlot(
-        index, module, request.references, request.callingProfile, request.assignerStrategy,
-      ),
-    )));
+      async (_, index) => {
+        try {
+          return await initializeSlot(
+            index, module, request.references, request.callingProfile, request.assignerStrategy,
+          );
+        } finally {
+          activeInitializers -= 1;
+          postInitializationTelemetry(request.id, workerCount, activeInitializers);
+        }
+      },
+    );
+    slots.push(...await Promise.all(initializationTasks));
 
     let fatalError: Error | null = null;
     let wakeAvailability: (() => void) | null = null;
@@ -184,7 +217,9 @@ async function handleRequest(request: StartRequest) {
     let nextCommit = 0;
     let parsed = 0;
     let committed = 0;
+    let acknowledged = 0;
     let inputDone = false;
+    let finalizing = false;
     let flushing = false;
     let lastProgress = 0.14;
     let bytesRead = 0;
@@ -194,6 +229,44 @@ async function handleRequest(request: StartRequest) {
     let fastqFilterStats: FastqQualityFilterStats = emptyFastqQualityFilterStats(
       Boolean(request.fastqFilter?.enabled),
       Boolean(request.fastqFilter?.enabled && request.format === 2),
+    );
+    let telemetryRate: number | null = null;
+    let telemetryPreviousTime = performance.now();
+    let telemetryPreviousCommitted = 0;
+
+    const assignmentPhase = (): AssignmentPhase => finalizing
+      ? "finalizing"
+      : inputDone ? "draining" : "streaming";
+
+    const telemetrySnapshot = (): AssignmentTelemetry => ({
+      phase: assignmentPhase(),
+      activeWorkers: slots.reduce((count, slot) => count + (slot.busy ? 1 : 0), 0),
+      totalWorkers: workerCount,
+      queriesPerSecond: telemetryRate,
+      recordsParsed: parsed,
+      recordsCommitted: acknowledged,
+      recordsOutstanding: Math.max(0, parsed - acknowledged),
+    });
+
+    const publishTelemetry = (updateRate: boolean) => {
+      const now = performance.now();
+      const elapsed = now - telemetryPreviousTime;
+      if (updateRate && elapsed > 0) {
+        telemetryRate = updateQueriesPerSecondEma(
+          telemetryRate,
+          acknowledged - telemetryPreviousCommitted,
+          elapsed,
+        );
+        telemetryPreviousTime = now;
+        telemetryPreviousCommitted = acknowledged;
+      }
+      self.postMessage({ id: request.id, type: "telemetry", telemetry: telemetrySnapshot() });
+    };
+
+    publishTelemetry(false);
+    telemetryTimer = self.setInterval(
+      () => publishTelemetry(true),
+      ASSIGNMENT_TELEMETRY_INTERVAL_MS,
     );
 
     const fail = (error: Error) => {
@@ -258,6 +331,7 @@ async function handleRequest(request: StartRequest) {
             doubleDCount: result.doubleDCount ?? 0,
           }, [result.body, ...(result.doubleDBody ? [result.doubleDBody] : [])]);
           await acknowledgement;
+          acknowledged += result.count;
           nextCommit += 1;
           wakeAvailability?.();
           wakeAvailability = null;
@@ -322,6 +396,7 @@ async function handleRequest(request: StartRequest) {
       }).catch(fail);
     }
     inputDone = true;
+    publishTelemetry(false);
     bytesRead = totalBytes;
     if (fastqFilterStats.applicable) {
       const rejected = fastqFilterStats.recordsRejectedExpectedErrors + fastqFilterStats.recordsRejectedMinimumLength;
@@ -334,6 +409,8 @@ async function handleRequest(request: StartRequest) {
     maybeFinish();
     await finished;
     if (fatalError) throw fatalError;
+    finalizing = true;
+    publishTelemetry(false);
     postProgress(request.id, "Finalizing the local AIRR index", 0.98);
     self.postMessage({
       id: request.id,
@@ -351,6 +428,7 @@ async function handleRequest(request: StartRequest) {
       message: error instanceof Error ? error.message : String(error),
     });
   } finally {
+    if (telemetryTimer !== undefined) self.clearInterval(telemetryTimer);
     slots.forEach((slot) => slot.worker.terminate());
   }
 }

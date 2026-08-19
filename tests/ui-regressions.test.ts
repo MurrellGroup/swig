@@ -115,6 +115,31 @@ test("analysis-scale running states expose cancellation and every interface fami
   assert.match(index, /PHYLO_UCA_INFERENCE\.md/);
 });
 
+test("assignment progress uses stable geometry and live scheduler telemetry", () => {
+  const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
+  const scheduler = fs.readFileSync(new URL("../src/swiftig-worker.ts", import.meta.url), "utf8");
+  const runtime = fs.readFileSync(new URL("../src/swiftig-runtime.ts", import.meta.url), "utf8");
+  const styles = fs.readFileSync(new URL("../src/globals.css", import.meta.url), "utf8");
+
+  assert.match(app, /Live assignment telemetry/);
+  assert.match(app, /Queries \/ s/);
+  assert.match(app, /Active workers/);
+  assert.match(app, /Draining final batches/);
+  assert.match(app, /onTelemetry: setAssignmentTelemetry/);
+  assert.match(runtime, /onTelemetry\?: \(telemetry: AssignmentTelemetry\)/);
+  assert.match(scheduler, /activeInitializers -= 1/);
+  assert.match(scheduler, /postInitializationTelemetry\(request\.id, workerCount, activeInitializers\)/);
+  assert.match(scheduler, /activeWorkers: slots\.reduce/);
+  assert.match(scheduler, /acknowledged \+= result\.count/);
+  assert.match(scheduler, /ASSIGNMENT_TELEMETRY_INTERVAL_MS/);
+  assert.match(styles, /\.progress-orbit > span b[\s\S]*width: 3ch/);
+  assert.match(styles, /\.progress-copy h2[\s\S]*height: 3\.45em/);
+  assert.match(styles, /\.progress-copy h2[\s\S]*font-variant-numeric: tabular-nums/);
+  assert.match(styles, /\.assignment-telemetry[\s\S]*grid-template-columns: repeat\(3/);
+  assert.match(styles, /\.assignment-telemetry > div[\s\S]*grid-template-rows: 14px 34px 24px/);
+  assert.match(styles, /\.assignment-telemetry dd[\s\S]*font-variant-numeric: tabular-nums/);
+});
+
 test("assignment is one progressive action page while independent result tools remain contextual", () => {
   const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const repertoire = fs.readFileSync(new URL("../src/repertoire-charts.tsx", import.meta.url), "utf8");
@@ -225,6 +250,8 @@ test("allele pooling exposes parameter-responsive reference and hard assignment 
 
 test("post-analysis skipping, richer lineage rows, CLI export, and lazy lineage studies remain exposed",()=>{
   const post=fs.readFileSync(new URL("../src/post-analysis.tsx",import.meta.url),"utf8");
+  const postWorker=fs.readFileSync(new URL("../src/post-analysis-worker.ts",import.meta.url),"utf8");
+  const partitionWorker=fs.readFileSync(new URL("../src/post-analysis-partition-worker.ts",import.meta.url),"utf8");
   const app=fs.readFileSync(new URL("../src/swig-app.tsx",import.meta.url),"utf8");
   const lineageStudy=fs.readFileSync(new URL("../src/lineage-study-page.tsx",import.meta.url),"utf8");
   const standalone=fs.readFileSync(new URL("../cli-src/swig-cli-standalone.mjs",import.meta.url),"utf8");
@@ -237,7 +264,17 @@ test("post-analysis skipping, richer lineage rows, CLI export, and lazy lineage 
   assert.match(post,/sample\.sampleId\}: \{sample\.abundance\.toLocaleString\(\)\} read/);
   assert.match(post,/Mean SHM/);
   assert.match(post,/SHM upper q95/);
+  assert.match(post,/Representative CDR3/);
+  assert.match(post,/Open selected together/);
+  assert.match(post,/Open together/);
+  assert.match(post,/Indel-aware edit distance/);
+  assert.match(post,/Require compatible V or J/);
   assert.match(post,/Post-lineage analysis/);
+  assert.match(postWorker,/new Worker\(new URL\("\.\/post-analysis-partition-worker\.ts"/);
+  assert.match(postWorker,/records\.length >= 10_000/);
+  assert.match(postWorker,/>= 500 \? request\.workers : 1/);
+  assert.match(partitionWorker,/runDenoisePartitionJob/);
+  assert.match(partitionWorker,/runExactDedupJob/);
   assert.match(app,/Export CLI config/);
   assert.match(app,/Run this setup with swig-cli/);
   assert.match(app,/exportConfiguredCliConfig/);
@@ -245,6 +282,9 @@ test("post-analysis skipping, richer lineage rows, CLI export, and lazy lineage 
   assert.match(app,/Cancel CLI config export/);
   assert.match(app,/Load lineage study/);
   assert.match(lineageStudy,/readLineageAirrSlice/);
+  assert.match(lineageStudy,/Promise\.all\(selected\.map/);
+  assert.match(lineageStudy,/Open together/);
+  assert.match(lineageStudy,/Representative CDR3/);
   assert.match(lineageStudy,/Samples and read counts/);
   assert.match(standalone,/with \{ type: "file" \}/);
   assert.match(standalone,/runCli\(\{wasmPath,referencePackPath\}\)/);

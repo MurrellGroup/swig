@@ -51,9 +51,16 @@ The shipped error-rate starting value is 0.00473, inherited from the linked MiSe
 
 The result reports unique representatives, collapsed rows, preserved abundance, partitions, exact candidate comparisons, substitution/indel merges, unresolved/ambiguous exclusions, and cap hits. Hitting the cap makes candidate generation incomplete and produces a warning; increase it and rerun before treating the result as final.
 
+## Parallel execution and reproducibility
+
+Exact collapse assigns complete comparison keys to deterministic hash shards. Identical keys therefore always enter the same shard, and each shard preserves input ordinal order. Swig merges shard results by ordinal, so the representative, abundance, and output are identical regardless of worker completion order. Browser and CLI enable these shards for at least 10,000 records, where worker startup is normally amortized.
+
+Methods B–D run independent study/C/locus/V/J partitions on a dynamically scheduled worker pool once the run contains at least 500 unique variants. A partition is never subdivided: template/centroid decisions can depend on every variant within it, particularly FAD's globally nearest accepted centroid. Consequently a repertoire containing one overwhelmingly large partition cannot usefully occupy every configured worker without changing the method. The serial and parallel routes call the same pure partition kernel and use identical sort keys and ordinal tie breaks. Cancellation terminates the outer worker and all of its active partition workers; results are committed only after every partition succeeds.
+
 ## Limitations
 
 - FAD was developed for amplicon denoising; its forced nearest-centroid assignment can merge a genuinely distinct variant.
 - Methods C/D use a simple independent, equal-substitution error model rather than per-base qualities or learned context.
 - Method D's indel abundance rule can merge true biological length variants.
 - Denoising expanded clones or PCR-amplified counts confounds molecule abundance with biological abundance unless preprocessing supplies suitable multiplicities.
+- Parallel speedup is bounded by the largest independent V/J partition and worker startup/serialization costs.

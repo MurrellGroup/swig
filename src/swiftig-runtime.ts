@@ -1,5 +1,6 @@
 import type { CompiledReferences } from "./reference-pack";
 import type { FastqQualityFilterOptions, FastqQualityFilterStats, SequenceSource } from "./sequence-stream";
+import type { AssignmentTelemetry } from "./assignment-telemetry";
 
 export interface ResultBatch {
   header: string;
@@ -40,6 +41,7 @@ export interface RunOptions {
   fastqFilter?: FastqQualityFilterOptions;
   doubleD?: DoubleDScreenOptions;
   onProgress?: (stage: string, value: number) => void;
+  onTelemetry?: (telemetry: AssignmentTelemetry) => void;
   onBatch?: (batch: ResultBatch) => void | Promise<void>;
   signal?: AbortSignal;
 }
@@ -106,7 +108,7 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
     worker.onmessage = (event) => {
       const message = event.data as {
         id: number;
-        type: "progress" | "batch" | "result" | "error";
+        type: "progress" | "telemetry" | "batch" | "result" | "error";
         stage?: string;
         value?: number;
         batch?: number;
@@ -122,10 +124,15 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
         doubleDHeader?: string;
         doubleDBody?: ArrayBuffer;
         doubleDCount?: number;
+        telemetry?: AssignmentTelemetry;
       };
       if (message.id !== id || finished) return;
       if (message.type === "progress") {
         options.onProgress?.(message.stage ?? "Working", message.value ?? 0);
+        return;
+      }
+      if (message.type === "telemetry") {
+        if (message.telemetry) options.onTelemetry?.(message.telemetry);
         return;
       }
       if (message.type === "batch") {

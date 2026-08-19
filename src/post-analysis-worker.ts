@@ -2,15 +2,22 @@
 
 import {
   assignLineages,
+  createExactDedupPlan,
   DenoiseAccumulator,
-  deduplicate,
   expandSingleLinkage,
+  finishExactDedupPlan,
   findLineageNeighbours,
   minHashSketch,
   queryRecords,
+  runDenoisePartitionJob,
+  runExactDedupJob,
   type DedupKey,
   type DedupResult,
+  type DenoisePartitionJob,
+  type DenoisePartitionJobResult,
   type DenoiseOptions,
+  type ExactDedupJob,
+  type ExactDedupJobResult,
   type ExpansionOptions,
   type LineageOptions,
   type LineageNeighbourOptions,
@@ -50,10 +57,10 @@ type Request =
   | { id: number; type: "ingest"; rows: IngestRow[] }
   | { id: number; type: "initSketches" }
   | { id: number; type: "ingestSketches"; rows: Array<{ ordinal: number; sequence: string }> }
-  | { id: number; type: "dedup"; key: DedupKey; unresolvedPolicy: "discard" | "retain"; scope: DatasetScope; respectConstantCall: boolean }
+  | { id: number; type: "dedup"; key: DedupKey; unresolvedPolicy: "discard" | "retain"; scope: DatasetScope; respectConstantCall: boolean; workers: number }
   | { id: number; type: "denoiseInit"; options: DenoiseOptions }
   | { id: number; type: "denoiseIngest"; rows: Array<{ ordinal: number; sequence: string }> }
-  | { id: number; type: "denoiseFinish" }
+  | { id: number; type: "denoiseFinish"; workers: number }
   | { id: number; type: "applyDedupFilter" }
   | { id: number; type: "setActiveMask"; mask: Uint8Array | null }
   | { id: number; type: "activeMask" }
@@ -87,6 +94,66 @@ function intern(value: string): string {
   if (existing !== undefined) return existing;
   interned.set(value, value);
   return value;
+}
+
+type PartitionTask =
+  | { kind: "denoise"; job: DenoisePartitionJob }
+  | { kind: "exact"; job: ExactDedupJob };
+
+function runPartitionTasks(
+  tasks: PartitionTask[],
+  requestedWorkers: number,
+  onCompleted?: (result: DenoisePartitionJobResult | ExactDedupJobResult) => void,
+): Promise<Array<DenoisePartitionJobResult | ExactDedupJobResult>> {
+  if (!tasks.length) return Promise.resolve([]);
+  const workerCount = Math.max(1, Math.min(Math.floor(requestedWorkers) || 1, tasks.length));
+  if (workerCount === 1) {
+    return Promise.resolve(tasks.map((task) => {
+      const result = task.kind === "denoise" ? runDenoisePartitionJob(task.job) : runExactDedupJob(task.job);
+      onCompleted?.(result);
+      return result;
+    }));
+  }
+  return new Promise((resolve, reject) => {
+    const children: Worker[] = [];
+    const results: Array<DenoisePartitionJobResult | ExactDedupJobResult> = new Array(tasks.length);
+    let nextTask = 0;
+    let completed = 0;
+    let settled = false;
+    const close = () => children.forEach((child) => child.terminate());
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      close();
+      reject(error);
+    };
+    const dispatch = (child: Worker) => {
+      if (nextTask >= tasks.length) return;
+      const taskIndex = nextTask++;
+      child.postMessage({ taskIndex, ...tasks[taskIndex] });
+    };
+    for (let index = 0; index < workerCount; index += 1) {
+      const child = new Worker(new URL("./post-analysis-partition-worker.ts", import.meta.url), { type: "module" });
+      child.onmessage = (event: MessageEvent<{ taskIndex: number; result?: DenoisePartitionJobResult | ExactDedupJobResult; error?: string }>) => {
+        if (settled) return;
+        if (event.data.error || !event.data.result) {
+          fail(new Error(event.data.error || "A post-analysis partition worker returned no result."));
+          return;
+        }
+        results[event.data.taskIndex] = event.data.result;
+        onCompleted?.(event.data.result);
+        completed += 1;
+        if (completed === tasks.length) {
+          settled = true;
+          close();
+          resolve(results);
+        } else dispatch(child);
+      };
+      child.onerror = (event) => fail(new Error(event.message || "A post-analysis partition worker stopped unexpectedly."));
+      children.push(child);
+      dispatch(child);
+    }
+  });
 }
 
 function compactLineageResult(result: LineageResult) {
@@ -140,7 +207,7 @@ function refreshDoubleDLineageSummaries(result: LineageResult, dedup?: DedupResu
   }
 }
 
-worker.onmessage = (event: MessageEvent<Request>) => {
+worker.onmessage = async (event: MessageEvent<Request>) => {
   const request = event.data;
   try {
     let result: unknown;
@@ -170,7 +237,10 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       for (const row of request.rows) packedSketches.set(minHashSketch(row.sequence), row.ordinal * 8);
       result = { sketched: request.rows.length };
     } else if (request.type === "dedup") {
-      currentDedup = deduplicate(records, request.key, request.unresolvedPolicy, request.scope, request.respectConstantCall);
+      const shardCount = records.length >= 10_000 ? request.workers : 1;
+      const plan = createExactDedupPlan(records, request.key, request.unresolvedPolicy, request.scope, request.respectConstantCall, shardCount);
+      const taskResults = await runPartitionTasks(plan.jobs.map((job) => ({ kind: "exact" as const, job })), request.workers);
+      currentDedup = finishExactDedupPlan(plan, taskResults as ExactDedupJobResult[]);
       denoiseAccumulator = undefined;
       currentLineages = undefined;
       currentActiveMask = undefined;
@@ -187,9 +257,22 @@ worker.onmessage = (event: MessageEvent<Request>) => {
       result = { ingested: request.rows.length };
     } else if (request.type === "denoiseFinish") {
       if (!denoiseAccumulator) throw new Error("Initialize denoising before finalization.");
-      currentDedup = denoiseAccumulator.finish((processed, total, phase) => {
-        worker.postMessage({ id: request.id, progress: { processed, total, phase } });
+      const jobs = denoiseAccumulator.preparePartitionJobs();
+      const variantWork = Math.max(1, jobs.reduce((total, job) => total + (job.options.mode === "fad"
+        ? job.variants.length + job.variants.reduce((count, variant) => count + (variant.count >= job.options.minimumParentCount ? 1 : 0), 0)
+        : job.variants.length), 0));
+      let processedVariantWork = 0;
+      worker.postMessage({ id: request.id, progress: { processed: 0, total: variantWork, phase: "variants" } });
+      const parallelWorkers = jobs.reduce((total, job) => total + job.variants.length, 0) >= 500 ? request.workers : 1;
+      const taskResults = await runPartitionTasks(jobs.map((job) => ({ kind: "denoise" as const, job })), parallelWorkers, (completed) => {
+        if (!("variantWork" in completed)) return;
+        processedVariantWork += completed.variantWork;
+        worker.postMessage({ id: request.id, progress: { processed: Math.min(processedVariantWork, variantWork), total: variantWork, phase: "variants" } });
       });
+      if (!jobs.length) worker.postMessage({ id: request.id, progress: { processed: variantWork, total: variantWork, phase: "variants" } });
+      currentDedup = denoiseAccumulator.finishWithPartitionResults(taskResults as DenoisePartitionJobResult[], (processed, total, phase) => {
+        worker.postMessage({ id: request.id, progress: { processed, total, phase } });
+      }, false);
       denoiseAccumulator = undefined;
       result = compactDedupResult(currentDedup);
     } else if (request.type === "applyDedupFilter") {

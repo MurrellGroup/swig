@@ -28,11 +28,12 @@ import {
 import {
   DenoiseAccumulator,
   assignLineages,
-  chmmairraDistanceFromReference,
+  createExactDedupPlan,
   deduplicate,
+  finishExactDedupPlan,
   prepareReferenceMsa,
-  runChmm,
-  threadSequenceToMsa,
+  runDenoisePartitionJob,
+  runExactDedupJob,
 } from "../src/post-analysis-core.ts";
 import { airrRowToPostAnalysisRecord, denoiseVdjSequence } from "../src/post-analysis-record.ts";
 import { compileReferences, germlineTemplateTiers, lociForScope } from "../src/reference-pack.ts";
@@ -51,7 +52,7 @@ import {
 } from "../src/sequence-stream.ts";
 import { annotateAirrBatch, annotateDoubleDBatch, stableDatasetSeed } from "../src/study-design.ts";
 
-const VERSION="0.37.2";
+const VERSION="0.37.4";
 const CLI_STREAM_HIGH_WATER_MARK=8*1024*1024;
 const CLI_GZIP_CHUNK_SIZE=1024*1024;
 const CLI_DIRECTORY=dirname(fileURLToPath(import.meta.url));
@@ -352,6 +353,47 @@ class WasmPool {
     for(const worker of this.workers)await worker.terminate();
     this.workers=[];this.available=[];
   }
+}
+
+async function runPostAnalysisTasks(tasks,requestedWorkers,onCompleted){
+  if(!tasks.length)return [];
+  const workerCount=Math.max(1,Math.min(Math.floor(requestedWorkers)||1,tasks.length));
+  if(workerCount===1)return tasks.map((task)=>{const result=task.kind==="denoise"?runDenoisePartitionJob(task.job):runExactDedupJob(task.job);onCompleted?.(result);return result;});
+  return new Promise((resolvePromise,reject)=>{
+    const workers=[];const results=new Array(tasks.length);let next=0,completed=0,settled=false;
+    const close=()=>{for(const worker of workers)void worker.terminate();};
+    const fail=(error)=>{if(settled)return;settled=true;close();reject(error instanceof Error?error:new Error(error?.message??String(error)));};
+    const dispatch=(worker)=>{if(next>=tasks.length)return;const id=next++;worker.postMessage({id,...tasks[id]});};
+    for(let index=0;index<workerCount;index+=1){
+      const webWorker=Boolean(process.versions.bun&&globalThis.Worker);
+      const worker=webWorker?new globalThis.Worker(new URL("./post-analysis-worker.js",import.meta.url)):new NodeWorker(new URL("./post-analysis-worker.mjs",import.meta.url));
+      const receive=(message)=>{if(settled)return;if(message.error||!message.result){fail(new Error(message.error||"A post-analysis worker returned no result."));return;}results[message.id]=message.result;onCompleted?.(message.result);completed+=1;if(completed===tasks.length){settled=true;close();resolvePromise(results);}else dispatch(worker);};
+      if(webWorker){worker.addEventListener("message",(event)=>receive(event.data));worker.addEventListener("error",fail);}
+      else{worker.on("message",receive);worker.on("error",fail);}
+      workers.push(worker);dispatch(worker);
+    }
+  });
+}
+
+class ChmmPool {
+  constructor(size,init){this.size=size;this.init=init;this.workers=[];this.available=[];this.queued=[];this.pending=new Map();this.nextId=1;this.failed=null;}
+  async start(){
+    for(let index=0;index<this.size;index+=1){
+      const webWorker=Boolean(process.versions.bun&&globalThis.Worker);
+      const worker=webWorker?new globalThis.Worker(new URL("./chmmairra-worker.js",import.meta.url)):new NodeWorker(new URL("./chmmairra-worker.mjs",import.meta.url));
+      const receive=(message)=>{const pending=this.pending.get(message.id);if(!pending)return;this.pending.delete(message.id);if(message.error)pending.reject(new Error(message.error));else pending.resolve(message.result);if(pending.release)this.release(worker);};
+      const fail=(error)=>{const failure=error instanceof Error?error:new Error(error?.message??String(error));this.failed=failure;for(const [id,pending] of this.pending){this.pending.delete(id);pending.reject(failure);}while(this.queued.length)this.queued.shift().reject(failure);};
+      if(webWorker){worker.addEventListener("message",(event)=>receive(event.data));worker.addEventListener("error",fail);}else{worker.on("message",receive);worker.on("error",fail);}
+      this.workers.push(worker);
+    }
+    await Promise.all(this.workers.map((worker)=>this.request(worker,{type:"init",...this.init})));
+    this.available.push(...this.workers);
+  }
+  request(worker,message,release=false){const id=this.nextId++;return new Promise((resolvePromise,reject)=>{this.pending.set(id,{resolve:resolvePromise,reject,release});worker.postMessage({id,...message});});}
+  dispatch(worker,job){const id=this.nextId++;this.pending.set(id,{resolve:job.resolve,reject:job.reject,release:true});worker.postMessage({id,type:"batch",rows:job.rows});}
+  release(worker){const job=this.queued.shift();if(job)this.dispatch(worker,job);else this.available.push(worker);}
+  run(rows){if(this.failed)return Promise.reject(this.failed);return new Promise((resolvePromise,reject)=>{const job={rows,resolve:resolvePromise,reject};const worker=this.available.shift();if(worker)this.dispatch(worker,job);else this.queued.push(job);});}
+  async close(){const error=new Error("CHMMAIRRa worker pool closed before queued work completed.");while(this.queued.length)this.queued.shift().reject(error);await Promise.all(this.workers.map((worker)=>Promise.resolve(worker.terminate())));this.workers=[];this.available=[];}
 }
 
 function workerInitialization(wasmPath,references,callingProfile,assignerStrategy,tuning){
@@ -763,12 +805,11 @@ function applyAlleles(rows,result,policy,threshold,headers){
   }
 }
 
-function runChimera(rows,activeMask,config,scope,headers,references){
+async function runChimera(rows,activeMask,config,scope,headers,references,workers){
   const selectedSegment=config.segment.toUpperCase();
   const msaText=config.uploadedMsa?.trim()||(config.msaSource==="selected"?references[selectedSegment]?.trim():"");
   if(!msaText)throw new Error("CLI chimera filtering requires either pipeline.chimera.uploadedMsa or an aligned selected-segment reference.");
-  let msa;
-  try{msa=prepareReferenceMsa(msaText);}
+  try{prepareReferenceMsa(msaText);}
   catch(error){
     if(config.msaSource==="selected"&&!config.uploadedMsa?.trim())throw new Error(`The selected ${selectedSegment} references are not already aligned. Export this pipeline from Swig Web to embed its Kalign MSA, or set pipeline.chimera.uploadedMsa explicitly. ${error instanceof Error?error.message:String(error)}`);
     throw error;
@@ -776,24 +817,31 @@ function runChimera(rows,activeMask,config,scope,headers,references){
   const segment=config.segment.toLowerCase();
   const method=config.model==="auto"?(scope==="TCR"||String(scope).startsWith("TR")?"DB":"BW"):config.model;
   const options={method,priorProbability:config.priorProbability,baseMutationProbability:config.baseMutationProbability,mutationRates:config.mutationRates,mutationSwitchProbability:config.mutationSwitchProbability,detailed:config.detailed};
-  const cache=new Map();let evaluated=0,flagged=0,unevaluated=0;
+  let evaluated=0,flagged=0,unevaluated=0;
   addHeaders(headers,["swig_chimera_probability","swig_chimera_status"]);
   if(config.detailed)addHeaders(headers,["swig_chimera_starting_reference","swig_chimera_recombinations"]);
+  const batches=[];let batch=[];
   for(let ordinal=0;ordinal<rows.length;ordinal+=1){
     if(!activeMask[ordinal])continue;
     const row=rows[ordinal],call=row[`${segment}_call`]??"",sequence=row[`${segment}_sequence_alignment`]??"",germline=row[`${segment}_germline_alignment`]??"";
-    if(!call||!sequence||!germline){row.swig_chimera_status="missing_alignment";unevaluated+=1;if(!config.retainUnevaluated)activeMask[ordinal]=0;continue;}
-    const dfr=chmmairraDistanceFromReference(sequence,germline);
-    if(dfr<config.minimumDfr){row.swig_chimera_status="low_dfr";unevaluated+=1;if(!config.retainUnevaluated)activeMask[ordinal]=0;continue;}
-    const key=`${call}\0${sequence}\0${germline}`;
-    try{
-      let result=cache.get(key);
-      if(result===undefined){result=runChmm(msa,threadSequenceToMsa(sequence,germline,call,msa),sequence,germline,options);cache.set(key,result);}
-      row.swig_chimera_probability=String(result.probability);row.swig_chimera_status="evaluated";evaluated+=1;
-      if(config.detailed){row.swig_chimera_starting_reference=result.startingReference;row.swig_chimera_recombinations=result.recombinations.map((event)=>`${event.left}->${event.right}@${event.position}`).join(";");}
-      if(result.probability>=config.posteriorThreshold){activeMask[ordinal]=0;flagged+=1;}
-    }catch(error){row.swig_chimera_status="error";unevaluated+=1;if(!config.retainUnevaluated)activeMask[ordinal]=0;}
+    batch.push({ordinal,call,sequenceAlignment:sequence,germlineAlignment:germline});if(batch.length>=250){batches.push(batch);batch=[];}
   }
+  if(batch.length)batches.push(batch);
+  if(!batches.length)return {evaluated,flagged,unevaluated,threshold:config.posteriorThreshold};
+  const workerCount=Math.max(1,Math.min(Math.floor(workers)||1,batches.length));
+  process.stderr.write(`CHMMAIRRa: ${workerCount} worker${workerCount===1?"":"s"} across ${batches.length.toLocaleString()} row batches.\n`);
+  const pool=new ChmmPool(workerCount,{msa:msaText,options,minDfr:config.minimumDfr});
+  try{
+    await pool.start();const outputs=await Promise.all(batches.map((rows)=>pool.run(rows)));
+    for(const output of outputs)for(const result of output.results){
+      const row=rows[result.ordinal];row.swig_chimera_status=result.status;
+      if(result.status==="evaluated"){
+        row.swig_chimera_probability=String(result.probability);evaluated+=1;
+        if(config.detailed){row.swig_chimera_starting_reference=result.startingReference;row.swig_chimera_recombinations=result.recombinations.map((event)=>`${event.left}->${event.right}@${event.position}`).join(";");}
+        if(result.probability>=config.posteriorThreshold){activeMask[result.ordinal]=0;flagged+=1;}
+      }else{unevaluated+=1;if(!config.retainUnevaluated)activeMask[result.ordinal]=0;}
+    }
+  }finally{await pool.close();}
   return {evaluated,flagged,unevaluated,threshold:config.posteriorThreshold};
 }
 
@@ -833,7 +881,8 @@ async function writeLineageStudy(path,manifestPath,headers,rows,activeMask,linea
     rangeHash.update(text,"utf8");await append(text);count+=1;
   }
   finishRange();stream.end();await once(stream,"finish");
-  const shmSummaries=shm?.lineages.flatMap((group)=>{const match=/^Lineage\s+(\d+)$/.exec(group.label);return match?[{lineageId:Number(match[1]),mean:group.mean,p95:group.p95??0}]:[]})??[];
+  const lowestShmByLineage=new Map((shm?.lowestByLineage??[]).map((value)=>[value.lineageId,value]));
+  const shmSummaries=shm?.lineages.flatMap((group)=>{const match=/^Lineage\s+(\d+)$/.exec(group.label);if(!match)return[];const lineageId=Number(match[1]),lowest=lowestShmByLineage.get(lineageId);return[{lineageId,mean:group.mean,p95:group.p95??0,ordinal:lowest?.ordinal,cdr3Nt:lowest?.cdr3Nt,cdr3Aa:lowest?.cdr3Aa}];})??[];
   const manifest={schema:1,application:"Swig lineage study",applicationVersion:VERSION,createdAt:new Date().toISOString(),linkedAirr:{name:basename(path),size:offset,records:indexed.length,headers,sha256:hash.digest("hex")},analysis:{inputName:config.studyName,species:config.references.species,scope:config.references.scope,references,datasets:config.inputs.map((input)=>({datasetId:input.datasetId,inputName:input.inputName||basename(input.path),sampleId:input.sampleId,subjectId:input.subjectId,cohort:input.cohort,timepoint:input.timepoint,compartment:input.compartment})),callingProfile:config.annotation.callingProfile,assignerStrategy:config.annotation.assignerStrategy,minimumIdentity:config.annotation.minimumIdentity,strand:config.annotation.strand,lineage:{scope:config.pipeline.lineage.scope,identity:config.pipeline.lineage.identity,resolution:config.pipeline.lineage.resolution,ambiguity:config.pipeline.lineage.ambiguity,productiveOnly:config.pipeline.lineage.productiveOnly,maxCandidateComparisons:config.pipeline.lineage.maxCandidateComparisons}},summaries:lineages.summaries,ranges,shm:shm?{metric:shm.metric,summaries:shmSummaries}:undefined};
   await writeFile(manifestPath,gzipSync(JSON.stringify(manifest)));
   return manifest;
@@ -919,17 +968,32 @@ async function runPipeline(config,base,assets){
   let collapseResult=null;let activeMask=new Uint8Array(rows.length);activeMask.fill(1);
   if(config.pipeline.collapse.enabled){
     process.stderr.write(`${config.pipeline.collapse.mode==="exact"?"Collapsing exact duplicates":"Denoising reads"}…\n`);
-    if(config.pipeline.collapse.mode==="exact")collapseResult=deduplicate(records,config.pipeline.collapse.key,config.pipeline.collapse.unresolvedPolicy,config.pipeline.collapse.scope,config.pipeline.collapse.respectConstantCall);
+    if(config.pipeline.collapse.mode==="exact"){
+      const shardCount=records.length>=10_000?config.annotation.workers:1;
+      if(shardCount===1)collapseResult=deduplicate(records,config.pipeline.collapse.key,config.pipeline.collapse.unresolvedPolicy,config.pipeline.collapse.scope,config.pipeline.collapse.respectConstantCall);
+      else{
+        const plan=createExactDedupPlan(records,config.pipeline.collapse.key,config.pipeline.collapse.unresolvedPolicy,config.pipeline.collapse.scope,config.pipeline.collapse.respectConstantCall,shardCount);
+        const workerCount=Math.max(1,Math.min(config.annotation.workers,plan.jobs.length));
+        process.stderr.write(`Exact collapse: ${workerCount} worker${workerCount===1?"":"s"} across ${plan.jobs.length.toLocaleString()} deterministic key shards.\n`);
+        const results=await runPostAnalysisTasks(plan.jobs.map((job)=>({kind:"exact",job})),workerCount);
+        collapseResult=finishExactDedupPlan(plan,results);
+      }
+    }
     else{
       const options={...config.pipeline.collapse.denoise,mode:config.pipeline.collapse.mode,scope:config.pipeline.collapse.scope,respectConstantCall:config.pipeline.collapse.respectConstantCall,unresolvedPolicy:config.pipeline.collapse.unresolvedPolicy};
-      const accumulator=new DenoiseAccumulator(records,options);rows.forEach((values,ordinal)=>accumulator.add(ordinal,denoiseVdjSequence({ordinal,values})));collapseResult=accumulator.finish();
+      const accumulator=new DenoiseAccumulator(records,options);rows.forEach((values,ordinal)=>accumulator.add(ordinal,denoiseVdjSequence({ordinal,values})));
+      const jobs=accumulator.preparePartitionJobs();const variants=jobs.reduce((total,job)=>total+job.variants.length,0);
+      const requested=variants>=500?config.annotation.workers:1;const workerCount=Math.max(1,Math.min(requested,jobs.length||1));
+      process.stderr.write(`${config.pipeline.collapse.mode.toUpperCase()} denoising: ${workerCount} worker${workerCount===1?"":"s"} across ${jobs.length.toLocaleString()} independent V/J partition${jobs.length===1?"":"s"}.\n`);
+      const results=await runPostAnalysisTasks(jobs.map((job)=>({kind:"denoise",job})),workerCount);
+      collapseResult=accumulator.finishWithPartitionResults(results);
     }
     activeMask=Uint8Array.from(collapseResult.counts,(count)=>count>0?1:0);addHeaders(headers,["duplicate_count"]);
     rows.forEach((row,ordinal)=>{if(collapseResult.counts[ordinal])row.duplicate_count=String(collapseResult.counts[ordinal]);});
   }
 
   let chimeraSummary=null;
-  if(config.pipeline.chimera.enabled){process.stderr.write("Filtering candidate chimeras…\n");chimeraSummary=runChimera(rows,activeMask,config.pipeline.chimera,config.references.scope,headers,references);}
+  if(config.pipeline.chimera.enabled){process.stderr.write("Filtering candidate chimeras…\n");chimeraSummary=await runChimera(rows,activeMask,config.pipeline.chimera,config.references.scope,headers,references,config.annotation.workers);}
 
   if(config.pipeline.selection.enabled){
     const errors=validateRepertoireSelection(config.pipeline.selection);if(errors.length)throw new Error(errors.join(" "));

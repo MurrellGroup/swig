@@ -69,6 +69,10 @@ import {
   type CallingProfile,
 } from "./swiftig-runtime";
 import {
+  initializingAssignmentTelemetry,
+  type AssignmentTelemetry,
+} from "./assignment-telemetry";
+import {
   addFastqQualityFilterStats,
   DEFAULT_FASTQ_QUALITY_FILTER,
   emptyFastqQualityFilterStats,
@@ -200,7 +204,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.37.2";
+const APP_VERSION = "0.37.4";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -243,7 +247,7 @@ const FIELD_HELP: Record<string,string> = {
   "assignment strategy":"Chooses the V-allele candidate-search algorithm; D and J scoring follows the calling profile.",
   "calling profile":"Selects the calibrated D/J scoring and tie-reporting parameter set.",
   "search strand":"Controls whether forward, reverse-complement, or both query orientations are tested.",
-  "parallel wasm workers":"Sets the number of browser workers used concurrently for V(D)J assignment.",
+  "parallel compute workers":"Sets the browser worker pool used for V(D)J assignment and independently parallel post-analysis partitions.",
   "airr results destination":"Chooses whether result batches remain in browser storage or are written incrementally to a file.",
   "minimum alignment identity":"Rejects segment alignments below this aligned-base identity fraction.",
   "maximum expected errors":"Filters a FASTQ read when the sum of base-error probabilities exceeds this value.",
@@ -780,9 +784,23 @@ function CompositionSummary({
   );
 }
 
-function AnalysisProgress({ stage, value, onCancel, lockState, hidden }: {
+function formatQueriesPerSecond(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  if (value >= 100) return Math.round(value).toLocaleString();
+  return value.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+
+function assignmentPhaseLabel(telemetry: AssignmentTelemetry | null): string {
+  if (!telemetry || telemetry.phase === "initializing") return "Loading workers";
+  if (telemetry.phase === "streaming") return "Streaming input";
+  if (telemetry.phase === "draining") return "Draining final batches";
+  return "Finalizing index";
+}
+
+export function AnalysisProgress({ stage, value, telemetry, onCancel, lockState, hidden }: {
   stage: string;
   value: number;
+  telemetry: AssignmentTelemetry | null;
   onCancel: () => void;
   lockState: "unsupported" | "waiting" | "held";
   hidden: boolean;
@@ -794,10 +812,22 @@ function AnalysisProgress({ stage, value, onCancel, lockState, hidden }: {
     { label: "Finalize index", threshold: 1 },
   ];
   const percent = Math.min(100, Math.max(0, Math.round(value * 100)));
+  const activeWorkers = telemetry ? `${telemetry.activeWorkers} / ${telemetry.totalWorkers}` : "—";
+  const phase = assignmentPhaseLabel(telemetry);
+  const phaseDetail = !telemetry || telemetry.phase === "initializing"
+    ? "Replicating per-worker germline indexes"
+    : telemetry.phase === "draining"
+    ? `${telemetry.recordsOutstanding.toLocaleString()} records still outstanding`
+    : telemetry.phase === "finalizing"
+      ? "All assignment batches committed"
+      : `${telemetry.recordsCommitted.toLocaleString()} records committed`;
+  const workerDetail = telemetry?.phase === "initializing"
+    ? "loading WASM and germline indexes"
+    : "currently assigning batches";
   return (
-    <section className="progress-stage" aria-live="polite">
-      <div className="progress-orbit"><span>{percent}<small>%</small></span><i style={{ "--progress": `${percent * 3.6}deg` } as React.CSSProperties} /></div>
-      <div className="progress-copy"><p className="eyebrow"><span>SwiftIG is running locally</span></p><h2>{stage}</h2><p>The page will move to Results automatically when the local AIRR index is ready.</p><p className={`background-run-state ${lockState}`}>{lockState === "held" ? `${hidden ? "Background tab · " : ""}active-run Web Lock held; Chrome Energy Saver freeze is inhibited while this analysis is running.` : lockState === "waiting" ? "Waiting for another Swig analysis tab to release the active-run lock." : "This browser does not expose Web Locks; keep the tab active for long runs."}</p><div className="main-progress"><i style={{ width: `${percent}%` }} /></div><ol>{phases.map((phase, index) => {
+    <section className="progress-stage" aria-live="polite" data-assignment-phase={telemetry?.phase ?? "initializing"}>
+      <div className="progress-orbit"><span><b>{percent}</b><small>%</small></span><i style={{ "--progress": `${percent * 3.6}deg` } as React.CSSProperties} /></div>
+      <div className="progress-copy"><p className="eyebrow"><span>SwiftIG is running locally</span></p><div className="progress-current-operation"><span>Current operation</span><h2 title={stage}>{stage}</h2></div><p>The page will move to Results automatically when the local AIRR index is ready.</p><dl className="assignment-telemetry" aria-label="Live assignment telemetry"><div><dt>Queries / s</dt><dd data-query-rate={telemetry?.queriesPerSecond ?? "pending"}>{formatQueriesPerSecond(telemetry?.queriesPerSecond)}</dd><small>2 s EMA · AIRR committed</small></div><div><dt>Active workers</dt><dd data-active-workers={telemetry?.activeWorkers ?? 0}>{activeWorkers}</dd><small>{workerDetail}</small></div><div><dt>Assignment state</dt><dd>{phase}</dd><small>{phaseDetail}</small></div></dl><p className={`background-run-state ${lockState}`}>{lockState === "held" ? `${hidden ? "Background tab · " : ""}active-run Web Lock held; Chrome Energy Saver freeze is inhibited while this analysis is running.` : lockState === "waiting" ? "Waiting for another Swig analysis tab to release the active-run lock." : "This browser does not expose Web Locks; keep the tab active for long runs."}</p><div className="main-progress"><i style={{ width: `${percent}%` }} /></div><ol>{phases.map((phase, index) => {
         const previous = index ? phases[index - 1].threshold : 0;
         const state = value >= phase.threshold ? "complete" : value >= previous ? "active" : "";
         return <li className={state} key={phase.label}><span>{state === "complete" ? "✓" : index + 1}</span>{phase.label}</li>;
@@ -1478,6 +1508,7 @@ export default function SwigApp() {
   const [configExporting,setConfigExporting]=useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ stage: "Preparing analysis", value: 0 });
+  const [assignmentTelemetry, setAssignmentTelemetry] = useState<AssignmentTelemetry | null>(null);
   const [analysisLockState, setAnalysisLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
   const [pageHidden, setPageHidden] = useState(typeof document !== "undefined" && document.hidden);
   const [runError, setRunError] = useState("");
@@ -2424,6 +2455,7 @@ export default function SwigApp() {
     setRunning(true);
     setRunError("");
     setProgress({ stage: "Preparing analysis", value: 0.01 });
+    setAssignmentTelemetry(initializingAssignmentTelemetry(workerCount));
     const started = performance.now();
     void navigator.storage?.persist?.().catch(() => false);
     const doubleD: DoubleDScreenOptions = {
@@ -2456,6 +2488,7 @@ export default function SwigApp() {
             records: input.count,
           };
           const weight = weights[datasetIndex];
+          setAssignmentTelemetry(initializingAssignmentTelemetry(workerCount));
           const completed = await runSwiftIg({
             query: input.source,
             format: input.formatCode,
@@ -2474,6 +2507,7 @@ export default function SwigApp() {
               stage: datasetSnapshot.length > 1 ? `${input.sampleId} · ${stage}` : stage,
               value: Math.min(0.995, (completedWeight + Math.max(0, Math.min(1, value)) * weight) / totalWeight),
             }),
+            onTelemetry: setAssignmentTelemetry,
             onBatch: async (batch) => {
               const annotated = annotateAirrBatch(batch.header, batch.body, manifest);
               const doubleDBatch = batch.doubleDHeader !== undefined && batch.doubleDBody !== undefined
@@ -2492,6 +2526,12 @@ export default function SwigApp() {
           fastqFilterStats = addFastqQualityFilterStats(fastqFilterStats, completed.fastqFilter);
           completedWeight += weight;
         }
+        setAssignmentTelemetry((current) => current ? {
+          ...current,
+          phase: "finalizing",
+          activeWorkers: 0,
+          recordsOutstanding: 0,
+        } : current);
         await store.finalize();
         return { count, inputRecords, workers, fastqFilterStats };
       });
@@ -2576,7 +2616,7 @@ export default function SwigApp() {
         <main className="analysis-page">
           <section className="analysis-intro"><WorkflowStepper active={running ? 2 : 1} /><div><p className="eyebrow"><span>{analysisTitle}</span></p><h1>{running ? "Calling rearrangements…" : webMode === "vdj" ? "Annotate and inspect one input." : webMode === "lineage" ? "Annotate one pre-defined lineage." : "Configure an annotation run."}</h1><p>{running ? "SwiftIG is processing bounded batches and writing AIRR records into a browser-local index." : webMode === "lineage" ? "Every input sequence will enter the alignment workbench as one lineage; clustering and lineage selection are bypassed." : focusedWebMode ? "Upload or paste sequences, choose germlines, and run V(D)J/CDR3 annotation." : "Provide sequences, select the biological search space, and specify any germline replacements."}</p></div></section>
 
-          {running ? <AnalysisProgress stage={progress.stage} value={progress.value} onCancel={() => abortRef.current?.abort()} lockState={analysisLockState} hidden={pageHidden} /> : (
+          {running ? <AnalysisProgress stage={progress.stage} value={progress.value} telemetry={assignmentTelemetry} onCancel={() => abortRef.current?.abort()} lockState={analysisLockState} hidden={pageHidden} /> : (
             <div className="analysis-layout single-action-layout">
               <div className="analysis-forms">
                 <section className="analysis-card input-card">
@@ -2704,7 +2744,7 @@ export default function SwigApp() {
                     <label><span>Assignment strategy</span><select value={assignerStrategy} onChange={(event) => setAssignerStrategy(event.target.value as AssignerStrategy)}><option value="riat_mp">RIAT-MP · root-indexed V allele tree · default</option><option value="aer">AER · adaptive exact V refinement</option><option value="standard">Standard SwiftIG · fixed V depth</option></select></label>
                     <label><span>Calling profile</span><select value={callingProfile} onChange={(event) => setCallingProfile(event.target.value as CallingProfile)}><option value="truth_optimized">Truth-optimized · default</option><option value="igblast_balanced">IgBLAST-balanced · agreement + truth constraint</option><option value="igblast_compatible">IgBLAST-agreement · agreement only</option></select></label>
                     <label><span>Search strand</span><select value={strand} onChange={(event) => setStrand(Number(event.target.value) as 0 | 1 | 2)}><option value={0}>Both orientations</option><option value={1}>Plus only</option><option value={2}>Minus only</option></select></label>
-                    <label><span>Parallel WASM workers</span><CommitNumberInput min="1" max={browserWorkerLimit()} step="1" value={workerCount} onCommit={(value)=>setWorkerCount(Math.max(1,Math.min(browserWorkerLimit(),Math.round(value))))}/><small>{recommendedWorkerCount()} recommended on this device · {browserWorkerLimit()} maximum</small></label>
+                    <label><span>Parallel compute workers</span><CommitNumberInput min="1" max={browserWorkerLimit()} step="1" value={workerCount} onCommit={(value)=>setWorkerCount(Math.max(1,Math.min(browserWorkerLimit(),Math.round(value))))}/><small>{recommendedWorkerCount()} recommended on this device · {browserWorkerLimit()} maximum</small></label>
                     {!focusedWebMode && <label><span>AIRR results destination</span><select disabled={Boolean(projectWorkspace)} value={projectWorkspace?"project":outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}>{projectWorkspace&&<option value="project">Project directory · save while analyzing</option>}<option value="auto">Auto · ask to save large results</option><option value="browser">Browser · compressed local index</option><option value="disk">File · save while analyzing</option></select></label>}
                     <label className="minimum-slider"><span>Minimum alignment identity <b>{Math.round(minimumIdentity * 100)}%</b></span><input type="range" min="0.45" max="0.9" step="0.01" value={minimumIdentity} onChange={(event) => setMinimumIdentity(Number(event.target.value))} /></label>
                     <p className="scientific-note calling-profile-note"><span>i</span>{assignerStrategy === "aer" ? "AER uses the ordinary full V-allele index, then increases exact affine-alignment depth only when leading 9-mer vote counts remain ambiguous (5% relative or 8 weighted votes; maximum 16 candidates). D and J use the selected calling profile's calibrated exact paths." : assignerStrategy === "riat_mp" ? "RIAT-MP indexes representative V roots, aligns up to three roots, propagates score changes through close-allele trees, and tests at most two root traceback geometries within four raw-score units when the provisional winner contains an indel. It performs no descendant V alignments. D and J retain the selected profile's calibrated exact paths." : "Standard SwiftIG exactly aligns the three leading strong-seed V candidates; weak-seed and seedless cases retain the existing safety pool. D and J retain the selected profile's calibrated exact paths."}</p>

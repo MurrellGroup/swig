@@ -109,7 +109,7 @@ export class PostAnalysisRuntime {
   private transactionDirty = false;
   private recovery: Promise<void> | null = null;
 
-  constructor(private readonly store: AirrResultStore) {
+  constructor(private readonly store: AirrResultStore, private readonly parallelWorkers = 1) {
     this.installWorker();
   }
 
@@ -185,7 +185,7 @@ export class PostAnalysisRuntime {
 
   async deduplicate(key: DedupKey, unresolvedPolicy: "discard" | "retain" = "discard", scope: DatasetScope = "global", respectConstantCall = true): Promise<DedupDashboard> {
     await this.ensureIndexed();
-    const dashboard = await this.request<DedupDashboard>({ type: "dedup", key, unresolvedPolicy, scope, respectConstantCall });
+    const dashboard = await this.request<DedupDashboard>({ type: "dedup", key, unresolvedPolicy, scope, respectConstantCall, workers: this.parallelWorkers });
     const state = await this.request<{ counts: Uint32Array; representatives: Int32Array }>({ type: "dedupState" });
     this.checkpoint = { ...this.checkpoint, activeMask: null, dedup: { dashboard, counts: state.counts, representatives: state.representatives }, lineages: undefined };
     this.transactionDirty ||= Boolean(this.transactionCheckpoint);
@@ -202,7 +202,7 @@ export class PostAnalysisRuntime {
         rows: rows.map((row) => ({ ordinal: row.ordinal, sequence: denoiseVdjSequence(row) })),
       });
     }, { batchSize: 2_000, onProgress: onProgress ? (processed, total) => onProgress(processed, total, "ingest") : undefined, signal });
-    const dashboard = await this.request<DedupDashboard>({ type: "denoiseFinish" }, (progress) => {
+    const dashboard = await this.request<DedupDashboard>({ type: "denoiseFinish", workers: this.parallelWorkers }, (progress) => {
       const phase = progress.phase === "finalize" ? "finalize" : "variants";
       onProgress?.(progress.processed, progress.total, phase);
     });

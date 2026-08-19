@@ -208,6 +208,37 @@ test("CDR3 neighbour search crosses assignment boundaries but preserves V/J and 
   assert.equal(result.hits[0].cdr3Identity, 0.8);
 });
 
+test("indel-aware neighbours admit CDR3 length variation and can tolerate one noisy germline call", () => {
+  const records = [
+    record(0, "AAAAAAAAAA", "donor_1", "IGHV1-2*01"),
+    record(1, "AAAAAAAAAAA", "donor_1", "IGHV1-2*01"),
+    record(2, "AAAAAAAAAT", "donor_1", "IGHV3-7*01"),
+  ];
+  const assignments = Int32Array.from([1, 2, 3]);
+  const base = {
+    identity: 0.95,
+    minimumIdentity: 0.9,
+    callResolution: "gene" as const,
+    ambiguity: "overlap" as const,
+    productiveOnly: true,
+    requireSameLocus: true,
+    maxCandidateComparisons: 10_000,
+    maximumResults: 20,
+    scope: "subject" as const,
+    sourceLineageIds: [1],
+  };
+  const hamming = findLineageNeighbours(records, assignments, { ...base, metric: "hamming", callPolicy: "both" });
+  assert.deepEqual(hamming.hits, []);
+  const strictEdit = findLineageNeighbours(records, assignments, { ...base, metric: "edit", callPolicy: "both" });
+  assert.deepEqual(strictEdit.hits.map((hit) => hit.lineageId), [2]);
+  assert.equal(strictEdit.hits[0].cdr3Distance, 1);
+  assert.equal(strictEdit.hits[0].cdr3LengthDelta, 1);
+  assert.equal(strictEdit.hits[0].callAgreement, "both");
+  const tolerant = findLineageNeighbours(records, assignments, { ...base, metric: "edit", callPolicy: "either" });
+  assert.deepEqual(tolerant.hits.map((hit) => hit.lineageId).sort((left, right) => left - right), [2, 3]);
+  assert.equal(tolerant.hits.find((hit) => hit.lineageId === 3)?.callAgreement, "j");
+});
+
 test("inferred germline identity treats N as unknown while retaining indel cost", () => {
   assert.equal(inferredGermlineIdentity("ACNGT", "ACAGT", 0.9), 1);
   assert.equal(inferredGermlineIdentity("ACGT", "ACGGT", 0), 0.8);

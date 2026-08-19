@@ -3,7 +3,7 @@ import { build } from "rolldown";
 
 await rm(new URL("../cli",import.meta.url),{recursive:true,force:true});
 await build({
-  input:{"swig-cli":new URL("../cli-src/swig-cli-node.mjs",import.meta.url).pathname,"swig-worker":new URL("../cli-src/swig-worker.mjs",import.meta.url).pathname},
+  input:{"swig-cli":new URL("../cli-src/swig-cli-node.mjs",import.meta.url).pathname,"swig-worker":new URL("../cli-src/swig-worker.mjs",import.meta.url).pathname,"post-analysis-worker":new URL("../cli-src/post-analysis-worker.mjs",import.meta.url).pathname,"chmmairra-worker":new URL("../cli-src/chmmairra-worker.mjs",import.meta.url).pathname},
   external:/^node:/,
   output:{
     dir:new URL("../cli",import.meta.url).pathname,

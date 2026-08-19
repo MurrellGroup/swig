@@ -20,6 +20,10 @@ export interface LineageStudyShmSummary {
   lineageId: number;
   mean: number;
   p95: number;
+  /** Exact lowest-V-SHM member retained during the original streaming scan. */
+  ordinal?: number;
+  cdr3Nt?: string;
+  cdr3Aa?: string;
 }
 
 export interface LineageStudyManifest {

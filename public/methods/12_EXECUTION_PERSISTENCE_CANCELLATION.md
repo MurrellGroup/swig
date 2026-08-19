@@ -40,7 +40,19 @@ Each post-analysis card may be skipped independently. A skipped card is omitted 
 
 Large AIRR text is held in chunked IndexedDB storage, with a compact per-record index for filtering and lookup. Sequence payloads needed by repertoire-scale algorithms are streamed in batches instead of constructing a second full in-memory AIRR table. Workers receive typed arrays, compact records, or bounded sequence arenas appropriate to each operation.
 
+Exact collapse uses deterministic key shards for large inputs. FAD/conservative/indel denoising dynamically schedules complete independent study/C/locus/V/J partitions across nested workers, while CHMMAIRRa schedules bounded row batches. A single denoising partition is intentionally indivisible because its parent/centroid decisions are global within that partition. The CLI uses equivalent worker-thread scheduling. Assignment, post-analysis, and CHMMAIRRa pools all honor the configured worker count, but they run at different pipeline stages rather than concurrently.
+
 Study-metadata re-indexing is one IndexedDB read/write transaction. Cancellation aborts that transaction, so the previous index remains authoritative.
+
+## Live assignment telemetry
+
+The browser assignment card reports three scheduler-level quantities without changing assignment or storage behavior:
+
+- **Queries / s** is a time-aware exponential moving average with a two-second time constant, sampled no more than twice per second. Its numerator is the number of AIRR records acknowledged after the browser has appended their batch to the result store. It therefore measures end-to-end committed throughput, including output/indexing backpressure, rather than only SwiftIG kernel speed.
+- **Active workers** is the exact number of compute-worker slots currently executing an annotation batch, shown against the effective worker-pool size. During per-dataset initialization it instead indicates that the concurrently launched workers are instantiating SwiftIG and building their own germline indexes. It is not an operating-system CPU-utilization estimate.
+- **Assignment state** distinguishes per-dataset initialization, concurrent input streaming, draining already-dispatched final batches, and result-index finalization. A falling active-worker count during draining is expected; a sustained low count while streaming identifies scheduler or result-store backpressure for follow-up profiling.
+
+The browser creates a fresh compute pool for each dataset. Compiling the shared WebAssembly module and concurrently constructing each worker's germline index can therefore produce a brief all-core burst at every dataset boundary before steady-state query processing begins. The telemetry exposes that burst as initialization rather than counting it as assignment throughput.
 
 ## Portable sessions and linked AIRR
 

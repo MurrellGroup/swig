@@ -5,6 +5,7 @@ import {
   assignLineages,
   boundedEditProfile,
   chmmairraDistanceFromReference,
+  createExactDedupPlan,
   DenoiseAccumulator,
   deduplicate,
   expandSingleLinkage,
@@ -13,6 +14,9 @@ import {
   prepareReferenceMsa,
   poissonStrictUpperTail,
   queryRecords,
+  finishExactDedupPlan,
+  runDenoisePartitionJob,
+  runExactDedupJob,
   runChmm,
   sequenceFingerprint,
   threadSequenceToMsa,
@@ -90,6 +94,47 @@ test("exact collapse discards unusable keys by default and can retain them uncha
   assert.equal(retained.uniqueRecords, 2);
   assert.equal(retained.counts[2], 9);
   assert.equal(retained.representatives[2], 2);
+});
+
+test("partition-worker exact collapse and denoising are byte-for-byte deterministic", () => {
+  const records: PostAnalysisRecord[] = [];
+  const sequences: string[] = [];
+  for (let partition = 0; partition < 4; partition += 1) {
+    const parent = `${"ACGT".repeat(14)}${"ACGT"[partition]}`;
+    const child = `${parent.slice(0, 21)}${parent[21] === "A" ? "C" : "A"}${parent.slice(22)}`;
+    for (let copy = 0; copy < 6; copy += 1) {
+      const sequence = copy < 4 ? parent : child;
+      const value = record(records.length, `TGTGCCAA${partition}`, `IGHV${partition + 1}-1*01`, "IGHJ4*02", sequence);
+      value.inputCount = copy === 0 ? 30 : 1;
+      records.push(value);
+      sequences.push(sequence);
+    }
+  }
+  const serialExact = deduplicate(records, "trimmed", "discard", "global", true);
+  const exactPlan = createExactDedupPlan(records, "trimmed", "discard", "global", true, 4);
+  const parallelExact = finishExactDedupPlan(exactPlan, exactPlan.jobs.map(runExactDedupJob).reverse());
+  assert.deepEqual([...parallelExact.representatives], [...serialExact.representatives]);
+  assert.deepEqual([...parallelExact.counts], [...serialExact.counts]);
+  assert.deepEqual(parallelExact.largestGroups, serialExact.largestGroups);
+
+  const options = {
+    mode: "conservative" as const, errorRate: 0.00473, alpha: 0.01, callResolution: "allele" as const,
+    ambiguity: "strict" as const, minimumParentCount: 2, ambiguousPolicy: "retain" as const,
+    fadNeighborThreshold: 1, fadMethod: 2 as const, expectedZeroErrorFraction: 1,
+    maximumHammingDistance: 1, maximumEditDistance: 2, minimumIndelParentRatio: 2,
+    maxCandidatesPerVariant: 10_000,
+  };
+  const serialAccumulator = new DenoiseAccumulator(records, options);
+  const partitionedAccumulator = new DenoiseAccumulator(records, options);
+  sequences.forEach((sequence, ordinal) => { serialAccumulator.add(ordinal, sequence); partitionedAccumulator.add(ordinal, sequence); });
+  const serialDenoise = serialAccumulator.finish();
+  const jobs = partitionedAccumulator.preparePartitionJobs();
+  assert.equal(jobs.length, 4);
+  const partitionedDenoise = partitionedAccumulator.finishWithPartitionResults(jobs.map(runDenoisePartitionJob).reverse());
+  assert.deepEqual([...partitionedDenoise.representatives], [...serialDenoise.representatives]);
+  assert.deepEqual([...partitionedDenoise.counts], [...serialDenoise.counts]);
+  assert.equal(partitionedDenoise.candidateComparisons, serialDenoise.candidateComparisons);
+  assert.deepEqual(partitionedDenoise.largestGroups, serialDenoise.largestGroups);
 });
 
 test("Poisson strict upper tail matches known probabilities used by FAD method 2", () => {
@@ -320,6 +365,8 @@ test("deduplicated active representatives retain collapsed abundance in lineage 
   assert.equal(result.assignedRecords, 2);
   assert.equal(result.summaries[0].uniqueMembers, 1);
   assert.equal(result.summaries[0].abundance, 2);
+  assert.equal(result.summaries[0].representativeCdr3Nt, "TGTGCCAAA");
+  assert.equal(result.summaries[0].representativeCdr3Aa, "CARDR");
 });
 
 test("lineages use V/J ambiguity overlap, exact CDR3 length, and bounded Hamming distance", () => {

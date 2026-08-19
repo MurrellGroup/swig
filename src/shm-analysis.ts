@@ -10,6 +10,8 @@ export interface ShmRecordMetric {
   subjectId: string;
   timepoint: string;
   compartment: string;
+  cdr3Nt: string;
+  cdr3Aa: string;
   duplicateCount: number;
   comparedNt: number;
   vNtMutations: number;
@@ -54,6 +56,8 @@ export interface ShmDashboard {
   sampledRecords: number;
   metric: ShmMetricKey;
   records: ShmRecordMetric[];
+  /** Exact lowest V-nucleotide-SHM member seen for each assigned lineage. */
+  lowestByLineage?: Array<{ lineageId: number; ordinal: number; vNtRate: number; vNtMutations: number; cdr3Nt: string; cdr3Aa: string }>;
   lineages: ShmDistribution[];
   vGenes: ShmDistribution[];
   strata: ShmDistribution[];
@@ -135,6 +139,7 @@ export function computeShmMetric(row: Record<string,string>, ordinal = 0, lineag
   return {
     ordinal, lineageId, sequenceId: row.sequence_id || `record_${ordinal + 1}`, vCall: topCall(row.v_call), jCall: topCall(row.j_call),
     sampleId: row.sample_id || "Unassigned sample", subjectId: row.subject_id || "", timepoint: row.swig_timepoint || "", compartment: row.swig_compartment || "",
+    cdr3Nt: row.cdr3 || row.junction || "", cdr3Aa: row.cdr3_aa || row.junction_aa || "",
     duplicateCount: positiveCount(row.duplicate_count || row.consensus_count || "1"), comparedNt, vNtMutations,
     vNtRate: vNtMutations / comparedNt, comparedCodons, vAaReplacements, vAaRate: comparedCodons ? vAaReplacements / comparedCodons : 0,
     synonymous, cdrNtCompared, cdrNtMutations, cdrNtRate: cdrNtCompared ? cdrNtMutations / cdrNtCompared : 0,
@@ -178,6 +183,7 @@ export class ShmAccumulator {
   private readonly options: Required<ShmAccumulatorOptions>;
   private readonly samples:ShmRecordMetric[]=[];
   private readonly sampledByLineageSample=new Map<string,number>();
+  private readonly lowestByLineage=new Map<number,ShmRecordMetric>();
   private skipped = 0;
   private analyzed = 0;
   private abundance = 0;
@@ -190,6 +196,7 @@ export class ShmAccumulator {
     const metric=computeShmMetric(row,ordinal,lineageId,stratum);
     if (!metric) { this.skipped += 1; return; }
     this.analyzed += 1; this.abundance += metric.duplicateCount;
+    if(lineageId>0){const previous=this.lowestByLineage.get(lineageId);if(!previous||metric.vNtRate<previous.vNtRate||(metric.vNtRate===previous.vNtRate&&(metric.vNtMutations<previous.vNtMutations||(metric.vNtMutations===previous.vNtMutations&&metric.ordinal<previous.ordinal))))this.lowestByLineage.set(lineageId,metric);}
     // Cap each lineage × sample cell independently. A repertoire ordered by
     // sample must not fill a lineage reservoir at the first timepoint and
     // silently erase all later longitudinal observations.
@@ -207,6 +214,7 @@ export class ShmAccumulator {
     const bins=Array.from({length:20},()=>({count:0,abundance:0}));
     for (const record of records) { const value=metricValue(record,metric); const normalized=metric.toLowerCase().includes("rate")?Math.min(.999999,Math.max(0,value)):Math.min(.999999,Math.max(0,value/50)); const bin=Math.floor(normalized*bins.length); bins[bin].count+=1; bins[bin].abundance+=record.duplicateCount; }
     return {analyzedRecords:this.analyzed,analyzedAbundance:this.abundance,skippedRecords:this.skipped,sampledRecords:records.length,metric,records,
+      lowestByLineage:[...this.lowestByLineage.values()].sort((left,right)=>left.lineageId-right.lineageId).map((record)=>({lineageId:record.lineageId,ordinal:record.ordinal,vNtRate:record.vNtRate,vNtMutations:record.vNtMutations,cdr3Nt:record.cdr3Nt,cdr3Aa:record.cdr3Aa})),
       lineages:distributions(records,metric,(record)=>record.lineageId?`Lineage ${record.lineageId}`:"Unassigned"),
       vGenes:distributions(records,metric,(record)=>record.vCall.replace(/\*.*$/,"")),strata:distributions(records,metric,(record)=>record.stratum),
       lineageSamples:lineageSampleDistributions(records,metric),

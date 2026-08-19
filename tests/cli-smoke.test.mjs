@@ -120,6 +120,31 @@ test("CLI AIRR mode can either preserve calls or reannotate sequence, including 
   }finally{await rm(temporary,{recursive:true,force:true});}
 });
 
+test("CLI CHMMAIRRa uses the configured worker pool without changing output",async()=>{
+  const root=resolve(import.meta.dirname,"..");const temporary=await mkdtemp(join(root,"tmp-cli-chmm-"));
+  try{
+    const input=join(temporary,"reads.airr.tsv");
+    const header="sequence_id\tsequence\tlocus\tv_call\tj_call\tproductive\tcdr3\tv_sequence_alignment\tv_germline_alignment\n";
+    const body=Array.from({length:501},(_,index)=>`r${index}\tAACA\tIGH\tIGHV1*01\tIGHJ4*01\tT\tTGTA\tAACA\tAAAA\n`).join("");
+    await writeFile(input,header+body);
+    const run=async(workers)=>{const output=join(temporary,`out-${workers}`),configPath=join(temporary,`config-${workers}.json`);await writeFile(configPath,JSON.stringify({inputs:[{path:input,format:"airr",sampleId:"sample",subjectId:"donor"}],annotation:{workers,airrMode:"preserve"},pipeline:{collapse:{enabled:false},chimera:{enabled:true,segment:"V",model:"BW",msaSource:"uploaded",uploadedMsa:">IGHV1*01\nAAAA\n>IGHV2*01\nCCCC\n",minimumDfr:1,posteriorThreshold:0.99,retainUnevaluated:true},lineage:{enabled:false},shm:{enabled:false}},output:{directory:output,prefix:"chmm",writeLineageStudy:false}}));const result=runCli(root,configPath);assert.equal(result.status,0,result.stderr);return{result,table:await readFile(join(output,"chmm.processed.airr.tsv"))};};
+    const serial=await run(1),parallel=await run(2);assert.deepEqual(parallel.table,serial.table);assert.match(parallel.result.stderr,/CHMMAIRRa: 2 workers across 3 row batches/);
+  }finally{await rm(temporary,{recursive:true,force:true});}
+});
+
+test("CLI FAD denoising runs independent V/J partitions in workers without changing output",async()=>{
+  const root=resolve(import.meta.dirname,"..");const temporary=await mkdtemp(join(root,"tmp-cli-fad-"));
+  try{
+    const encode=(value)=>{let result="";for(let place=0;place<5;place+=1){result="ACGT"[value&3]+result;value>>>=2;}return result;};
+    const input=join(temporary,"reads.airr.tsv");
+    const header="sequence_id\tsequence\tlocus\tv_call\tj_call\tproductive\tcdr3\tsequence_alignment\n";
+    const body=Array.from({length:600},(_,index)=>{const sequence=`ACGTACGT${encode(index)}`,v=index<300?"IGHV1-2*01":"IGHV3-7*01";return `r${index}\t${sequence}\tIGH\t${v}\tIGHJ4*02\tT\t${sequence.slice(-9)}\t${sequence}\n`;}).join("");
+    await writeFile(input,header+body);
+    const run=async(workers)=>{const output=join(temporary,`out-${workers}`),configPath=join(temporary,`config-${workers}.json`);await writeFile(configPath,JSON.stringify({inputs:[{path:input,format:"airr",sampleId:"sample",subjectId:"donor"}],annotation:{workers,airrMode:"preserve"},pipeline:{collapse:{enabled:true,mode:"fad"},chimera:{enabled:false},lineage:{enabled:false},shm:{enabled:false}},output:{directory:output,prefix:"fad",writeLineageStudy:false}}));const result=runCli(root,configPath);assert.equal(result.status,0,result.stderr);return{result,table:await readFile(join(output,"fad.processed.airr.tsv"))};};
+    const serial=await run(1),parallel=await run(2);assert.deepEqual(parallel.table,serial.table);assert.match(parallel.result.stderr,/FAD denoising: 2 workers across 2 independent V\/J partitions/);
+  }finally{await rm(temporary,{recursive:true,force:true});}
+});
+
 test("CLI executes a browser-exported pasted input embedded in the JSON config",async()=>{
   const root=resolve(import.meta.dirname,"..");
   const temporary=await mkdtemp(join(root,"tmp-cli-inline-"));

@@ -99,6 +99,9 @@ export interface LineageSummary {
   vCalls: string[];
   jCalls: string[];
   cdr3Length: number;
+  /** Representative CDR3 available without loading lineage members. */
+  representativeCdr3Nt?: string;
+  representativeCdr3Aa?: string;
   studyScope: DatasetScope;
   studyGroup: string;
   /** Study metadata represented among active members of this lineage summary. */
@@ -142,6 +145,10 @@ export interface LineageNeighbourOptions extends LineageOptions {
   /** Lower, exploratory CDR3 identity boundary; normally below lineage assignment. */
   minimumIdentity: number;
   maximumResults: number;
+  /** Equal-length Hamming preserves the assignment metric; edit admits indels. */
+  metric?: "hamming" | "edit";
+  /** How much potentially noisy V/J evidence is allowed to gate a CDR3 hit. */
+  callPolicy?: "both" | "either" | "ignore";
 }
 
 export interface LineageNeighbourHit {
@@ -150,6 +157,10 @@ export interface LineageNeighbourHit {
   sourceOrdinal: number;
   candidateOrdinal: number;
   cdr3Identity: number;
+  cdr3Distance?: number;
+  cdr3Metric?: "hamming" | "edit";
+  cdr3LengthDelta?: number;
+  callAgreement?: "both" | "v" | "j" | "none";
   uniqueMembers: number;
   abundance: number;
   locus: string;
@@ -454,6 +465,148 @@ export function deduplicate(
     unresolvedRecords,
     warnings: unresolvedRecords ? [
       `${unresolvedRecords.toLocaleString()} records without a usable ${key} key were ${unresolvedPolicy === "retain" ? "retained unchanged" : "discarded from the downstream representative set"}.`,
+    ] : [],
+  };
+}
+
+/** A deterministic shard of an exact-collapse job. Identical keys are always
+ * routed to the same shard, while records inside each shard remain in AIRR
+ * order so the serial implementation's first-record representative is kept. */
+export interface ExactDedupJob {
+  id: number;
+  ordinals: Int32Array;
+  weights: Uint32Array;
+  keys: string[];
+}
+
+export interface ExactDedupJobResult {
+  id: number;
+  representatives: Int32Array;
+  representativeOrdinals: Int32Array;
+  representativeCounts: Uint32Array;
+  uniqueRecords: number;
+}
+
+export interface ExactDedupPlan {
+  key: DedupKey;
+  recordCount: number;
+  inputAbundance: number;
+  unresolvedPolicy: "discard" | "retain";
+  unresolvedOrdinals: Int32Array;
+  unresolvedWeights: Uint32Array;
+  jobs: ExactDedupJob[];
+}
+
+export function createExactDedupPlan(
+  records: PostAnalysisRecord[],
+  key: DedupKey,
+  unresolvedPolicy: "discard" | "retain" = "discard",
+  scope: DatasetScope = "global",
+  respectConstantCall = true,
+  requestedShards = 1,
+): ExactDedupPlan {
+  const shardCount = Math.max(1, Math.min(Math.floor(requestedShards) || 1, records.length || 1));
+  const shardOrdinals = Array.from({ length: shardCount }, () => [] as number[]);
+  const shardWeights = Array.from({ length: shardCount }, () => [] as number[]);
+  const shardKeys = Array.from({ length: shardCount }, () => [] as string[]);
+  const unresolvedOrdinals: number[] = [];
+  const unresolvedWeights: number[] = [];
+  let inputAbundance = 0;
+  for (let ordinal = 0; ordinal < records.length; ordinal += 1) {
+    const weight = Math.max(1, Math.floor(records[ordinal].inputCount ?? 1));
+    inputAbundance += weight;
+    if (!hasUsableDedupKey(records[ordinal], key)) {
+      unresolvedOrdinals.push(ordinal);
+      unresolvedWeights.push(weight);
+      continue;
+    }
+    const value = dedupKey(records[ordinal], key, scope, respectConstantCall);
+    const shard = hashSequence(value) % shardCount;
+    shardOrdinals[shard].push(ordinal);
+    shardWeights[shard].push(weight);
+    shardKeys[shard].push(value);
+  }
+  const jobs: ExactDedupJob[] = [];
+  for (let shard = 0; shard < shardCount; shard += 1) {
+    if (!shardOrdinals[shard].length) continue;
+    jobs.push({
+      id: shard,
+      ordinals: Int32Array.from(shardOrdinals[shard]),
+      weights: Uint32Array.from(shardWeights[shard]),
+      keys: shardKeys[shard],
+    });
+  }
+  return {
+    key,
+    recordCount: records.length,
+    inputAbundance,
+    unresolvedPolicy,
+    unresolvedOrdinals: Int32Array.from(unresolvedOrdinals),
+    unresolvedWeights: Uint32Array.from(unresolvedWeights),
+    jobs,
+  };
+}
+
+export function runExactDedupJob(job: ExactDedupJob): ExactDedupJobResult {
+  if (job.ordinals.length !== job.weights.length || job.ordinals.length !== job.keys.length) {
+    throw new Error("The exact-collapse worker received inconsistent shard vectors.");
+  }
+  const representatives = new Int32Array(job.ordinals.length);
+  const seen = new Map<string, number>();
+  const countByRepresentative = new Map<number, number>();
+  for (let index = 0; index < job.ordinals.length; index += 1) {
+    const previous = seen.get(job.keys[index]);
+    const representative = previous ?? job.ordinals[index];
+    if (previous === undefined) seen.set(job.keys[index], representative);
+    representatives[index] = representative;
+    countByRepresentative.set(representative, (countByRepresentative.get(representative) ?? 0) + job.weights[index]);
+  }
+  const representativeOrdinals = Int32Array.from(countByRepresentative.keys());
+  const representativeCounts = Uint32Array.from(representativeOrdinals, (ordinal) => countByRepresentative.get(ordinal) ?? 0);
+  return { id: job.id, representatives, representativeOrdinals, representativeCounts, uniqueRecords: seen.size };
+}
+
+export function finishExactDedupPlan(plan: ExactDedupPlan, results: ExactDedupJobResult[]): DedupResult {
+  const representatives = new Int32Array(plan.recordCount);
+  representatives.fill(-1);
+  const counts = new Uint32Array(plan.recordCount);
+  const resultById = new Map(results.map((result) => [result.id, result] as const));
+  let uniqueRecords = 0;
+  for (const job of plan.jobs) {
+    const result = resultById.get(job.id);
+    if (!result || result.representatives.length !== job.ordinals.length) throw new Error(`Exact-collapse shard ${job.id} did not return a complete result.`);
+    uniqueRecords += result.uniqueRecords;
+    for (let index = 0; index < job.ordinals.length; index += 1) representatives[job.ordinals[index]] = result.representatives[index];
+    for (let index = 0; index < result.representativeOrdinals.length; index += 1) counts[result.representativeOrdinals[index]] = result.representativeCounts[index];
+  }
+  if (plan.unresolvedPolicy === "retain") {
+    uniqueRecords += plan.unresolvedOrdinals.length;
+    for (let index = 0; index < plan.unresolvedOrdinals.length; index += 1) {
+      const ordinal = plan.unresolvedOrdinals[index];
+      representatives[ordinal] = ordinal;
+      counts[ordinal] = plan.unresolvedWeights[index];
+    }
+  }
+  const unresolvedRecords = plan.unresolvedOrdinals.length;
+  return {
+    mode: "exact",
+    key: plan.key,
+    algorithm: "Exact key collapse",
+    inputRecords: plan.recordCount,
+    inputAbundance: plan.inputAbundance,
+    uniqueRecords,
+    collapsedRecords: plan.recordCount - uniqueRecords,
+    representatives,
+    counts,
+    largestGroups: largestCountGroups(counts),
+    partitions: 1,
+    candidateComparisons: 0,
+    indelMergedVariants: 0,
+    substitutionMergedVariants: 0,
+    excludedAmbiguous: 0,
+    unresolvedRecords,
+    warnings: unresolvedRecords ? [
+      `${unresolvedRecords.toLocaleString()} records without a usable ${plan.key} key were ${plan.unresolvedPolicy === "retain" ? "retained unchanged" : "discarded from the downstream representative set"}.`,
     ] : [],
   };
 }
@@ -857,6 +1010,268 @@ export function boundedEditProfile(parent: string, child: string, maximum: numbe
   return createBoundedEditProfiler(maximum)(parent, child);
 }
 
+export interface DenoisePartitionJobVariant {
+  sequence: string;
+  representative: number;
+  count: number;
+}
+
+export interface DenoisePartitionJob {
+  id: number;
+  /** Global variant ordinals retained by the accumulator for deterministic merge. */
+  variantIndices: Int32Array;
+  variants: DenoisePartitionJobVariant[];
+  options: DenoiseOptions;
+}
+
+export interface DenoisePartitionJobResult extends DenoisePartitionStats {
+  id: number;
+  /** Local target index for every local variant. */
+  targets: Int32Array;
+  variantWork: number;
+}
+
+/**
+ * Pure partition kernel shared by browser workers, CLI worker threads, and the
+ * serial fallback. A V/J partition is an exact independence boundary for all
+ * three denoisers; splitting inside it would change parent/centroid choices.
+ */
+export function runDenoisePartitionJob(job: DenoisePartitionJob): DenoisePartitionJobResult {
+  const variants = job.variants;
+  if (job.variantIndices.length !== variants.length) throw new Error(`Denoising partition ${job.id} has inconsistent variant vectors.`);
+  const targets = Int32Array.from(variants, (_, index) => index);
+  const ordered = Array.from({ length: variants.length }, (_, index) => index)
+    .sort((left, right) => variants[right].count - variants[left].count || variants[left].representative - variants[right].representative);
+  const options = job.options;
+
+  if (options.mode === "fad") {
+    const maximumSquared = Math.max(0, Math.floor(12 * options.fadNeighborThreshold + 1e-9));
+    const blockCount = Math.max(1, maximumSquared + 1);
+    const profiles = new Map<number, KmerProfile>();
+    for (let index = 0; index < variants.length; index += 1) profiles.set(index, kmerProfile(variants[index].sequence, blockCount));
+    const accepted: number[] = [];
+    const blockIndex = new Map<string, number[]>();
+    const candidates = new Set<number>();
+    let comparisons = 0;
+    let truncated = 0;
+    const addAccepted = (variantIndex: number) => {
+      accepted.push(variantIndex);
+      const profile = profiles.get(variantIndex)!;
+      profile.hashes.forEach((hash, block) => {
+        const key = `${block}:${hash}`;
+        const values = blockIndex.get(key);
+        if (values) values.push(variantIndex);
+        else blockIndex.set(key, [variantIndex]);
+      });
+    };
+    for (const variantIndex of ordered.filter((value) => variants[value].count >= options.minimumParentCount)) {
+      const profile = profiles.get(variantIndex)!;
+      candidates.clear();
+      profile.hashes.forEach((hash, block) => {
+        if (candidates.size >= options.maxCandidatesPerVariant) return;
+        for (const candidate of blockIndex.get(`${block}:${hash}`) ?? []) {
+          if (candidates.size >= options.maxCandidatesPerVariant) break;
+          candidates.add(candidate);
+        }
+      });
+      if (candidates.size >= options.maxCandidatesPerVariant) truncated += 1;
+      const neighbors: Array<{ index: number; distance: number }> = [];
+      for (const candidate of candidates) {
+        comparisons += 1;
+        const distance = kmerSquaredDistance(profile, profiles.get(candidate)!, maximumSquared);
+        if (distance <= maximumSquared) neighbors.push({ index: candidate, distance });
+      }
+      if (!neighbors.length) {
+        addAccepted(variantIndex);
+        continue;
+      }
+      neighbors.sort((left, right) => variants[right.index].count - variants[left.index].count || left.distance - right.distance || variants[left.index].representative - variants[right.index].representative);
+      const parent = neighbors[0].index;
+      const child = variants[variantIndex];
+      const lambda = variants[parent].count / Math.max(Number.MIN_VALUE, options.expectedZeroErrorFraction) * options.errorRate;
+      const adjusted = Math.min(1, poissonStrictUpperTail(child.count, lambda) * (child.sequence.length || 1));
+      if (options.fadMethod === 2 && adjusted < options.alpha) addAccepted(variantIndex);
+      else targets[variantIndex] = parent;
+    }
+    if (!accepted.length && ordered.length) addAccepted(ordered[0]);
+    const acceptedSet = new Set(accepted);
+    const vpTree = buildKmerVpTree(accepted, profiles, () => { comparisons += 1; });
+    for (const variantIndex of ordered) {
+      targets[variantIndex] = acceptedSet.has(variantIndex)
+        ? variantIndex
+        : vpTree
+          ? nearestKmerPoint(vpTree, variantIndex, profiles, (point) => variants[point].count, () => { comparisons += 1; })
+          : variantIndex;
+    }
+    return {
+      id: job.id,
+      targets,
+      comparisons,
+      truncated,
+      indelMergedVariants: 0,
+      substitutionMergedVariants: 0,
+      variantWork: variants.length + variants.reduce((count, variant) => count + (variant.count >= options.minimumParentCount ? 1 : 0), 0),
+    };
+  }
+
+  if (options.mode === "indel") {
+    const distanceLimit = options.maximumEditDistance;
+    const blockCount = distanceLimit + 1;
+    const parentIndex = new Map<string, number[]>();
+    const shortParentsByLength = new Map<number, number[]>();
+    const profileEdit = createBoundedEditProfiler(distanceLimit);
+    let comparisons = 0;
+    let truncated = 0;
+    let indelMergedVariants = 0;
+    let substitutionMergedVariants = 0;
+    const candidates = new Set<number>();
+    const addParent = (variantIndex: number) => {
+      if (variants[variantIndex].count < options.minimumParentCount) return;
+      const sequence = variants[variantIndex].sequence;
+      const segments = indexedEditSegments(sequence, blockCount);
+      if (segments.some((segment) => segment.length === 0)) {
+        const values = shortParentsByLength.get(sequence.length);
+        if (values) values.push(variantIndex);
+        else shortParentsByLength.set(sequence.length, [variantIndex]);
+        return;
+      }
+      for (const segment of segments) {
+        const key = `${sequence.length}:${segment.index}:${segment.value}`;
+        const values = parentIndex.get(key);
+        if (values) values.push(variantIndex);
+        else parentIndex.set(key, [variantIndex]);
+      }
+    };
+    for (const variantIndex of ordered) {
+      const child = variants[variantIndex];
+      const sequence = child.sequence;
+      candidates.clear();
+      let capped = false;
+      const addCandidates = (values: number[]) => {
+        for (const candidate of values) {
+          if (candidates.has(candidate)) continue;
+          if (candidates.size >= options.maxCandidatesPerVariant) {
+            capped = true;
+            return;
+          }
+          candidates.add(candidate);
+        }
+      };
+      const minimumParentLength = Math.max(1, sequence.length - distanceLimit);
+      const maximumParentLength = sequence.length + distanceLimit;
+      for (let parentLength = minimumParentLength; parentLength <= maximumParentLength && !capped; parentLength += 1) {
+        addCandidates(shortParentsByLength.get(parentLength) ?? []);
+        for (let segmentIndex = 0; segmentIndex < blockCount && !capped; segmentIndex += 1) {
+          const parentStart = Math.floor(segmentIndex * parentLength / blockCount);
+          const parentEnd = Math.floor((segmentIndex + 1) * parentLength / blockCount);
+          const segmentLength = parentEnd - parentStart;
+          if (!segmentLength) continue;
+          const firstStart = Math.max(0, parentStart - distanceLimit);
+          const lastStart = Math.min(sequence.length - segmentLength, parentStart + distanceLimit);
+          for (let queryStart = firstStart; queryStart <= lastStart && !capped; queryStart += 1) {
+            addCandidates(parentIndex.get(`${parentLength}:${segmentIndex}:${sequence.slice(queryStart, queryStart + segmentLength)}`) ?? []);
+          }
+        }
+      }
+      if (capped) truncated += 1;
+      let best = -1;
+      let bestProfile: BoundedEditProfile | null = null;
+      for (const candidate of candidates) {
+        const parent = variants[candidate];
+        if (parent.count <= child.count) continue;
+        comparisons += 1;
+        const profile = profileEdit(parent.sequence, sequence);
+        if (!profile || profile.distance < 1) continue;
+        const indels = profile.insertions + profile.deletions;
+        let plausible = false;
+        if (indels > 0) plausible = parent.count / child.count >= options.minimumIndelParentRatio;
+        else {
+          const exactErrorProbability = (options.errorRate / 3) ** profile.substitutions * (1 - options.errorRate) ** Math.max(0, sequence.length - profile.substitutions);
+          const lambda = parent.count * exactErrorProbability;
+          const adjusted = Math.min(1, poissonStrictUpperTail(child.count, lambda) * alternativeCount(sequence.length, profile.substitutions));
+          plausible = adjusted >= options.alpha;
+        }
+        if (!plausible) continue;
+        const bestParent = best >= 0 ? variants[best] : null;
+        const isBetter = !bestProfile ||
+          profile.distance < bestProfile.distance ||
+          (profile.distance === bestProfile.distance && profile.substitutions < bestProfile.substitutions) ||
+          (profile.distance === bestProfile.distance && profile.substitutions === bestProfile.substitutions && parent.count > (bestParent?.count ?? -1)) ||
+          (profile.distance === bestProfile.distance && profile.substitutions === bestProfile.substitutions && parent.count === bestParent?.count && parent.representative < (bestParent?.representative ?? Number.POSITIVE_INFINITY));
+        if (isBetter) {
+          best = candidate;
+          bestProfile = profile;
+        }
+      }
+      if (best >= 0 && bestProfile) {
+        targets[variantIndex] = best;
+        if (bestProfile.insertions + bestProfile.deletions > 0) indelMergedVariants += 1;
+        else substitutionMergedVariants += 1;
+      } else {
+        targets[variantIndex] = variantIndex;
+        addParent(variantIndex);
+      }
+    }
+    return { id: job.id, targets, comparisons, truncated, indelMergedVariants, substitutionMergedVariants, variantWork: variants.length };
+  }
+
+  const distanceLimit = options.maximumHammingDistance;
+  const blockCount = distanceLimit + 1;
+  const parentIndex = new Map<string, number[]>();
+  let comparisons = 0;
+  let truncated = 0;
+  let substitutionMergedVariants = 0;
+  const candidates = new Set<number>();
+  const addParent = (variantIndex: number) => {
+    if (variants[variantIndex].count < options.minimumParentCount) return;
+    const sequence = variants[variantIndex].sequence;
+    sequenceBlocks(sequence, blockCount).forEach((block, blockIndex) => {
+      const key = `${sequence.length}:${blockIndex}:${block}`;
+      const values = parentIndex.get(key);
+      if (values) values.push(variantIndex);
+      else parentIndex.set(key, [variantIndex]);
+    });
+  };
+  for (const variantIndex of ordered) {
+    const child = variants[variantIndex];
+    const sequence = child.sequence;
+    candidates.clear();
+    sequenceBlocks(sequence, blockCount).forEach((block, blockIndex) => {
+      if (candidates.size >= options.maxCandidatesPerVariant) return;
+      for (const candidate of parentIndex.get(`${sequence.length}:${blockIndex}:${block}`) ?? []) {
+        if (candidates.size >= options.maxCandidatesPerVariant) break;
+        candidates.add(candidate);
+      }
+    });
+    if (candidates.size >= options.maxCandidatesPerVariant) truncated += 1;
+    let best = -1;
+    let bestLambda = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      comparisons += 1;
+      const distance = hammingDistanceWithin(sequence, variants[candidate].sequence, distanceLimit, false);
+      if (distance < 1 || distance > distanceLimit) continue;
+      const parentCount = variants[candidate].count;
+      const exactErrorProbability = (options.errorRate / 3) ** distance * (1 - options.errorRate) ** Math.max(0, sequence.length - distance);
+      const lambda = parentCount * exactErrorProbability;
+      const adjusted = Math.min(1, poissonStrictUpperTail(child.count, lambda) * alternativeCount(sequence.length, distance));
+      if (adjusted >= options.alpha && (lambda > bestLambda || (lambda === bestLambda && distance < bestDistance))) {
+        best = candidate;
+        bestLambda = lambda;
+        bestDistance = distance;
+      }
+    }
+    if (best >= 0) {
+      targets[variantIndex] = best;
+      substitutionMergedVariants += 1;
+    } else {
+      targets[variantIndex] = variantIndex;
+      addParent(variantIndex);
+    }
+  }
+  return { id: job.id, targets, comparisons, truncated, indelMergedVariants: 0, substitutionMergedVariants, variantWork: variants.length };
+}
+
 /**
  * Streaming builder used by the post-analysis worker. Exact variants are
  * dereplicated while batches are scanned, sequences live in a compact 2-bit
@@ -875,6 +1290,7 @@ export class DenoiseAccumulator {
   private unresolvedRecords = 0;
   private readonly records: PostAnalysisRecord[];
   private readonly options: DenoiseOptions;
+  private partitionJobsCache: DenoisePartitionJob[] | null = null;
 
   constructor(records: PostAnalysisRecord[], options: DenoiseOptions) {
     this.records = records;
@@ -891,6 +1307,7 @@ export class DenoiseAccumulator {
   }
 
   add(ordinal: number, rawSequence: string) {
+    if (this.partitionJobsCache) throw new Error("Cannot add reads after denoising partition finalization has started.");
     if (ordinal < 0 || ordinal >= this.records.length || this.processed[ordinal]) return;
     this.processed[ordinal] = 1;
     const record = this.records[ordinal];
@@ -928,7 +1345,8 @@ export class DenoiseAccumulator {
     this.variantByOrdinal[ordinal] = variantIndex;
   }
 
-  finish(onProgress?: (processed: number, total: number, phase: "variants" | "finalize") => void): DedupResult {
+  preparePartitionJobs(): DenoisePartitionJob[] {
+    if (this.partitionJobsCache) return this.partitionJobsCache;
     for (let ordinal = 0; ordinal < this.records.length; ordinal += 1) {
       if (!this.processed[ordinal]) {
         if (this.options.unresolvedPolicy === "retain") this.standalone.push(ordinal);
@@ -941,31 +1359,56 @@ export class DenoiseAccumulator {
       if (values) values.push(index);
       else partitions.set(variant.partition, [index]);
     });
+    this.partitionJobsCache = [...partitions.values()].map((group, id) => ({
+      id,
+      variantIndices: Int32Array.from(group),
+      variants: group.map((index) => ({
+        sequence: this.arena.decode(this.variants[index].location),
+        representative: this.variants[index].representative,
+        count: this.variants[index].count,
+      })),
+      options: this.options,
+    }));
+    return this.partitionJobsCache;
+  }
+
+  finish(onProgress?: (processed: number, total: number, phase: "variants" | "finalize") => void): DedupResult {
+    const results = this.preparePartitionJobs().map(runDenoisePartitionJob);
+    return this.finishWithPartitionResults(results, onProgress);
+  }
+
+  finishWithPartitionResults(
+    results: DenoisePartitionJobResult[],
+    onProgress?: (processed: number, total: number, phase: "variants" | "finalize") => void,
+    reportVariantProgress = true,
+  ): DedupResult {
+    const jobs = this.preparePartitionJobs();
+    const resultById = new Map(results.map((result) => [result.id, result] as const));
     let candidateComparisons = 0;
     let truncated = 0;
     let indelMergedVariants = 0;
     let substitutionMergedVariants = 0;
-    const variantWork = this.options.mode === "fad"
-      ? this.variants.length + this.variants.reduce((count, variant) => count + (variant.count >= this.options.minimumParentCount ? 1 : 0), 0)
-      : this.variants.length;
+    const variantWork = Math.max(1, jobs.reduce((total, job) => total + (this.options.mode === "fad"
+      ? job.variants.length + job.variants.reduce((count, variant) => count + (variant.count >= this.options.minimumParentCount ? 1 : 0), 0)
+      : job.variants.length), 0));
     let processedVariantWork = 0;
-    const progressStride = Math.max(1, Math.floor(Math.max(1, variantWork) / 500));
-    const variantProgress = () => {
-      processedVariantWork += 1;
-      if (processedVariantWork === variantWork || processedVariantWork % progressStride === 0) onProgress?.(processedVariantWork, Math.max(1, variantWork), "variants");
-    };
-    onProgress?.(0, Math.max(1, variantWork), "variants");
-    for (const group of partitions.values()) {
-      const result = this.options.mode === "fad"
-        ? this.processFadPartition(group, variantProgress)
-        : this.options.mode === "indel"
-          ? this.processIndelPartition(group, variantProgress)
-          : this.processConservativePartition(group, variantProgress);
+    if (reportVariantProgress) onProgress?.(0, variantWork, "variants");
+    for (const job of jobs) {
+      const result = resultById.get(job.id);
+      if (!result || result.targets.length !== job.variantIndices.length) throw new Error(`Denoising partition ${job.id} did not return a complete result.`);
+      for (let localIndex = 0; localIndex < job.variantIndices.length; localIndex += 1) {
+        const localTarget = result.targets[localIndex];
+        if (localTarget < 0 || localTarget >= job.variantIndices.length) throw new Error(`Denoising partition ${job.id} returned an invalid target.`);
+        this.variants[job.variantIndices[localIndex]].target = job.variantIndices[localTarget];
+      }
       candidateComparisons += result.comparisons;
       truncated += result.truncated;
       indelMergedVariants += result.indelMergedVariants;
       substitutionMergedVariants += result.substitutionMergedVariants;
+      processedVariantWork += result.variantWork;
+      if (reportVariantProgress) onProgress?.(Math.min(processedVariantWork, variantWork), variantWork, "variants");
     }
+    if (reportVariantProgress && !jobs.length) onProgress?.(variantWork, variantWork, "variants");
 
     const representatives = new Int32Array(this.records.length);
     representatives.fill(-1);
@@ -1033,7 +1476,7 @@ export class DenoiseAccumulator {
       representatives,
       counts,
       largestGroups,
-      partitions: partitions.size,
+      partitions: jobs.length,
       candidateComparisons,
       indelMergedVariants,
       substitutionMergedVariants,
@@ -1505,6 +1948,8 @@ export function assignLineages(
       vCalls,
       jCalls,
       cdr3Length: representative.cdr3Nt.length,
+      representativeCdr3Nt: representative.cdr3Nt,
+      representativeCdr3Aa: representative.cdr3Aa,
       studyScope: options.scope ?? "global",
       studyGroup: datasetScopeValue(representative, options.scope ?? "global"),
       sampleIds: [],
@@ -1599,11 +2044,95 @@ export function assignLineages(
   };
 }
 
+interface Cdr3BkNode {
+  sequence: string;
+  ordinals: number[];
+  children: Map<number, Cdr3BkNode>;
+}
+
+interface Cdr3BkPartition {
+  root: Cdr3BkNode | null;
+  minimumLength: number;
+  maximumLength: number;
+}
+
+function exactEditDistance(left: string, right: string): number {
+  return bandedEditDistance(left, right, Math.max(left.length, right.length));
+}
+
+function insertCdr3Bk(partition: Cdr3BkPartition, sequence: string, ordinal: number) {
+  partition.minimumLength = Math.min(partition.minimumLength, sequence.length);
+  partition.maximumLength = Math.max(partition.maximumLength, sequence.length);
+  if (!partition.root) {
+    partition.root = { sequence, ordinals: [ordinal], children: new Map() };
+    return;
+  }
+  let node = partition.root;
+  while (true) {
+    const distance = exactEditDistance(sequence, node.sequence);
+    if (!distance) {
+      node.ordinals.push(ordinal);
+      return;
+    }
+    const child = node.children.get(distance);
+    if (child) node = child;
+    else {
+      node.children.set(distance, { sequence, ordinals: [ordinal], children: new Map() });
+      return;
+    }
+  }
+}
+
+function searchCdr3Bk(
+  node: Cdr3BkNode | null,
+  query: string,
+  radius: number,
+  visit: (node: Cdr3BkNode, distance: number) => boolean,
+): boolean {
+  if (!node) return true;
+  const distance = exactEditDistance(query, node.sequence);
+  if (distance <= radius && !visit(node, distance)) return false;
+  const minimum = Math.max(0, distance - radius);
+  const maximum = distance + radius;
+  for (const [edge, child] of node.children) {
+    if (edge < minimum || edge > maximum) continue;
+    if (!searchCdr3Bk(child, query, radius, visit)) return false;
+  }
+  return true;
+}
+
+function neighbourHardPartition(record: PostAnalysisRecord, options: LineageOptions): string {
+  return `${datasetScopeKey(record, options.scope ?? "global")}\u0001${options.requireSameLocus ? record.locus : "*"}`;
+}
+
+function neighbourCallAgreement(
+  left: PostAnalysisRecord,
+  right: PostAnalysisRecord,
+  options: LineageNeighbourOptions,
+): { accepted: boolean; label: "both" | "v" | "j" | "none" } {
+  const v = callsCompatible(left.vCall, right.vCall, options.callResolution, options.ambiguity);
+  const j = callsCompatible(left.jCall, right.jCall, options.callResolution, options.ambiguity);
+  const label = v && j ? "both" : v ? "v" : j ? "j" : "none";
+  const policy = options.callPolicy ?? "both";
+  return { accepted: policy === "ignore" || (policy === "either" ? v || j : v && j), label };
+}
+
+function maximumEditSearchRadius(sourceLength: number, partition: Cdr3BkPartition, identity: number): number {
+  let maximum = 0;
+  if (!Number.isFinite(partition.minimumLength)) return maximum;
+  for (let length = partition.minimumLength; length <= partition.maximumLength; length += 1) {
+    const allowed = Math.floor((1 - identity) * Math.max(sourceLength, length) + 1e-9);
+    if (Math.abs(sourceLength - length) <= allowed) maximum = Math.max(maximum, allowed);
+  }
+  return maximum;
+}
+
 /**
- * Exact indexed search across already-assigned lineage boundaries. Candidate
- * generation uses the same study/locus/V/J partition and d+1 block guarantee
- * as lineage assignment, then verifies the best member-to-member CDR3 Hamming
- * identity for each neighbouring lineage. It never changes assignments.
+ * Read-only search across already-assigned lineage boundaries. The default
+ * retains assignment-compatible equal-length Hamming search. Indel-aware mode
+ * uses an exact BK-tree shortlist followed by pair-specific banded Levenshtein
+ * verification; V/J evidence can remain strict, require either call, or be
+ * ignored while study boundary and locus remain hard constraints.
  */
 export function findLineageNeighbours(
   records: PostAnalysisRecord[],
@@ -1616,10 +2145,13 @@ export function findLineageNeighbours(
   const sourceIds = new Set(options.sourceLineageIds.filter((value) => value > 0));
   if (!sourceIds.size) throw new Error("Choose at least one assigned lineage before searching for neighbours.");
   if (!(options.minimumIdentity >= 0 && options.minimumIdentity <= 1)) throw new Error("Neighbour CDR3 identity must be between zero and one.");
+  const metric = options.metric ?? "hamming";
+  const callPolicy = options.callPolicy ?? "both";
   const lineageCount = assignments.reduce((maximum, value) => Math.max(maximum, value), 0);
   const uniqueMembers = new Uint32Array(lineageCount + 1);
   const abundance = new Float64Array(lineageCount + 1);
   const bucket = new Map<string, number[]>();
+  const bkPartitions = new Map<string, Cdr3BkPartition>();
   const sourceRecords: number[] = [];
   let indexedRecords = 0;
 
@@ -1629,25 +2161,31 @@ export function findLineageNeighbours(
     if (!(lineageId > 0)) continue;
     const record = records[index];
     const cdr3 = normalizeNt(record.cdr3Nt);
-    const tokens = recordIndexTokens(record, options);
+    const tokens = callPolicy === "both" ? recordIndexTokens(record, options) : ["*"];
     if (!cdr3 || !tokens.length || (options.productiveOnly && !record.productive)) continue;
     const weight = dedup ? dedup.counts[index] : Math.max(1, Math.floor(record.inputCount ?? 1));
-    // A deduplicated non-representative can inherit an assignment but is not an
-    // independent searchable row in the active representative set.
     if (dedup && !weight) continue;
     uniqueMembers[lineageId] += 1;
     abundance[lineageId] += weight;
     indexedRecords += 1;
     if (sourceIds.has(lineageId)) sourceRecords.push(index);
+    const hard = neighbourHardPartition(record, options);
+    if (metric === "edit") {
+      let partition = bkPartitions.get(hard);
+      if (!partition) {
+        partition = { root: null, minimumLength: Number.POSITIVE_INFINITY, maximumLength: 0 };
+        bkPartitions.set(hard, partition);
+      }
+      insertCdr3Bk(partition, cdr3, index);
+      continue;
+    }
     const distanceLimit = Math.floor((1 - options.minimumIdentity) * cdr3.length + 1e-9);
     const blockCount = Math.max(1, Math.min(cdr3.length, distanceLimit + 1));
-    const prefix = `${options.requireSameLocus ? record.locus : "*"}\u0000${cdr3.length}\u0000`;
     for (const token of tokens) {
       for (const block of blocks(cdr3, blockCount)) {
-        const key = `${prefix}${token}\u0000${block.index}\u0000${block.value}`;
+        const key = `${hard}\u0000${cdr3.length}\u0000${token}\u0000${block.index}\u0000${block.value}`;
         const values = bucket.get(key);
-        if (values) values.push(index);
-        else bucket.set(key, [index]);
+        if (values) values.push(index); else bucket.set(key, [index]);
       }
     }
   }
@@ -1655,20 +2193,77 @@ export function findLineageNeighbours(
   const best = new Map<number, LineageNeighbourHit>();
   let candidateComparisons = 0;
   let truncatedSourceRecords = 0;
+  const agreementRank = (value: LineageNeighbourHit["callAgreement"]) => value === "both" ? 2 : value === "v" || value === "j" ? 1 : 0;
+  const consider = (sourceIndex: number, candidateIndex: number, distance: number) => {
+    const candidateLineage = assignments[candidateIndex];
+    if (candidateLineage <= 0 || sourceIds.has(candidateLineage)) return;
+    candidateComparisons += 1;
+    const source = records[sourceIndex];
+    const candidate = records[candidateIndex];
+    if (neighbourHardPartition(source, options) !== neighbourHardPartition(candidate, options)) return;
+    const agreement = neighbourCallAgreement(source, candidate, options);
+    if (!agreement.accepted) return;
+    const sourceCdr3 = normalizeNt(source.cdr3Nt);
+    const candidateCdr3 = normalizeNt(candidate.cdr3Nt);
+    const denominator = metric === "edit" ? Math.max(sourceCdr3.length, candidateCdr3.length) : sourceCdr3.length;
+    const distanceLimit = Math.floor((1 - options.minimumIdentity) * denominator + 1e-9);
+    if (distance > distanceLimit) return;
+    const cdr3Identity = denominator ? 1 - distance / denominator : 0;
+    const previous = best.get(candidateLineage);
+    if (previous && (previous.cdr3Identity > cdr3Identity ||
+      (previous.cdr3Identity === cdr3Identity && agreementRank(previous.callAgreement) >= agreementRank(agreement.label)))) return;
+    best.set(candidateLineage, {
+      lineageId: candidateLineage,
+      sourceLineageId: assignments[sourceIndex],
+      sourceOrdinal: source.ordinal,
+      candidateOrdinal: candidate.ordinal,
+      cdr3Identity,
+      cdr3Distance: distance,
+      cdr3Metric: metric,
+      cdr3LengthDelta: candidateCdr3.length - sourceCdr3.length,
+      callAgreement: agreement.label,
+      uniqueMembers: uniqueMembers[candidateLineage],
+      abundance: abundance[candidateLineage],
+      locus: candidate.locus,
+      vCalls: callSet(candidate.vCall, options.callResolution, options.ambiguity),
+      jCalls: callSet(candidate.jCall, options.callResolution, options.ambiguity),
+      cdr3Length: candidateCdr3.length,
+      studyGroup: datasetScopeValue(candidate, options.scope ?? "global"),
+    });
+  };
+
   for (const sourceIndex of sourceRecords) {
     const source = records[sourceIndex];
-    const sourceLineageId = assignments[sourceIndex];
     const cdr3 = normalizeNt(source.cdr3Nt);
+    const hard = neighbourHardPartition(source, options);
+    if (metric === "edit") {
+      const partition = bkPartitions.get(hard);
+      const radius = partition ? maximumEditSearchRadius(cdr3.length, partition, options.minimumIdentity) : 0;
+      let candidates = 0;
+      const completed = searchCdr3Bk(partition?.root ?? null, cdr3, radius, (node, distance) => {
+        for (const candidateIndex of node.ordinals) {
+          const candidateLineage = assignments[candidateIndex];
+          if (candidateLineage <= 0 || sourceIds.has(candidateLineage)) continue;
+          consider(sourceIndex, candidateIndex, distance);
+          candidates += 1;
+          if (candidates >= options.maxCandidateComparisons) return false;
+        }
+        return true;
+      });
+      if (!completed) truncatedSourceRecords += 1;
+      continue;
+    }
     const distanceLimit = Math.floor((1 - options.minimumIdentity) * cdr3.length + 1e-9);
     const blockCount = Math.max(1, Math.min(cdr3.length, distanceLimit + 1));
-    const prefix = `${options.requireSameLocus ? source.locus : "*"}\u0000${cdr3.length}\u0000`;
     const candidates = new Set<number>();
-    for (const token of recordIndexTokens(source, options)) {
+    const tokens = callPolicy === "both" ? recordIndexTokens(source, options) : ["*"];
+    for (const token of tokens) {
       for (const block of blocks(cdr3, blockCount)) {
-        for (const candidate of bucket.get(`${prefix}${token}\u0000${block.index}\u0000${block.value}`) ?? []) {
-          const candidateLineage = assignments[candidate];
+        const key = `${hard}\u0000${cdr3.length}\u0000${token}\u0000${block.index}\u0000${block.value}`;
+        for (const candidateIndex of bucket.get(key) ?? []) {
+          const candidateLineage = assignments[candidateIndex];
           if (candidateLineage <= 0 || sourceIds.has(candidateLineage)) continue;
-          candidates.add(candidate);
+          candidates.add(candidateIndex);
           if (candidates.size >= options.maxCandidateComparisons) break;
         }
         if (candidates.size >= options.maxCandidateComparisons) break;
@@ -1677,33 +2272,12 @@ export function findLineageNeighbours(
     }
     if (candidates.size >= options.maxCandidateComparisons) truncatedSourceRecords += 1;
     for (const candidateIndex of candidates) {
-      candidateComparisons += 1;
-      const candidate = records[candidateIndex];
-      if (!compatibleRecords(source, candidate, options)) continue;
-      const distance = hammingDistanceWithin(cdr3, normalizeNt(candidate.cdr3Nt), distanceLimit, false);
-      if (distance > distanceLimit) continue;
-      const candidateLineage = assignments[candidateIndex];
-      const cdr3Identity = cdr3.length ? 1 - distance / cdr3.length : 0;
-      const previous = best.get(candidateLineage);
-      if (previous && previous.cdr3Identity >= cdr3Identity) continue;
-      best.set(candidateLineage, {
-        lineageId: candidateLineage,
-        sourceLineageId,
-        sourceOrdinal: source.ordinal,
-        candidateOrdinal: candidate.ordinal,
-        cdr3Identity,
-        uniqueMembers: uniqueMembers[candidateLineage],
-        abundance: abundance[candidateLineage],
-        locus: candidate.locus,
-        vCalls: callSet(candidate.vCall, options.callResolution, options.ambiguity),
-        jCalls: callSet(candidate.jCall, options.callResolution, options.ambiguity),
-        cdr3Length: candidate.cdr3Nt.length,
-        studyGroup: datasetScopeValue(candidate, options.scope ?? "global"),
-      });
+      const distance = hammingDistanceWithin(cdr3, normalizeNt(records[candidateIndex].cdr3Nt), distanceLimit, false);
+      consider(sourceIndex, candidateIndex, distance);
     }
   }
   const hits = [...best.values()]
-    .sort((left, right) => right.cdr3Identity - left.cdr3Identity || right.abundance - left.abundance || left.lineageId - right.lineageId)
+    .sort((left, right) => right.cdr3Identity - left.cdr3Identity || agreementRank(right.callAgreement) - agreementRank(left.callAgreement) || right.abundance - left.abundance || left.lineageId - right.lineageId)
     .slice(0, Math.max(1, options.maximumResults));
   return { hits, indexedRecords, sourceRecords: sourceRecords.length, candidateComparisons, truncatedSourceRecords };
 }
