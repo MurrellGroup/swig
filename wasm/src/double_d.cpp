@@ -162,12 +162,25 @@ DoubleDScreener::DoubleDScreener(
     if (options_.seed_length < 6 || options_.seed_length > 24) {
         options_.seed_length = 11;
     }
+    fallback_seed_length_ = options_.robust_seed_rescue
+        ? std::max<std::size_t>(6, options_.seed_length > 3
+            ? options_.seed_length - 3 : options_.seed_length)
+        : 0;
     for (std::size_t gene_index = 0; gene_index < database_.d.genes().size(); ++gene_index) {
         const auto& sequence = database_.d.genes()[gene_index].sequence;
         if (sequence.size() < options_.seed_length) continue;
         for (std::size_t position = 0; position + options_.seed_length <= sequence.size(); ++position) {
             const auto seed = sequence.substr(position, options_.seed_length);
             if (canonical(seed)) seeds_[seed].push_back(SeedHit{gene_index, position});
+        }
+        if (fallback_seed_length_ && fallback_seed_length_ < options_.seed_length) {
+            for (std::size_t position = 0;
+                 position + fallback_seed_length_ <= sequence.size(); ++position) {
+                const auto seed = sequence.substr(position, fallback_seed_length_);
+                if (canonical(seed)) {
+                    fallback_seeds_[seed].push_back(SeedHit{gene_index, position});
+                }
+            }
         }
     }
 }
@@ -189,27 +202,38 @@ std::optional<DoubleDCall> DoubleDScreener::screen(const Annotation& annotation)
 
     std::vector<SegmentHit> hits;
     std::unordered_set<std::string> diagonals;
-    for (std::size_t query_position = 0;
-         query_position + options_.seed_length <= query.size(); ++query_position) {
-        const auto seed = query.substr(query_position, options_.seed_length);
-        if (!canonical(seed)) continue;
-        const auto found = seeds_.find(seed);
-        if (found == seeds_.end()) continue;
-        for (const auto& seed_hit : found->second) {
-            const auto& gene = database_.d.genes()[seed_hit.gene];
-            if (!matching_locus(gene, annotation.locus)) continue;
-            const auto diagonal = static_cast<long long>(query_position) -
-                static_cast<long long>(seed_hit.position);
-            const auto key = std::to_string(seed_hit.gene) + ':' + std::to_string(diagonal);
-            if (!diagonals.insert(key).second) continue;
-            auto alignment = extend_seed(
-                query, gene, query_position, seed_hit.position, options_.seed_length);
-            alignment.query_start += window_start;
-            alignment.query_end += window_start;
-            refresh_airr_cigar(
-                alignment, annotation.oriented_sequence.size(), gene.sequence.size());
-            hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name});
+    const auto collect = [&](const auto& index, std::size_t seed_length, bool rescue) {
+        if (!seed_length || query.size() < seed_length) return;
+        for (std::size_t query_position = 0;
+             query_position + seed_length <= query.size(); ++query_position) {
+            const auto seed = query.substr(query_position, seed_length);
+            if (!canonical(seed)) continue;
+            const auto found = index.find(seed);
+            if (found == index.end()) continue;
+            for (const auto& seed_hit : found->second) {
+                const auto& gene = database_.d.genes()[seed_hit.gene];
+                if (!matching_locus(gene, annotation.locus)) continue;
+                const auto diagonal = static_cast<long long>(query_position) -
+                    static_cast<long long>(seed_hit.position);
+                const auto key = std::to_string(seed_hit.gene) + ':' + std::to_string(diagonal);
+                if (diagonals.contains(key)) continue;
+                auto alignment = extend_seed(
+                    query, gene, query_position, seed_hit.position, seed_length);
+                const auto aligned = static_cast<std::size_t>(
+                    alignment.matches + alignment.mismatches);
+                if (rescue && aligned < options_.seed_length) continue;
+                diagonals.insert(key);
+                alignment.query_start += window_start;
+                alignment.query_end += window_start;
+                refresh_airr_cigar(
+                    alignment, annotation.oriented_sequence.size(), gene.sequence.size());
+                hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name});
+            }
         }
+    };
+    collect(seeds_, options_.seed_length, false);
+    if (options_.robust_seed_rescue) {
+        collect(fallback_seeds_, fallback_seed_length_, true);
     }
     if (hits.size() < 2) return std::nullopt;
     std::sort(hits.begin(), hits.end(), [](const SegmentHit& left, const SegmentHit& right) {

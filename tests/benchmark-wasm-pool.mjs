@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import { performance } from "node:perf_hooks";
@@ -39,6 +40,7 @@ class Client {
     this.worker = new Worker(new URL("./benchmark-wasm-worker.mjs", import.meta.url), {
       workerData: {
         strategy: STRATEGY,
+        wasmPath: process.env.SWIG_BENCH_WASM || "",
         reference: process.env.SWIG_BENCH_REFERENCE === "1",
         referenceOutput: process.env.SWIG_BENCH_REFERENCE_OUTPUT === "1",
       },
@@ -85,6 +87,7 @@ assert.ok(genes.every((count) => count === genes[0]));
 let nextRecord = 0;
 let completed = 0;
 let outputBytes = 0;
+const outputHash = crypto.createHash("sha256");
 const baselineRss = process.resourceUsage().maxRSS * 1024;
 
 function makeBatch(start, count) {
@@ -106,6 +109,7 @@ await Promise.all(clients.map(async (client) => {
     assert.equal(result.count, count);
     completed += result.count;
     outputBytes += result.output.byteLength;
+    outputHash.update(new Uint8Array(result.output));
   }
 }));
 const seconds = (performance.now() - started) / 1000;
@@ -122,6 +126,7 @@ const summary = {
   seconds: Number(seconds.toFixed(3)),
   readsPerSecond: Math.round(completed / seconds),
   airrOutputMiB: Number((outputBytes / 1024 / 1024).toFixed(1)),
+  outputSha256: outputHash.digest("hex"),
   baselineRssMiB: Number((baselineRss / 1024 / 1024).toFixed(1)),
   peakRssMiB: Number((peakRss / 1024 / 1024).toFixed(1)),
   boundedInFlightBatches: WORKERS,

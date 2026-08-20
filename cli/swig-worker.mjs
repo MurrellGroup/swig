@@ -51,7 +51,7 @@ var Event = class {
 	}
 };
 //#endregion
-//#region ../swig-flow-refactor/node_modules/@bjorn3/browser_wasi_shim/dist/debug.js
+//#region node_modules/@bjorn3/browser_wasi_shim/dist/debug.js
 let Debug = class Debug {
 	enable(enabled) {
 		this.log = createLogger(enabled === void 0 ? true : enabled, this.prefix);
@@ -71,7 +71,7 @@ function createLogger(enabled, prefix) {
 }
 const debug = new Debug(false);
 //#endregion
-//#region ../swig-flow-refactor/node_modules/@bjorn3/browser_wasi_shim/dist/wasi.js
+//#region node_modules/@bjorn3/browser_wasi_shim/dist/wasi.js
 var WASIProcExit = class extends Error {
 	constructor(code) {
 		super("exit with exit code " + code);
@@ -545,7 +545,7 @@ let WASI = class WASI {
 	}
 };
 //#endregion
-//#region ../swig-flow-refactor/node_modules/@bjorn3/browser_wasi_shim/dist/fd.js
+//#region node_modules/@bjorn3/browser_wasi_shim/dist/fd.js
 var Inode = class Inode {
 	static issue_ino() {
 		return Inode.next_ino++;
@@ -770,7 +770,7 @@ async function initialize(message) {
 	const instance = await WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport });
 	wasi.initialize(instance);
 	runtime = instance.exports;
-	const strategy = message.assignerStrategy === "standard" ? 0 : message.assignerStrategy === "aer" ? 2 : 1;
+	const strategy = message.assignerStrategy === "standard" ? 0 : message.assignerStrategy === "aer" ? 2 : message.assignerStrategy === "aer_robust" ? 3 : 1;
 	if (runtime.swig_set_assigner_strategy(strategy) !== 0) throw new Error("SwiftIG rejected the assignment strategy.");
 	const profile = message.callingProfile === "truth_optimized" ? 0 : 1;
 	if (runtime.swig_set_calling_profile(profile) !== 0) throw new Error("SwiftIG rejected the calling profile.");

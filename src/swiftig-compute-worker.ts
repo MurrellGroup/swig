@@ -87,7 +87,8 @@ async function initialize(request: InitializeRequest) {
     exports: { memory: WebAssembly.Memory; _initialize?: () => unknown };
   });
   const exports = instance.exports as SwiftIgExports;
-  const strategy = request.assignerStrategy === "riat_mp" ? 1 : request.assignerStrategy === "aer" ? 2 : 0;
+  const strategy = request.assignerStrategy === "riat_mp" ? 1 :
+    request.assignerStrategy === "aer" ? 2 : request.assignerStrategy === "aer_robust" ? 3 : 0;
   if (exports.swig_set_assigner_strategy(strategy) !== 0) {
     throw new Error("SwiftIG rejected the selected assignment strategy.");
   }

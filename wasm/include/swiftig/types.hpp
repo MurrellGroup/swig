@@ -18,6 +18,10 @@ enum class AssignerStrategy : std::uint8_t {
     Standard = 0,
     RiatMp = 1,
     Aer = 2,
+    // Experimental, separately selectable AER derivative. Candidate discovery
+    // remains AER; segment boundaries are adjudicated with a joint V-(D)-J
+    // partition rather than committing V/J before looking for D evidence.
+    AerRobust = 3,
 };
 
 struct SequenceRecord {

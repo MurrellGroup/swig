@@ -16,7 +16,7 @@ export interface ResultBatch {
 export type DoubleDScreenMode = "off" | "all" | "long_span";
 
 export type CallingProfile = "truth_optimized" | "igblast_compatible" | "igblast_balanced";
-export type AssignerStrategy = "standard" | "riat_mp" | "aer";
+export type AssignerStrategy = "standard" | "riat_mp" | "aer" | "aer_robust";
 
 export interface DoubleDScreenOptions {
   mode: DoubleDScreenMode;

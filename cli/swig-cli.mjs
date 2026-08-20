@@ -3528,7 +3528,7 @@ var ShmAccumulator = class {
 };
 //#endregion
 //#region cli-src/swig-cli.mjs
-const VERSION = "0.37.4";
+const VERSION = "0.37.6";
 const CLI_STREAM_HIGH_WATER_MARK = 8 * 1024 * 1024;
 const CLI_GZIP_CHUNK_SIZE = 1024 * 1024;
 const CLI_DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -3546,7 +3546,7 @@ function prepareReferenceUsage() {
 	return `swig-cli ${VERSION} prepare-reference\n\nInfer, validate, and persist reusable SWIGMETA germline annotations.\n\nRequired:\n  -germline_db_V FASTA  -germline_db_J FASTA  --out-prefix PREFIX\n\nOptional references and exact metadata:\n  -germline_db_D FASTA  -c_region_db FASTA\n  -custom_internal_data FILE  -auxiliary_data FILE  -d_frame_data FILE\n  -organism NAME (default human)  -ig_seqtype Ig|TCR (default Ig)\n\nMatching controls:\n  --match-mode strict|permissive|best-guess  (default strict)\n  --best-guess             Alias for --match-mode best-guess; disables identity floors\n  --nearest-candidates N   Non-gene candidates aligned after named candidates fail\n  --v-same-gene-min-identity X  --v-nearest-min-identity X\n  --j-same-gene-min-identity X  --j-nearest-min-identity X\n  --require-complete       Exit nonzero if any V/J record remains unresolved\n\nOutputs are PREFIX.V/D/J/C.fasta, PREFIX.swig-reference.json, and\nPREFIX.annotation-diagnostics.tsv. The manifest can be passed directly to\nswig-cli --vdj with --prepared-reference.`;
 }
 function vdjUsage() {
-	return `swig-cli ${VERSION} --vdj\n\nLow-overhead, streaming SwiftIG V(D)J assignment with IgBLAST-style option names.\n\nRequired:\n  -out AIRR_TSV, plus either --prepared-reference MANIFEST or\n  -germline_db_V FASTA and -germline_db_J FASTA\n\nInput and optional references:\n  -query FASTA            Query FASTA or '-' for stdin (default '-')\n  -germline_db_D FASTA    D germline FASTA\n  -c_region_db FASTA      Constant-region FASTA\n\nAnnotation modes (default: assignments only; CDR/FWR fields remain empty):\n  -custom_internal_data FILE  IgBLAST V .ndm.imgt data (1-based inclusive intervals)\n  -auxiliary_data FILE        IgBLAST J .aux data (0-based frame/CDR3 stop)\n  -d_frame_data FILE          IgBLAST D frame-one starts\n  --swigannots                Infer/validate metadata as in Swig Web\n\n  --prepared-reference FILE   Reuse a prepare-reference manifest and its FASTAs\n  --match-mode MODE           Metadata transfer only: strict, permissive, best-guess\n  --best-guess                Disable metadata-transfer identity floors (not read mapping)\nExecution:\n  -num_threads N          Exact worker count; --workers N overrides it\n  --workers N             Exact workers with no CLI cap; 0 chooses up to 8\n  --batch-records N       Records per bounded WASM batch; 0/omitted selects 2000, 1000,\n                          or 500 according to worker count\n  --assigner NAME         riat_mp (default), aer, or standard\n  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\nThe germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\nnot IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally.`;
+	return `swig-cli ${VERSION} --vdj\n\nLow-overhead, streaming SwiftIG V(D)J assignment with IgBLAST-style option names.\n\nRequired:\n  -out AIRR_TSV, plus either --prepared-reference MANIFEST or\n  -germline_db_V FASTA and -germline_db_J FASTA\n\nInput and optional references:\n  -query FASTA            Query FASTA or '-' for stdin (default '-')\n  -germline_db_D FASTA    D germline FASTA\n  -c_region_db FASTA      Constant-region FASTA\n\nAnnotation modes (default: assignments only; CDR/FWR fields remain empty):\n  -custom_internal_data FILE  IgBLAST V .ndm.imgt data (1-based inclusive intervals)\n  -auxiliary_data FILE        IgBLAST J .aux data (0-based frame/CDR3 stop)\n  -d_frame_data FILE          IgBLAST D frame-one starts\n  --swigannots                Infer/validate metadata as in Swig Web\n\n  --prepared-reference FILE   Reuse a prepare-reference manifest and its FASTAs\n  --match-mode MODE           Metadata transfer only: strict, permissive, best-guess\n  --best-guess                Disable metadata-transfer identity floors (not read mapping)\nExecution:\n  -num_threads N          Exact worker count; --workers N overrides it\n  --workers N             Exact workers with no CLI cap; 0 chooses up to 8\n  --batch-records N       Records per bounded WASM batch; 0/omitted selects 2000, 1000,\n                          or 500 according to worker count\n  --assigner NAME         riat_mp (default), aer, aer_robust, or standard\n  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\nThe germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\nnot IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally.`;
 }
 function thirdPartyNotices() {
 	return "Bundled IMGT/GENE-DB reference data\n\nSource: IMGT/GENE-DB release 202632-7, retrieved 2026-08-08.\nCopyright © 1995-2026 IMGT®, the international ImMunoGeneTics information system®.\nAttribution: IMGT®, the international ImMunoGeneTics information system®, https://www.imgt.org/, Institute of Human Genetics, Université de Montpellier and CNRS.\nLicense: CC BY 4.0, https://creativecommons.org/licenses/by/4.0/\nTerms: https://www.imgt.org/about/termsofuse.php\nCitation: Giudicelli V, Chaume D, Lefranc M-P. Nucleic Acids Research. 2005;33:D593-D597. https://doi.org/10.1093/nar/gki010\n\nSwig modifies the source data by selecting and reorganizing IG/TR V/D/J/C records, normalizing and ungapping nucleotide sequences, deriving compact coordinate metadata, selecting one source sequence per allele identifier, and joining selected coding IGH/TR constant exons. Membrane-only and untranslated constant exons are omitted. IMGT, Université de Montpellier, and CNRS do not endorse Swig or warrant the modified pack or its use.";
@@ -5291,8 +5291,9 @@ async function runVdj(rawArgs, assets) {
 	if (![
 		"standard",
 		"riat_mp",
-		"aer"
-	].includes(assigner)) throw new Error("--assigner must be standard, riat_mp, or aer.");
+		"aer",
+		"aer_robust"
+	].includes(assigner)) throw new Error("--assigner must be standard, riat_mp, aer, or aer_robust.");
 	const callingProfile = String(options["--calling-profile"] ?? "truth_optimized");
 	if (![
 		"truth_optimized",
@@ -5313,7 +5314,7 @@ async function runVdj(rawArgs, assets) {
 	let completed = false;
 	try {
 		if (outputPath !== "-") await once(output, "open");
-		const assignerLabel = assigner === "riat_mp" ? "RIAT-MP" : assigner === "aer" ? "AER" : "standard SwiftIG";
+		const assignerLabel = assigner === "riat_mp" ? "RIAT-MP" : assigner === "aer" ? "AER" : assigner === "aer_robust" ? "AER-R (experimental)" : "standard SwiftIG";
 		process.stderr.write(`Streaming SwiftIG V(D)J assignments (${prepared.mode}; ${workers} worker${workers === 1 ? "" : "s"}; ${batchRecords.toLocaleString()} records/batch; ${assignerLabel}) to ${outputPath}.\n`);
 		const state = {
 			inputRecords: 0,
@@ -5429,6 +5430,12 @@ async function runCli(assets = defaultCliAssets()) {
 		workers: parseIntegerOption(commandWorkers, "--workers", { minimum: 0 })
 	};
 	const config = normalizeCliConfig(raw);
+	if (![
+		"standard",
+		"riat_mp",
+		"aer",
+		"aer_robust"
+	].includes(config.annotation.assignerStrategy)) throw new Error("annotation.assignerStrategy must be standard, riat_mp, aer, or aer_robust.");
 	if (config.annotation.workers === 0) config.annotation.workers = Math.max(1, Math.min(8, availableParallelism()));
 	config.inputs = config.inputs.map((input) => ({
 		...input,

@@ -1,6 +1,6 @@
 {
   "name": "swig-cli",
-  "version": "0.37.4",
+  "version": "0.37.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -19,6 +19,7 @@
     "test:wasm": "node --experimental-strip-types --test tests/swiftig-wasm.test.mjs tests/alivibe-msa-wasm.test.mjs",
     "test:cli": "node scripts/build-cli.mjs && node --test tests/cli-smoke.test.mjs",
     "benchmark:50k": "node tests/benchmark-wasm-pool.mjs",
+    "benchmark:aer-robust": "node tests/benchmark-aer-robustness.mjs",
     "benchmark:denoise-50k": "node --experimental-strip-types tests/benchmark-denoise-50k.mjs",
     "benchmark:indel-denoise-50k": "node --experimental-strip-types tests/benchmark-denoise-50k.mjs --indel",
     "benchmark:missing-v-50k": "node --expose-gc --experimental-strip-types tests/benchmark-missing-v-50k.ts",

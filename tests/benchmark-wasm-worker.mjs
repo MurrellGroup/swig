@@ -23,14 +23,16 @@ function errorText() {
 }
 
 async function initialize(references) {
-  const wasmBytes = fs.readFileSync(new URL("../public/swiftig.wasm", import.meta.url));
+  const wasmBytes = fs.readFileSync(
+    workerData?.wasmPath || new URL("../public/swiftig.wasm", import.meta.url),
+  );
   const wasi = new WASI([], [], []);
   const module = await WebAssembly.compile(wasmBytes);
   const instance = await WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport });
   wasi.initialize(instance);
   runtime = instance.exports;
   const strategy = workerData?.strategy === "riat_mp" ? 1 :
-    workerData?.strategy === "aer" ? 2 : 0;
+    workerData?.strategy === "aer" ? 2 : workerData?.strategy === "aer_robust" ? 3 : 0;
   if (runtime.swig_set_assigner_strategy(strategy) !== 0) {
     throw new Error("SwiftIG rejected the benchmark assignment strategy");
   }

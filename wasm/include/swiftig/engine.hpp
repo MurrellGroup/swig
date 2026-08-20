@@ -48,9 +48,13 @@ private:
     ReferenceDatabaseStatistics d_statistics_;
     ReferenceDatabaseStatistics j_statistics_;
     ReferenceDatabaseStatistics c_statistics_;
+    std::size_t maximum_d_length_ = 0;
     mutable AlignmentWorkspace alignment_workspace_;
 
     [[nodiscard]] OrientationResult annotate_orientation(
+        const std::string& sequence,
+        const OrientationHints* hints = nullptr) const;
+    [[nodiscard]] OrientationResult annotate_orientation_aer_robust(
         const std::string& sequence,
         const OrientationHints* hints = nullptr) const;
     [[nodiscard]] std::vector<SegmentHit> align_candidates(

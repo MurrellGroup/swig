@@ -21,6 +21,9 @@ struct DoubleDOptions {
     std::size_t pseudo_trim = 5;
     int maximum_pseudo_mismatches = 3;
     int minimum_score_gain = 8;
+    // AER-R-only rescue: admit mutation-tolerant seed starts, while requiring
+    // the resulting extended hit to cover at least the configured seed length.
+    bool robust_seed_rescue = false;
 };
 
 struct DoubleDAlternative {
@@ -58,6 +61,8 @@ private:
     const GermlineDatabase& database_;
     DoubleDOptions options_;
     std::unordered_map<std::string, std::vector<SeedHit>> seeds_;
+    std::unordered_map<std::string, std::vector<SeedHit>> fallback_seeds_;
+    std::size_t fallback_seed_length_ = 0;
 };
 
 void write_double_d_header(std::ostream& output);

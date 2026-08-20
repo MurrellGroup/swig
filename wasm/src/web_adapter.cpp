@@ -325,7 +325,7 @@ int swig_set_calling_profile(int profile) noexcept {
 __attribute__((export_name("swig_set_assigner_strategy")))
 int swig_set_assigner_strategy(int strategy) noexcept {
     if (strategy < static_cast<int>(AssignerStrategy::Standard) ||
-        strategy > static_cast<int>(AssignerStrategy::Aer)) return -1;
+        strategy > static_cast<int>(AssignerStrategy::AerRobust)) return -1;
     g_assigner_strategy = static_cast<AssignerStrategy>(strategy);
     return 0;
 }
@@ -460,6 +460,8 @@ int swig_annotate_double_d(
     double_d_options.maximum_pseudo_mismatches = std::clamp(
         maximum_pseudo_mismatches, 0, 24);
     double_d_options.minimum_score_gain = std::clamp(minimum_score_gain, 0, 1000);
+    double_d_options.robust_seed_rescue =
+        engine_options.assigner_strategy == AssignerStrategy::AerRobust;
     swiftig::DoubleDScreener screener(*g_database, double_d_options);
     std::ostringstream reference_airr_output;
     std::ostringstream double_d_output;

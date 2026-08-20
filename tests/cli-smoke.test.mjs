@@ -261,6 +261,11 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
     assert.ok(igblastRow.cdr1);assert.ok(igblastRow.cdr3);assert.equal(igblastRow.region_definition,"IMGT");
     assert.equal(Number(igblastRow.j_sequence_end)-Number(igblastRow.fwr4_end),1);
 
+    const robustPath=join(temporary,"aer-robust.airr.tsv");
+    const robust=runRawCli(root,[...common,"--assigner","aer_robust","-out",robustPath]);
+    assert.equal(robust.status,0,robust.stderr);assert.match(robust.stderr,/AER-R \(experimental\)/);
+    const robustRow=await readRow(robustPath);assert.equal(robustRow.v_call,v[0]);assert.equal(robustRow.j_call,j[0]);
+
     const swigPath=join(temporary,"swig.airr.tsv");
     const swig=runRawCli(root,[...common,"--swigannots","-organism","human","-ig_seqtype","Ig","-out",swigPath]);
     assert.equal(swig.status,0,swig.stderr);assert.match(swig.stderr,/Swig metadata preparation/);

@@ -52,7 +52,7 @@ import {
 } from "../src/sequence-stream.ts";
 import { annotateAirrBatch, annotateDoubleDBatch, stableDatasetSeed } from "../src/study-design.ts";
 
-const VERSION="0.37.4";
+const VERSION="0.37.6";
 const CLI_STREAM_HIGH_WATER_MARK=8*1024*1024;
 const CLI_GZIP_CHUNK_SIZE=1024*1024;
 const CLI_DIRECTORY=dirname(fileURLToPath(import.meta.url));
@@ -127,7 +127,7 @@ function vdjUsage(){
     `  --workers N             Exact workers with no CLI cap; 0 chooses up to 8\n`+
     `  --batch-records N       Records per bounded WASM batch; 0/omitted selects 2000, 1000,\n`+
     `                          or 500 according to worker count\n`+
-    `  --assigner NAME         riat_mp (default), aer, or standard\n`+
+    `  --assigner NAME         riat_mp (default), aer, aer_robust, or standard\n`+
     `  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\n`+
     `The germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\n`+
     `not IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally.`;
@@ -1081,7 +1081,7 @@ async function runVdj(rawArgs,assets){
   const requestedBatchRecords=options["--batch-records"]===undefined?0:parseIntegerOption(options["--batch-records"],"--batch-records",{minimum:0});
   const batchRecords=requestedBatchRecords||automaticBatchRecords(workers);
   const assigner=String(options["--assigner"]??"riat_mp");
-  if(!["standard","riat_mp","aer"].includes(assigner))throw new Error("--assigner must be standard, riat_mp, or aer.");
+  if(!["standard","riat_mp","aer","aer_robust"].includes(assigner))throw new Error("--assigner must be standard, riat_mp, aer, or aer_robust.");
   const callingProfile=String(options["--calling-profile"]??"truth_optimized");
   if(!["truth_optimized","igblast_compatible","igblast_balanced"].includes(callingProfile))throw new Error("--calling-profile must be truth_optimized, igblast_compatible, or igblast_balanced.");
   const queryValue=String(options["-query"]??"-");
@@ -1096,7 +1096,7 @@ async function runVdj(rawArgs,assets){
   let outputHeader=null;let records=0;let completed=false;
   try{
     if(outputPath!=="-")await once(output,"open");
-    const assignerLabel=assigner==="riat_mp"?"RIAT-MP":assigner==="aer"?"AER":"standard SwiftIG";
+    const assignerLabel=assigner==="riat_mp"?"RIAT-MP":assigner==="aer"?"AER":assigner==="aer_robust"?"AER-R (experimental)":"standard SwiftIG";
     process.stderr.write(`Streaming SwiftIG V(D)J assignments (${prepared.mode}; ${workers} worker${workers===1?"":"s"}; ${batchRecords.toLocaleString()} records/batch; ${assignerLabel}) to ${outputPath}.\n`);
     const state={inputRecords:0,eligibleRecords:0,selectedRecords:0,fastqFilter:emptyFastqQualityFilterStats(false,false)};
     const pending=[];
@@ -1149,6 +1149,9 @@ export async function runCli(assets=defaultCliAssets()){
   const commandWorkers=argumentValue(rest,"--workers");
   if(commandWorkers!==undefined)raw.annotation={...(raw.annotation??{}),workers:parseIntegerOption(commandWorkers,"--workers",{minimum:0})};
   const config=normalizeCliConfig(raw);
+  if(!["standard","riat_mp","aer","aer_robust"].includes(config.annotation.assignerStrategy)){
+    throw new Error("annotation.assignerStrategy must be standard, riat_mp, aer, or aer_robust.");
+  }
   if(config.annotation.workers===0)config.annotation.workers=Math.max(1,Math.min(8,availableParallelism()));
   config.inputs=config.inputs.map((input)=>({...input,path:typeof input.inline==="string"?input.path:resolveFrom(base,input.path)}));
   await runPipeline(config,base,assets);

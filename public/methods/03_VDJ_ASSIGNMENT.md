@@ -4,13 +4,15 @@
 
 SwiftIG's C++20 core runs as WebAssembly in a bounded worker pool. Each worker receives the same composed germline references and processes independent record batches. Swig preserves input order when committing AIRR batches. Search strand, minimum accepted alignment identity, assignment strategy, and calling profile are explicit run settings.
 
-For each oriented query, SwiftIG uses exact nucleotide seed indexes to retrieve candidates, exact affine local alignment for selected candidates, then reconstructs a consistent V-(D)-J rearrangement and AIRR coordinate/alignment fields. D and J evidence is evaluated in the V/J-bounded region. Co-optimal calls are emitted as comma-separated names; sparse near-tied candidates retain score/identity/coordinate evidence without duplicating full alignment strings into every AIRR row.
+For each oriented query, SwiftIG uses exact nucleotide seed indexes to retrieve candidates, exact affine local alignment for selected candidates, then reconstructs a consistent V-(D)-J rearrangement and AIRR coordinate/alignment fields. The ordinary RIAT-MP, AER, and standard paths evaluate D in the V/J-bounded region. Experimental AER-R begins there too, but can expand an uncertain junction to mapped conserved V/J anchors before comparing complete non-overlapping partitions. Co-optimal calls are emitted as comma-separated names; sparse near-tied candidates retain score/identity/coordinate evidence without duplicating full alignment strings into every AIRR row.
+
+V and J are first optimized independently, but their junction-facing endpoints are not treated as irrevocable. If the ordinary D call has less than 10 consecutive exact bases and a V 3′ or J 5′ affine gap lies within 24 query bases of the junction-facing edge, SwiftIG checks the reclaimed boundary span for an exact 10-nt D seed. Only then does it perform a second D refinement. It clips the competing V/J alignment at each candidate D boundary, recomputes the retained affine scores, and accepts the split only when the non-overlapping V+D+J score is strictly greater than the original V+(weak D)+J score. This custom rescue prevents a gappy terminal V/J optimum from hiding a long exact D tract. Strong ordinary D calls and endpoints without a junction-facing gap never execute the additional search.
 
 The minimum identity control is an acceptance floor for candidate alignments, not a global read-trimming heuristic. The `sequence` field remains the user's input sequence (or the chosen reverse complement); V/J-aligned and junction fields are derived outputs.
 
-## V assignment strategies
+## Assignment strategies
 
-The strategy changes V candidate retrieval/refinement only. D and J use the selected calling profile in every strategy.
+RIAT-MP, ordinary AER, and standard SwiftIG change V candidate retrieval/refinement only. AER-R is a separately selectable experimental AER derivative that also changes how uncertain V/D/J boundaries and candidates are adjudicated. Every strategy uses the same selected calling-profile scores and minimum evidence settings.
 
 RIAT-MP is the default for all three front-page workflows, hand-written/normalized CLI configs, and the direct `swig-cli --vdj` route. Either surface can select any strategy explicitly, and a browser-exported config records the web selection.
 
@@ -19,6 +21,20 @@ RIAT-MP is the default for all three front-page workflows, hand-written/normaliz
 AER begins from the complete V-allele seed index. It exactly aligns the leading candidates and increases exact affine-alignment depth only when the leading 9-mer vote ranking is ambiguous: within 5% relative vote count or 8 weighted votes, up to 16 candidates. It never substitutes a propagated approximate score for the final retained exact alignment.
 
 The production AER kernel evaluates independent affine recurrences in four exact SIMD128 lanes. A score-only pass over a wide safety pool omits trace storage but uses the same recurrence; full DP/traceback continues through every raw-score group capable of entering the retained top-N set. The scalar affine implementation remains the executable reference path used by equivalence tests.
+
+### AER-R—experimental robust joint caller
+
+AER-R leaves ordinary AER intact and is selected explicitly as `aer_robust` in portable config or `--assigner aer_robust` in the CLI. It reuses AER's exact seed candidates, affine recurrence, calling-profile scores, AIRR writer, and clean V/J-bounded D search. Its additional decisions are:
+
+- compare explicit non-overlapping V–D–J partitions, charging the complete affine-score loss when V or J must be clipped;
+- retain the nominal V/J-bounded D location and, only when it is absent, boundary-truncated, or weak beside a junction-facing gap, add a conserved-anchor-bounded D search as a distinct location hypothesis;
+- map the final V cysteine and J F/W–G anchors from reference through the alignment, with a database-length-derived fallback only when metadata or alignment coverage cannot map an anchor;
+- retain exact score ties at a configured candidate cutoff and add exact retained-D-substring allele labels that a top-N list alone could hide;
+- if a strongly V-supported orientation has no valid V/J partition, exactly align the complete small J database; the opposite/weak orientation does not pay for that rescue;
+- optimize a non-overlapping J/C split when independent local hits overlap, retaining it only when the scored constant contribution exceeds the lost J score; and
+- when the separate double-D screen is enabled, permit a shorter seed rescue that must ungapped-extend back to at least the configured ordinary seed length before entering the unchanged pair-gain and pseudo-tandem tests.
+
+Anchor projection and the maximum D-reference length are cached or evaluated lazily. Clean geometry therefore performs the same number of D searches as ordinary AER. The development simulator contains skewed allele use, V/D/J deletion, P/N addition, occasional tandem D, hotspot-weighted SHM, short indels, base-call errors, ambiguous bases, partial reads, flanks, reverse complements, and exact base provenance. It and the compile-time all-reference oracle live under `tests/`; neither is linked into the runtime WebAssembly. Results and limitations are in [`BENCHMARK_AER_ROBUST_0.37.6.md`](../../BENCHMARK_AER_ROBUST_0.37.6.md).
 
 ### RIAT-MP (Swig default)
 
@@ -73,11 +89,13 @@ The schema follows the AIRR Rearrangement representation so downstream tools can
 
 Reference indexes are built once per worker. Records are processed in bounded batches, and results are appended to browser storage or a user-selected writable stream. Cancellation aborts input reading, terminates the worker pool, aborts unfinalized output, and clears the temporary result store; no partial run is opened as a completed analysis.
 
-AER/RIAT production indexes use direct-address CSR k-mer hits and reusable generation-stamped vote workspaces; their original unordered-map candidate implementation is retained for byte-equivalence tests. AIRR production output is appended directly with byte-identical numeric formatting, while the original ostream writer is likewise retained as a reference. These are execution optimizations only: scoring, search breadth, band choice, tie handling, and output fields are unchanged.
+AER/RIAT production indexes use direct-address CSR k-mer hits and reusable generation-stamped vote workspaces; their original unordered-map candidate implementation is retained for byte-equivalence tests. AIRR production output is appended directly with byte-identical numeric formatting, while the original ostream writer is likewise retained as a reference. Those kernel optimizations do not change scoring, search breadth, band choice, tie handling, or output fields. AER-R's explicitly documented search and tie differences are method changes, not kernel optimizations.
 
 ## Limitations
 
-- AER/RIAT-MP/profile calibration used simulated human IGH and is not held-out validation.
+- AER/RIAT-MP/profile calibration and the AER-R development audit use simulated material and are not held-out validation.
+- The AER-R simulator is realistic enough to expose boundary and pruning failures, but it is not a claim that its SHM, indel, trimming, or junction distributions match every repertoire.
+- AER-R improved retained-D-tract recovery on the audited difficult cohort but also increased calls on truth records retaining fewer than six D bases; it remains experimental and opt-in.
 - Short D segments and highly mutated reads can remain intrinsically ambiguous.
 - Co-optimal labels describe equal scores under this caller, not equal biological posterior probabilities.
 - C calls depend on whether the input actually covers constant sequence.

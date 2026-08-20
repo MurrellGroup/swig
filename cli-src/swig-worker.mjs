@@ -24,7 +24,7 @@ async function initialize(message){
   const instance=await WebAssembly.instantiate(module,{wasi_snapshot_preview1:wasi.wasiImport});
   wasi.initialize(instance);
   runtime=instance.exports;
-  const strategy=message.assignerStrategy==="standard"?0:message.assignerStrategy==="aer"?2:1;
+  const strategy=message.assignerStrategy==="standard"?0:message.assignerStrategy==="aer"?2:message.assignerStrategy==="aer_robust"?3:1;
   if(runtime.swig_set_assigner_strategy(strategy)!==0)throw new Error("SwiftIG rejected the assignment strategy.");
   // The browser's balanced profile intentionally starts from compatible calls
   // and then applies the shared post-filter below.

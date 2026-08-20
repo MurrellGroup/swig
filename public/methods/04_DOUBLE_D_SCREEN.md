@@ -10,6 +10,8 @@ The search window is the oriented query interval from the end of the selected V 
 
 All exact canonical \(k\)-mers from locus-compatible D references are indexed; \(k=11\) by default. An exact seed hit is ungapped-extended left and right with match `+2`, mismatch `−2`, retaining the highest-scoring extension in each direction. Duplicate gene/diagonal seed hits are collapsed. Two hits form a candidate only when they are ordered and non-overlapping on the query.
 
+When the experimental AER-R assignment strategy is selected, the screen additionally indexes `max(6, k−3)`-mers. A fallback hit is discarded unless ungapped extension reaches at least `k` aligned query bases, so the shorter word rescues seed disruption without lowering the configured minimum span of evaluated evidence. Ordinary AER, RIAT-MP, and standard screening retain the original exact-`k` path.
+
 For a pair \((D_1,D_2)\), the pair score is the sum of its two extension scores. It must exceed the best supported single-D extension by the configured minimum score gain (8 by default). Equal-score/equal-coordinate allele labels remain co-optimal.
 
 ## Pseudo-tandem veto

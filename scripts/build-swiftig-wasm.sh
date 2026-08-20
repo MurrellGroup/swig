@@ -26,6 +26,12 @@ mkdir -p "$build_dir"
 export TMPDIR="$build_dir"
 export LD_LIBRARY_PATH="$wasi_sdk/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+extra_defines=()
+if [[ "${SWIG_AER_ROBUST_EXHAUSTIVE:-0}" == "1" ]]; then
+  extra_defines+=("-DSWIG_AER_ROBUST_EXHAUSTIVE=1")
+fi
+output_path="${SWIG_WASM_OUTPUT:-$project_dir/public/swiftig.wasm}"
+
 sources=(
   "$project_dir/wasm/src/types.cpp"
   "$project_dir/wasm/src/index.cpp"
@@ -53,6 +59,7 @@ sources=(
   -DSWIG_V_TREE_TRACEBACKS=2 \
   -DSWIG_V_TREE_TRACEBACK_TOLERANCE=4 \
   -DSWIG_V_TREE_TRACE_STATE_LIMIT=1024 \
+  "${extra_defines[@]}" \
   -I"$project_dir/wasm/include" \
   "${sources[@]}" \
   -mexec-model=reactor \
@@ -72,5 +79,5 @@ sources=(
   --strip-producers \
   -o "$build_dir/swiftig.wasm"
 
-install -m 755 "$build_dir/swiftig.wasm" "$project_dir/public/swiftig.wasm"
-echo "Built optimized SIMD/LTO public/swiftig.wasm"
+install -m 755 "$build_dir/swiftig.wasm" "$output_path"
+echo "Built optimized SIMD/LTO ${output_path#$project_dir/}"
