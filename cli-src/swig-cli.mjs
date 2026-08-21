@@ -52,7 +52,7 @@ import {
 } from "../src/sequence-stream.ts";
 import { annotateAirrBatch, annotateDoubleDBatch, stableDatasetSeed } from "../src/study-design.ts";
 
-const VERSION="0.37.6";
+const VERSION="0.38.0";
 const CLI_STREAM_HIGH_WATER_MARK=8*1024*1024;
 const CLI_GZIP_CHUNK_SIZE=1024*1024;
 const CLI_DIRECTORY=dirname(fileURLToPath(import.meta.url));
@@ -128,6 +128,8 @@ function vdjUsage(){
     `  --batch-records N       Records per bounded WASM batch; 0/omitted selects 2000, 1000,\n`+
     `                          or 500 according to worker count\n`+
     `  --assigner NAME         riat_mp (default), aer, aer_robust, or standard\n`+
+    `  --calling-profile NAME  truth_optimized (default), r_optimized (AER-R only),\n`+
+    `                          igblast_balanced, or igblast_compatible\n`+
     `  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\n`+
     `The germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\n`+
     `not IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally.`;
@@ -399,7 +401,7 @@ class ChmmPool {
 function workerInitialization(wasmPath,references,callingProfile,assignerStrategy,tuning){
   return {
     wasmPath,referenceV:references.V,referenceD:references.D,referenceJ:references.J,referenceC:references.C,
-    callingProfile,assignerStrategy,hasTuning:Boolean(tuning),
+    callingProfile,assignerStrategy,hasTuning:Boolean(tuning),rOptimized:Boolean(tuning?.rOptimized),
     tuningDMatch:tuning?.dMatch??0,tuningDMismatch:tuning?.dMismatch??0,tuningDGapOpen:tuning?.dGapOpen??0,tuningDGapExtend:tuning?.dGapExtend??0,
     tuningTopD:tuning?.topD??0,tuningMinDMatch:tuning?.minDMatch??0,tuningJMatch:tuning?.jMatch??0,tuningJMismatch:tuning?.jMismatch??0,
     tuningJGapOpen:tuning?.jGapOpen??0,tuningJGapExtend:tuning?.jGapExtend??0,tuningTopJ:tuning?.topJ??0,tuningMinJLength:tuning?.minJLength??0,
@@ -1047,16 +1049,17 @@ async function runPipeline(config,base,assets){
 function vdjTuning(options,callingProfile){
   const keys=["-min_D_match","-min_J_length","-num_alignments_D","-num_alignments_J","-D_penalty","-J_penalty"];
   if(!keys.some((key)=>options[key]!==undefined))return undefined;
-  const agreement=callingProfile!=="truth_optimized";
-  const minD=options["-min_D_match"]===undefined?(agreement?5:6):parseIntegerOption(options["-min_D_match"],"-min_D_match",{minimum:5});
+  const agreement=callingProfile==="igblast_compatible"||callingProfile==="igblast_balanced";
+  const rOptimized=callingProfile==="r_optimized";
+  const minD=options["-min_D_match"]===undefined?(agreement||rOptimized?5:6):parseIntegerOption(options["-min_D_match"],"-min_D_match",{minimum:5});
   const minJ=options["-min_J_length"]===undefined?10:parseIntegerOption(options["-min_J_length"],"-min_J_length",{minimum:0});
   const topD=options["-num_alignments_D"]===undefined?(agreement?3:2):parseIntegerOption(options["-num_alignments_D"],"-num_alignments_D",{minimum:1,allowZero:false});
   const topJ=options["-num_alignments_J"]===undefined?2:parseIntegerOption(options["-num_alignments_J"],"-num_alignments_J",{minimum:1,allowZero:false});
-  const dMismatch=options["-D_penalty"]===undefined?(agreement?-4:-3):parseFiniteOption(options["-D_penalty"],"-D_penalty");
-  const jMismatch=options["-J_penalty"]===undefined?(agreement?-4:-3):parseFiniteOption(options["-J_penalty"],"-J_penalty");
+  const dMismatch=options["-D_penalty"]===undefined?(agreement||rOptimized?-4:-3):parseFiniteOption(options["-D_penalty"],"-D_penalty");
+  const jMismatch=options["-J_penalty"]===undefined?(agreement||rOptimized?-4:-3):parseFiniteOption(options["-J_penalty"],"-J_penalty");
   if(options["-D_penalty"]!==undefined&&(!Number.isInteger(dMismatch)||dMismatch<=-5||dMismatch>=0))throw new Error("-D_penalty must be an integer greater than -5 and less than 0.");
-  if(options["-J_penalty"]!==undefined&&(!Number.isInteger(jMismatch)||jMismatch<=-4||jMismatch>=0))throw new Error("-J_penalty must be an integer greater than -4 and less than 0.");
-  return {dMatch:2,dMismatch,dGapOpen:agreement?-11:-13,dGapExtend:-1,topD,minDMatch:minD,jMatch:2,jMismatch,jGapOpen:agreement?-13:-17,jGapExtend:agreement?-1:-2,topJ,minJLength:Math.max(1,minJ)};
+  if(options["-J_penalty"]!==undefined&&(!Number.isInteger(jMismatch)||jMismatch<=-5||jMismatch>=0))throw new Error("-J_penalty must be an integer greater than -5 and less than 0.");
+  return {dMatch:2,dMismatch,dGapOpen:agreement?-11:-13,dGapExtend:-1,topD,minDMatch:minD,jMatch:2,jMismatch,jGapOpen:agreement?-13:-17,jGapExtend:agreement?-1:-2,topJ,minJLength:Math.max(1,minJ),rOptimized};
 }
 
 async function runVdj(rawArgs,assets){
@@ -1083,7 +1086,8 @@ async function runVdj(rawArgs,assets){
   const assigner=String(options["--assigner"]??"riat_mp");
   if(!["standard","riat_mp","aer","aer_robust"].includes(assigner))throw new Error("--assigner must be standard, riat_mp, aer, or aer_robust.");
   const callingProfile=String(options["--calling-profile"]??"truth_optimized");
-  if(!["truth_optimized","igblast_compatible","igblast_balanced"].includes(callingProfile))throw new Error("--calling-profile must be truth_optimized, igblast_compatible, or igblast_balanced.");
+  if(!["truth_optimized","igblast_compatible","igblast_balanced","r_optimized"].includes(callingProfile))throw new Error("--calling-profile must be truth_optimized, r_optimized, igblast_compatible, or igblast_balanced.");
+  if(callingProfile==="r_optimized"&&assigner!=="aer_robust")throw new Error("--calling-profile r_optimized requires --assigner aer_robust.");
   const queryValue=String(options["-query"]??"-");
   const queryPath=queryValue==="-"?"-":resolve(queryValue);
   const outputPath=String(outputValue)==="-"?"-":resolve(String(outputValue));
@@ -1151,6 +1155,12 @@ export async function runCli(assets=defaultCliAssets()){
   const config=normalizeCliConfig(raw);
   if(!["standard","riat_mp","aer","aer_robust"].includes(config.annotation.assignerStrategy)){
     throw new Error("annotation.assignerStrategy must be standard, riat_mp, aer, or aer_robust.");
+  }
+  if(!["truth_optimized","igblast_compatible","igblast_balanced","r_optimized"].includes(config.annotation.callingProfile)){
+    throw new Error("annotation.callingProfile must be truth_optimized, r_optimized, igblast_compatible, or igblast_balanced.");
+  }
+  if(config.annotation.callingProfile==="r_optimized"&&config.annotation.assignerStrategy!=="aer_robust"){
+    throw new Error("annotation.callingProfile r_optimized requires annotation.assignerStrategy aer_robust.");
   }
   if(config.annotation.workers===0)config.annotation.workers=Math.max(1,Math.min(8,availableParallelism()));
   config.inputs=config.inputs.map((input)=>({...input,path:typeof input.inline==="string"?input.path:resolveFrom(base,input.path)}));

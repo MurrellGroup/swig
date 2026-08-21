@@ -150,6 +150,8 @@ test("assignment is one progressive action page while independent result tools r
   assert.doesNotMatch(app, /AnalysisWorkspace|analysisWorkspace|Analysis setup sections/);
   assert.doesNotMatch(app, /settings-strip/);
   assert.match(app, /<b>Advanced options<\/b>/);
+  assert.match(app, /value="r_optimized" disabled=\{assignerStrategy!=="aer_robust"\}/);
+  assert.match(app, /R-optimized · AER-R only/);
   assert.match(app, /Customize individual loci, V\/D\/J\/C sources, or allele inclusion/);
   assert.match(app, /aria-label="Sequence result panels"/);
   assert.match(app, /setSequenceWorkspace\("detail"\)/);

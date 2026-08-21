@@ -79,6 +79,9 @@ function readError(exports: SwiftIgExports): string {
 }
 
 async function initialize(request: InitializeRequest) {
+  if (request.callingProfile === "r_optimized" && request.assignerStrategy !== "aer_robust") {
+    throw new Error("The r-optimized calling profile requires AER-R.");
+  }
   const wasi = new WASI([], [], []);
   const instance = await WebAssembly.instantiate(request.module, {
     wasi_snapshot_preview1: wasi.wasiImport,
@@ -93,7 +96,8 @@ async function initialize(request: InitializeRequest) {
     throw new Error("SwiftIG rejected the selected assignment strategy.");
   }
   if (exports.swig_set_calling_profile(
-    request.callingProfile === "truth_optimized" ? 0 : 1,
+    request.callingProfile === "truth_optimized" ? 0 :
+      request.callingProfile === "r_optimized" ? 2 : 1,
   ) !== 0) {
     throw new Error("SwiftIG rejected the selected calling profile.");
   }

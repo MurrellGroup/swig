@@ -21,7 +21,8 @@ public:
         const std::string& query,
         std::size_t limit,
         std::size_t max_seed_frequency = 96,
-        std::size_t stride = 1) const;
+        std::size_t stride = 1,
+        bool force_fallback = false) const;
     // Allocation-light, result-equivalent candidate search used by the AER
     // and RIAT-MP production kernels. `candidates` above is deliberately kept
     // as the reference implementation for equivalence testing.
@@ -29,7 +30,8 @@ public:
         const std::string& query,
         std::size_t limit,
         std::size_t max_seed_frequency = 96,
-        std::size_t stride = 1) const;
+        std::size_t stride = 1,
+        bool force_fallback = false) const;
     [[nodiscard]] const std::vector<Gene>& genes() const noexcept { return genes_; }
     [[nodiscard]] std::vector<Gene>& mutable_genes() noexcept { return genes_; }
     [[nodiscard]] std::uint32_t kmer_size() const noexcept { return kmer_size_; }

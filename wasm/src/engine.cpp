@@ -1,6 +1,7 @@
 #include "swiftig/engine.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -376,6 +377,44 @@ std::size_t longest_exact_run(const Alignment& alignment) {
 }
 
 /**
+ * A long D alignment can carry compelling distributed evidence even when SHM
+ * interrupts every exact seed.  The ordinary exact-run floor remains the
+ * inexpensive primary rule; this stricter aggregate rule is an AER-R-only
+ * alternative for alignments that fail it.  Score with the truth-profile D
+ * tuple so the evidence boundary is stable across user calling profiles.
+ */
+bool strong_distributed_d_evidence(const Alignment& alignment) {
+    constexpr std::size_t minimum_aligned_bases = 16;
+    constexpr std::size_t minimum_matches = 14;
+    constexpr int minimum_evidence_score = 19;
+    const auto aligned = aligned_bases(alignment);
+    if (aligned < minimum_aligned_bases ||
+        static_cast<std::size_t>(alignment.matches) < minimum_matches ||
+        static_cast<std::size_t>(alignment.matches) * 5 < aligned * 4) return false;
+
+    constexpr Scoring evidence_scoring{2, -3, -13, -1};
+    int score = 0;
+    char gap_state = 0;
+    for (std::size_t column = 0; column < alignment.aligned_query.size(); ++column) {
+        const char query = alignment.aligned_query[column];
+        const char reference = alignment.aligned_reference[column];
+        if (query == '-' && reference != '-') {
+            score += gap_state == 'D'
+                ? evidence_scoring.gap_extend : evidence_scoring.gap_open;
+            gap_state = 'D';
+        } else if (query != '-' && reference == '-') {
+            score += gap_state == 'I'
+                ? evidence_scoring.gap_extend : evidence_scoring.gap_open;
+            gap_state = 'I';
+        } else {
+            score += substitution_score(query, reference, evidence_scoring);
+            gap_state = 0;
+        }
+    }
+    return score >= minimum_evidence_score;
+}
+
+/**
  * Return true when an affine gap occurs close to the recombination-facing
  * edge of an alignment. A local V/J optimum can otherwise consume a strong D
  * tract by paying one or two gaps near that edge, leaving too little of the
@@ -592,6 +631,31 @@ void merge_equivalent_calls(SegmentHit& selected, const std::vector<SegmentHit>&
     }
 }
 
+void merge_near_score_calls(
+    SegmentHit& selected,
+    const std::vector<SegmentHit>& hits,
+    int tolerance) {
+    if (tolerance <= 0) return;
+    std::unordered_set<std::string> present;
+    std::size_t start = 0;
+    while (start <= selected.call.size()) {
+        const auto end = selected.call.find(',', start);
+        present.insert(selected.call.substr(
+            start, end == std::string::npos ? std::string::npos : end - start));
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    for (const auto& hit : hits) {
+        if (!hit.gene || present.contains(hit.gene->name) ||
+            std::abs(hit.alignment.score - selected.alignment.score) > tolerance ||
+            hit.alignment.query_start != selected.alignment.query_start ||
+            hit.alignment.query_end != selected.alignment.query_end ||
+            !same_or_unknown_locus(hit.gene->locus, selected.gene->locus)) continue;
+        selected.call += "," + hit.gene->name;
+        present.insert(hit.gene->name);
+    }
+}
+
 void merge_exact_substring_calls(SegmentHit& selected, const SegmentIndex& index) {
     if (selected.alignment.aligned_query.empty() ||
         selected.alignment.aligned_query != selected.alignment.aligned_reference ||
@@ -736,14 +800,19 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
         }
     }
     if (work.empty()) return {};
+    const bool aer_robust_d_search =
+        options_.assigner_strategy == AssignerStrategy::AerRobust &&
+        &index == &database_.d;
     // A strong seed mode normally needs only a small refinement set. Retain
     // the full safety pool when the short-seed rescue tier was needed, or for
     // exhaustive seedless fallback, so robustness is paid for only on hard
     // reads rather than on every ordinary repertoire record.
     const bool exhaustive = work.front().diagonal == std::numeric_limits<int>::max();
+    std::size_t primary_work_size = work.size();
     if (!exhaustive && !work.front().weak_seed_signal) {
         auto refinement_limit = std::max<std::size_t>(top_n, 3);
-        if ((options_.assigner_strategy == AssignerStrategy::Aer ||
+        if (!aer_robust_d_search &&
+            (options_.assigner_strategy == AssignerStrategy::Aer ||
              options_.assigner_strategy == AssignerStrategy::AerRobust) &&
             index.kmer_size() == 9 && min_length == options_.min_v_length &&
             work.size() > refinement_limit) {
@@ -757,7 +826,15 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
                 ++refinement_limit;
             }
         }
-        if (work.size() > refinement_limit) work.resize(refinement_limit);
+        if (aer_robust_d_search) {
+            // First trace the same small strong-seed set as ordinary AER.
+            // Keep the remainder available for a quality-triggered score-only
+            // pass; do not pay to examine it on a convincing ordinary D.
+            primary_work_size = std::min(work.size(), refinement_limit);
+        } else if (work.size() > refinement_limit) {
+            work.resize(refinement_limit);
+            primary_work_size = work.size();
+        }
     }
     std::vector<SegmentHit> hits;
     hits.reserve(work.size());
@@ -819,19 +896,18 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
     // the exact same affine likelihood for every candidate, then performs full
     // traceback only through the score group that can enter top_n. Invalid
     // high-scoring alignments are handled by continuing to lower groups.
-    const bool use_score_screen = options_.optimized_kernels &&
-        options_.assigner_strategy != AssignerStrategy::Standard &&
-        work.size() > top_n + 1;
-    if (use_score_screen) {
+    const auto score_and_align_range = [&](std::size_t begin, std::size_t end,
+                                           bool retain_d_evidence_floor,
+                                           bool preserve_top_n) {
         struct ScoredCandidate {
             const Candidate* candidate = nullptr;
             int score = 0;
         };
         std::vector<ScoredCandidate> scored;
-        scored.reserve(work.size());
-        for (std::size_t start = 0; start < work.size(); start += 4) {
+        scored.reserve(end - begin);
+        for (std::size_t start = begin; start < end; start += 4) {
             std::array<AlignmentScoreRequest, 4> requests{};
-            const auto count = std::min<std::size_t>(4, work.size() - start);
+            const auto count = std::min<std::size_t>(4, end - start);
             for (std::size_t lane = 0; lane < count; ++lane) {
                 const auto& candidate = work[start + lane];
                 requests[lane] = AlignmentScoreRequest{
@@ -852,17 +928,21 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
             return left.candidate->gene_index < right.candidate->gene_index;
         });
         for (std::size_t start = 0; start < scored.size(); start += 4) {
-            if (scored[start].score <= 0) break;
+            if (scored[start].score <= 0 ||
+                (!preserve_top_n && scored[start].score < 16)) break;
             std::array<const Candidate*, 4> batch{};
             std::size_t count = 0;
             while (count < 4 && start + count < scored.size() &&
-                   scored[start + count].score > 0) {
+                   scored[start + count].score > 0 &&
+                   (preserve_top_n || scored[start + count].score >= 16)) {
                 batch[count] = scored[start + count].candidate;
                 ++count;
             }
             align_batch(batch, count);
             const auto end = start + count;
-            if (hits.size() >= top_n) {
+            if (!preserve_top_n) {
+                if (end >= scored.size() || scored[end].score < 16) break;
+            } else if (hits.size() >= top_n) {
                 std::vector<int> accepted_scores;
                 accepted_scores.reserve(hits.size());
                 for (const auto& hit : hits) accepted_scores.push_back(hit.alignment.score);
@@ -870,18 +950,79 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
                     accepted_scores.begin(), accepted_scores.begin() + (top_n - 1),
                     accepted_scores.end(), std::greater<int>{});
                 const int cutoff = accepted_scores[top_n - 1];
-                if (end >= scored.size() || scored[end].score < cutoff) break;
+                // Under either shipped D scoring tuple, 16 is a conservative
+                // lower bound on the selected-profile score of an alignment
+                // capable of passing strong_distributed_d_evidence(): the
+                // limiting case is 14 matches and three mismatches. Continue
+                // the cheap score-only screen through that bound even when a
+                // short, higher-scoring D has already filled top_n. This is a
+                // quality-bound rescue, not a no-D retry.
+                const int required_score = retain_d_evidence_floor
+                    ? std::min(cutoff, 16) : cutoff;
+                if (end >= scored.size() || scored[end].score < required_score) break;
             }
             if (count < 4) break;
         }
+    };
+
+    const bool use_score_screen = options_.optimized_kernels &&
+        options_.assigner_strategy != AssignerStrategy::Standard &&
+        primary_work_size > top_n + 1;
+    if (use_score_screen) {
+        score_and_align_range(0, primary_work_size, aer_robust_d_search, true);
     } else {
-        for (std::size_t start = 0; start < work.size(); start += 4) {
+        for (std::size_t start = 0; start < primary_work_size; start += 4) {
             std::array<const Candidate*, 4> batch{};
-            const auto count = std::min<std::size_t>(4, work.size() - start);
+            const auto count = std::min<std::size_t>(4, primary_work_size - start);
             for (std::size_t lane = 0; lane < count; ++lane) {
                 batch[lane] = &work[start + lane];
             }
             align_batch(batch, count);
+        }
+    }
+    if (aer_robust_d_search && primary_work_size < work.size() &&
+        std::none_of(hits.begin(), hits.end(), [](const SegmentHit& hit) {
+            return strong_distributed_d_evidence(hit.alignment);
+        })) {
+        // A present but short seed-driven call reaches this branch just like an
+        // empty call. Score the deferred safety pool and trace every candidate
+        // capable of satisfying the distributed-evidence bound. This avoids a
+        // brittle no-D boundary while keeping convincing ordinary D calls on
+        // the original three-candidate hot path.
+        score_and_align_range(primary_work_size, work.size(), true, true);
+    }
+    if (aer_robust_d_search &&
+        std::none_of(hits.begin(), hits.end(), [](const SegmentHit& hit) {
+            return strong_distributed_d_evidence(hit.alignment);
+        })) {
+        // A strong short decoy can suppress the ordinary 3-mer tier entirely,
+        // and a crowded weak tier can stop at its bounded safety pool. Only
+        // after the ordinary and deferred candidates still lack a convincing
+        // long D, collect the 3-mer tier unconditionally across the complete D
+        // set. Append new (gene, diagonal) hypotheses and apply the same exact
+        // score bound before traceback. A present short D therefore cannot act
+        // as a binary gate, while ordinary long calls pay none of this work.
+        auto broad = options_.optimized_kernels
+            ? index.candidates_fast(query, index.genes().size(), 96, 1, true)
+            : index.candidates(query, index.genes().size(), 96, 1, true);
+        std::unordered_set<std::uint64_t> present;
+        present.reserve(work.size() * 2 + 1);
+        const auto candidate_key = [](const Candidate& candidate) {
+            return (static_cast<std::uint64_t>(candidate.gene_index) << 32U) |
+                static_cast<std::uint32_t>(candidate.diagonal);
+        };
+        for (const auto& candidate : work) present.insert(candidate_key(candidate));
+        const auto broad_start = work.size();
+        for (auto& candidate : broad) {
+            const auto& gene = index.genes()[candidate.gene_index];
+            if ((!locus_filter.empty() && !same_or_unknown_locus(locus_filter, gene.locus)) ||
+                !present.insert(candidate_key(candidate)).second) continue;
+            work.push_back(std::move(candidate));
+        }
+        if (work.size() > broad_start) {
+            // The complete-set pass exists only to expose long distributed
+            // evidence; it must not reshuffle ordinary short-D top-N calls.
+            score_and_align_range(broad_start, work.size(), true, false);
         }
     }
     std::sort(hits.begin(), hits.end(), [](const SegmentHit& a, const SegmentHit& b) {
@@ -895,7 +1036,26 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
         return a.gene->name < b.gene->name;
     });
     if (hits.size() > top_n) {
-        if (options_.assigner_strategy == AssignerStrategy::AerRobust) {
+        if (aer_robust_d_search) {
+            // Keep the ordinary top-N/tie set plus every lower-ranked D that
+            // actually passes the aggregate evidence rule. A short exact D
+            // can therefore never suppress a longer distributed match solely
+            // by occupying the generic traceback slots; joint V-D-J scoring
+            // adjudicates both hypotheses below.
+            const int cutoff = hits[top_n - 1].alignment.score;
+            auto retained = top_n;
+            while (retained < hits.size() && hits[retained].alignment.score == cutoff) {
+                ++retained;
+            }
+            std::vector<SegmentHit> selected;
+            selected.reserve(hits.size());
+            for (std::size_t index = 0; index < hits.size(); ++index) {
+                if (index < retained || strong_distributed_d_evidence(hits[index].alignment)) {
+                    selected.push_back(std::move(hits[index]));
+                }
+            }
+            hits = std::move(selected);
+        } else if (options_.assigner_strategy == AssignerStrategy::AerRobust) {
             // Do not silently discard an exact score tie in the experimental
             // caller. This is usually free because the SIMD score screen has
             // already traced the complete cutoff score group.
@@ -1437,22 +1597,25 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
     use_nominal_d_window = false;
 #endif
 
+    const auto convincing_exact_run = std::max<std::size_t>(
+        options_.min_d_match + 3, std::min<std::size_t>(10, maximum_d_length_));
     std::unordered_map<std::string, std::vector<SegmentHit>> d_hits_by_locus;
     const auto d_hits_for_locus = [&](const std::string& locus)
         -> const std::vector<SegmentHit>& {
         if (const auto found = d_hits_by_locus.find(locus);
             found != d_hits_by_locus.end()) return found->second;
         const auto align_window = [&](std::size_t window_start, std::size_t window_end) {
-            std::vector<SegmentHit> viable;
             if (!locus_has_d(locus) || database_.d.empty() ||
-                window_end <= window_start) return viable;
+                window_end <= window_start) return std::vector<SegmentHit>{};
             const auto window = sequence.substr(window_start, window_end - window_start);
             auto hits = align_candidates(
                 window, database_.d, d_limit, options_.d_scoring,
                 options_.min_d_match, locus);
+            std::vector<SegmentHit> viable;
             viable.reserve(hits.size());
             for (auto hit : hits) {
-                if (longest_exact_run(hit.alignment) < options_.min_d_match) continue;
+                if (longest_exact_run(hit.alignment) < options_.min_d_match &&
+                    !strong_distributed_d_evidence(hit.alignment)) continue;
                 hit.alignment.query_start += window_start;
                 hit.alignment.query_end += window_start;
                 refresh_airr_cigar(
@@ -1468,12 +1631,11 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
         const auto initial_end = use_nominal_d_window
             ? nominal_d_window_end : anchor_d_window_end;
         auto viable = align_window(initial_start, initial_end);
-        const auto convincing_exact_run = std::max<std::size_t>(
-            options_.min_d_match + 3, std::min<std::size_t>(10, maximum_d_length_));
         bool expand = use_nominal_d_window &&
             (viable.empty() ||
-             (suspicious_d_geometry && longest_exact_run(viable.front().alignment) <
-                 convincing_exact_run));
+             (suspicious_d_geometry &&
+              (options_.aer_r_optimized ||
+               longest_exact_run(viable.front().alignment) < convincing_exact_run)));
         if (use_nominal_d_window) {
             for (const auto& hit : viable) {
                 const bool left_truncated =
@@ -1536,6 +1698,41 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
         std::size_t d_exact_run = 0;
     };
     std::optional<JointChoice> best;
+    std::vector<std::pair<const SegmentHit*, bool>> relaxed_d_cost_cache;
+    relaxed_d_cost_cache.reserve(8);
+    const auto supports_relaxed_d_cost = [&](const SegmentHit& hit) {
+        if (!options_.aer_r_evidence_conditioned_d_penalty) return false;
+        if (const auto found = std::find_if(
+                relaxed_d_cost_cache.begin(), relaxed_d_cost_cache.end(),
+                [&](const auto& entry) { return entry.first == &hit; });
+            found != relaxed_d_cost_cache.end()) return found->second;
+        bool supported = hit.alignment.score >= 18;
+        if (!supported &&
+            hit.alignment.aligned_query == hit.alignment.aligned_reference &&
+            hit.alignment.aligned_query.find('-') == std::string::npos &&
+            std::all_of(
+                hit.alignment.aligned_query.begin(),
+                hit.alignment.aligned_query.end(), canonical_base)) {
+            std::array<const std::string*, 3> template_classes{};
+            std::size_t template_class_count = 0;
+            for (const auto& gene : database_.d.genes()) {
+                if (!same_or_unknown_locus(gene.locus, hit.gene->locus) ||
+                    gene.sequence.find(hit.alignment.aligned_query) == std::string::npos) continue;
+                const bool already_present = std::any_of(
+                    template_classes.begin(),
+                    template_classes.begin() + template_class_count,
+                    [&](const std::string* sequence) { return *sequence == gene.sequence; });
+                if (already_present) continue;
+                template_classes[template_class_count++] = &gene.sequence;
+                if (template_class_count == template_classes.size()) {
+                    supported = true;
+                    break;
+                }
+            }
+        }
+        relaxed_d_cost_cache.emplace_back(&hit, supported);
+        return supported;
+    };
     const auto consider = [&](JointChoice candidate) {
         bool replace = !best;
         if (best && candidate.score != best->score) {
@@ -1638,8 +1835,12 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
                     d.alignment.query_end > j_alignment->query_start) continue;
                 const auto distance = j_alignment->query_start - v_alignment->query_end;
                 if (distance > options_.max_junction_span) continue;
+                const auto d_presence_penalty = options_.aer_r_d_presence_penalty -
+                    (supports_relaxed_d_cost(d) &&
+                     options_.aer_r_d_presence_penalty >= 2 ? 2 : 0);
                 const auto joint_score = static_cast<double>(
-                    v_alignment->score + d.alignment.score + j_alignment->score) + 24.0;
+                    v_alignment->score + d.alignment.score + j_alignment->score) + 24.0 -
+                    static_cast<double>(d_presence_penalty);
                 consider(JointChoice{
                     &original_v, &original_j, &d,
                     std::move(clipped_v), std::move(clipped_j),
@@ -1703,6 +1904,12 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
         const auto& d_hits = d_hits_for_locus(locus);
         merge_equivalent_calls(*result.d, d_hits);
         merge_exact_substring_calls(*result.d, database_.d);
+        if (options_.aer_r_optimized) {
+            // A same-query-span, one-point window was calibrated with a
+            // uniform-set Brier score on development data and independently
+            // retained on validation. It changes only reported D uncertainty.
+            merge_near_score_calls(*result.d, d_hits, 1);
+        }
         result.d_alternatives = uncertain_alternatives(*result.d, d_hits);
     }
 

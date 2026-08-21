@@ -210,6 +210,12 @@ test("pipeline CLI requires an explicit output directory and command-line worker
     assert.notEqual(missing.status,0);
     assert.match(missing.stderr,/requires an explicit output directory/);
 
+    const invalidProfilePath=join(temporary,"invalid-profile.json");
+    await writeFile(invalidProfilePath,JSON.stringify({inputs:[{path:input}],annotation:{workers:1,callingProfile:"r_optimized",assignerStrategy:"riat_mp"},output:{directory:join(temporary,"invalid-profile")}}));
+    const invalidProfile=runCli(root,invalidProfilePath);
+    assert.notEqual(invalidProfile.status,0);
+    assert.match(invalidProfile.stderr,/requires annotation.assignerStrategy aer_robust/);
+
     const output=join(temporary,"out"),configPath=join(temporary,"config.json");
     await writeFile(configPath,JSON.stringify({inputs:[{path:input}],annotation:{workers:1},pipeline:{collapse:{enabled:false},lineage:{enabled:false},shm:{enabled:false}},output:{directory:output,prefix:"workers"}}));
     const result=runCli(root,configPath,["--workers","2"]);
@@ -253,6 +259,15 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
     assert.ok(plainRow.d_support&&Number.isFinite(Number(plainRow.d_support))&&Number(plainRow.d_support)>=0);
     assert.ok(plainRow.j_support&&Number.isFinite(Number(plainRow.j_support))&&Number(plainRow.j_support)>=0);
     assert.equal(plainRow.c_support,"");
+
+    const optimizedPath=join(temporary,"r-optimized.airr.tsv");
+    const optimized=runRawCli(root,[...common,"--assigner","aer_robust","--calling-profile","r_optimized","-out",optimizedPath]);
+    assert.equal(optimized.status,0,optimized.stderr);assert.match(optimized.stderr,/AER-R/);
+    const optimizedRow=await readRow(optimizedPath);
+    assert.equal(optimizedRow.v_call,v[0]);assert.equal(optimizedRow.j_call,j[0]);
+
+    const invalidProfile=runRawCli(root,[...common,"--calling-profile","r_optimized","-out",join(temporary,"invalid-profile.airr.tsv")]);
+    assert.notEqual(invalidProfile.status,0);assert.match(invalidProfile.stderr,/requires --assigner aer_robust/);
 
     const igblastPath=join(temporary,"igblast-data.airr.tsv");
     const igblast=runRawCli(root,[...common,"--assigner","aer","-custom_internal_data",internalPath,"-auxiliary_data",auxPath,"-out",igblastPath]);

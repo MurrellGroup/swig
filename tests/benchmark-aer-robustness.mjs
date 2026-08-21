@@ -60,6 +60,7 @@ const records = generateVdjDataset({
   sequencingErrorRate: Number(args.get("error-rate") ?? 0.0008),
   ambiguousRate: Number(args.get("n-rate") ?? 0.00025),
   reverseRate: Number(args.get("reverse-rate") ?? 0.08),
+  fullyTrimmedDRate: Number(args.get("fully-trimmed-d-rate") ?? 0),
 });
 
 function parseAirr(text) {
@@ -203,6 +204,8 @@ function evaluate(record, row) {
   const dSpan = orientedSpan(record, record.truth.spans.D1);
   const dEligible = !record.truth.tandem && Boolean(dSpan && dSpan.bases >= 6);
   const dStrong = dEligible && dSpan.bases >= 10;
+  const dSubthreshold = !record.truth.tandem && (!dSpan || dSpan.bases < 6);
+  const dAbsent = !record.truth.tandem && (!dSpan || dSpan.bases === 0);
   const predictedD = predictedSpan(row, "d");
   const dCalled = callAtoms(row.d_call).length > 0;
   const compatibleD = new Set(record.truth.dCompatibleCalls?.[0] ?? [dTruth]);
@@ -213,6 +216,8 @@ function evaluate(record, row) {
     jEquivalent: equivalentCall("J", record.truth.jCall, row.j_call),
     dEligible,
     dStrong,
+    dSubthreshold,
+    dAbsent,
     dCalled,
     dExact: dEligible && callAtoms(row.d_call).includes(dTruth),
     dEquivalent: dEligible && equivalentCall("D", dTruth, row.d_call),
@@ -221,7 +226,7 @@ function evaluate(record, row) {
     dTruthBases: dSpan?.bases ?? 0,
     dStartError: dEligible && predictedD ? Math.abs(predictedD.start - dSpan.start) : null,
     dEndError: dEligible && predictedD ? Math.abs(predictedD.end - dSpan.end) : null,
-    falseD: !record.truth.tandem && (!dSpan || dSpan.bases < 6) && dCalled,
+    falseD: dSubthreshold && dCalled,
   };
 }
 
@@ -241,6 +246,8 @@ function summarize(evaluations, timing) {
     ? selected.filter(predicate).length / selected.length : null;
   const eligible = evaluations.filter((value) => value.dEligible);
   const strong = evaluations.filter((value) => value.dStrong);
+  const subthreshold = evaluations.filter((value) => value.dSubthreshold);
+  const absent = evaluations.filter((value) => value.dAbsent);
   return {
     records: evaluations.length,
     seconds: timing.seconds,
@@ -258,7 +265,11 @@ function summarize(evaluations, timing) {
     strongDDetection: fraction((value) => value.dCalled, strong),
     strongDSequenceEquivalent: fraction((value) => value.dEquivalent, strong),
     strongDRetainedTractCompatible: fraction((value) => value.dCompatible, strong),
-    falseDOnSubthresholdTruth: fraction((value) => value.falseD),
+    subthresholdTruthRecords: subthreshold.length,
+    dCallRateOnSubthresholdTruth: fraction((value) => value.dCalled, subthreshold),
+    subthresholdDCallCohortFraction: fraction((value) => value.falseD),
+    fullyAbsentDTruthRecords: absent.length,
+    dCallRateOnFullyAbsentDTruth: fraction((value) => value.dCalled, absent),
     dBoundary: {
       meanStartAbsoluteError: mean(eligible.map((value) => value.dStartError)),
       p95StartAbsoluteError: quantile(eligible.map((value) => value.dStartError), 0.95),
@@ -314,7 +325,7 @@ if (oraclePath) {
     if (((Number(record.id.slice(4)) * 2654435761) >>> 0) % 97 < 4) selectedIds.add(record.id);
   }
   const selected = records.filter((record) => selectedIds.has(record.id)).slice(0, oracleCount);
-  process.stderr.write(`Exhaustive oracle (${selected.length} selected records)\n`);
+  process.stderr.write(`All-reference candidate oracle (${selected.length} selected records)\n`);
   const result = await annotateAll(oraclePath, 3, selected, true);
   const rows = new Map(result.rows.map((row) => [row.sequence_id, row]));
   let oracleRescues = 0;
@@ -322,18 +333,18 @@ if (oraclePath) {
   const classifications = [];
   for (const record of selected) {
     const production = evaluate(record, robustRows.get(record.id));
-    const exhaustive = evaluate(record, rows.get(record.id));
-    if (production.dCompatible === exhaustive.dCompatible &&
-        production.vEquivalent === exhaustive.vEquivalent &&
-        production.jEquivalent === exhaustive.jEquivalent) productionMatches += 1;
-    if (!production.dCompatible && exhaustive.dCompatible) oracleRescues += 1;
+    const allReference = evaluate(record, rows.get(record.id));
+    if (production.dCompatible === allReference.dCompatible &&
+        production.vEquivalent === allReference.vEquivalent &&
+        production.jEquivalent === allReference.jEquivalent) productionMatches += 1;
+    if (!production.dCompatible && allReference.dCompatible) oracleRescues += 1;
     classifications.push({
       id: record.id,
       production,
-      exhaustive,
-      cause: !production.dCompatible && exhaustive.dCompatible
+      allReference,
+      cause: !production.dCompatible && allReference.dCompatible
         ? "production_candidate_or_fast_path_pruning"
-        : !exhaustive.dCompatible && exhaustive.dStrong
+        : !allReference.dCompatible && allReference.dStrong
           ? "joint_scoring_or_identifiability"
           : "agreement",
       oracleRow: rows.get(record.id),
@@ -387,12 +398,14 @@ const report = {
       sequencingErrorRate: Number(args.get("error-rate") ?? 0.0008),
       ambiguousRate: Number(args.get("n-rate") ?? 0.00025),
       reverseRate: Number(args.get("reverse-rate") ?? 0.08),
+      fullyTrimmedDRate: Number(args.get("fully-trimmed-d-rate") ?? 0),
     },
     observed: {
       tandemD: records.filter((record) => record.truth.tandem).length,
       reversed: records.filter((record) => record.truth.reversed).length,
       indelBearing: records.filter((record) => record.truth.indelEvents > 0).length,
       meanShmMutations: mean(records.map((record) => record.truth.shmMutations)),
+      fullyTrimmedD1: records.filter((record) => record.truth.fullyTrimmedD1).length,
     },
   },
   aer: summarize(aerEvaluation, aer),
@@ -411,6 +424,8 @@ if (outputPrefix) {
   fs.mkdirSync(path.dirname(outputPrefix), { recursive: true });
   fs.writeFileSync(`${outputPrefix}.report.json`, `${JSON.stringify(report, null, 2)}\n`);
   fs.writeFileSync(`${outputPrefix}.cases.jsonl`, cases.map((value) => JSON.stringify(value)).join("\n") + (cases.length ? "\n" : ""));
+  fs.writeFileSync(`${outputPrefix}.aer.rows.jsonl`, aer.rows.map((value) => JSON.stringify(value)).join("\n") + "\n");
+  fs.writeFileSync(`${outputPrefix}.aer-r.rows.jsonl`, robust.rows.map((value) => JSON.stringify(value)).join("\n") + "\n");
   fs.writeFileSync(`${outputPrefix}.simulated.fasta`, recordsToFasta(records));
   fs.writeFileSync(`${outputPrefix}.truth.jsonl`, records.map((record) => JSON.stringify({ id: record.id, ...record.truth })).join("\n") + "\n");
 }

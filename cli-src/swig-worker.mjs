@@ -19,6 +19,7 @@ function read(pointer,length){return decoder.decode(new Uint8Array(runtime.memor
 function errorText(){return read(runtime.swig_error_ptr(),runtime.swig_error_len())||"SwiftIG could not complete the annotation.";}
 
 async function initialize(message){
+  if(message.callingProfile==="r_optimized"&&message.assignerStrategy!=="aer_robust")throw new Error("The r-optimized calling profile requires AER-R.");
   const wasi=new WASI([],[],[]);
   const module=await WebAssembly.compile(readFileSync(message.wasmPath));
   const instance=await WebAssembly.instantiate(module,{wasi_snapshot_preview1:wasi.wasiImport});
@@ -28,7 +29,7 @@ async function initialize(message){
   if(runtime.swig_set_assigner_strategy(strategy)!==0)throw new Error("SwiftIG rejected the assignment strategy.");
   // The browser's balanced profile intentionally starts from compatible calls
   // and then applies the shared post-filter below.
-  const profile=message.callingProfile==="truth_optimized"?0:1;
+  const profile=message.callingProfile==="truth_optimized"?0:message.callingProfile==="r_optimized"?2:1;
   if(runtime.swig_set_calling_profile(profile)!==0)throw new Error("SwiftIG rejected the calling profile.");
   callingProfile=message.callingProfile;
   if(message.hasTuning){
@@ -38,6 +39,10 @@ async function initialize(message){
       message.tuningJMatch,message.tuningJMismatch,message.tuningJGapOpen,message.tuningJGapExtend,message.tuningTopJ,message.tuningMinJLength,
     );
     if(accepted!==0)throw new Error("SwiftIG rejected the requested D/J compatibility controls.");
+    if(message.rOptimized){
+      if(typeof runtime.swig_set_v_tuning_options!=="function"||typeof runtime.swig_set_aer_r_decision_tuning!=="function")throw new Error("This SwiftIG build does not expose r-optimized tuning controls.");
+      if(runtime.swig_set_v_tuning_options(2,-4,-13,-1,1)!==0||runtime.swig_set_aer_r_decision_tuning(10)!==0)throw new Error("SwiftIG rejected the r-optimized tuning controls.");
+    }
   }
   const allocations=[message.referenceV,message.referenceD,message.referenceJ,message.referenceC].map((value)=>put(encoder.encode(value||"")));
   try{

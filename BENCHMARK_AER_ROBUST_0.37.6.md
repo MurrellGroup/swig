@@ -1,5 +1,7 @@
 # Experimental AER-R robustness audit — Swig 0.37.6
 
+> **0.37.7 terminology correction:** the diagnostic described below removes candidate-count pruning but retains the production evidence gates. It is therefore an all-reference candidate oracle, not an unconstrained exhaustive biological oracle. See [`BENCHMARK_AER_ROBUST_0.37.7.md`](BENCHMARK_AER_ROBUST_0.37.7.md).
+
 ## Question and scope
 
 AER-R is a separately selectable experimental caller (`aer_robust`). It tests whether narrowly gated joint V/D/J boundary and candidate fallbacks can recover failures hidden by independent local alignments or fixed top-N cutoffs without slowing the ordinary path. Ordinary AER, RIAT-MP, and standard SwiftIG were not replaced.

@@ -34,6 +34,7 @@ test("small CLI configs receive analysis defaults and explicit donor grouping",(
   assert.equal(config.annotation.workers,0,"zero means choose the host default at CLI startup");
   assert.equal(config.annotation.assignerStrategy,"riat_mp");
   assert.equal(normalizeCliConfig({annotation:{assignerStrategy:"aer_robust"}}).annotation.assignerStrategy,"aer_robust");
+  assert.equal(normalizeCliConfig({annotation:{callingProfile:"r_optimized"}}).annotation.callingProfile,"r_optimized");
   assert.equal(config.references.prepareMetadata,true);
   assert.equal(normalizeCliConfig({references:{prepareMetadata:false}}).references.prepareMetadata,false);
 });
@@ -108,4 +109,10 @@ test("pre-run export embeds a pasted dataset instead of emitting an unusable tex
   const config=cliConfigFromBrowser({studyName:"paste",studyDesign:"independent",datasets:[pasted],references,species:"Homo sapiens",scope:"IGH",workers:1,callingProfile:"truth_optimized",assignerStrategy:"aer",minimumIdentity:0.6,strand:0,doubleD:{mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8},pipeline:{...DEFAULT_PIPELINE_PLAN,enabled:true}});
   assert.equal(config.inputs[0].format,"fasta");
   assert.equal(config.inputs[0].inline,">read\nACGT\n");
+});
+
+test("browser CLI export preserves the AER-R-only R-optimized profile",()=>{
+  const config=cliConfigFromBrowser({studyName:"r profile",studyDesign:"independent",datasets:[],references,species:"Macaca mulatta",scope:"IGH",workers:2,callingProfile:"r_optimized",assignerStrategy:"aer_robust",minimumIdentity:0.6,strand:1,doubleD:{mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8},pipeline:{...DEFAULT_PIPELINE_PLAN,enabled:false}});
+  assert.equal(config.annotation.callingProfile,"r_optimized");
+  assert.equal(config.annotation.assignerStrategy,"aer_robust");
 });

@@ -39,7 +39,7 @@ const sampleMod = Number(args.get("sample-mod") ?? 1);
 const sampleResidue = Number(args.get("sample-residue") ?? 0);
 const tuning = args.has("tuning") ? JSON.parse(args.get("tuning")) : null;
 const callingProfile = args.get("calling-profile") ?? "truth_optimized";
-if (!["truth_optimized", "igblast_compatible", "igblast_balanced"].includes(callingProfile)) throw new Error(`Unknown calling profile: ${callingProfile}`);
+if (!["truth_optimized", "igblast_compatible", "igblast_balanced", "r_optimized"].includes(callingProfile)) throw new Error(`Unknown calling profile: ${callingProfile}`);
 const target = args.get("target") ?? "truth";
 if (!["truth", "igblast", "both"].includes(target)) throw new Error(`Unknown target: ${target}`);
 
@@ -184,7 +184,7 @@ const runtime = instance.exports;
 
 if (typeof runtime.swig_set_calling_profile === "function") {
   const result = runtime.swig_set_calling_profile(
-    callingProfile === "truth_optimized" ? 0 : 1,
+    callingProfile === "truth_optimized" ? 0 : callingProfile === "r_optimized" ? 2 : 1,
   );
   if (result !== 0) throw new Error("WASM rejected the requested calling profile");
 } else if (callingProfile !== "truth_optimized") {

@@ -60,7 +60,7 @@ async function makeRuntime() {
   }
 
   function setCallingProfile(profile) {
-    return exports.swig_set_calling_profile(profile === "igblast_compatible" ? 1 : profile === "igblast_balanced" ? 2 : profile === "truth_optimized" ? 0 : Number(profile));
+    return exports.swig_set_calling_profile(profile === "igblast_compatible" || profile === "igblast_balanced" ? 1 : profile === "r_optimized" ? 2 : profile === "truth_optimized" ? 0 : Number(profile));
   }
 
   function setAssignerStrategy(strategy) {
@@ -241,7 +241,8 @@ test("calling profiles are explicit, switchable, and reject unknown profile iden
   const defaultResult = runtime.annotate(query, 1);
   assert.equal(runtime.setCallingProfile("igblast_compatible"), 0);
   const compatibilityResult = runtime.annotate(query, 1);
-  assert.equal(runtime.setCallingProfile(2), -1);
+  assert.equal(runtime.setCallingProfile("r_optimized"), 0);
+  assert.equal(runtime.setCallingProfile(3), -1);
   assert.equal(runtime.setCallingProfile("truth_optimized"), 0);
   assert.equal(runtime.annotate(query, 1).tsv, defaultResult.tsv, "resetting the profile did not restore default calls");
   assert.equal(defaultResult.rows[0].d_call, "");
@@ -280,6 +281,169 @@ test("joint boundary scoring recovers a strong KIMDB D tract swallowed by a gapp
       assert.ok(Number(row.v_sequence_end) < Number(row.d_sequence_start));
       assert.ok(Number(row.d_sequence_start) <= 421 && Number(row.d_sequence_end) >= 437);
     }
+  }
+  const optimized = await makeRuntime();
+  assert.equal(optimized.setAssignerStrategy("aer_robust"), 0);
+  assert.equal(optimized.setCallingProfile("r_optimized"), 0);
+  optimized.initialize(references);
+  const optimizedRow = optimized.annotate(query, 1, 1).rows[0];
+  assert.match(optimizedRow.d_call, /IGHD5-32\*01_S0263/);
+  assert.ok(optimizedRow.d_sequence_alignment.includes("ATACAGTGGGTACAGTT"));
+});
+
+test("R-optimized corrects representative junction-facing V over-extension regressions", async () => {
+  const roots = ["Macaca_mulatta", "Macaca_fascicularis"].map((species) =>
+    new URL(`../public/references/kimdb-1.1/${species}/IGH/`, import.meta.url));
+  const combined = (segment) => {
+    const records = new Map();
+    for (const root of roots) {
+      for (const record of parseSimulatorFasta(fs.readFileSync(new URL(`${segment}.fasta`, root), "utf8"))) {
+        records.set(record.name, record.sequence);
+      }
+    }
+    return [...records].map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+  };
+  const references = { V: combined("V"), D: combined("D"), J: combined("J"), C: "" };
+  const records = parseSimulatorFasta(fs.readFileSync(
+    new URL("fixtures/r-optimized-v-boundary-regressions.fasta", import.meta.url), "utf8"));
+  const query = records.map((record) => `>${record.name}\n${record.sequence}\n`).join("");
+  const annotate = async (profile) => {
+    const runtime = await makeRuntime();
+    assert.equal(runtime.setAssignerStrategy("aer_robust"), 0);
+    assert.equal(runtime.setCallingProfile(profile), 0);
+    runtime.initialize(references);
+    return runtime.annotate(query, 1, 1).rows;
+  };
+  const [legacy, optimized] = await Promise.all([
+    annotate("truth_optimized"), annotate("r_optimized"),
+  ]);
+  const goldEnds = [330, 428, 349];
+  const legacyLoss = legacy.reduce((sum, row, index) =>
+    sum + Math.abs(Number(row.v_sequence_end) - goldEnds[index]), 0);
+  const optimizedLoss = optimized.reduce((sum, row, index) =>
+    sum + Math.abs(Number(row.v_sequence_end) - goldEnds[index]), 0);
+  assert.ok(optimizedLoss < legacyLoss);
+  assert.deepEqual(optimized.map((row) => Number(row.v_sequence_end)), [330, 428, 352]);
+  for (let index = 0; index < optimized.length; index += 1) {
+    assert.ok(optimized[index].v_call.split(",").includes([
+      "IGHV4-NL_36*01_S9644", "IGHV3-122*01", "IGHV3-172*01_S0577",
+    ][index]));
+    assert.ok(Math.abs(Number(optimized[index].v_sequence_end) - goldEnds[index]) <= 3);
+  }
+});
+
+test("R-optimized conditions D presence on score and independent template support", async () => {
+  const roots = ["Macaca_mulatta", "Macaca_fascicularis"].map((species) =>
+    new URL(`../public/references/kimdb-1.1/${species}/IGH/`, import.meta.url));
+  const combined = (segment) => {
+    const records = new Map();
+    for (const root of roots) {
+      for (const record of parseSimulatorFasta(fs.readFileSync(new URL(`${segment}.fasta`, root), "utf8"))) {
+        records.set(record.name, record.sequence);
+      }
+    }
+    return [...records].map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+  };
+  const runtime = await makeRuntime();
+  assert.equal(runtime.setAssignerStrategy("aer_robust"), 0);
+  assert.equal(runtime.setCallingProfile("r_optimized"), 0);
+  runtime.initialize({ V: combined("V"), D: combined("D"), J: combined("J"), C: "" });
+  const query = fs.readFileSync(
+    new URL("fixtures/r-optimized-d-decision-regressions.fasta", import.meta.url), "utf8");
+  const [supported, zeroD] = runtime.annotate(query, 1, 1).rows;
+
+  assert.match(supported.d_call, /IGHD1-5\*01/);
+  assert.equal(supported.d_sequence_alignment, supported.d_germline_alignment);
+  assert.equal(zeroD.d_call, "");
+  assert.match(zeroD.j_call, /IGHJ3-2\*01/);
+});
+
+test("AER-R accepts strong distributed D evidence instead of a short exact-seed decoy", async () => {
+  const roots = ["Macaca_mulatta", "Macaca_fascicularis"].map((species) =>
+    new URL(`../public/references/kimdb-1.1/${species}/IGH/`, import.meta.url));
+  const combined = (segment) => {
+    const records = new Map();
+    for (const root of roots) {
+      for (const record of parseSimulatorFasta(fs.readFileSync(new URL(`${segment}.fasta`, root), "utf8"))) {
+        assert.ok(!records.has(record.name) || records.get(record.name) === record.sequence);
+        records.set(record.name, record.sequence);
+      }
+    }
+    return [...records].map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+  };
+  const references = { V: combined("V"), D: combined("D"), J: combined("J"), C: "" };
+  const sequence = "GGAGCCCGGAACACTGAGGGTCGTGGCTAAAGTCGTTTGGTGCAGGGTGCCCTGCTTCTCAGGGATGCTGTACACGTTCCTAACAGGTGCAGCTTCAGGAGTCGGGCCCAGGACTGGTGAAGCCTTCGGAGACCCTGTCTGTCACCTGCGCTGTCTCTGGTGGCTCTATCAGCAGTAGCTACTGGAATTGGATCCGCCAGCCCCCAGCGAAGGGACGGGAGTGTATTGGCTACATCTATGGTAGTGGTGGGAGCACCAGCGACAACCCCTCCCTCCTGAGTCGAGTCACCCTGTCAGTAGATACGTCTGAGCACCAGCTCTCCTTGAAGCTGAGCCCTGTGTCCGCCGCGGACCCGGTCGTGTATTACTGTGCGATAGGATTAACGGTCTAGAAGCATCTACATCCTCAATCTGATATCTGGGGCCCTGGCACCCCAATCACCATGTCCTCAGGCTCCTATGTTGGGCAGGCTGGTCCGAGGAGCCTCTCATCAAAACTCAGGATTGGCACCTTGCGCGCCGCCAGAGGTAATAACCACACTTTCAGCAAGGTTAATCGACCGCGTCTGATTACATTT";
+  const query = `>distributed_d\n${sequence}\n`;
+
+  for (const profile of ["truth_optimized", "igblast_compatible"]) {
+    const ordinary = await makeRuntime();
+    assert.equal(ordinary.setAssignerStrategy("aer"), 0);
+    assert.equal(ordinary.setCallingProfile(profile), 0);
+    ordinary.initialize(references);
+    const ordinaryRow = ordinary.annotate(query, 1).rows[0];
+
+    const robust = await makeRuntime();
+    assert.equal(robust.setAssignerStrategy("aer_robust"), 0);
+    assert.equal(robust.setCallingProfile(profile), 0);
+    robust.initialize(references);
+    const row = robust.annotate(query, 1).rows[0];
+
+    assert.doesNotMatch(ordinaryRow.d_call, /IGHD6-39\*01/);
+    assert.equal(row.v_call, "IGHV4-NL_1*02_S8056");
+    assert.equal(row.d_call, "IGHD6-39*01");
+    assert.equal(row.j_call, "IGHJ2*01_S5087");
+    assert.equal(row.d_sequence_start, "386");
+    assert.equal(row.d_sequence_end, "402");
+    assert.equal(row.d_germline_start, "2");
+    assert.equal(row.d_germline_end, "18");
+    assert.equal(row.d_sequence_alignment, "GGTCTAGAAGCATCTAC");
+    assert.equal(row.d_germline_alignment, "GGTATAGCAGCAGCTAC");
+    assert.equal(row.np1, "GATTAAC");
+    assert.equal(row.np2, "ATCCTCAATCT");
+  }
+  const optimized = await makeRuntime();
+  assert.equal(optimized.setAssignerStrategy("aer_robust"), 0);
+  assert.equal(optimized.setCallingProfile("r_optimized"), 0);
+  optimized.initialize(references);
+  assert.match(optimized.annotate(query, 1).rows[0].d_call, /IGHD6-39\*01/);
+});
+
+test("AER-R short D calls cannot crowd a stronger distributed match out of traceback", async () => {
+  const roots = ["Macaca_mulatta", "Macaca_fascicularis"].map((species) =>
+    new URL(`../public/references/kimdb-1.1/${species}/IGH/`, import.meta.url));
+  const combined = (segment) => {
+    const records = new Map();
+    for (const root of roots) {
+      for (const record of parseSimulatorFasta(fs.readFileSync(new URL(`${segment}.fasta`, root), "utf8"))) {
+        records.set(record.name, record.sequence);
+      }
+    }
+    return [...records].map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+  };
+  const sequence = "GGAGCCCGGAACACTGAGGGTCGTGGCTAAAGTCGTTTGGTGCAGGGTGCCCTGCTTCTCAGGGATGCTGTACACGTTCCTAACAGGTGCAGCTTCAGGAGTCGGGCCCAGGACTGGTGAAGCCTTCGGAGACCCTGTCTGTCACCTGCGCTGTCTCTGGTGGCTCTATCAGCAGTAGCTACTGGAATTGGATCCGCCAGCCCCCAGCGAAGGGACGGGAGTGTATTGGCTACATCTATGGTAGTGGTGGGAGCACCAGCGACAACCCCTCCCTCCTGAGTCGAGTCACCCTGTCAGTAGATACGTCTGAGCACCAGCTCTCCTTGAAGCTGAGCCCTGTGTCCGCCGCGGACCCGGTCGTGTATTACTGTGCGATAGGATTAACGGTCTAGAAGCATCTACATCCTCAATCTGATATCTGGGGCCCTGGCACCCCAATCACCATGTCCTCAGGCTCCTATGTTGGGCAGGCTGGTCCGAGGAGCCTCTCATCAAAACTCAGGATTGGCACCTTGCGCGCCGCCAGAGGTAATAACCACACTTTCAGCAAGGTTAATCGACCGCGTCTGATTACATTT";
+  // Fifty exact 7-mers have stronger seed rankings than IGHD6-39's mutated
+  // 17-nt tract but lower affine scores. They deliberately overflow the
+  // ordinary bounded D candidate/traceback set while remaining inferior joint
+  // explanations. A binary "no D" retry would never run because these decoys
+  // all produce short calls.
+  const decoys = Array.from({ length: 50 }, (_, index) => {
+    const start = 376 + (index % 35);
+    return `>DECOY_D_${String(index).padStart(2, "0")}\n${sequence.slice(start, start + 7)}\n`;
+  }).join("");
+  for (const profile of ["truth_optimized", "igblast_compatible"]) {
+    const runtime = await makeRuntime();
+    assert.equal(runtime.setAssignerStrategy("aer_robust"), 0);
+    assert.equal(runtime.setCallingProfile(profile), 0);
+    runtime.initialize({
+      V: combined("V"),
+      D: decoys + combined("D"),
+      J: combined("J"),
+      C: "",
+    });
+    const row = runtime.annotate(`>crowded_distributed_d\n${sequence}\n`, 1).rows[0];
+    assert.equal(row.d_call, "IGHD6-39*01");
+    assert.equal(row.d_sequence_alignment, "GGTCTAGAAGCATCTAC");
+    assert.equal(row.d_germline_alignment, "GGTATAGCAGCAGCTAC");
   }
 });
 
@@ -393,13 +557,16 @@ test("AER-R's gated complete-J retry recovers strong-V seed-pruning failures", {
     record.id === "sim_0000292" || record.id === "sim_0000319");
   assert.equal(selected.length, 2);
   const query = recordsToFasta(selected);
-  const annotateWith = async (strategy) => {
+  const annotateWith = async (strategy, profile = "truth_optimized") => {
     const runtime = await makeRuntime();
     assert.equal(runtime.setAssignerStrategy(strategy), 0);
+    assert.equal(runtime.setCallingProfile(profile), 0);
     runtime.initialize(references);
     return runtime.annotate(query, 1).rows;
   };
-  const [aer, robust] = await Promise.all([annotateWith("aer"), annotateWith("aer_robust")]);
+  const [aer, robust, optimized] = await Promise.all([
+    annotateWith("aer"), annotateWith("aer_robust"), annotateWith("aer_robust", "r_optimized"),
+  ]);
   const atoms = (value) => String(value ?? "").split(/[,/]/).filter(Boolean);
   let ordinaryMisses = 0;
   for (let index = 0; index < selected.length; index += 1) {
@@ -411,6 +578,8 @@ test("AER-R's gated complete-J retry recovers strong-V seed-pruning failures", {
     assert.ok(atoms(r.v_call).includes(truth.vCall));
     assert.ok(atoms(r.j_call).includes(truth.jCall));
     assert.ok(atoms(r.d_call).includes(truth.dCalls[0]));
+    assert.ok(atoms(optimized[index].v_call).includes(truth.vCall));
+    assert.ok(atoms(optimized[index].j_call).includes(truth.jCall));
   }
   assert.ok(ordinaryMisses > 0, "the fixed cohort no longer exercises the gated rescue");
 });

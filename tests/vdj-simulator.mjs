@@ -229,6 +229,7 @@ export function generateVdjDataset({
   sequencingErrorRate = 0.0008,
   ambiguousRate = 0.00025,
   reverseRate = 0.08,
+  fullyTrimmedDRate = 0,
 } = {}) {
   if (!V?.length || !J?.length) throw new Error("The simulator requires non-empty V and J references.");
   const random = seededRandom(seed);
@@ -246,8 +247,13 @@ export function generateVdjDataset({
     const j = takeJ();
 
     const vTrim3 = geometric(random, 3.2, Math.min(45, Math.max(0, v.sequence.length - 30)));
-    const d1Trim5 = d1 ? geometric(random, 2.8, Math.max(0, d1.sequence.length - 1)) : 0;
-    const d1Trim3 = d1 ? geometric(random, 3.0, Math.max(0, d1.sequence.length - d1Trim5 - 1)) : 0;
+    const fullyTrimmedD1 = Boolean(
+      fullyTrimmedDRate > 0 && d1 && !tandem && random() < fullyTrimmedDRate);
+    const d1Trim5 = d1 ? (fullyTrimmedD1
+      ? d1.sequence.length
+      : geometric(random, 2.8, Math.max(0, d1.sequence.length - 1))) : 0;
+    const d1Trim3 = d1 && !fullyTrimmedD1
+      ? geometric(random, 3.0, Math.max(0, d1.sequence.length - d1Trim5 - 1)) : 0;
     const d2Trim5 = d2 ? geometric(random, 2.8, Math.max(0, d2.sequence.length - 1)) : 0;
     const d2Trim3 = d2 ? geometric(random, 3.0, Math.max(0, d2.sequence.length - d2Trim5 - 1)) : 0;
     const jTrim5 = geometric(random, 3.4, Math.min(35, Math.max(0, j.sequence.length - 18)));
@@ -314,6 +320,7 @@ export function generateVdjDataset({
             : []),
         jCall: j.name,
         tandem,
+        fullyTrimmedD1,
         reversed,
         spans,
         retained: { V: retainedV.length, D1: retainedD1.length, D2: retainedD2.length, J: retainedJ.length },

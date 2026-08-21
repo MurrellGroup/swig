@@ -446,7 +446,8 @@ std::vector<Candidate> SegmentIndex::candidates(
     const std::string& query,
     std::size_t limit,
     std::size_t max_seed_frequency,
-    std::size_t stride) const {
+    std::size_t stride,
+    bool force_fallback) const {
     if (limit == 0 || kmer_size_ == 0 || query.size() < kmer_size_) return {};
     constexpr int bin_width = 4;
     std::unordered_map<std::uint64_t, std::uint32_t> vote_bins;
@@ -482,7 +483,8 @@ std::vector<Candidate> SegmentIndex::candidates(
     const auto weak_primary_threshold = std::max<std::uint32_t>(
         32U, kmer_size_ * 16U);
     const bool weak_primary_signal = strongest_primary_bin < weak_primary_threshold;
-    if (weak_primary_signal) {
+    const bool use_fallback = force_fallback || weak_primary_signal;
+    if (use_fallback) {
         collect(fallback_seeds_, fallback_kmer_size_, 1, max_seed_frequency * 4);
     }
 
@@ -495,7 +497,7 @@ std::vector<Candidate> SegmentIndex::candidates(
             gene, static_cast<int>(bin) * bin_width,
             static_cast<std::uint16_t>(std::min<std::uint32_t>(
                 votes, std::numeric_limits<std::uint16_t>::max())), 0,
-            weak_primary_signal});
+            use_fallback});
     }
     std::sort(ranked.begin(), ranked.end(), [](const Candidate& a, const Candidate& b) {
         if (a.votes != b.votes) return a.votes > b.votes;
@@ -526,7 +528,8 @@ std::vector<Candidate> SegmentIndex::candidates_fast(
     const std::string& query,
     std::size_t limit,
     std::size_t max_seed_frequency,
-    std::size_t stride) const {
+    std::size_t stride,
+    bool force_fallback) const {
     if (limit == 0 || kmer_size_ == 0 || query.size() < kmer_size_) return {};
     constexpr int bin_width = 4;
     auto& vote_bins = vote_workspace();
@@ -587,7 +590,8 @@ std::vector<Candidate> SegmentIndex::candidates_fast(
     const auto weak_primary_threshold = std::max<std::uint32_t>(
         32U, kmer_size_ * 16U);
     const bool weak_primary_signal = strongest_primary_bin < weak_primary_threshold;
-    if (weak_primary_signal) {
+    const bool use_fallback = force_fallback || weak_primary_signal;
+    if (use_fallback) {
         collect(fallback_seeds_, fast_fallback_seed_offsets_, fast_fallback_seed_hits_,
             fallback_kmer_size_, 1, max_seed_frequency * 4);
     }
@@ -624,7 +628,7 @@ std::vector<Candidate> SegmentIndex::candidates_fast(
             static_cast<std::uint16_t>(std::min<std::uint32_t>(
                 candidate_reduction.votes(gene), std::numeric_limits<std::uint16_t>::max())),
             candidate_reduction.span(gene),
-            weak_primary_signal,
+            use_fallback,
         });
     }
     std::sort(ranked.begin(), ranked.end(), [](const Candidate& a, const Candidate& b) {

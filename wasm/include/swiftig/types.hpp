@@ -155,6 +155,16 @@ struct Annotation {
 
 struct EngineOptions {
     AssignerStrategy assigner_strategy = AssignerStrategy::Standard;
+    // Enables the separately selected, empirically validated AER-R decision
+    // rules without changing the legacy AER-R caller.
+    bool aer_r_optimized = false;
+    // Score cost for introducing a D state after maximizing over alleles and
+    // junction positions. Zero preserves legacy AER-R behavior.
+    int aer_r_d_presence_penalty = 0;
+    // R-optimized may reduce that cost by two points when the already-scored
+    // D hypothesis has strong single-template score or broad exact-template
+    // support. This changes no candidate search or alignment recurrence.
+    bool aer_r_evidence_conditioned_d_penalty = false;
     // AER and RIAT-MP use result-equivalent allocation-light kernels by
     // default. The reference kernels remain selectable for validation.
     bool optimized_kernels = true;

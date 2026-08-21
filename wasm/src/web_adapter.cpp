@@ -296,6 +296,19 @@ EngineOptions configured_options(int minimum_identity_per_mille, int strand) {
         options.min_d_match = 5;
         options.j_scoring = {2, -4, -13, -1};
         options.top_j = 2;
+    } else if (g_calling_profile == 2) {
+        // Experimental AER-R-only profile. These values are calibrated with
+        // ambiguity-aware scores and boundary losses; the production caller
+        // rejects this profile for other assignment strategies.
+        options.v_scoring = {2, -4, -13, -1};
+        options.aer_r_optimized = true;
+        options.aer_r_d_presence_penalty = 10;
+        options.aer_r_evidence_conditioned_d_penalty = true;
+        options.d_scoring = {2, -4, -13, -1};
+        options.top_d = 2;
+        options.min_d_match = 5;
+        options.j_scoring = {2, -4, -17, -2};
+        options.top_j = 2;
     }
     options.assigner_strategy = g_assigner_strategy;
     options.optimized_kernels = g_optimized_kernels;
@@ -317,7 +330,7 @@ void swig_free(void* pointer) { std::free(pointer); }
 
 __attribute__((export_name("swig_set_calling_profile")))
 int swig_set_calling_profile(int profile) noexcept {
-    if (profile != 0 && profile != 1) return -1;
+    if (profile < 0 || profile > 2) return -1;
     g_calling_profile = profile;
     return 0;
 }
@@ -623,6 +636,40 @@ int swig_set_tuning_options(
 
 __attribute__((export_name("swig_clear_tuning_options")))
 void swig_clear_tuning_options() noexcept { g_engine_options_override.reset(); }
+
+// Companion to swig_set_tuning_options. Benchmarks use it for calibration;
+// the direct CLI also preserves R-optimized V decisions when a user overrides
+// one of the exposed D/J compatibility controls.
+__attribute__((export_name("swig_set_v_tuning_options")))
+int swig_set_v_tuning_options(
+    int v_match,
+    int v_mismatch,
+    int v_gap_open,
+    int v_gap_extend,
+    int aer_r_optimized) noexcept {
+    if (!g_engine_options_override) g_engine_options_override = EngineOptions{};
+    g_engine_options_override->v_scoring = {
+        std::clamp(v_match, 1, 20),
+        std::clamp(v_mismatch, -50, 0),
+        std::clamp(v_gap_open, -100, 0),
+        std::clamp(v_gap_extend, -50, 0)};
+    g_engine_options_override->aer_r_optimized = aer_r_optimized != 0;
+    g_engine_options_override->aer_r_evidence_conditioned_d_penalty =
+        aer_r_optimized != 0;
+    return 0;
+}
+
+__attribute__((export_name("swig_set_aer_r_decision_tuning")))
+int swig_set_aer_r_decision_tuning(int d_presence_penalty) noexcept {
+    if (!g_engine_options_override) g_engine_options_override = EngineOptions{};
+    g_engine_options_override->aer_r_optimized = true;
+    // Calibration sweeps request an exact fixed cost. Production profile 2
+    // enables the evidence-conditioned two-point relaxation separately.
+    g_engine_options_override->aer_r_evidence_conditioned_d_penalty = false;
+    g_engine_options_override->aer_r_d_presence_penalty =
+        std::clamp(d_presence_penalty, 0, 100);
+    return 0;
+}
 
 __attribute__((export_name("swig_version")))
 const char* swig_version() noexcept { return swiftig::kVersion; }
