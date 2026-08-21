@@ -300,14 +300,14 @@ EngineOptions configured_options(int minimum_identity_per_mille, int strand) {
         // Experimental AER-R-only profile. These values are calibrated with
         // ambiguity-aware scores and boundary losses; the production caller
         // rejects this profile for other assignment strategies.
-        options.v_scoring = {2, -4, -13, -1};
+        options.v_scoring = {2, -3, -9, -1};
         options.aer_r_optimized = true;
-        options.aer_r_d_presence_penalty = 10;
+        options.aer_r_d_presence_penalty = 12;
         options.aer_r_evidence_conditioned_d_penalty = true;
-        options.d_scoring = {2, -4, -13, -1};
+        options.d_scoring = {2, -3, -13, -1};
         options.top_d = 2;
         options.min_d_match = 5;
-        options.j_scoring = {2, -4, -17, -2};
+        options.j_scoring = {2, -3, -17, -2};
         options.top_j = 2;
     }
     options.assigner_strategy = g_assigner_strategy;

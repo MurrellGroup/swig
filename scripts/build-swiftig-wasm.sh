@@ -26,9 +26,9 @@ mkdir -p "$build_dir"
 export TMPDIR="$build_dir"
 export LD_LIBRARY_PATH="$wasi_sdk/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-extra_defines=()
+extra_defines=("-DSWIG_AER_ROBUST_EXHAUSTIVE=0")
 if [[ "${SWIG_AER_ROBUST_EXHAUSTIVE:-0}" == "1" ]]; then
-  extra_defines+=("-DSWIG_AER_ROBUST_EXHAUSTIVE=1")
+  extra_defines=("-DSWIG_AER_ROBUST_EXHAUSTIVE=1")
 fi
 output_path="${SWIG_WASM_OUTPUT:-$project_dir/public/swiftig.wasm}"
 

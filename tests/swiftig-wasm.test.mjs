@@ -317,16 +317,16 @@ test("R-optimized corrects representative junction-facing V over-extension regre
   const [legacy, optimized] = await Promise.all([
     annotate("truth_optimized"), annotate("r_optimized"),
   ]);
-  const goldEnds = [330, 428, 349];
+  const goldEnds = [330, 428, 349, 316];
   const legacyLoss = legacy.reduce((sum, row, index) =>
     sum + Math.abs(Number(row.v_sequence_end) - goldEnds[index]), 0);
   const optimizedLoss = optimized.reduce((sum, row, index) =>
     sum + Math.abs(Number(row.v_sequence_end) - goldEnds[index]), 0);
   assert.ok(optimizedLoss < legacyLoss);
-  assert.deepEqual(optimized.map((row) => Number(row.v_sequence_end)), [330, 428, 352]);
+  assert.deepEqual(optimized.map((row) => Number(row.v_sequence_end)), [330, 428, 352, 316]);
   for (let index = 0; index < optimized.length; index += 1) {
     assert.ok(optimized[index].v_call.split(",").includes([
-      "IGHV4-NL_36*01_S9644", "IGHV3-122*01", "IGHV3-172*01_S0577",
+      "IGHV4-NL_36*01_S9644", "IGHV3-122*01", "IGHV3-172*01_S0577", "IGHV1-NL_2*01_S9896",
     ][index]));
     assert.ok(Math.abs(Number(optimized[index].v_sequence_end) - goldEnds[index]) <= 3);
   }

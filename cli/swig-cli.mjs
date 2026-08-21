@@ -3528,7 +3528,7 @@ var ShmAccumulator = class {
 };
 //#endregion
 //#region cli-src/swig-cli.mjs
-const VERSION = "0.38.0";
+const VERSION = "0.38.1";
 const CLI_STREAM_HIGH_WATER_MARK = 8 * 1024 * 1024;
 const CLI_GZIP_CHUNK_SIZE = 1024 * 1024;
 const CLI_DIRECTORY = dirname(fileURLToPath(import.meta.url));

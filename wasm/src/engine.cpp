@@ -1706,14 +1706,14 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
                 relaxed_d_cost_cache.begin(), relaxed_d_cost_cache.end(),
                 [&](const auto& entry) { return entry.first == &hit; });
             found != relaxed_d_cost_cache.end()) return found->second;
-        bool supported = hit.alignment.score >= 18;
+        bool supported = hit.alignment.score >= 20;
         if (!supported &&
             hit.alignment.aligned_query == hit.alignment.aligned_reference &&
             hit.alignment.aligned_query.find('-') == std::string::npos &&
             std::all_of(
                 hit.alignment.aligned_query.begin(),
                 hit.alignment.aligned_query.end(), canonical_base)) {
-            std::array<const std::string*, 3> template_classes{};
+            std::array<const std::string*, 2> template_classes{};
             std::size_t template_class_count = 0;
             for (const auto& gene : database_.d.genes()) {
                 if (!same_or_unknown_locus(gene.locus, hit.gene->locus) ||
