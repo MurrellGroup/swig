@@ -34,8 +34,12 @@ if (!["train", "validation", "test", "development", "all"].includes(split)) {
   throw new Error("--split must be train, validation, test, development, or all");
 }
 const profile = args.get("profile") ?? "truth_optimized";
-const profileNumbers = { truth_optimized: 0, igblast_compatible: 1, igblast_balanced: 1, r_optimized: 2 };
+const profileNumbers = { truth_optimized: 0, igblast_compatible: 1, igblast_balanced: 1, r_optimized: 2, sensitive_d: 3 };
 if (!(profile in profileNumbers)) throw new Error(`Unknown profile: ${profile}`);
+const aerRProfile = profile === "r_optimized" || profile === "sensitive_d";
+const assigner = args.get("assigner") ?? "aer_robust";
+const assignerNumbers = { standard: 0, riat_mp: 1, aer: 2, aer_robust: 3 };
+if (!(assigner in assignerNumbers)) throw new Error(`Unknown assigner: ${assigner}`);
 const batchSize = Number(args.get("batch") ?? 500);
 const minimumIdentity = Number(args.get("minimum-identity") ?? 600);
 const strand = Number(args.get("strand") ?? 1);
@@ -208,6 +212,7 @@ function emptyCallMetric() {
   return {
     records: 0, brier: 0, truthProbability: 0, containsTruth: 0, exactSingleton: 0,
     predictedCount: 0, ambiguous: 0, truthAbsent: 0, trueNegative: 0,
+    truthPresent: 0, detectedWhenTruthPresent: 0, predictedPresent: 0, falsePositive: 0,
   };
 }
 
@@ -222,6 +227,10 @@ function addCallMetric(metric, score) {
   metric.ambiguous += Number(score.predictedCount > 1);
   metric.truthAbsent += Number(score.truthAbsent);
   metric.trueNegative += Number(score.truthAbsent && score.predictedAbsent);
+  metric.truthPresent += Number(!score.truthAbsent);
+  metric.detectedWhenTruthPresent += Number(!score.truthAbsent && !score.predictedAbsent);
+  metric.predictedPresent += Number(!score.predictedAbsent);
+  metric.falsePositive += Number(score.truthAbsent && !score.predictedAbsent);
 }
 
 function summarizeCall(metric) {
@@ -236,6 +245,12 @@ function summarizeCall(metric) {
     meanReportedClasses: divide(metric.predictedCount),
     truthAbsentRecords: metric.truthAbsent,
     truthAbsentSpecificity: divide(metric.trueNegative, metric.truthAbsent),
+    truthPresentRecords: metric.truthPresent,
+    truthPresentDetectionRate: divide(metric.detectedWhenTruthPresent, metric.truthPresent),
+    predictedPresentRecords: metric.predictedPresent,
+    predictedPresentRate: divide(metric.predictedPresent),
+    falsePositiveRecords: metric.falsePositive,
+    truthAbsentFalsePositiveRate: divide(metric.falsePositive, metric.truthAbsent),
   };
 }
 
@@ -299,12 +314,14 @@ const runtime = instance.exports;
 
 const profileResult = runtime.swig_set_calling_profile(profileNumbers[profile]);
 if (profileResult !== 0) throw new Error(`WASM rejected profile ${profile}`);
-if (runtime.swig_set_assigner_strategy(3) !== 0) throw new Error("WASM rejected AER-R");
+if (runtime.swig_set_assigner_strategy(assignerNumbers[assigner]) !== 0) {
+  throw new Error(`WASM rejected assigner ${assigner}`);
+}
 if (tuning) {
-  const defaults = profile === "r_optimized" ? {
-    vMatch: 2, vMismatch: -4, vGapOpen: -13, vGapExtend: -1,
-    dMatch: 2, dMismatch: -4, dGapOpen: -13, dGapExtend: -1, topD: 2, minDMatch: 5,
-    jMatch: 2, jMismatch: -4, jGapOpen: -17, jGapExtend: -2, topJ: 2, minJLength: 10,
+  const defaults = aerRProfile ? {
+    vMatch: 2, vMismatch: -3, vGapOpen: -9, vGapExtend: -1,
+    dMatch: 2, dMismatch: -3, dGapOpen: -13, dGapExtend: -1, topD: 2, minDMatch: 4,
+    jMatch: 2, jMismatch: -3, jGapOpen: -17, jGapExtend: -2, topJ: 2, minJLength: 10,
   } : {
     vMatch: 2, vMismatch: -3, vGapOpen: -5, vGapExtend: -1,
     dMatch: 2, dMismatch: -3, dGapOpen: -13, dGapExtend: -1, topD: 2, minDMatch: 6,
@@ -317,7 +334,7 @@ if (tuning) {
     options.jGapOpen, options.jGapExtend, options.topJ, options.minJLength,
   );
   if (accepted !== 0) throw new Error("WASM rejected tuning options");
-  if (profile === "r_optimized" || "vMatch" in tuning || "vMismatch" in tuning || "vGapOpen" in tuning || "vGapExtend" in tuning) {
+  if (aerRProfile || "vMatch" in tuning || "vMismatch" in tuning || "vGapOpen" in tuning || "vGapExtend" in tuning) {
     if (typeof runtime.swig_set_v_tuning_options !== "function") {
       throw new Error("WASM does not expose V tuning options");
     }
@@ -326,11 +343,23 @@ if (tuning) {
       options.vMismatch,
       options.vGapOpen,
       options.vGapExtend,
-      profile === "r_optimized" ? 1 : 0,
+      aerRProfile ? 1 : 0,
     );
     if (vAccepted !== 0) throw new Error("WASM rejected V tuning options");
+    if (aerRProfile && tuning.dEvidenceConditioned !== false) {
+      const dPresencePenalty = tuning.dPresencePenalty ?? (profile === "sensitive_d" ? 10 : 12);
+      const dPenaltyRelaxation = tuning.dPenaltyRelaxation ?? (profile === "sensitive_d" ? 0 : 2);
+      const accepted = typeof runtime.swig_set_aer_r_profile_decision_tuning_v2 === "function"
+        ? runtime.swig_set_aer_r_profile_decision_tuning_v2(dPresencePenalty, dPenaltyRelaxation)
+        : dPenaltyRelaxation === 2 && typeof runtime.swig_set_aer_r_profile_decision_tuning === "function"
+          ? runtime.swig_set_aer_r_profile_decision_tuning(dPresencePenalty)
+          : -1;
+      if (accepted !== 0) {
+        throw new Error("WASM rejected the current AER-R decision profile");
+      }
+    }
   }
-  if ("dPresencePenalty" in tuning) {
+  if ("dPresencePenalty" in tuning && tuning.dEvidenceConditioned === false) {
     if (typeof runtime.swig_set_aer_r_decision_tuning !== "function") {
       throw new Error("WASM does not expose AER-R decision tuning");
     }
@@ -383,6 +412,7 @@ const predictionLines = [predictionFields.join("\t")];
 const failures = [];
 let tandemD = 0;
 let processed = 0;
+const startedCpu = process.cpuUsage();
 const started = performance.now();
 for (let offset = 0; offset < truth.length; offset += batchSize) {
   const batch = truth.slice(offset, offset + batchSize);
@@ -439,17 +469,22 @@ for (let offset = 0; offset < truth.length; offset += batchSize) {
 }
 process.stderr.write("\n");
 const elapsedSeconds = (performance.now() - started) / 1_000;
+const elapsedCpu = process.cpuUsage(startedCpu);
+const cpuSeconds = (elapsedCpu.user + elapsedCpu.system) / 1_000_000;
 if (outputPath) fs.writeFileSync(outputPath, `${predictionLines.join("\n")}\n`);
 if (failuresPath) fs.writeFileSync(failuresPath, failures.map((record) => JSON.stringify(record)).join("\n") + "\n");
 
 const report = {
   split,
   profile,
+  assigner,
   records: truth.length,
   tandemDExcludedFromPrimaryScore: tandemD,
   references: genes,
   elapsedSeconds,
+  cpuSeconds,
   readsPerSecond: truth.length / elapsedSeconds,
+  cpuReadsPerSecond: truth.length / cpuSeconds,
   callMetrics: Object.fromEntries(Object.entries(callMetrics).map(([segment, metric]) => [segment, summarizeCall(metric)])),
   boundaryMetrics: {
     allCalled: Object.fromEntries(Object.entries(allBoundaryMetrics).map(([field, metric]) => [field, summarizeBoundary(metric)])),
@@ -460,10 +495,13 @@ const report = {
 if (args.get("compact") === "true") {
   console.log(JSON.stringify({
     profile: report.profile,
+    assigner: report.assigner,
     records: report.records,
     tuning,
     elapsedSeconds: report.elapsedSeconds,
+    cpuSeconds: report.cpuSeconds,
     readsPerSecond: report.readsPerSecond,
+    cpuReadsPerSecond: report.cpuReadsPerSecond,
     V: report.callMetrics.V,
     D: report.callMetrics.D,
     J: report.callMetrics.J,

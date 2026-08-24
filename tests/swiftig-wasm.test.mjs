@@ -60,7 +60,7 @@ async function makeRuntime() {
   }
 
   function setCallingProfile(profile) {
-    return exports.swig_set_calling_profile(profile === "igblast_compatible" || profile === "igblast_balanced" ? 1 : profile === "r_optimized" ? 2 : profile === "truth_optimized" ? 0 : Number(profile));
+    return exports.swig_set_calling_profile(profile === "igblast_compatible" || profile === "igblast_balanced" ? 1 : profile === "r_optimized" ? 2 : profile === "sensitive_d" ? 3 : profile === "truth_optimized" ? 0 : Number(profile));
   }
 
   function setAssignerStrategy(strategy) {
@@ -242,7 +242,8 @@ test("calling profiles are explicit, switchable, and reject unknown profile iden
   assert.equal(runtime.setCallingProfile("igblast_compatible"), 0);
   const compatibilityResult = runtime.annotate(query, 1);
   assert.equal(runtime.setCallingProfile("r_optimized"), 0);
-  assert.equal(runtime.setCallingProfile(3), -1);
+  assert.equal(runtime.setCallingProfile("sensitive_d"), 0);
+  assert.equal(runtime.setCallingProfile(4), -1);
   assert.equal(runtime.setCallingProfile("truth_optimized"), 0);
   assert.equal(runtime.annotate(query, 1).tsv, defaultResult.tsv, "resetting the profile did not restore default calls");
   assert.equal(defaultResult.rows[0].d_call, "");
@@ -344,18 +345,123 @@ test("R-optimized conditions D presence on score and independent template suppor
     }
     return [...records].map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
   };
-  const runtime = await makeRuntime();
-  assert.equal(runtime.setAssignerStrategy("aer_robust"), 0);
-  assert.equal(runtime.setCallingProfile("r_optimized"), 0);
-  runtime.initialize({ V: combined("V"), D: combined("D"), J: combined("J"), C: "" });
+  const references = { V: combined("V"), D: combined("D"), J: combined("J"), C: "" };
   const query = fs.readFileSync(
     new URL("fixtures/r-optimized-d-decision-regressions.fasta", import.meta.url), "utf8");
-  const [supported, zeroD] = runtime.annotate(query, 1, 1).rows;
+  for (const profile of ["r_optimized", "sensitive_d"]) {
+    const runtime = await makeRuntime();
+    assert.equal(runtime.setAssignerStrategy("aer_robust"), 0);
+    assert.equal(runtime.setCallingProfile(profile), 0);
+    runtime.initialize(references);
+    const [supported, zeroD] = runtime.annotate(query, 1, 1).rows;
+    assert.match(supported.d_call, /IGHD1-5\*01/);
+    assert.equal(supported.d_sequence_alignment, supported.d_germline_alignment);
+    assert.equal(zeroD.d_call, "", `${profile} called a strong singleton no-D decoy`);
+    assert.match(zeroD.j_call, /IGHJ3-2\*01/);
+  }
+});
 
-  assert.match(supported.d_call, /IGHD1-5\*01/);
-  assert.equal(supported.d_sequence_alignment, supported.d_germline_alignment);
-  assert.equal(zeroD.d_call, "");
-  assert.match(zeroD.j_call, /IGHJ3-2\*01/);
+test("both optimized profiles admit a mutation-interrupted four-base-run D candidate", async () => {
+  const roots = ["Macaca_mulatta", "Macaca_fascicularis"].map((species) =>
+    new URL(`../public/references/kimdb-1.1/${species}/IGH/`, import.meta.url));
+  const combined = (segment) => {
+    const records = new Map();
+    for (const root of roots) {
+      for (const record of parseSimulatorFasta(fs.readFileSync(new URL(`${segment}.fasta`, root), "utf8"))) {
+        records.set(record.name, record.sequence);
+      }
+    }
+    return [...records].map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+  };
+  const references = { V: combined("V"), D: combined("D"), J: combined("J"), C: "" };
+  const query = fs.readFileSync(
+    new URL("fixtures/sensitive-d-min4-regression.fasta", import.meta.url), "utf8");
+  const annotate = async (profile) => {
+    const runtime = await makeRuntime();
+    assert.equal(runtime.setAssignerStrategy("aer_robust"), 0);
+    assert.equal(runtime.setCallingProfile(profile), 0);
+    runtime.initialize(references);
+    return runtime.annotate(query, 1, 1).rows[0];
+  };
+  const [optimized, sensitive] = await Promise.all([
+    annotate("r_optimized"), annotate("sensitive_d"),
+  ]);
+  for (const row of [optimized, sensitive]) {
+    assert.match(row.d_call, /IGHD5-32\*01/);
+    assert.equal(row.d_sequence_alignment, "ATACTGTGGCGACAG");
+    assert.equal(row.d_germline_alignment, "ATACAGTGGGTACAG");
+  }
+});
+
+test("Sensitive-D lowers only the post-signal joint D threshold", async () => {
+  const roots = ["Macaca_mulatta", "Macaca_fascicularis"].map((species) =>
+    new URL(`../public/references/kimdb-1.1/${species}/IGH/`, import.meta.url));
+  const combined = (segment) => {
+    const records = new Map();
+    for (const root of roots) {
+      for (const record of parseSimulatorFasta(fs.readFileSync(new URL(`${segment}.fasta`, root), "utf8"))) {
+        records.set(record.name, record.sequence);
+      }
+    }
+    return [...records].map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+  };
+  const references = { V: combined("V"), D: combined("D"), J: combined("J"), C: "" };
+  const query = fs.readFileSync(
+    new URL("fixtures/sensitive-d-joint-threshold-regression.fasta", import.meta.url), "utf8");
+  const annotate = async (profile) => {
+    const runtime = await makeRuntime();
+    assert.equal(runtime.setAssignerStrategy("aer_robust"), 0);
+    assert.equal(runtime.setCallingProfile(profile), 0);
+    runtime.initialize(references);
+    return runtime.annotate(query, 1, 1).rows[0];
+  };
+  const [optimized, sensitive] = await Promise.all([
+    annotate("r_optimized"), annotate("sensitive_d"),
+  ]);
+  assert.equal(optimized.d_call, "");
+  assert.equal(sensitive.d_call, "IGHD1-7*01");
+  assert.equal(sensitive.d_score, "12");
+  assert.equal(sensitive.d_sequence_alignment, "GAGCACCCGAATCGAC");
+  assert.equal(sensitive.d_germline_alignment, "GAACACCTGGAACGAC");
+});
+
+test("R-optimized profiles commit V/J boundaries only from the winning complete partition", async () => {
+  const roots = ["Macaca_mulatta", "Macaca_fascicularis"].map((species) =>
+    new URL(`../public/references/kimdb-1.1/${species}/IGH/`, import.meta.url));
+  const combined = (segment) => {
+    const records = new Map();
+    for (const root of roots) {
+      for (const record of parseSimulatorFasta(fs.readFileSync(new URL(`${segment}.fasta`, root), "utf8"))) {
+        records.set(record.name, record.sequence);
+      }
+    }
+    return [...records].map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+  };
+  const references = { V: combined("V"), D: combined("D"), J: combined("J"), C: "" };
+  const records = parseSimulatorFasta(fs.readFileSync(
+    new URL("fixtures/r-optimized-vj-boundary-invariants.fasta", import.meta.url), "utf8"));
+  const query = records.map((record) => `>${record.name}\n${record.sequence}\n`).join("");
+  const expected = [
+    { v_sequence_end: 393 },
+    { j_sequence_start: 451 },
+    { j_sequence_start: 435 },
+    { v_sequence_end: 389 },
+    { j_sequence_start: 364 },
+  ];
+
+  for (const profile of ["r_optimized", "sensitive_d"]) {
+    const runtime = await makeRuntime();
+    assert.equal(runtime.setAssignerStrategy("aer_robust"), 0);
+    assert.equal(runtime.setCallingProfile(profile), 0);
+    runtime.initialize(references);
+    const rows = runtime.annotate(query, 1, 1).rows;
+    assert.equal(rows.length, expected.length);
+    for (let index = 0; index < expected.length; index += 1) {
+      for (const [field, value] of Object.entries(expected[index])) {
+        assert.equal(Number(rows[index][field]), value, `${profile} ${records[index].name} ${field}`);
+      }
+    }
+  }
 });
 
 test("AER-R accepts strong distributed D evidence instead of a short exact-seed decoy", async () => {

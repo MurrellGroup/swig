@@ -152,6 +152,76 @@ void extend_terminal_substitutions(
     refresh_airr_cigar(alignment, query.size(), reference.size());
 }
 
+/**
+ * Local alignment can omit a recombination-facing five-base block whose
+ * substitution score is exactly zero (three matches, two mismatches under
+ * +2/-3). Materialize that tied block only in a high-SHM context and only
+ * inside currently unassigned junction sequence. Because the score is tied,
+ * this changes endpoint reporting without changing candidate rank.
+ */
+bool extend_junction_terminal_score_tie(
+    const std::string& query,
+    const std::string& reference,
+    const Scoring& scoring,
+    Alignment& alignment,
+    bool extend_right,
+    std::size_t query_boundary) {
+    constexpr std::size_t length = 5;
+    if (!alignment.valid()) return false;
+
+    std::size_t query_start = 0;
+    std::size_t reference_start = 0;
+    if (extend_right) {
+        if (alignment.query_end + length > query.size() ||
+            alignment.query_end + length > query_boundary ||
+            alignment.reference_end + length > reference.size()) return false;
+        query_start = alignment.query_end;
+        reference_start = alignment.reference_end;
+    } else {
+        if (alignment.query_start < length || alignment.reference_start < length ||
+            alignment.query_start - length < query_boundary) return false;
+        query_start = alignment.query_start - length;
+        reference_start = alignment.reference_start - length;
+    }
+
+    int total = 0;
+    int cumulative = 0;
+    int maximum_prefix = std::numeric_limits<int>::min();
+    for (std::size_t step = 0; step < length; ++step) {
+        const auto offset = extend_right ? step : length - step - 1;
+        const char q = query[query_start + offset];
+        const char r = reference[reference_start + offset];
+        if (!canonical_base(q) || !canonical_base(r)) return false;
+        const int contribution = substitution_score(q, r, scoring);
+        total += contribution;
+        cumulative += contribution;
+        maximum_prefix = std::max(maximum_prefix, cumulative);
+    }
+    if (total != 0 || maximum_prefix > 0) return false;
+
+    for (std::size_t offset = 0; offset < length; ++offset) {
+        const char q = query[query_start + offset];
+        const char r = reference[reference_start + offset];
+        const auto [matches, mismatches] = substitution_counts(q, r);
+        alignment.matches += matches;
+        alignment.mismatches += mismatches;
+    }
+    alignment.score += total;
+    if (extend_right) {
+        alignment.aligned_query.append(query, query_start, length);
+        alignment.aligned_reference.append(reference, reference_start, length);
+        alignment.query_end += length;
+        alignment.reference_end += length;
+    } else {
+        alignment.aligned_query.insert(0, query, query_start, length);
+        alignment.aligned_reference.insert(0, reference, reference_start, length);
+        alignment.query_start -= length;
+        alignment.reference_start -= length;
+    }
+    refresh_airr_cigar(alignment, query.size(), reference.size());
+    return true;
+}
+
 void rank_segment_hits(std::vector<SegmentHit>& hits) {
     std::sort(hits.begin(), hits.end(), [](const SegmentHit& left, const SegmentHit& right) {
         if (left.alignment.score != right.alignment.score) return left.alignment.score > right.alignment.score;
@@ -1694,18 +1764,16 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
         const SegmentHit* d = nullptr;
         std::optional<Alignment> clipped_v;
         std::optional<Alignment> clipped_j;
+        std::optional<Alignment> clipped_d;
         double score = -std::numeric_limits<double>::infinity();
         std::size_t d_exact_run = 0;
+        bool restores_single_v_match = false;
     };
     std::optional<JointChoice> best;
     std::vector<std::pair<const SegmentHit*, bool>> relaxed_d_cost_cache;
     relaxed_d_cost_cache.reserve(8);
-    const auto supports_relaxed_d_cost = [&](const SegmentHit& hit) {
-        if (!options_.aer_r_evidence_conditioned_d_penalty) return false;
-        if (const auto found = std::find_if(
-                relaxed_d_cost_cache.begin(), relaxed_d_cost_cache.end(),
-                [&](const auto& entry) { return entry.first == &hit; });
-            found != relaxed_d_cost_cache.end()) return found->second;
+    const auto compute_relaxed_d_cost = [&](const SegmentHit& hit) {
+        if (options_.aer_r_d_presence_penalty_relaxation <= 0) return false;
         bool supported = hit.alignment.score >= 20;
         if (!supported &&
             hit.alignment.aligned_query == hit.alignment.aligned_reference &&
@@ -1730,8 +1798,23 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
                 }
             }
         }
+        return supported;
+    };
+    const auto supports_relaxed_d_cost = [&](const SegmentHit& hit) {
+        if (const auto found = std::find_if(
+                relaxed_d_cost_cache.begin(), relaxed_d_cost_cache.end(),
+                [&](const auto& entry) { return entry.first == &hit; });
+            found != relaxed_d_cost_cache.end()) return found->second;
+        const bool supported = compute_relaxed_d_cost(hit);
         relaxed_d_cost_cache.emplace_back(&hit, supported);
         return supported;
+    };
+    const auto viable_clipped_d = [&](const SegmentHit& hit) {
+        return hit.alignment.valid() &&
+            aligned_bases(hit.alignment) >= options_.min_d_match &&
+            hit.alignment.identity() >= options_.min_identity &&
+            (longest_exact_run(hit.alignment) >= options_.min_d_match ||
+             strong_distributed_d_evidence(hit.alignment));
     };
     const auto consider = [&](JointChoice candidate) {
         bool replace = !best;
@@ -1741,6 +1824,19 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
             // A D explanation must improve the joint score; an exact tie is
             // retained as the more conservative no-D partition.
             replace = candidate.d == nullptr;
+        } else if (best && candidate.d && best->d &&
+                   candidate.v == best->v && candidate.j == best->j &&
+                   candidate.d == best->d &&
+                   candidate.restores_single_v_match !=
+                       best->restores_single_v_match) {
+            // If the same complete V/D/J hypothesis has an exact boundary
+            // score tie, restore one V base only when it is an exact
+            // continuation of a substantially 3'-trimmed independent V
+            // alignment. The >=10-reference-base condition was selected on
+            // development data and retained without error on both held-out
+            // simulations. This preference is deliberately scoped to the
+            // eventual D call; rejected D hypotheses cannot alter V trimming.
+            replace = candidate.restores_single_v_match;
         } else if (best && candidate.d_exact_run != best->d_exact_run) {
             replace = candidate.d_exact_run > best->d_exact_run;
         } else if (best && candidate.v->gene->name != best->v->gene->name) {
@@ -1781,8 +1877,8 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
                 if (distance <= options_.max_junction_span) {
                     consider(JointChoice{
                         &original_v, &original_j, nullptr, std::nullopt, std::nullopt,
-                        static_cast<double>(original_v.alignment.score +
-                            original_j.alignment.score) + 24.0, 0});
+                        std::nullopt, static_cast<double>(original_v.alignment.score +
+                            original_j.alignment.score) + 24.0, 0, false});
                 }
             } else {
                 const auto low = std::max(
@@ -1800,14 +1896,22 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
                         v->alignment.score + j->alignment.score) + 24.0;
                     consider(JointChoice{
                         &original_v, &original_j, nullptr,
-                        std::move(v->alignment), std::move(j->alignment),
-                        joint_score, 0});
+                        std::move(v->alignment), std::move(j->alignment), std::nullopt,
+                        joint_score, 0, false});
                 }
             }
 
             for (const auto& d : d_hits_for_locus(locus)) {
                 if (d.alignment.query_start <= original_v.alignment.query_start ||
                     d.alignment.query_end >= original_j.alignment.query_end) continue;
+                const auto d_presence_penalty = options_.aer_r_d_presence_penalty -
+                    (supports_relaxed_d_cost(d)
+                        ? std::min(options_.aer_r_d_presence_penalty,
+                            options_.aer_r_d_presence_penalty_relaxation)
+                        : 0);
+
+                // Candidate A: retain the complete D alignment and give any
+                // overlapping query bases to D by clipping V and/or J.
                 std::optional<Alignment> clipped_v;
                 std::optional<Alignment> clipped_j;
                 const Alignment* v_alignment = &original_v.alignment;
@@ -1826,26 +1930,90 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
                         sequence.size(), original_j.gene->sequence.size());
                     j_alignment = &*clipped_j;
                 }
-                if (!v_alignment->valid() || !j_alignment->valid() ||
-                    aligned_bases(*v_alignment) < options_.min_v_length ||
-                    aligned_bases(*j_alignment) < options_.min_j_length ||
-                    v_alignment->identity() < options_.min_identity ||
-                    j_alignment->identity() < options_.min_identity ||
-                    v_alignment->query_end > d.alignment.query_start ||
-                    d.alignment.query_end > j_alignment->query_start) continue;
-                const auto distance = j_alignment->query_start - v_alignment->query_end;
-                if (distance > options_.max_junction_span) continue;
-                const auto d_presence_penalty = options_.aer_r_d_presence_penalty -
-                    (supports_relaxed_d_cost(d) &&
-                     options_.aer_r_d_presence_penalty >= 2 ? 2 : 0);
-                const auto joint_score = static_cast<double>(
-                    v_alignment->score + d.alignment.score + j_alignment->score) + 24.0 -
-                    static_cast<double>(d_presence_penalty);
-                consider(JointChoice{
-                    &original_v, &original_j, &d,
-                    std::move(clipped_v), std::move(clipped_j),
-                    joint_score,
-                    longest_exact_run(d.alignment)});
+                const bool ordinary_viable =
+                    v_alignment->valid() && j_alignment->valid() &&
+                    aligned_bases(*v_alignment) >= options_.min_v_length &&
+                    aligned_bases(*j_alignment) >= options_.min_j_length &&
+                    v_alignment->identity() >= options_.min_identity &&
+                    j_alignment->identity() >= options_.min_identity &&
+                    v_alignment->query_end <= d.alignment.query_start &&
+                    d.alignment.query_end <= j_alignment->query_start &&
+                    j_alignment->query_start - v_alignment->query_end <=
+                        options_.max_junction_span;
+                bool ordinary_restores_single_v_match = false;
+                std::optional<double> ordinary_joint_score;
+                if (ordinary_viable) {
+                    const auto joint_score = static_cast<double>(
+                        v_alignment->score + d.alignment.score + j_alignment->score) + 24.0 -
+                        static_cast<double>(d_presence_penalty);
+                    ordinary_joint_score = joint_score;
+                    ordinary_restores_single_v_match =
+                        original_v.alignment.query_end ==
+                            v_alignment->query_end + 1 &&
+                        original_j.alignment.query_start >=
+                            d.alignment.query_end &&
+                        original_v.alignment.score ==
+                            v_alignment->score + options_.v_scoring.match &&
+                        original_v.gene->sequence.size() >=
+                            original_v.alignment.reference_end + 10;
+                    consider(JointChoice{
+                        &original_v, &original_j, &d,
+                        std::move(clipped_v), std::move(clipped_j), std::nullopt,
+                        joint_score, longest_exact_run(d.alignment), false});
+                }
+
+                // Candidate B: preserve the independently aligned V/J
+                // endpoints and give overlapping query bases to them by
+                // clipping D. This candidate is scored independently of
+                // Candidate A; merely examining D never mutates V or J.
+                if (options_.aer_r_optimized &&
+                    original_v.alignment.query_end <= original_j.alignment.query_start &&
+                    (d.alignment.query_start < original_v.alignment.query_end ||
+                     d.alignment.query_end > original_j.alignment.query_start)) {
+                    const auto d_start = std::max(
+                        d.alignment.query_start, original_v.alignment.query_end);
+                    const auto d_end = std::min(
+                        d.alignment.query_end, original_j.alignment.query_start);
+                    if (d_start < d_end) {
+                        SegmentHit clipped_d = d;
+                        clipped_d.alignment = clip_alignment_to_query(
+                            d.alignment, d_start, d_end, options_.d_scoring,
+                            sequence.size(), d.gene->sequence.size());
+                        if (viable_clipped_d(clipped_d)) {
+                            const auto symmetric_penalty = options_.aer_r_d_presence_penalty -
+                                (compute_relaxed_d_cost(clipped_d)
+                                    ? std::min(options_.aer_r_d_presence_penalty,
+                                        options_.aer_r_d_presence_penalty_relaxation)
+                                    : 0);
+                            const auto symmetric_score = static_cast<double>(
+                                original_v.alignment.score + clipped_d.alignment.score +
+                                original_j.alignment.score) + 24.0 -
+                                static_cast<double>(symmetric_penalty);
+                            const auto symmetric_exact_run =
+                                longest_exact_run(clipped_d.alignment);
+                            const bool earns_symmetric_boundary =
+                                !ordinary_joint_score ||
+                                symmetric_score > *ordinary_joint_score ||
+                                (symmetric_score == *ordinary_joint_score &&
+                                 ordinary_restores_single_v_match);
+                            const bool improves_global_partition =
+                                !best || symmetric_score > best->score ||
+                                (ordinary_restores_single_v_match &&
+                                 symmetric_score == best->score &&
+                                 best->v == &original_v &&
+                                 best->j == &original_j && best->d == &d);
+                            if (earns_symmetric_boundary &&
+                                improves_global_partition) {
+                                consider(JointChoice{
+                                    &original_v, &original_j, &d,
+                                    std::nullopt, std::nullopt,
+                                    std::move(clipped_d.alignment), symmetric_score,
+                                    symmetric_exact_run,
+                                    ordinary_restores_single_v_match});
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1855,7 +2023,10 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
         result.j = *best->j;
         if (best->clipped_v) result.v->alignment = std::move(*best->clipped_v);
         if (best->clipped_j) result.j->alignment = std::move(*best->clipped_j);
-        if (best->d) result.d = *best->d;
+        if (best->d) {
+            result.d = *best->d;
+            if (best->clipped_d) result.d->alignment = std::move(*best->clipped_d);
+        }
         result.rank_score = best->score;
     } else {
         // Preserve useful partial calls when no biologically ordered pair was
@@ -1911,6 +2082,28 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
             merge_near_score_calls(*result.d, d_hits, 1);
         }
         result.d_alternatives = uncertain_alternatives(*result.d, d_hits);
+    }
+
+    // Repair score-tied local-alignment resets at either junction-facing
+    // endpoint. V identity supplies a stable per-read SHM proxy; <=0.88 was
+    // selected on development data and improved held-out V-end and J-start
+    // MAE while leaving the low-SHM simulation unchanged. Extensions are
+    // bounded by the actual selected D call (or by the opposite selected
+    // segment when no D is called), never by a provisional D hypothesis.
+    const bool high_shm_boundary_context = options_.aer_r_optimized &&
+        result.v && result.j && result.v->alignment.identity() <= 0.88;
+    if (high_shm_boundary_context) {
+        const auto v_boundary = result.d
+            ? result.d->alignment.query_start : result.j->alignment.query_start;
+        extend_junction_terminal_score_tie(
+            sequence, result.v->gene->sequence, options_.v_scoring,
+            result.v->alignment, true, v_boundary);
+
+        const auto j_boundary = result.d
+            ? result.d->alignment.query_end : result.v->alignment.query_end;
+        extend_junction_terminal_score_tie(
+            sequence, result.j->gene->sequence, options_.j_scoring,
+            result.j->alignment, false, j_boundary);
     }
 
     const std::string locus = result.v ? result.v->gene->locus

@@ -229,6 +229,10 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
   const root=resolve(import.meta.dirname,"..");
   const temporary=await mkdtemp(join(root,"tmp-cli-vdj-"));
   try{
+    const help=runRawCli(root,["--vdj","--help"]);
+    assert.equal(help.status,0,help.stderr);
+    assert.match(help.stdout,/r_optimized: 4-nt D signal floor; joint D cost 12, evidence-relaxed to 10/);
+    assert.match(help.stdout,/sensitive_d: same signal floor and scores; fixed joint D cost 10 \(a bare 4-mer scores 8\)/);
     const pack=JSON.parse(gunzipSync(await readFile(join(root,"public/references/imgt-202632-7-swig-0.7.json.gz"))).toString("utf8"));
     const human=pack.species.find((entry)=>entry.name==="Homo sapiens");
     const v=human.loci.IGH.V.find((entry)=>entry[2]?.slice(2,12).every((value)=>value>=0));
@@ -262,9 +266,15 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
 
     const optimizedPath=join(temporary,"r-optimized.airr.tsv");
     const optimized=runRawCli(root,[...common,"--assigner","aer_robust","--calling-profile","r_optimized","-out",optimizedPath]);
-    assert.equal(optimized.status,0,optimized.stderr);assert.match(optimized.stderr,/AER-R/);
+    assert.equal(optimized.status,0,optimized.stderr);assert.match(optimized.stderr,/AER-R/);assert.match(optimized.stderr,/R-optimized profile/);
     const optimizedRow=await readRow(optimizedPath);
     assert.equal(optimizedRow.v_call,v[0]);assert.equal(optimizedRow.j_call,j[0]);
+
+    const sensitivePath=join(temporary,"sensitive-d.airr.tsv");
+    const sensitive=runRawCli(root,[...common,"--assigner","aer_robust","--calling-profile","sensitive_d","-out",sensitivePath]);
+    assert.equal(sensitive.status,0,sensitive.stderr);assert.match(sensitive.stderr,/AER-R/);assert.match(sensitive.stderr,/Sensitive-D profile/);
+    const sensitiveRow=await readRow(sensitivePath);
+    assert.equal(sensitiveRow.v_call,v[0]);assert.equal(sensitiveRow.j_call,j[0]);
 
     const invalidProfile=runRawCli(root,[...common,"--calling-profile","r_optimized","-out",join(temporary,"invalid-profile.airr.tsv")]);
     assert.notEqual(invalidProfile.status,0);assert.match(invalidProfile.stderr,/requires --assigner aer_robust/);
@@ -296,6 +306,46 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
     assert.deepEqual(await readFile(parallelPath),await readFile(serialPath));
     assert.match(parallel.stderr,/1,000 records\/batch/);
     assert.deepEqual((await readdir(temporary)).filter((name)=>/summary|resolved-config|processed|lineage/i.test(name)),[]);
+  }finally{await rm(temporary,{recursive:true,force:true});}
+});
+
+test("--vdj preserves the R-optimized versus Sensitive-D joint threshold under explicit tuning",async()=>{
+  const root=resolve(import.meta.dirname,"..");
+  const temporary=await mkdtemp(join(root,"tmp-cli-sensitive-d-"));
+  try{
+    const referenceRoot=join(root,"public/references/kimdb-1.1");
+    const referencePaths={};
+    for(const segment of ["V","D","J"]){
+      const records=new Map();
+      for(const text of await Promise.all(["Macaca_mulatta","Macaca_fascicularis"].map((species)=>
+        readFile(join(referenceRoot,species,"IGH",`${segment}.fasta`),"utf8")))){
+        for(const record of text.trim().split(/(?=>)/).filter(Boolean)){
+          const name=record.slice(1).trim().split(/\s+/,1)[0];
+          if(!records.has(name))records.set(name,record);
+        }
+      }
+      referencePaths[segment]=join(temporary,`${segment}.fasta`);
+      await writeFile(referencePaths[segment],`${[...records.values()].join("\n")}\n`);
+    }
+    const common=[
+      "--vdj","-query",join(root,"tests/fixtures/sensitive-d-joint-threshold-regression.fasta"),
+      "-germline_db_V",referencePaths.V,"-germline_db_D",referencePaths.D,
+      "-germline_db_J",referencePaths.J,"--assigner","aer_robust",
+      "--workers","1","--batch-records","1","-outfmt","19","-min_D_match","4",
+    ];
+    const annotate=async(profile)=>{
+      const output=join(temporary,`${profile}.airr.tsv`);
+      const result=runRawCli(root,[...common,"--calling-profile",profile,"-out",output]);
+      assert.equal(result.status,0,result.stderr);
+      const [header,line]=String(await readFile(output,"utf8")).trimEnd().split("\n");
+      const names=header.split("\t"),values=line.split("\t");
+      return Object.fromEntries(names.map((name,index)=>[name,values[index]??""]));
+    };
+    const optimized=await annotate("r_optimized");
+    const sensitive=await annotate("sensitive_d");
+    assert.equal(optimized.d_call,"");
+    assert.equal(sensitive.d_call,"IGHD1-7*01");
+    assert.equal(sensitive.d_score,"12");
   }finally{await rm(temporary,{recursive:true,force:true});}
 });
 

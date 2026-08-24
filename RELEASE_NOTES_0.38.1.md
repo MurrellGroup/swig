@@ -7,6 +7,7 @@
 - Uses V scoring `+2/−3/−9/−1`; the −9 gap-open cost retains the three original V-stop regression fixes without the observed 42-nt complex-indel V-end failure at −11/−13.
 - Uses D scoring `+2/−3/−13/−1`, retains the 5-nt exact-run floor, and changes the D-state cost from 10→8 to 12→10. The two-point relaxation now requires raw D score ≥20 or exact support from at least two distinct locus-matched D template sequences.
 - Uses J scoring `+2/−3/−17/−2`. The same-span one-point D ambiguity window and the AER-R candidate-search/joint-partition algorithm are unchanged.
+- Keeps browser help, browser-exported configuration, and direct CLI execution on that same profile. The tagged standalone-CLI workflow now rebuilds the SwiftIG WASM core before embedding it, and explicit CLI D/J overrides preserve the revised V and evidence-conditioned D decisions.
 - Adds the complex-indel IgG V-end case to the deterministic WASM regression fixture.
 
 ## Accuracy summary

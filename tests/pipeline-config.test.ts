@@ -35,6 +35,7 @@ test("small CLI configs receive analysis defaults and explicit donor grouping",(
   assert.equal(config.annotation.assignerStrategy,"riat_mp");
   assert.equal(normalizeCliConfig({annotation:{assignerStrategy:"aer_robust"}}).annotation.assignerStrategy,"aer_robust");
   assert.equal(normalizeCliConfig({annotation:{callingProfile:"r_optimized"}}).annotation.callingProfile,"r_optimized");
+  assert.equal(normalizeCliConfig({annotation:{callingProfile:"sensitive_d"}}).annotation.callingProfile,"sensitive_d");
   assert.equal(config.references.prepareMetadata,true);
   assert.equal(normalizeCliConfig({references:{prepareMetadata:false}}).references.prepareMetadata,false);
 });
@@ -114,5 +115,11 @@ test("pre-run export embeds a pasted dataset instead of emitting an unusable tex
 test("browser CLI export preserves the AER-R-only R-optimized profile",()=>{
   const config=cliConfigFromBrowser({studyName:"r profile",studyDesign:"independent",datasets:[],references,species:"Macaca mulatta",scope:"IGH",workers:2,callingProfile:"r_optimized",assignerStrategy:"aer_robust",minimumIdentity:0.6,strand:1,doubleD:{mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8},pipeline:{...DEFAULT_PIPELINE_PLAN,enabled:false}});
   assert.equal(config.annotation.callingProfile,"r_optimized");
+  assert.equal(config.annotation.assignerStrategy,"aer_robust");
+});
+
+test("browser CLI export preserves the AER-R-only Sensitive-D profile",()=>{
+  const config=cliConfigFromBrowser({studyName:"sensitive D",studyDesign:"independent",datasets:[],references,species:"Macaca mulatta",scope:"IGH",workers:2,callingProfile:"sensitive_d",assignerStrategy:"aer_robust",minimumIdentity:0.6,strand:1,doubleD:{mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8},pipeline:{...DEFAULT_PIPELINE_PLAN,enabled:false}});
+  assert.equal(config.annotation.callingProfile,"sensitive_d");
   assert.equal(config.annotation.assignerStrategy,"aer_robust");
 });

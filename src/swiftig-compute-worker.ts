@@ -79,8 +79,9 @@ function readError(exports: SwiftIgExports): string {
 }
 
 async function initialize(request: InitializeRequest) {
-  if (request.callingProfile === "r_optimized" && request.assignerStrategy !== "aer_robust") {
-    throw new Error("The r-optimized calling profile requires AER-R.");
+  if ((request.callingProfile === "r_optimized" || request.callingProfile === "sensitive_d") &&
+      request.assignerStrategy !== "aer_robust") {
+    throw new Error("The selected AER-R calling profile requires AER-R.");
   }
   const wasi = new WASI([], [], []);
   const instance = await WebAssembly.instantiate(request.module, {
@@ -97,7 +98,8 @@ async function initialize(request: InitializeRequest) {
   }
   if (exports.swig_set_calling_profile(
     request.callingProfile === "truth_optimized" ? 0 :
-      request.callingProfile === "r_optimized" ? 2 : 1,
+      request.callingProfile === "r_optimized" ? 2 :
+        request.callingProfile === "sensitive_d" ? 3 : 1,
   ) !== 0) {
     throw new Error("SwiftIG rejected the selected calling profile.");
   }

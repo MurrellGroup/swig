@@ -145,6 +145,9 @@ test("assignment is one progressive action page while independent result tools r
   const repertoire = fs.readFileSync(new URL("../src/repertoire-charts.tsx", import.meta.url), "utf8");
   const post = fs.readFileSync(new URL("../src/post-analysis.tsx", import.meta.url), "utf8");
   const css = fs.readFileSync(new URL("../src/globals.css", import.meta.url), "utf8");
+  const cli = fs.readFileSync(new URL("../cli-src/swig-cli.mjs", import.meta.url), "utf8");
+  const cliWorker = fs.readFileSync(new URL("../cli-src/swig-worker.mjs", import.meta.url), "utf8");
+  const adapter = fs.readFileSync(new URL("../wasm/src/web_adapter.cpp", import.meta.url), "utf8");
 
   assert.match(app, /analysis-layout single-action-layout/);
   assert.doesNotMatch(app, /AnalysisWorkspace|analysisWorkspace|Analysis setup sections/);
@@ -152,6 +155,21 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(app, /<b>Advanced options<\/b>/);
   assert.match(app, /value="r_optimized" disabled=\{assignerStrategy!=="aer_robust"\}/);
   assert.match(app, /R-optimized · AER-R only/);
+  assert.match(app, /value="sensitive_d" disabled=\{assignerStrategy!=="aer_robust"\}/);
+  assert.match(app, /Sensitive-D · AER-R only/);
+  assert.match(app, /same 4-nt signal floor/);
+  assert.match(app, /bare four-base exact seed scores only 8/);
+  assert.match(app, /V uses \+2\/−3\/−9\/−1/);
+  assert.match(app, /12-point D-presence cost relaxed to 10/);
+  assert.match(app, /at least two distinct exact template sequences/);
+  assert.match(cli, /agreement\?\-4:\-3/);
+  assert.match(cliWorker, /callingProfile==="sensitive_d"\?3/);
+  assert.match(cliWorker, /swig_set_v_tuning_options\(2,\-3,\-9,\-1,1\)/);
+  assert.match(cliWorker, /callingProfile==="sensitive_d"\?10:12/);
+  assert.match(cliWorker, /callingProfile==="sensitive_d"\?0:2/);
+  assert.match(cliWorker, /swig_set_aer_r_profile_decision_tuning_v2/);
+  assert.match(adapter, /export_name\("swig_set_aer_r_profile_decision_tuning"\)/);
+  assert.match(adapter, /export_name\("swig_set_aer_r_profile_decision_tuning_v2"\)/);
   assert.match(app, /Customize individual loci, V\/D\/J\/C sources, or allele inclusion/);
   assert.match(app, /aria-label="Sequence result panels"/);
   assert.match(app, /setSequenceWorkspace\("detail"\)/);
@@ -290,6 +308,9 @@ test("post-analysis skipping, richer lineage rows, CLI export, and lazy lineage 
   assert.match(lineageStudy,/Samples and read counts/);
   assert.match(standalone,/with \{ type: "file" \}/);
   assert.match(standalone,/runCli\(\{wasmPath,referencePackPath\}\)/);
+  assert.match(release,/Build release WebAssembly core/);
+  assert.match(release,/release-swiftig-wasm/);
+  assert.match(release,/build-swiftig-wasm\.sh/);
   for(const target of ["bun-linux-x64-baseline","bun-linux-arm64","bun-darwin-x64","bun-darwin-arm64","bun-windows-x64-baseline"]){assert.match(release,new RegExp(target));}
   assert.match(release,/Smoke-test the actual executable/);
 });
