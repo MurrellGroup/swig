@@ -77,6 +77,10 @@ async function makeRuntime() {
     return exports.swig_set_optimized_output(enabled ? 1 : 0);
   }
 
+  function setConstantPrefixIdentity(identity) {
+    return exports.swig_set_c_prefix_identity(Math.round(identity * 1000));
+  }
+
   function annotate(query, format, strand = 0) {
     const [pointer, size] = put(query);
     const count = exports.swig_annotate(pointer, size, format, 600, strand);
@@ -147,6 +151,7 @@ async function makeRuntime() {
     setAssignerStrategy,
     setOptimizedKernels,
     setOptimizedOutput,
+    setConstantPrefixIdentity,
   };
 }
 
@@ -849,6 +854,19 @@ test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, 
   assert.equal(fastq.rows[0].sequence_id, "fastq_case");
   assert.equal(fastq.rows[0].quality.length, heavy.sequence.length);
 
+  // A malformed identifier/quality value must never inject another AIRR
+  // delimiter. This keeps the optimized writer safe for ordinary cut -f
+  // pipelines even when input metadata contains control characters.
+  const unsafeQuality = `${"I".repeat(12)}\t${"I".repeat(heavy.sequence.length - 13)}`;
+  const delimiterSafe = runtime.annotate(
+    `@delimiter_safe\n${heavy.sequence}\n+\n${unsafeQuality}\n`,
+    2,
+  );
+  assert.equal(delimiterSafe.rows[0].quality[12], " ");
+  for (const line of delimiterSafe.tsv.split("\n").filter((value) => value.length > 0)) {
+    assert.equal(line.split("\t").length, delimiterSafe.headers.length);
+  }
+
   const airr = runtime.annotate(`sequence_id\tsequence\nairr_case\t${heavy.sequence}\n`, 3);
   assert.equal(airr.rows[0].sequence_id, "airr_case");
   assert.equal(airr.rows[0].j_call, customJName);
@@ -874,6 +892,95 @@ test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, 
   assert.ok(tcrResult.rows[0].j_call);
   assert.equal(tcrResult.rows[0].c_call, tcr.names.C);
   if (tcr.names.D) assert.ok(tcrResult.rows[0].d_call);
+});
+
+test("constant calling is post-J, stringent, primer-tolerant, and VDJ-invariant", async () => {
+  const human = pack.species.find((entry) => entry.name === "Homo sapiens");
+  assert.ok(human?.loci.IGH);
+  const heavy = referenceFor(human.loci.IGH);
+  assert.ok(heavy.references.C && heavy.names.C);
+  const cSequence = fastaRecords(heavy.references.C)[0].sequence;
+  const vdjSequence = heavy.sequence.slice(0, -cSequence.length);
+  const runtime = await makeRuntime();
+  runtime.setAssignerStrategy("aer_robust");
+  runtime.setCallingProfile("r_optimized");
+
+  const strongPrefix = cSequence.slice(0, 72);
+  const primerTail = "TTTTAGATCGGAAGAGCACACGTCTGAACTCCAGTCAC";
+  const strongQuery = `>strong_constant\n${vdjSequence}${strongPrefix}${primerTail}\n`;
+  runtime.initialize({ ...heavy.references, C: "" });
+  const withoutC = runtime.annotate(strongQuery, 1).rows[0];
+  runtime.initialize(heavy.references);
+  const withC = runtime.annotate(strongQuery, 1).rows[0];
+
+  assert.ok(withC.c_call, "a strong post-J constant tract was not called");
+  assert.ok(Number(withC.c_identity) >= 0.9);
+  assert.ok(Number(withC.c_support) <= 1e-5);
+  assert.ok(
+    Number(withC.c_sequence_end) < vdjSequence.length + strongPrefix.length + primerTail.length,
+    "a downstream primer/mismatch tail was forced into the C alignment",
+  );
+
+  // The optional prefix gate sees leading C mismatches that a local HSP can
+  // legitimately trim. It is off by default and cannot modify V/D/J.
+  const replacement = { A: "C", C: "G", G: "T", T: "A" };
+  const leadingMismatchPrefix = `${replacement[strongPrefix[0]]}${replacement[strongPrefix[1]]}${strongPrefix.slice(2)}`;
+  assert.equal(runtime.setConstantPrefixIdentity(0), 0);
+  const permissivePrefix = runtime.annotate(
+    `>covered_prefix_default\n${vdjSequence}${leadingMismatchPrefix}${primerTail}\n`, 1,
+  ).rows[0];
+  assert.ok(permissivePrefix.c_call, "the optional covered-prefix gate was unexpectedly enabled");
+  assert.ok(Number(permissivePrefix.c_prefix_identity) < 0.99);
+  assert.equal(runtime.setConstantPrefixIdentity(0.99), 0);
+  const strictPrefix = runtime.annotate(
+    `>covered_prefix_strict\n${vdjSequence}${leadingMismatchPrefix}${primerTail}\n`, 1,
+  ).rows[0];
+  assert.equal(strictPrefix.c_call, "", "the configured covered-prefix identity gate retained a mismatching C call");
+  for (const segment of ["v", "d", "j"]) {
+    for (const suffix of ["call", "score", "identity", "cigar", "sequence_start", "sequence_end"]) {
+      assert.equal(strictPrefix[`${segment}_${suffix}`],permissivePrefix[`${segment}_${suffix}`]);
+    }
+  }
+  assert.equal(runtime.setConstantPrefixIdentity(0), 0);
+
+  // The short-tract threshold scales with the number of locus-matched C
+  // hypotheses rather than pretending that one fixed length fits every DB.
+  runtime.initialize({ ...heavy.references, C: asFasta(human.loci.IGH.C) });
+  const minimumStrong = runtime.annotate(
+    `>minimum_strong_constant\n${vdjSequence}${cSequence.slice(0, 15)}${primerTail}\n`,
+    1,
+  ).rows[0];
+  assert.ok(minimumStrong.c_call, "an exact 15-nt 5'-anchored C match was rejected");
+  assert.equal(Number(minimumStrong.c_identity), 1);
+  assert.ok(Number(minimumStrong.c_support) <= 1e-4);
+  const belowAdaptiveEvidence = runtime.annotate(
+    `>below_adaptive_constant\n${vdjSequence}${cSequence.slice(0, 13)}\n`,
+    1,
+  ).rows[0];
+  assert.equal(
+    belowAdaptiveEvidence.c_call,
+    "",
+    `a human 13-nt C prefix passed the database-size-adjusted chance gate (${belowAdaptiveEvidence.c_sequence_alignment.length} aligned nt; support ${belowAdaptiveEvidence.c_support})`,
+  );
+  for (const segment of ["v", "d", "j"]) {
+    for (const suffix of [
+      "call", "score", "identity", "cigar", "sequence_start", "sequence_end",
+      "germline_start", "germline_end", "sequence_alignment", "germline_alignment",
+    ]) {
+      assert.equal(
+        withC[`${segment}_${suffix}`],
+        withoutC[`${segment}_${suffix}`],
+        `${segment.toUpperCase()} ${suffix} changed merely because a C database was supplied`,
+      );
+    }
+  }
+
+  const weakConstant = cSequence.slice(0, 72).split("").map((base, index) => (
+    index % 5 === 2 ? replacement[base] : base
+  )).join("");
+  const weak = runtime.annotate(`>weak_constant\n${vdjSequence}${weakConstant}\n`, 1).rows[0];
+  assert.equal(weak.c_call, "", "an 80%-identity post-J tract became a C call");
+  assert.equal(weak.c_support, "");
 });
 
 test("calibrated AIRR support uses the supplied segment database search space", async () => {

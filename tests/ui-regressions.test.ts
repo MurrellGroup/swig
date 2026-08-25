@@ -115,6 +115,16 @@ test("analysis-scale running states expose cancellation and every interface fami
   assert.match(index, /PHYLO_UCA_INFERENCE\.md/);
 });
 
+test("personalized germline inference is isolated beside missing-V diagnostics and selects lowest current V-SHM",()=>{
+  const post=fs.readFileSync(new URL("../src/post-analysis.tsx",import.meta.url),"utf8");
+  const engine=fs.readFileSync(new URL("../src/personalized-germline.ts",import.meta.url),"utf8");
+  assert.match(post,/Infer expressed V allele set/);
+  assert.match(post,/Lowest current V-SHM/);
+  assert.match(post,/no circularity correction/);
+  assert.match(engine,/observation\.shmRate < existing\.shmRate/);
+  assert.doesNotMatch(engine,/random|softmax|gumbel/i);
+});
+
 test("assignment progress uses stable geometry and live scheduler telemetry", () => {
   const app = fs.readFileSync(new URL("../src/swig-app.tsx", import.meta.url), "utf8");
   const scheduler = fs.readFileSync(new URL("../src/swiftig-worker.ts", import.meta.url), "utf8");
@@ -194,6 +204,9 @@ test("assignment is one progressive action page while independent result tools r
   assert.doesNotMatch(app, /speciesDraft/);
   assert.match(app, /setPendingDatabaseId\(nextId\)/);
   assert.match(app, /aria-busy=\{busy\} value=\{value\} onChange=/);
+  assert.match(app, /Covered C-prefix identity gate/);
+  assert.match(app, /A failed C gate clears only C fields; V\/D\/J calls and boundaries are retained/);
+  assert.match(app, /<option value="gzip">Gzip \(\.gz\)<\/option>/);
 
   assert.match(repertoire, /aria-label="Repertoire panels"/);
   assert.match(repertoire, /panel==="usage"/);
@@ -216,6 +229,7 @@ test("assignment is one progressive action page while independent result tools r
   assert.match(post, /<span>Allele pooling<small>/);
   assert.match(post, /Resolve ambiguous germline calls by pooling repertoire evidence/);
   assert.match(post, /<AlleleRefinementPanel references=\{references\} options=/);
+  assert.match(post, /bounded native compression stream/);
   assert.match(post, /\{sidebarTools\}/);
   assert.match(fs.readFileSync(new URL("../src/allele-refinement/panel.tsx", import.meta.url), "utf8"), /Advanced evidence-kernel and model settings/);
   assert.match(css, /\.post-context-main > \.post-module\.is-collapsed \{ display: none !important; \}/);

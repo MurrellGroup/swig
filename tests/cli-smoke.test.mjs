@@ -31,7 +31,7 @@ test("the CLI pipeline runs annotation through lazy lineage-study export",async(
       inputs:[{path:join(root,"tests/fixtures/cli-smoke.fasta"),sampleId:"sample-A",subjectId:"donor-A"}],
       annotation:{workers:1},
       pipeline:{lineage:{productiveOnly:false}},
-      output:{directory:output,prefix:"smoke"},
+      output:{directory:output,prefix:"smoke",airrCompression:"gzip"},
     }));
     const result=runCli(root,configPath);
     assert.equal(result.status,0,result.stderr);
@@ -40,8 +40,15 @@ test("the CLI pipeline runs annotation through lazy lineage-study export",async(
     assert.equal(summary.annotatedRecords,2);
     assert.equal(summary.retainedRecords,1);
     assert.equal(summary.lineages,1);
+    assert.deepEqual(summary.outputs,{annotated:"smoke.annotated.airr.tsv.gz",processed:"smoke.processed.airr.tsv.gz",airrCompression:"gzip"});
+    for(const name of [summary.outputs.annotated,summary.outputs.processed]){
+      const compressed=await readFile(join(output,name));
+      assert.deepEqual([...compressed.subarray(0,2)],[0x1f,0x8b]);
+      assert.match(gunzipSync(compressed).toString("utf8"),/^sequence_id\t/);
+    }
     const resolved=JSON.parse(await readFile(join(output,"smoke.resolved-config.json"),"utf8"));
     assert.equal(resolved.annotation.assignerStrategy,"riat_mp");
+    assert.equal(resolved.output.airrCompression,"gzip");
     const airr=await readFile(join(output,"smoke.lineages.airr.tsv"));
     const headers=airr.toString("utf8").split("\n",1)[0].split("\t");
     for(const field of ["v_support","d_support","j_support","c_support"])assert.ok(headers.includes(field));
@@ -218,10 +225,12 @@ test("pipeline CLI requires an explicit output directory and command-line worker
 
     const output=join(temporary,"out"),configPath=join(temporary,"config.json");
     await writeFile(configPath,JSON.stringify({inputs:[{path:input}],annotation:{workers:1},pipeline:{collapse:{enabled:false},lineage:{enabled:false},shm:{enabled:false}},output:{directory:output,prefix:"workers"}}));
-    const result=runCli(root,configPath,["--workers","2"]);
+    const result=runCli(root,configPath,["--workers","2","--airr-compression","gzip"]);
     assert.equal(result.status,0,result.stderr);
     const resolved=JSON.parse(await readFile(join(output,"workers.resolved-config.json"),"utf8"));
     assert.equal(resolved.annotation.workers,2);
+    assert.equal(resolved.output.airrCompression,"gzip");
+    assert.deepEqual([...(await readFile(join(output,"workers.processed.airr.tsv.gz"))).subarray(0,2)],[0x1f,0x8b]);
   }finally{await rm(temporary,{recursive:true,force:true});}
 });
 
@@ -263,6 +272,40 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
     assert.ok(plainRow.d_support&&Number.isFinite(Number(plainRow.d_support))&&Number(plainRow.d_support)>=0);
     assert.ok(plainRow.j_support&&Number.isFinite(Number(plainRow.j_support))&&Number(plainRow.j_support)>=0);
     assert.equal(plainRow.c_support,"");
+
+    const gzipPath=join(temporary,"plain.airr.tsv.gz");
+    const gzipResult=runRawCli(root,[...common,"-out",gzipPath]);
+    assert.equal(gzipResult.status,0,gzipResult.stderr);
+    const compressed=await readFile(gzipPath);
+    assert.deepEqual([...compressed.subarray(0,2)],[0x1f,0x8b]);
+    const gzipText=gunzipSync(compressed).toString("utf8");
+    const gzipLines=gzipText.split("\n").filter((line)=>line.length>0);
+    const gzipHeaders=gzipLines[0].split("\t");
+    assert.equal(gzipHeaders[12],"j_call");
+    assert.ok(gzipLines.slice(1).every((line)=>line.split("\t").length===gzipHeaders.length));
+    assert.equal(gzipLines[1].split("\t")[12],j[0]);
+
+    const c=human.loci.IGH.C[0];
+    const cPath=join(temporary,"C.fasta"),cQueryPath=join(temporary,"query-with-c.fasta");
+    const replace={A:"C",C:"G",G:"T",T:"A"};
+    const cPrefix=c[1].slice(0,72);
+    const mismatchingPrefix=`${replace[cPrefix[0]]}${replace[cPrefix[1]]}${cPrefix.slice(2)}`;
+    await writeFile(cPath,`>${c[0]}\n${c[1]}\n`);
+    await writeFile(cQueryPath,`>read-c\n${v[1]}AACCGG${d[1]}TTG${j[1]}${mismatchingPrefix}\n`);
+    const cCommon=[...common];
+    cCommon[cCommon.indexOf("-query")+1]=cQueryPath;
+    cCommon.splice(cCommon.indexOf("-outfmt"),0,"-c_region_db",cPath);
+    const cPermissivePath=join(temporary,"c-default.airr.tsv");
+    const cPermissive=runRawCli(root,[...cCommon,"-out",cPermissivePath]);
+    assert.equal(cPermissive.status,0,cPermissive.stderr);
+    const cPermissiveRow=await readRow(cPermissivePath);
+    assert.ok(cPermissiveRow.c_call);assert.ok(Number(cPermissiveRow.c_prefix_identity)<.99);
+    const cStrictPath=join(temporary,"c-strict.airr.tsv");
+    const cStrict=runRawCli(root,[...cCommon,"--minimum-c-prefix-identity","0.99","-out",cStrictPath]);
+    assert.equal(cStrict.status,0,cStrict.stderr);
+    const cStrictRow=await readRow(cStrictPath);
+    assert.equal(cStrictRow.c_call,"");
+    for(const field of ["v_call","d_call","j_call","v_sequence_start","v_sequence_end","j_sequence_start","j_sequence_end"])assert.equal(cStrictRow[field],cPermissiveRow[field]);
 
     const optimizedPath=join(temporary,"r-optimized.airr.tsv");
     const optimized=runRawCli(root,[...common,"--assigner","aer_robust","--calling-profile","r_optimized","-out",optimizedPath]);

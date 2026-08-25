@@ -39,7 +39,10 @@ import {
   type ChmmSegment,
 } from "./chmmairra-runtime";
 import { alignmentExtension, alignmentText, tableExtension, tableHeader, tableRow, treeNexus, type AlignmentExportFormat, type TableExportFormat } from "./export-formats";
+import { compressedExtension, compressedMime, compressedName, outputWriter, type OutputCompression } from "./gzip-output";
 import { MissingAlleleAccumulator, DEFAULT_MISSING_ALLELE_OPTIONS, type MissingAlleleDashboard, type MissingAlleleOptions } from "./germline-evidence";
+import { DEFAULT_PERSONALIZED_GERMLINE_OPTIONS, type PersonalizedGermlineDashboard, type PersonalizedGermlineOptions } from "./personalized-germline";
+import { PersonalizedGermlineRuntime } from "./personalized-germline-runtime";
 import { GERMLINE_OUTGROUP, alignedSequenceFrameOffset, inferLineageGermline, isProductiveLineageRow, lineageInputFasta, type LineageGermlineMethod } from "./lineage-alignment";
 import {
   buildLineageGermlineSketchIndex,
@@ -84,7 +87,7 @@ import { inferQueryAssignments, type InferredQueryAssignment } from "./query-inf
 import type { CompiledReferences, ScopeKey } from "./reference-pack";
 import type { AirrDetailRow, AirrIndexRecord, AirrResultStore, FacetValue, ResultFacets } from "./result-store";
 import { ColoredSequence, sequenceColor } from "./sequence-colors";
-import { MissingAlleleResultsPanel, ShmResultsPanel } from "./post-analysis-extensions";
+import { MissingAlleleResultsPanel, PersonalizedGermlineResultsPanel, ShmResultsPanel } from "./post-analysis-extensions";
 import { DEFAULT_REPERTOIRE_SELECTION, selectRepertoire, validateRepertoireSelection, type RepertoireSelectionOptions, type RepertoireSelectionResult } from "./repertoire-selection";
 import { ShmAccumulator, type ShmDashboard, type ShmMetricKey } from "./shm-analysis";
 import { packSessionVector, unpackSessionVector, type PostAnalysisSessionSnapshot } from "./session-state";
@@ -131,7 +134,7 @@ export interface PostAnalysisSessionHandle {
 }
 
 interface SaveFileHandle {
-  createWritable: () => Promise<{ write: (value: string | Blob | Uint8Array) => Promise<void>; close: () => Promise<void>; abort?: () => Promise<void> }>;
+  createWritable: () => Promise<{ write: (value: string | Blob | Uint8Array) => Promise<void>; close: () => Promise<void>; abort?: (reason?: unknown) => Promise<void> }>;
 }
 
 interface ChartDatum {
@@ -267,26 +270,31 @@ async function saveStream(
   description: string,
   extension: string,
   produce: (writer: { write: (value: string | Blob | Uint8Array) => Promise<void> }) => Promise<void>,
+  compression: OutputCompression = "none",
 ) {
+  const outputName=compressedName(name,compression);
+  const outputExtension=compressedExtension(extension,compression);
   const picker = (window as Window & { showSaveFilePicker?: (options: unknown) => Promise<SaveFileHandle> }).showSaveFilePicker;
   if (picker) {
     const handle = await picker.call(window, {
-      suggestedName: name,
-      types: [{ description, accept: { "text/plain": [extension] } }],
+      suggestedName: outputName,
+      types: [{ description:compression==="gzip"?`Gzip-compressed ${description}`:description, accept: { [compressedMime("text/plain",compression)]: [outputExtension] } }],
     });
-    const writable = await handle.createWritable();
+    const writable = outputWriter(await handle.createWritable(),compression);
     try {
       await produce(writable);
       await writable.close();
     } catch (error) {
-      await writable.abort?.();
+      await writable.abort(error);
       throw error;
     }
     return;
   }
   const parts: BlobPart[] = [];
-  await produce({ write: async (value) => { parts.push(value instanceof Uint8Array ? value.slice().buffer : value); } });
-  downloadBlob(new Blob(parts, { type: "text/plain;charset=utf-8" }), name);
+  const writable=outputWriter({write:async(value)=>{parts.push(value instanceof Uint8Array?value.slice().buffer:value);}},compression);
+  try{await produce(writable);await writable.close();}
+  catch(error){await writable.abort(error);throw error;}
+  downloadBlob(new Blob(parts, { type: compressedMime("text/plain;charset=utf-8",compression) }), outputName);
 }
 
 function downloadText(value: string, name: string, type = "text/plain;charset=utf-8") {
@@ -434,6 +442,7 @@ function isAbortError(error: unknown): boolean {
 export function PostAnalysisWorkbench({ store, references, scope, loci, resultFacets, inputName, workers, callingProfile, assignerStrategy, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", doubleDCount = 0, autoPipeline, sidebarTools, onInspect, onSessionChange, sessionHandleRef, initialSession, directLineage = false }: Props) {
   const runtime = useMemo(() => new PostAnalysisRuntime(store, workers), [store, workers]);
   const alleleRuntime = useMemo(() => new AlleleRefinementRuntime(), [store]);
+  const personalizedGermlineRuntime = useMemo(() => new PersonalizedGermlineRuntime(), [store]);
   const postLockAbortRef = useRef<AbortController | null>(null);
   const cancellationRecoveryRef = useRef<Promise<void> | null>(null);
   const pipelineActiveRef = useRef(false);
@@ -442,7 +451,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     postLockAbortRef.current?.abort();
     runtime.terminate();
     alleleRuntime.terminate();
-  }, [alleleRuntime, runtime]);
+    personalizedGermlineRuntime.terminate();
+  }, [alleleRuntime, personalizedGermlineRuntime, runtime]);
   const [busy, setBusy] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const [postLockState, setPostLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
@@ -500,6 +510,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     isotypes:resultFacets.isotypes,
   }),[datasets,loci,resultFacets.cCalls,resultFacets.dCalls,resultFacets.isotypes,resultFacets.jCalls,resultFacets.vCalls]);
   const [exportFormat, setExportFormat] = useState<TableExportFormat>("tsv");
+  const [exportCompression, setExportCompression] = useState<OutputCompression>("none");
   const [alignmentExportFormat, setAlignmentExportFormat] = useState<AlignmentExportFormat>("fasta");
 
   const [shmMetric, setShmMetric] = useState<ShmMetricKey>("vNtRate");
@@ -510,6 +521,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [missingAlleleOptions, setMissingAlleleOptions] = useState<MissingAlleleOptions>({ ...DEFAULT_MISSING_ALLELE_OPTIONS });
   const [missingAlleles, setMissingAlleles] = useState<MissingAlleleDashboard | null>(null);
   const [selectedMissingAlleleIds, setSelectedMissingAlleleIds] = useState<Set<string>>(new Set());
+  const [personalizedGermlineOptions, setPersonalizedGermlineOptions] = useState<PersonalizedGermlineOptions>({ ...DEFAULT_PERSONALIZED_GERMLINE_OPTIONS });
+  const [personalizedGermline, setPersonalizedGermline] = useState<PersonalizedGermlineDashboard | null>(null);
 
   const [identity, setIdentity] = useState(0.85);
   const [lineageScope, setLineageScope] = useState<DatasetScope>(defaultLineageScope);
@@ -1021,7 +1034,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         editedAlignments:[...editedAlignments.values()].map((entry)=>({...entry,lineageIds:[...entry.lineageIds]})),
         lineageMerges:lineageMerges.map((merge)=>({...merge,originalLineageIds:[...merge.originalLineageIds]})),
         tree:treeRun?{rawNewick:treeRun.newick,rootedNewick:treeRun.rootedNewick,stableNewick:treeRun.stableNewick,source:treeRun.source,lineageIds:[...selectedLineageIds],run:{...treeRun}}:undefined,phyloUca:phyloUcaState??undefined,
-        shm:shmDashboard?{metric:shmMetric,dashboard:shmDashboard,sampleOrder:[...shmSampleOrder]}:undefined,missingAlleles:missingAlleles?{options:missingAlleleOptions,dashboard:missingAlleles,selectedCandidateIds:[...selectedMissingAlleleIds]}:undefined} satisfies PostAnalysisSessionSnapshot;
+        shm:shmDashboard?{metric:shmMetric,dashboard:shmDashboard,sampleOrder:[...shmSampleOrder]}:undefined,missingAlleles:missingAlleles?{options:missingAlleleOptions,dashboard:missingAlleles,selectedCandidateIds:[...selectedMissingAlleleIds]}:undefined,personalizedGermline:personalizedGermline?{options:personalizedGermlineOptions,dashboard:personalizedGermline}:undefined} satisfies PostAnalysisSessionSnapshot;
     }};
     sessionHandleRef.current=handle;
     return()=>{if(sessionHandleRef.current===handle)sessionHandleRef.current=null;};
@@ -1031,11 +1044,11 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
 
   useEffect(()=>{
     if(!sessionChangeReadyRef.current){sessionChangeReadyRef.current=true;return;}
-    const reason=treeRun?"phylogeny_changed":editedAlignments.size?"edited_alignment_changed":alignment?"lineage_alignment_changed":missingAlleles?"missing_allele_screen_changed":shmDashboard?"shm_changed":lineages?"lineages_changed":chmm?"chimera_state_changed":dedup?"collapse_state_changed":selectionApplied||selectionPreview?"repertoire_selection_changed":"post_analysis_state_changed";
+    const reason=treeRun?"phylogeny_changed":editedAlignments.size?"edited_alignment_changed":alignment?"lineage_alignment_changed":personalizedGermline?"personalized_germline_changed":missingAlleles?"missing_allele_screen_changed":shmDashboard?"shm_changed":lineages?"lineages_changed":chmm?"chimera_state_changed":dedup?"collapse_state_changed":selectionApplied||selectionPreview?"repertoire_selection_changed":"post_analysis_state_changed";
     sessionChangeCallbackRef.current?.(reason);
   },[
     alignment,alignmentFrameOffset,alignmentProductiveOnly,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior,alleleOptions,alleleRefinement,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
-    missingAlleleOptions,missingAlleles,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
+    missingAlleleOptions,missingAlleles,personalizedGermlineOptions,personalizedGermline,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
     queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,skippedModules,
     selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,phyloUcaState,workingStages,
   ]);
@@ -1153,7 +1166,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         if(initialSession.alignment&&/(corrected|manual|alivibe|edited)/i.test(initialSession.alignment.source)){const lineageIds=initialSession.alignment.selectedLineageId?[initialSession.alignment.selectedLineageId]:[];const productiveOnly=Boolean(initialSession.alignmentProductiveOnly);const key=lineageAlignmentKey(lineageIds,productiveOnly);if(key&&!restoredEdited.has(key))restoredEdited.set(key,{key,lineageIds,productiveOnly,fasta:initialSession.alignment.fasta,source:initialSession.alignment.source,frameOffset:validAlignmentFrameOffset(initialSession.alignment.frameOffset),savedAt:new Date().toISOString()});}
         setEditedAlignments(restoredEdited);
         const chimera=initialSession.chimera;if(chimera?.dashboard&&chimera.probabilities&&chimera.dfr&&chimera.msa){const dashboard={...chimera.dashboard,probabilities:unpackSessionVector(chimera.probabilities) as Float32Array,dfr:unpackSessionVector(chimera.dfr) as Uint16Array} as unknown as ChmmDashboard;const rawOptions=chimera.options;const options=rawOptions as unknown as ChmmRunOptions;const inputMask=chimera.retainedMask?unpackSessionVector(chimera.retainedMask) as Uint8Array:null;setChmm(dashboard);setChmmRun({msa:chimera.msa,options,inputMask});setPreparedMsa(chimera.msa);setChmmFilterThreshold(chimera.filterThreshold);setChmmSegment(options.segment);if(rawOptions.chmmSource==="selected"||rawOptions.chmmSource==="upload")setChmmSource(rawOptions.chmmSource);if(typeof rawOptions.uploadedMsaName==="string")setUploadedMsaName(rawOptions.uploadedMsaName);if(rawOptions.chmmSource==="upload")setUploadedMsa(chimera.msa);}
-        if(initialSession.shm){setShmMetric(initialSession.shm.metric);setShmDashboard(initialSession.shm.dashboard);if(initialSession.shm.sampleOrder?.length)setShmSampleOrder([...initialSession.shm.sampleOrder]);}if(initialSession.missingAlleles){setMissingAlleleOptions({...DEFAULT_MISSING_ALLELE_OPTIONS,...initialSession.missingAlleles.options,unit:"lineage"});setMissingAlleles(initialSession.missingAlleles.dashboard?.validationPasses===2?initialSession.missingAlleles.dashboard:null);setSelectedMissingAlleleIds(new Set(initialSession.missingAlleles.selectedCandidateIds??[]));}
+        if(initialSession.shm){setShmMetric(initialSession.shm.metric);setShmDashboard(initialSession.shm.dashboard);if(initialSession.shm.sampleOrder?.length)setShmSampleOrder([...initialSession.shm.sampleOrder]);}if(initialSession.missingAlleles){setMissingAlleleOptions({...DEFAULT_MISSING_ALLELE_OPTIONS,...initialSession.missingAlleles.options,unit:"lineage"});setMissingAlleles(initialSession.missingAlleles.dashboard?.validationPasses===2?initialSession.missingAlleles.dashboard:null);setSelectedMissingAlleleIds(new Set(initialSession.missingAlleles.selectedCandidateIds??[]));}if(initialSession.personalizedGermline){setPersonalizedGermlineOptions({...DEFAULT_PERSONALIZED_GERMLINE_OPTIONS,...initialSession.personalizedGermline.options});setPersonalizedGermline(initialSession.personalizedGermline.dashboard?.version===1?initialSession.personalizedGermline.dashboard:null);}
         const q=initialSession.query??{};if(typeof q.queryText==="string")setQueryText(q.queryText);if(q.queryResultMode==="lineages"||q.queryResultMode==="sequences")setQueryResultMode(q.queryResultMode);
         if(Array.isArray(q.queryLineageHits))setQueryLineageHits(q.queryLineageHits as QueryLineageHit[]);
         const restoredHits=Array.isArray(q.queryHits)?q.queryHits as QueryHit[]:[];setQueryHits(restoredHits);const restoredExpansion=q.expanded as NonNullable<typeof expanded>|undefined;if(restoredExpansion)setExpanded(restoredExpansion);
@@ -1194,6 +1207,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     const recovery = (async () => {
       controller.abort();
       alleleRuntime.cancel();
+      personalizedGermlineRuntime.cancel();
       if (recoverRuntime) {
         await runtime.cancelAndRestore((processed, total) => setProgress({ processed, total, unit: "AIRR records restored" }), true);
       } else {
@@ -1357,6 +1371,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setShmDashboard(null);
     setMissingAlleles(null);
     setSelectedMissingAlleleIds(new Set());
+    setPersonalizedGermline(null);
   }
 
   function clearDownstreamStageState() {
@@ -1507,7 +1522,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       await runInActiveLock(async (signal) => {
         const mask = await runtime.activeMask();
         const extension = tableExtension(exportFormat);
-        await saveStream(`${baseName(inputName)}.repertoire-allele-posteriors${extension}`, "Sparse per-record repertoire allele posterior", extension, (writer) => writeRefinementSidecar(store, alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined, signal));
+        await saveStream(`${baseName(inputName)}.repertoire-allele-posteriors${extension}`, "Sparse per-record repertoire allele posterior", extension, (writer) => writeRefinementSidecar(store, alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined, signal),exportCompression);
       });
     } catch (operationError) { if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError)); }
     finally { if (!cancellationRecoveryRef.current) setBusy(""); }
@@ -1521,7 +1536,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       await runInActiveLock(async (signal) => {
         const mask = await runtime.activeMask();
         const extension = tableExtension(exportFormat);
-        await saveStream(`${baseName(inputName)}.repertoire-refined.airr${extension}`, "AIRR table with policy-selected repertoire allele calls", extension, (writer) => writeRefinedAirr(store, alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined, signal));
+        await saveStream(`${baseName(inputName)}.repertoire-refined.airr${extension}`, "AIRR table with policy-selected repertoire allele calls", extension, (writer) => writeRefinedAirr(store, alleleRefinement, alleleReassignmentPolicy, alleleApplyMinimumPosterior, exportFormat, writer.write, mask ?? undefined, signal),exportCompression);
       });
     } catch (operationError) { if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError)); }
     finally { if (!cancellationRecoveryRef.current) setBusy(""); }
@@ -1529,7 +1544,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
 
   async function downloadActivePopulation() {
     setBusy("Writing the current selected population");setError("");
-    try { await runInActiveLock(async(signal)=>{const mask=await runtime.activeMask();const extension=tableExtension(exportFormat);await saveStream(`${baseName(inputName)}.selected.airr${extension}`,"Selected AIRR population",extension,(writer)=>store.writeAirrFormat(exportFormat,writer.write,mask??undefined,signal));}); }
+    try { await runInActiveLock(async(signal)=>{const mask=await runtime.activeMask();const extension=tableExtension(exportFormat);await saveStream(`${baseName(inputName)}.selected.airr${extension}`,"Selected AIRR population",extension,(writer)=>store.writeAirrFormat(exportFormat,writer.write,mask??undefined,signal),exportCompression);}); }
     catch(operationError){if(!isAbortError(operationError))setError(operationError instanceof Error?operationError.message:String(operationError));}finally{if(!cancellationRecoveryRef.current)setBusy("");}
   }
 
@@ -1559,6 +1574,23 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     if(result){setMissingAlleles(result);setSelectedMissingAlleleIds(new Set());}
   }
 
+  async function runPersonalizedGermlineAnalysis() {
+    if(!lineages){setError("Personalized germline inference requires lineage assignments on the current selected population. Assign lineages first so every clone contributes exactly one observation.");return;}
+    const result=await operation("Inferring a lineage-weighted personalized V germline set",async(signal)=>{
+      const mask=await runtime.activeMask();
+      const assignments=await analysisLineageAssignments();
+      await personalizedGermlineRuntime.begin(references.V,personalizedGermlineOptions);
+      const fields=["sequence_id","subject_id","locus","v_call","v_germline_start","v_sequence_alignment","v_germline_alignment"];
+      setBusy("Personalized V germline · selecting the lowest-current-SHM member of every lineage");
+      await store.scanAirrRows(fields,async(rows)=>{
+        for(const row of rows)overlayRefinedCalls(row);
+        await personalizedGermlineRuntime.ingest(rows,assignments);
+      },{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total,unit:"AIRR records screened"}),signal});
+      return personalizedGermlineRuntime.finish((next)=>{setBusy(next.phase);setProgress({processed:next.processed,total:next.total,unit:"V-gene fits"});});
+    });
+    if(result)setPersonalizedGermline(result);
+  }
+
   async function downloadDeduplicated() {
     setBusy("Writing deduplicated AIRR table");
     setError("");
@@ -1567,7 +1599,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         const counts = await runtime.dedupCounts();
         const suffix = dedup?.mode === "exact" ? "deduplicated" : "denoised";
         const extension = tableExtension(exportFormat);
-        await saveStream(`${baseName(inputName)}.${suffix}.airr${extension}`, "Collapsed AIRR rearrangement table with multiplicity", extension, async (writer) => store.writeDeduplicatedAirrFormat(counts, exportFormat, writer.write, signal));
+        await saveStream(`${baseName(inputName)}.${suffix}.airr${extension}`, "Collapsed AIRR rearrangement table with multiplicity", extension, async (writer) => store.writeDeduplicatedAirrFormat(counts, exportFormat, writer.write, signal),exportCompression);
       });
     } catch (operationError) {
       if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
@@ -1615,7 +1647,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       await runInActiveLock(async (signal) => {
         const assignments = await runtime.lineageAssignments();
         const extension = tableExtension(exportFormat);
-        await saveStream(`${baseName(inputName)}.lineages.airr${extension}`, "AIRR rearrangement table with original and merged lineage identifiers", extension, async (writer) => store.writeLineageAirrFormat(assignments, exportFormat, writer.write, mergedIdByOriginal, signal));
+        await saveStream(`${baseName(inputName)}.lineages.airr${extension}`, "AIRR rearrangement table with original and merged lineage identifiers", extension, async (writer) => store.writeLineageAirrFormat(assignments, exportFormat, writer.write, mergedIdByOriginal, signal),exportCompression);
       });
     } catch (operationError) {
       if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
@@ -1852,6 +1884,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setLineageMerges((current) => [...current.filter((entry) => !touching.some((touch) => touch.id === entry.id)), merged]);
     setShmDashboard(null);
     setMissingAlleles(null);
+    setPersonalizedGermline(null);
     return merged;
   }
 
@@ -1859,6 +1892,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setLineageMerges((current) => current.filter((entry) => entry.id !== id));
     setShmDashboard(null);
     setMissingAlleles(null);
+    setPersonalizedGermline(null);
   }
 
   async function viewSelectedNeighbourGroup(merge = false) {
@@ -2328,7 +2362,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     if (!chmm) return;
     setBusy("Writing CHMMAIRRa result table");
     try {
-      await runInActiveLock(async(signal)=>{const extension=tableExtension(exportFormat);await saveStream(`${baseName(inputName)}.chmmairra-${chmm.segment.toLowerCase()}${extension}`, "CHMMAIRRa result table", extension, (writer) => writeChmmairra(store, chmm, exportFormat, writer, signal));});
+      await runInActiveLock(async(signal)=>{const extension=tableExtension(exportFormat);await saveStream(`${baseName(inputName)}.chmmairra-${chmm.segment.toLowerCase()}${extension}`, "CHMMAIRRa result table", extension, (writer) => writeChmmairra(store, chmm, exportFormat, writer, signal),exportCompression);});
     } catch (operationError) {
       if (!isAbortError(operationError)) setError(operationError instanceof Error ? operationError.message : String(operationError));
     } finally {
@@ -2563,7 +2597,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       <div className="working-set-flow"><article className="source"><span>Assigned input</span><strong>{store.count.toLocaleString()}</strong><small>records</small></article>{workingStages.map((stage,index) => <article key={`${stage.id}-${index}`} className={stage.id}><span>{stage.label}</span><strong>{stage.retained.toLocaleString()}</strong><small>retained · {stage.discarded.toLocaleString()} excluded at this step</small><p>{stage.detail}</p></article>)}{!workingStages.length && <article className="pass-through"><span>No applied filter</span><strong>All records</strong><small>pass downstream</small></article>}<article className="consumers"><span>Current consumers</span><strong>lineages · SHM · allele hints · query</strong><small>alignment/tree follow the selected lineage</small></article></div>
     </section>
 
-    <section className="post-export-center"><div><span className="section-kicker">Export center</span><h3>Machine-readable analysis outputs</h3><p>The selected table is streamed from browser storage. CSV and JSONL do not require building the complete output in memory.</p></div><label><span>Tabular format</span><select value={exportFormat} onChange={(event)=>setExportFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button type="button" disabled={Boolean(busy)} onClick={()=>void downloadActivePopulation()}>Download current population</button></section>
+    <section className="post-export-center"><div><span className="section-kicker">Export center</span><h3>Machine-readable analysis outputs</h3><p>The selected table is streamed from browser storage. Gzip uses a bounded native compression stream when the browser supports it.</p></div><label><span>Tabular format</span><select value={exportFormat} onChange={(event)=>setExportFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><label><span>Compression</span><select value={exportCompression} onChange={(event)=>setExportCompression(event.target.value as OutputCompression)}><option value="none">None</option><option value="gzip">Gzip (.gz)</option></select></label><button type="button" disabled={Boolean(busy)} onClick={()=>void downloadActivePopulation()}>Download current population</button></section>
     </section>}
 
     {busy && <div className="post-progress" role="status"><div><span>{busy}</span><span className="post-progress-actions"><strong>{progress.total ? `${Math.min(100, progress.processed / progress.total * 100).toFixed(1)}%` : "working"}</strong><button type="button" disabled={cancelling || !postLockAbortRef.current} onClick={()=>void cancelActiveOperation()}>{cancelling ? "Restoring…" : "Cancel"}</button></span></div><progress max={Math.max(1, progress.total)} value={progress.processed} /><small>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()} {progress.unit ?? "AIRR records indexed or scanned"} · {postLockState === "held" ? "background-run lock held" : postLockState === "waiting" ? "waiting for another Swig tab" : "Web Locks unavailable"}</small></div>}
@@ -2777,7 +2811,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     </section>
 
     <section className={moduleClass("diagnostics","post-module downstream-viz-module")}>
-      <header><div className="module-number amber">06</div><div><span className="section-kicker">Post-lineage analysis</span><h3>Somatic hypermutation and reference-set evidence</h3><p>These are separate downstream analyses of the current population. SHM summarizes mutation distributions; the missing-V screen tests linked nucleotide haplotypes across independent lineages.</p></div><a href="./methods/09_SHM_AND_GERMLINE_DIAGNOSTICS.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("diagnostics")}<button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("diagnostics")} onClick={()=>toggleModule("diagnostics")}>{openModules.has("diagnostics")?"Collapse ↑":"Expand ↓"}</button></header>
+      <header><div className="module-number amber">06</div><div><span className="section-kicker">Post-lineage analysis</span><h3>Somatic hypermutation and reference-set evidence</h3><p>These are separate downstream analyses of the current population. SHM summarizes mutation distributions; the missing-V screen tests linked haplotypes; personalized inference fits an expressed V set with one observation per lineage.</p></div><a href="./methods/09_SHM_AND_GERMLINE_DIAGNOSTICS.md" target="_blank" rel="noreferrer">Method details ↗</a>{skipStepButton("diagnostics")}<button className="module-collapse-toggle" type="button" aria-expanded={openModules.has("diagnostics")} onClick={()=>toggleModule("diagnostics")}>{openModules.has("diagnostics")?"Collapse ↑":"Expand ↓"}</button></header>
       <div className="diagnostic-grid">
         <article><span className="section-kicker">SHM</span><h4>Mutation distributions</h4><div className="control-grid two"><label><span>Measure</span><select value={shmMetric} onChange={(event)=>{setShmMetric(event.target.value as ShmMetricKey);setShmDashboard(null);}}><option value="vNtRate">V nucleotide rate</option><option value="vNtMutations">V nucleotide count</option><option value="vAaRate">V amino-acid replacement rate</option><option value="vAaReplacements">V amino-acid replacement count</option><option value="synonymous">Synonymous codon count</option><option value="cdrNtRate">CDR1/2 nucleotide rate</option><option value="frameworkNtRate">Framework nucleotide rate</option></select></label><label><span>Stratify by</span><select value={shmStratum} onChange={(event)=>{setShmStratum(event.target.value as typeof shmStratum);setShmDashboard(null);}}><option value="all">No additional stratum</option><option value="sample_id">Sample</option><option value="subject_id">Donor / subject</option><option value="swig_cohort">Cohort</option><option value="swig_timepoint">Timepoint</option><option value="swig_compartment">Compartment / tissue</option><option value="locus">Locus</option><option value="v_call">V call</option><option value="isotype">Isotype</option></select></label></div><details className="post-advanced"><summary>Advanced plot sampling</summary><div className="control-grid"><label><span>Plot sample / lineage</span><CommitNumberInput min="50" max="10000" step="50" value={shmSampleCap} onCommit={(value)=>{setShmSampleCap(value);setShmDashboard(null);}} /></label></div></details><button className={guidedClass("run-shm")} type="button" disabled={Boolean(busy)} onClick={()=>void runShmAnalysis()}>Calculate SHM on {workingCount.toLocaleString()} records</button><p>Plot memory is bounded per lineage; scalar counts still cover every selected row.</p></article>
         <article><span className="section-kicker">Reference warning</span><h4>Possible missing V alleles</h4>
@@ -2801,9 +2835,25 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           <div className="algorithm-note"><strong>Two-pass linked-haplotype rule</strong><span>Pass 1 uses one lowest-SHM representative per lineage to propose nucleotide sets that co-occur on the same molecule. Pass 2 rescans every retained member: any covered parent-reference base at any proposed site vetoes that lineage. Candidates must also span distinct CDR3 sequences, CDR3 lengths, and J calls.</span></div>
           <button className="post-primary amber" type="button" disabled={Boolean(busy)} onClick={()=>void runMissingAlleleAnalysis()}>Run two-pass screen on {workingCount.toLocaleString()} records</button><p>This produces referral candidates only; it never edits the selected database.</p>
         </article>
+        <article><span className="section-kicker">Personalized reference</span><h4>Infer expressed V allele set</h4>
+          <details className="post-advanced"><summary>Advanced personalized-germline settings</summary><div className="control-grid three">
+            <div className="fixed-method-value"><span>Lineage representative</span><strong>Lowest current V-SHM</strong><small>Directly from the current V alignment; no circularity correction.</small></div>
+            <label><span>Minimum aligned V bases</span><CommitNumberInput min="30" max="1000" value={personalizedGermlineOptions.minimumAlignedBases} onCommit={(minimumAlignedBases)=>{setPersonalizedGermlineOptions(value=>({...value,minimumAlignedBases}));setPersonalizedGermline(null);}} /></label>
+            <label><span>Known-allele SNP radius</span><CommitNumberInput min="0" max="30" value={personalizedGermlineOptions.maximumKnownAlleleSnps} onCommit={(maximumKnownAlleleSnps)=>{setPersonalizedGermlineOptions(value=>({...value,maximumKnownAlleleSnps:Math.floor(maximumKnownAlleleSnps)}));setPersonalizedGermline(null);}} /></label>
+            <label><span>Maximum novel SNPs</span><CommitNumberInput min="1" max="20" value={personalizedGermlineOptions.maximumNovelSnps} onCommit={(maximumNovelSnps)=>{setPersonalizedGermlineOptions(value=>({...value,maximumNovelSnps:Math.floor(maximumNovelSnps)}));setPersonalizedGermline(null);}} /></label>
+            <label><span>Minimum novel support</span><CommitNumberInput min="2" max="10000" value={personalizedGermlineOptions.minimumNovelSupport} onCommit={(minimumNovelSupport)=>{setPersonalizedGermlineOptions(value=>({...value,minimumNovelSupport:Math.floor(minimumNovelSupport)}));setPersonalizedGermline(null);}} /></label>
+            <label><span>Minimum novel fraction</span><CommitNumberInput min="0.001" max="1" step="0.01" value={personalizedGermlineOptions.minimumNovelFraction} onCommit={(minimumNovelFraction)=>{setPersonalizedGermlineOptions(value=>({...value,minimumNovelFraction}));setPersonalizedGermline(null);}} /></label>
+            <label><span>Extra log-evidence gain</span><CommitNumberInput min="0" max="100" step="0.5" value={personalizedGermlineOptions.minimumLogEvidenceGain} onCommit={(minimumLogEvidenceGain)=>{setPersonalizedGermlineOptions(value=>({...value,minimumLogEvidenceGain}));setPersonalizedGermline(null);}} /><small>Required after the automatic BIC penalty.</small></label>
+            <label><span>Sequencing error floor</span><CommitNumberInput min="0.000001" max="0.1" step="0.0001" value={personalizedGermlineOptions.sequencingErrorRate} onCommit={(sequencingErrorRate)=>{setPersonalizedGermlineOptions(value=>({...value,sequencingErrorRate}));setPersonalizedGermline(null);}} /></label>
+            <label><span>Maximum active alleles / gene</span><CommitNumberInput min="1" max="30" value={personalizedGermlineOptions.maximumActiveAllelesPerGene} onCommit={(maximumActiveAllelesPerGene)=>{setPersonalizedGermlineOptions(value=>({...value,maximumActiveAllelesPerGene:Math.floor(maximumActiveAllelesPerGene)}));setPersonalizedGermline(null);}} /></label>
+          </div></details>
+          <div className="algorithm-note"><strong>Lowest-SHM lineage row → fixed-context likelihood → sparse stepwise set</strong><span>Each lineage contributes its lowest V-mismatch-rate member under the current assignment. Same-gene, same-length database alleles and recurrent substitution candidates are rescored with a fixed 5-mer AID hotspot/coldspot prior. Greedy additions and backward removals optimize a BIC-penalized mixture; subjects never share evidence.</span></div>
+          <button className="post-primary amber" type="button" disabled={Boolean(busy)} onClick={()=>void runPersonalizedGermlineAnalysis()}>Infer personalized V set from {lineages?.lineageCount.toLocaleString()??"assigned"} lineages</button><p>This creates a downloadable candidate reference; it does not change current calls.</p>
+        </article>
       </div>
       {shmDashboard?<ShmResultsPanel dashboard={shmDashboard} name={baseName(inputName)} color={chartColor} sampleColors={sampleColors} stratum={shmStratum} datasets={datasets} sampleOrder={shmSampleOrder} onSampleOrderChange={setShmSampleOrder}/>:null}
       {missingAlleles?<MissingAlleleResultsPanel dashboard={missingAlleles} name={baseName(inputName)} referenceFasta={references.V} selectedIds={selectedMissingAlleleIds} onSelectedIdsChange={setSelectedMissingAlleleIds}/>:null}
+      {personalizedGermline?<PersonalizedGermlineResultsPanel dashboard={personalizedGermline} name={baseName(inputName)} referenceFasta={references.V}/>:null}
     </section>
 
     <section className={moduleClass("query","post-module query-module")}>

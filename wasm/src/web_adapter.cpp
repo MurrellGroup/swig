@@ -32,6 +32,7 @@ int g_calling_profile = 0;
 AssignerStrategy g_assigner_strategy = AssignerStrategy::Standard;
 bool g_optimized_kernels = true;
 bool g_optimized_output = true;
+int g_min_c_prefix_identity_per_mille = 0;
 std::string g_result;
 std::string g_double_d_result;
 int g_double_d_count = 0;
@@ -315,6 +316,8 @@ EngineOptions configured_options(int minimum_identity_per_mille, int strand) {
     options.assigner_strategy = g_assigner_strategy;
     options.optimized_kernels = g_optimized_kernels;
     options.min_identity = std::clamp(minimum_identity_per_mille, 0, 1000) / 1000.0;
+    options.min_c_prefix_identity =
+        std::clamp(g_min_c_prefix_identity_per_mille, 0, 1000) / 1000.0;
     options.search_forward = strand != 2;
     options.search_reverse = strand != 1;
     return options;
@@ -334,6 +337,15 @@ __attribute__((export_name("swig_set_calling_profile")))
 int swig_set_calling_profile(int profile) noexcept {
     if (profile < 0 || profile > 3) return -1;
     g_calling_profile = profile;
+    return 0;
+}
+
+__attribute__((export_name("swig_set_c_prefix_identity")))
+int swig_set_c_prefix_identity(int minimum_identity_per_mille) noexcept {
+    if (minimum_identity_per_mille < 0 || minimum_identity_per_mille > 1000) {
+        return -1;
+    }
+    g_min_c_prefix_identity_per_mille = minimum_identity_per_mille;
     return 0;
 }
 

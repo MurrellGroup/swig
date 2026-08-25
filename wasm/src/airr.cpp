@@ -24,7 +24,7 @@ const std::vector<std::string>& columns() {
         "v_score", "v_identity", "v_support", "v_cigar",
         "d_score", "d_identity", "d_support", "d_cigar",
         "j_score", "j_identity", "j_support", "j_cigar",
-        "c_score", "c_identity", "c_support", "c_cigar",
+        "c_score", "c_identity", "c_prefix_identity", "c_support", "c_cigar",
         "v_sequence_start", "v_sequence_end", "v_germline_start", "v_germline_end",
         "d_sequence_start", "d_sequence_end", "d_germline_start", "d_germline_end",
         "j_sequence_start", "j_sequence_end", "j_germline_start", "j_germline_end",
@@ -78,6 +78,10 @@ std::string hit_support(const std::optional<SegmentHit>& hit) {
     const int written = std::snprintf(buffer, sizeof(buffer), "%.6e", *hit->support);
     return written > 0 && static_cast<std::size_t>(written) < sizeof(buffer)
         ? std::string(buffer, static_cast<std::size_t>(written)) : std::string{};
+}
+
+std::string hit_prefix_identity(const std::optional<SegmentHit>& hit) {
+    return hit && hit->prefix_identity ? number(*hit->prefix_identity) : std::string{};
 }
 
 std::string hit_cigar(const std::optional<SegmentHit>& hit) {
@@ -143,7 +147,9 @@ std::string np2_length(const Annotation& annotation) {
 void write_row(std::ostream& output, const std::vector<std::string>& values) {
     for (std::size_t i = 0; i < values.size(); ++i) {
         if (i) output.put('\t');
-        output << values[i];
+        for (const char value : values[i]) {
+            output.put(value == '\t' || value == '\r' || value == '\n' ? ' ' : value);
+        }
     }
     output.put('\n');
 }
@@ -155,6 +161,14 @@ public:
     void field(std::string_view value) {
         separator();
         output_.append(value.data(), value.size());
+    }
+
+    void sanitized_field(std::string_view value) {
+        separator();
+        for (const char character : value) {
+            output_.push_back(
+                character == '\t' || character == '\r' || character == '\n' ? ' ' : character);
+        }
     }
 
     void field(bool value) { field(value ? std::string_view{"T"} : std::string_view{"F"}); }
@@ -259,6 +273,11 @@ void fast_hit_support(FastRow& row, const std::optional<SegmentHit>& hit) {
     else row.field(std::string_view{});
 }
 
+void fast_hit_prefix_identity(FastRow& row, const std::optional<SegmentHit>& hit) {
+    if (hit && hit->prefix_identity) row.identity(*hit->prefix_identity);
+    else row.field(std::string_view{});
+}
+
 void fast_hit_cigar(FastRow& row, const std::optional<SegmentHit>& hit) {
     if (hit) row.field(hit->alignment.cigar);
     else row.field(std::string_view{});
@@ -316,7 +335,7 @@ void write_airr_record(std::ostream& output, const Annotation& a) {
         hit_score(a.v), hit_identity(a.v), hit_support(a.v), hit_cigar(a.v),
         hit_score(a.d), hit_identity(a.d), hit_support(a.d), hit_cigar(a.d),
         hit_score(a.j), hit_identity(a.j), hit_support(a.j), hit_cigar(a.j),
-        hit_score(a.c), hit_identity(a.c), hit_support(a.c), hit_cigar(a.c),
+        hit_score(a.c), hit_identity(a.c), hit_prefix_identity(a.c), hit_support(a.c), hit_cigar(a.c),
         query_start(a.v), query_end(a.v), reference_start(a.v), reference_end(a.v),
         query_start(a.d), query_end(a.d), reference_start(a.d), reference_end(a.d),
         query_start(a.j), query_end(a.j), reference_start(a.j), reference_end(a.j),
@@ -350,7 +369,7 @@ void append_airr_header(std::string& output) {
 
 void append_airr_record(std::string& output, const Annotation& a) {
     FastRow row(output);
-    row.field(a.sequence_id); row.field(a.sequence); row.field(a.quality); row.field(a.sequence_aa);
+    row.sanitized_field(a.sequence_id); row.field(a.sequence); row.sanitized_field(a.quality); row.field(a.sequence_aa);
     row.field(a.rev_comp); row.optional_boolean(a.productive); row.optional_boolean(a.vj_in_frame);
     row.optional_boolean(a.stop_codon); row.optional_boolean(a.complete_vdj); row.field(a.locus);
     fast_hit_name(row, a.v); fast_hit_name(row, a.d); fast_hit_name(row, a.j); fast_hit_name(row, a.c);
@@ -366,7 +385,7 @@ void append_airr_record(std::string& output, const Annotation& a) {
     fast_hit_score(row, a.v); fast_hit_identity(row, a.v); fast_hit_support(row, a.v); fast_hit_cigar(row, a.v);
     fast_hit_score(row, a.d); fast_hit_identity(row, a.d); fast_hit_support(row, a.d); fast_hit_cigar(row, a.d);
     fast_hit_score(row, a.j); fast_hit_identity(row, a.j); fast_hit_support(row, a.j); fast_hit_cigar(row, a.j);
-    fast_hit_score(row, a.c); fast_hit_identity(row, a.c); fast_hit_support(row, a.c); fast_hit_cigar(row, a.c);
+    fast_hit_score(row, a.c); fast_hit_identity(row, a.c); fast_hit_prefix_identity(row, a.c); fast_hit_support(row, a.c); fast_hit_cigar(row, a.c);
     fast_query_start(row, a.v); fast_query_end(row, a.v); fast_reference_start(row, a.v); fast_reference_end(row, a.v);
     fast_query_start(row, a.d); fast_query_end(row, a.d); fast_reference_start(row, a.d); fast_reference_end(row, a.d);
     fast_query_start(row, a.j); fast_query_end(row, a.j); fast_reference_start(row, a.j); fast_reference_end(row, a.j);

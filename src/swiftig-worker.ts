@@ -28,6 +28,7 @@ interface StartRequest {
   callingProfile: CallingProfile;
   assignerStrategy: AssignerStrategy;
   minimumIdentity: number;
+  minimumConstantPrefixIdentity: number | null;
   strand: 0 | 1 | 2;
   workers: number;
   countHint: number | null;
@@ -116,6 +117,7 @@ async function initializeSlot(
   references: StartRequest["references"],
   callingProfile: CallingProfile,
   assignerStrategy: AssignerStrategy,
+  minimumConstantPrefixIdentity: number | null,
 ): Promise<ComputeSlot> {
   const worker = new Worker(new URL("./swiftig-compute-worker.ts", import.meta.url), { type: "module" });
   const slot: ComputeSlot = { index, worker, busy: false };
@@ -133,7 +135,7 @@ async function initializeSlot(
       }
       resolve(slot);
     };
-    worker.postMessage({ type: "initialize", worker: index, module, references, callingProfile, assignerStrategy });
+    worker.postMessage({ type: "initialize", worker: index, module, references, callingProfile, assignerStrategy, minimumConstantPrefixIdentity });
   });
 }
 
@@ -197,6 +199,7 @@ async function handleRequest(request: StartRequest) {
         try {
           return await initializeSlot(
             index, module, request.references, request.callingProfile, request.assignerStrategy,
+            request.minimumConstantPrefixIdentity,
           );
         } finally {
           activeInitializers -= 1;

@@ -1,4 +1,4 @@
-# Post-lineage analysis: SHM summaries and possible-missing-V evidence
+# Post-lineage analysis: SHM, missing-V evidence, and personalized V inference
 
 ## SHM metrics
 
@@ -34,7 +34,36 @@ For each proposed linked pattern, Swig scans every retained member of the releva
 
 Candidates can be exported as proposed V FASTA after explicit selection. No reference is added to the running assignment database automatically.
 
-SHM and possible-missing-V evidence are separate full-width result sections, one below the other. They share a post-lineage location because both consume lineage assignments; neither is treated as a generic “diagnostic.”
+## Personalized expressed V-set inference
+
+This is a separate model from the high-specificity missing-V warning. It uses every assigned lineage with a usable V alignment, with exactly one vote per lineage.
+
+### Representative rule
+
+Swig selects the member with the lowest nucleotide mismatch rate in its **current** `v_sequence_alignment` versus `v_germline_alignment`. Ties prefer more aligned V bases and then the earlier AIRR ordinal. There is no random draw, temporal “early” requirement, allele-invariant mask, or circularity correction in this selection step. Lower-SHM observations are used simply because they carry more information about the rearranged germline allele.
+
+### Candidate and likelihood model
+
+Each subject, locus, and called V gene is fitted independently. Candidate database alleles must have the same ungapped length as the current allele and fall within the configured Hamming radius. Recurrent, linked substitution patterns can additionally create same-length novel candidates; insertions, deletions, boundary changes, cross-gene swaps, and D/J hypotheses are not admitted.
+
+For each lineage observation, mutation exposure is estimated from covered positions that are invariant across the local candidate set. Candidate likelihoods use a fixed five-nucleotide-window motif prior:
+
+- WRCY/RGYW AID hot spots have relative mutability 5;
+- SYC/GRS cold spots have relative mutability 0.25;
+- WA/TW polymerase-eta hot spots have relative mutability 2;
+- other contexts have relative mutability 1.
+
+This is a cheap fixed context approximation, **not** the empirical 1,024-entry human-heavy S5F table. A small configurable sequencing-error floor is mixed into every site probability. Allele-discriminating positions and their ±2-nucleotide context halo do not contribute to the observation's mutation-exposure estimate.
+
+### Stepwise allele-set search
+
+Within each expressed gene, Swig begins with the best penalized single allele. It tests an inactive candidate by optimizing the frequency transferred from the current mixture, using only the candidate's per-lineage emission and the cached current mixture. An accepted addition is followed by an exact EM frequency refit. Backward deletion removes components that become redundant.
+
+The objective is log likelihood minus a BIC penalty for mixture-frequency parameters and every learned nucleotide in a novel candidate. The optional extra log-evidence threshold is applied after that penalty. Known and novel candidates therefore use the same likelihood, while data-derived sequences pay for the bases learned from the same repertoire.
+
+The downloadable V FASTA is conservative: inferred active alleles replace only genes actually tested for the selected subject/locus. Untested genes and other loci remain unchanged. Novel records inherit the exact parent's `SWIGMETA` annotation. The download is a candidate reference and must be used in a complete new assignment run; the current analysis is never silently changed.
+
+SHM, possible-missing-V evidence, and personalized inference are separate full-width result sections. They share a post-lineage location because all consume lineage assignments; none modifies another result.
 
 ## Prominent incomplete-reference escalation
 
@@ -60,3 +89,5 @@ The screen is **custom and deliberately conservative**. It shares the problem of
 - Expressed repertoires cannot prove genomic presence/absence or copy number.
 - The binomial background is simplified and substitutions are not modeled with S5F context probabilities.
 - A warning must be validated by dedicated germline inference and, where important, genomic evidence.
+- Personalized inference covers expressed same-length V alleles only. A silent allele, unobserved gene, length-changing allele, or cross-gene reassignment cannot be resolved by this implementation.
+- The fixed motif likelihood is a computational approximation and may be misspecified for non-human species or non-heavy-chain loci.

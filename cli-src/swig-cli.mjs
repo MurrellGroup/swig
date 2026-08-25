@@ -5,10 +5,11 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Worker as NodeWorker } from "node:worker_threads";
-import { createGunzip, gzipSync, gunzipSync } from "node:zlib";
+import { createGunzip, createGzip, gzipSync, gunzipSync } from "node:zlib";
 import { once } from "node:events";
 import { availableParallelism } from "node:os";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import { SparseEvidenceAccumulator } from "../src/allele-refinement/evidence.ts";
 import { refinedCall } from "../src/allele-refinement/export.ts";
@@ -52,7 +53,7 @@ import {
 } from "../src/sequence-stream.ts";
 import { annotateAirrBatch, annotateDoubleDBatch, stableDatasetSeed } from "../src/study-design.ts";
 
-const VERSION="0.38.3";
+const VERSION="0.38.5";
 const CLI_STREAM_HIGH_WATER_MARK=8*1024*1024;
 const CLI_GZIP_CHUNK_SIZE=1024*1024;
 const CLI_DIRECTORY=dirname(fileURLToPath(import.meta.url));
@@ -66,7 +67,7 @@ function usage(){
   return `swig-cli ${VERSION}\n\n`+
     `Run a complete non-phylogenetic Swig pipeline:\n`+
     `  swig-cli run reads.fastq.gz --out swig-output\n`+
-    `  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N]\n\n`+
+    `  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N] [--airr-compression none|gzip]\n\n`+
     `Run only streaming V(D)J assignment (AIRR outfmt 19):\n`+
     `  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n`+
     `    -germline_db_J J.fasta -out calls.airr.tsv\n\n`+
@@ -132,9 +133,12 @@ function vdjUsage(){
     `                          (AER-R only), igblast_balanced, or igblast_compatible\n`+
     `    r_optimized: 4-nt D signal floor; joint D cost 12, evidence-relaxed to 10\n`+
     `    sensitive_d: same signal floor and scores; fixed joint D cost 10 (a bare 4-mer scores 8)\n`+
+    `  C calls use calibrated post-J evidence; short 5'-anchored C tracts can pass without a fixed 30-nt floor\n`+
+    `  --minimum-c-prefix-identity X  Optional 0..1 identity gate over the complete covered C prefix\n`+
     `  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\n`+
     `The germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\n`+
-    `not IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally.`;
+    `not IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally;\n`+
+    `a path ending in .gz is gzip-compressed.`;
 }
 
 function thirdPartyNotices(){
@@ -169,13 +173,14 @@ function parseVdjArguments(rawArgs,context="vdj"){
     ["--query","-query"],["--output","-out"],["--out","-out"],
     ["--germline-db-v","-germline_db_V"],["--germline-db-d","-germline_db_D"],
     ["--germline-db-j","-germline_db_J"],["--c-region-db","-c_region_db"],
+    ["--min-c-prefix-identity","--minimum-c-prefix-identity"],
     ["--out-prefix","-out"],
   ]);
   const valued=new Set([
     "-query","-out","-germline_db_V","-germline_db_D","-germline_db_J","-c_region_db",
     "-custom_internal_data","-auxiliary_data","-d_frame_data","-organism","-domain_system",
     "-ig_seqtype","-strand","-outfmt","-num_threads","--workers","--batch-records",
-    "--minimum-identity","--assigner","--calling-profile","-min_D_match","-min_J_length",
+    "--minimum-identity","--minimum-c-prefix-identity","--assigner","--calling-profile","-min_D_match","-min_J_length",
     "-num_alignments_D","-num_alignments_J","-D_penalty","-J_penalty",
     "--prepared-reference","--match-mode","--nearest-candidates",
     "--v-same-gene-min-identity","--v-nearest-min-identity",
@@ -400,10 +405,10 @@ class ChmmPool {
   async close(){const error=new Error("CHMMAIRRa worker pool closed before queued work completed.");while(this.queued.length)this.queued.shift().reject(error);await Promise.all(this.workers.map((worker)=>Promise.resolve(worker.terminate())));this.workers=[];this.available=[];}
 }
 
-function workerInitialization(wasmPath,references,callingProfile,assignerStrategy,tuning){
+function workerInitialization(wasmPath,references,callingProfile,assignerStrategy,tuning,minimumConstantPrefixIdentity=null){
   return {
     wasmPath,referenceV:references.V,referenceD:references.D,referenceJ:references.J,referenceC:references.C,
-    callingProfile,assignerStrategy,hasTuning:Boolean(tuning),aerRProfile:Boolean(tuning?.aerRProfile),
+    callingProfile,assignerStrategy,minimumConstantPrefixIdentity,hasTuning:Boolean(tuning),aerRProfile:Boolean(tuning?.aerRProfile),
     tuningDMatch:tuning?.dMatch??0,tuningDMismatch:tuning?.dMismatch??0,tuningDGapOpen:tuning?.dGapOpen??0,tuningDGapExtend:tuning?.dGapExtend??0,
     tuningTopD:tuning?.topD??0,tuningMinDMatch:tuning?.minDMatch??0,tuningJMatch:tuning?.jMatch??0,tuningJMismatch:tuning?.jMismatch??0,
     tuningJGapOpen:tuning?.jGapOpen??0,tuningJGapExtend:tuning?.jGapExtend??0,tuningTopJ:tuning?.topJ??0,tuningMinJLength:tuning?.minJLength??0,
@@ -853,12 +858,29 @@ function writeChunk(stream,chunk){if(stream.write(chunk))return Promise.resolve(
 
 function createCliWriteStream(path){return createWriteStream(path,{highWaterMark:CLI_STREAM_HIGH_WATER_MARK});}
 
-async function finishWritable(stream){stream.end();await once(stream,"finish");}
+function createVdjOutput(path){
+  const file=createCliWriteStream(path);
+  if(!/\.gz$/i.test(path))return {stream:file,opened:once(file,"open"),finish:()=>finishWritable(file),destroy:()=>file.destroy()};
+  const gzip=createGzip();
+  const completed=pipeline(gzip,file);
+  return {
+    stream:gzip,
+    opened:once(file,"open"),
+    finish:async()=>{gzip.end();await completed;},
+    destroy:()=>{gzip.destroy();file.destroy();void completed.catch(()=>{});},
+  };
+}
+
+function airrOutputName(prefix,kind,compression){
+  return `${prefix}.${kind}.airr.tsv${compression==="gzip"?".gz":""}`;
+}
+
+async function finishWritable(stream){const completed=once(stream,"finish");stream.end();await completed;}
 
 async function writeRowsFile(path,headers,rows,include=()=>true){
-  const stream=createCliWriteStream(path);
+  const output=createVdjOutput(path);const stream=output.stream;
   try{
-    await once(stream,"open");
+    await output.opened;
     await writeChunk(stream,`${headers.join("\t")}\n`);
     let batch=[];
     for(let ordinal=0;ordinal<rows.length;ordinal+=1){
@@ -867,8 +889,8 @@ async function writeRowsFile(path,headers,rows,include=()=>true){
       if(batch.length>=2_000){await writeChunk(stream,serializeRowBody(headers,batch));batch=[];}
     }
     if(batch.length)await writeChunk(stream,serializeRowBody(headers,batch));
-    await finishWritable(stream);
-  }catch(error){stream.destroy();throw error;}
+    await output.finish();
+  }catch(error){output.destroy();throw error;}
 }
 
 async function writeLineageStudy(path,manifestPath,headers,rows,activeMask,lineages,config,references,shm){
@@ -901,17 +923,19 @@ async function runPipeline(config,base,assets){
   if(config.annotation.airrMode==="preserve"&&config.annotation.doubleD.mode!=="off"&&config.inputs.some((input)=>detectFormat(input.path,input.format)==="airr"))throw new Error("Double-D screening of AIRR input requires annotation.airrMode = \"reannotate\".");
   const needsAnnotation=config.inputs.some((input)=>detectFormat(input.path,input.format)!=="airr"||config.annotation.airrMode==="reannotate");
   const annotationBatchRecords=config.annotation.batchRecords||automaticBatchRecords(config.annotation.workers);
-  const pool=needsAnnotation?new WasmPool(config.annotation.workers,workerInitialization(assets.wasmPath,references,config.annotation.callingProfile,config.annotation.assignerStrategy)):null;
+  const pool=needsAnnotation?new WasmPool(config.annotation.workers,workerInitialization(assets.wasmPath,references,config.annotation.callingProfile,config.annotation.assignerStrategy,undefined,config.annotation.minimumConstantPrefixIdentity)):null;
   if(pool){
     process.stderr.write(`Starting SwiftIG pool (${config.annotation.workers} worker${config.annotation.workers===1?"":"s"}; ${annotationBatchRecords.toLocaleString()} records/batch).\n`);
     await pool.start();
   }
-  const annotatedStream=config.output.writeAnnotatedAirr?createCliWriteStream(join(outputDirectory,`${prefix}.annotated.airr.tsv`)):null;
+  const annotatedName=airrOutputName(prefix,"annotated",config.output.airrCompression);
+  const annotatedOutput=config.output.writeAnnotatedAirr?createVdjOutput(join(outputDirectory,annotatedName)):null;
+  const annotatedStream=annotatedOutput?.stream??null;
   let annotatedOutputHeaders=null;
   const rows=[];const headers=[];let annotatedRecords=0;let inputRecords=0;let eligibleRecords=0;
   let fastqFilterStats=emptyFastqQualityFilterStats(config.preprocessing.fastqFilter.enabled,false);
   try{
-    if(annotatedStream)await once(annotatedStream,"open");
+    if(annotatedOutput)await annotatedOutput.opened;
     for(let datasetIndex=0;datasetIndex<config.inputs.length;datasetIndex+=1){
       const input=config.inputs[datasetIndex];
       const format=detectFormat(input.path,input.format);
@@ -955,9 +979,9 @@ async function runPipeline(config,base,assets){
       inputRecords+=preprocessingState.inputRecords;eligibleRecords+=preprocessingState.eligibleRecords;
       fastqFilterStats=addFastqQualityFilterStats(fastqFilterStats,preprocessingState.fastqFilter);
     }
-  }catch(error){annotatedStream?.destroy();throw error;}
+  }catch(error){annotatedOutput?.destroy();throw error;}
   finally{await pool?.close();}
-  if(annotatedStream)await finishWritable(annotatedStream);
+  if(annotatedOutput)await annotatedOutput.finish();
   rows.forEach((row,ordinal)=>{if(!row.sequence_id)row.sequence_id=`swig_${ordinal+1}`;});
 
   let alleleResult=null;
@@ -1033,7 +1057,8 @@ async function runPipeline(config,base,assets){
   }
 
   addHeaders(headers,["swig_retained"]);rows.forEach((row,ordinal)=>{row.swig_retained=activeMask[ordinal]?"T":"F";});
-  await writeRowsFile(join(outputDirectory,`${prefix}.processed.airr.tsv`),headers,rows,(_,ordinal)=>Boolean(activeMask[ordinal]));
+  const processedName=airrOutputName(prefix,"processed",config.output.airrCompression);
+  await writeRowsFile(join(outputDirectory,processedName),headers,rows,(_,ordinal)=>Boolean(activeMask[ordinal]));
 
   let lineageStudy=null;
   if(config.output.writeLineageStudy&&lineages){
@@ -1042,7 +1067,7 @@ async function runPipeline(config,base,assets){
   }
 
   const retained=activeMask.reduce((sum,value)=>sum+(value?1:0),0);
-  const summary={application:"swig-cli",version:VERSION,completedAt:new Date().toISOString(),inputRecords,eligibleRecords,annotatedRecords,retainedRecords:retained,lineages:lineages?.lineageCount??0,references:{metadataPreparation:{enabled:config.references.prepareMetadata,segments:loadedReferences.preparation}},preprocessing:{subsample:config.preprocessing.subsample,fastqFilter:{options:config.preprocessing.fastqFilter,stats:fastqFilterStats}},collapse:collapseResult?{mode:collapseResult.mode,inputRecords:collapseResult.inputRecords,inputAbundance:collapseResult.inputAbundance,uniqueRecords:collapseResult.uniqueRecords,collapsedRecords:collapseResult.collapsedRecords,warnings:collapseResult.warnings}:null,chimera:chimeraSummary,alleleRefinement:alleleResult?compactAlleleResult(alleleResult):null,shm:shm?{analyzedRecords:shm.analyzedRecords,analyzedAbundance:shm.analyzedAbundance,skippedRecords:shm.skippedRecords,metric:shm.metric}:null,missingAlleles:missingAlleles?{candidates:missingAlleles.candidates.length,warnings:missingAlleles.warnings}:null,lineageStudy:lineageStudy?{manifest:`${prefix}.swig-lineage-study.json.gz`,airr:`${prefix}.lineages.airr.tsv`,records:lineageStudy.linkedAirr.records}:null};
+  const summary={application:"swig-cli",version:VERSION,completedAt:new Date().toISOString(),inputRecords,eligibleRecords,annotatedRecords,retainedRecords:retained,lineages:lineages?.lineageCount??0,outputs:{annotated:config.output.writeAnnotatedAirr?annotatedName:null,processed:processedName,airrCompression:config.output.airrCompression},references:{metadataPreparation:{enabled:config.references.prepareMetadata,segments:loadedReferences.preparation}},preprocessing:{subsample:config.preprocessing.subsample,fastqFilter:{options:config.preprocessing.fastqFilter,stats:fastqFilterStats}},collapse:collapseResult?{mode:collapseResult.mode,inputRecords:collapseResult.inputRecords,inputAbundance:collapseResult.inputAbundance,uniqueRecords:collapseResult.uniqueRecords,collapsedRecords:collapseResult.collapsedRecords,warnings:collapseResult.warnings}:null,chimera:chimeraSummary,alleleRefinement:alleleResult?compactAlleleResult(alleleResult):null,shm:shm?{analyzedRecords:shm.analyzedRecords,analyzedAbundance:shm.analyzedAbundance,skippedRecords:shm.skippedRecords,metric:shm.metric}:null,missingAlleles:missingAlleles?{candidates:missingAlleles.candidates.length,warnings:missingAlleles.warnings}:null,lineageStudy:lineageStudy?{manifest:`${prefix}.swig-lineage-study.json.gz`,airr:`${prefix}.lineages.airr.tsv`,records:lineageStudy.linkedAirr.records}:null};
   await writeFile(join(outputDirectory,`${prefix}.summary.json`),JSON.stringify(summary,null,2));
   await writeFile(join(outputDirectory,`${prefix}.resolved-config.json`),JSON.stringify(config,null,2));
   process.stdout.write(`${JSON.stringify(summary,null,2)}\n`);
@@ -1096,12 +1121,15 @@ async function runVdj(rawArgs,assets){
   if(outputPath!=="-")await mkdir(dirname(outputPath),{recursive:true});
   const prepared=await prepareVdjReferences(options,assets);
   const tuning=vdjTuning(options,callingProfile);
-  const pool=new WasmPool(workers,workerInitialization(assets.wasmPath,prepared.references,callingProfile,assigner,tuning));
+  const minimumConstantPrefixIdentity=options["--minimum-c-prefix-identity"]===undefined?null:parseFiniteOption(options["--minimum-c-prefix-identity"],"--minimum-c-prefix-identity");
+  if(minimumConstantPrefixIdentity!==null&&(minimumConstantPrefixIdentity<0||minimumConstantPrefixIdentity>1))throw new Error("--minimum-c-prefix-identity must be between 0 and 1.");
+  const pool=new WasmPool(workers,workerInitialization(assets.wasmPath,prepared.references,callingProfile,assigner,tuning,minimumConstantPrefixIdentity));
   await pool.start();
-  const output=outputPath==="-"?process.stdout:createCliWriteStream(outputPath);
+  const outputHandle=outputPath==="-"?null:createVdjOutput(outputPath);
+  const output=outputHandle?.stream??process.stdout;
   let outputHeader=null;let records=0;let completed=false;
   try{
-    if(outputPath!=="-")await once(output,"open");
+    if(outputHandle)await outputHandle.opened;
     const assignerLabel=assigner==="riat_mp"?"RIAT-MP":assigner==="aer"?"AER":assigner==="aer_robust"?"AER-R (experimental)":"standard SwiftIG";
     const profileLabel=callingProfile==="r_optimized"?"R-optimized":callingProfile==="sensitive_d"?"Sensitive-D":callingProfile==="igblast_balanced"?"IgBLAST-balanced":callingProfile==="igblast_compatible"?"IgBLAST-agreement":"truth-optimized";
     process.stderr.write(`Streaming SwiftIG V(D)J assignments (${prepared.mode}; ${workers} worker${workers===1?"":"s"}; ${batchRecords.toLocaleString()} records/batch; ${assignerLabel}; ${profileLabel} profile) to ${outputPath}.\n`);
@@ -1121,10 +1149,10 @@ async function runVdj(rawArgs,assets){
       if(pending.length>=Math.max(2,workers*2))await consume(pending.shift());
     }
     while(pending.length)await consume(pending.shift());
-    if(outputPath!=="-")await finishWritable(output);
+    if(outputHandle)await outputHandle.finish();
     completed=true;
   }finally{
-    if(!completed&&outputPath!=="-")output.destroy();
+    if(!completed&&outputHandle)outputHandle.destroy();
     await pool.close();
   }
   process.stderr.write(`Completed ${records.toLocaleString()} streaming V(D)J assignment${records===1?"":"s"}.\n`);
@@ -1155,6 +1183,8 @@ export async function runCli(assets=defaultCliAssets()){
   if(commandOutput)raw.output={...(raw.output??{}),directory:commandOutput};
   const commandWorkers=argumentValue(rest,"--workers");
   if(commandWorkers!==undefined)raw.annotation={...(raw.annotation??{}),workers:parseIntegerOption(commandWorkers,"--workers",{minimum:0})};
+  const commandCompression=argumentValue(rest,"--airr-compression");
+  if(commandCompression!==undefined){if(!["none","gzip"].includes(commandCompression))throw new Error("--airr-compression must be none or gzip.");raw.output={...(raw.output??{}),airrCompression:commandCompression};}
   const config=normalizeCliConfig(raw);
   if(!["standard","riat_mp","aer","aer_robust"].includes(config.annotation.assignerStrategy)){
     throw new Error("annotation.assignerStrategy must be standard, riat_mp, aer, or aer_robust.");

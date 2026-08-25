@@ -27,6 +27,7 @@ const paths = {
   V: required("v"),
   D: required("d"),
   J: required("j"),
+  C: args.get("c") ? path.resolve(args.get("c")) : "",
   wasm: path.resolve(args.get("wasm") ?? new URL("../public/swiftig.wasm", import.meta.url).pathname),
 };
 const split = args.get("split") ?? "train";
@@ -54,6 +55,7 @@ const selectedIds = idsPath
   : null;
 const excludedIds = new Set((args.get("exclude-id") ?? "").split(",").map((value) => value.trim()).filter(Boolean));
 const tuning = args.has("tuning") ? JSON.parse(args.get("tuning")) : null;
+const cSpecies = args.get("c-species") ?? "";
 
 function readText(file) {
   const bytes = fs.readFileSync(file);
@@ -110,6 +112,18 @@ function parseFasta(text) {
   return records;
 }
 
+function bundledConstantFasta(speciesName) {
+  if (!speciesName) return "";
+  const packed = JSON.parse(zlib.gunzipSync(fs.readFileSync(
+    new URL("../public/references/imgt-202632-7-swig-0.7.json.gz", import.meta.url),
+  )));
+  const species = packed.species.find((entry) => entry.name === speciesName);
+  if (!species?.loci?.IGH?.C?.length) {
+    throw new Error(`The bundled reference pack has no IGH C records for ${speciesName}`);
+  }
+  return species.loci.IGH.C.map(([name, sequence]) => `>${name}\n${sequence}\n`).join("");
+}
+
 function parseHeaderTruthFasta(text) {
   const rows = [];
   let header = "";
@@ -164,7 +178,10 @@ function callAtoms(value) {
   return String(value ?? "").split(/[,/]/).map((atom) => atom.trim()).filter(Boolean);
 }
 
-const referenceText = Object.fromEntries(["V", "D", "J"].map((segment) => [segment, readText(paths[segment])]));
+const referenceText = Object.fromEntries(["V", "D", "J", "C"].map((segment) => [
+  segment,
+  paths[segment] ? readText(paths[segment]) : segment === "C" ? bundledConstantFasta(cSpecies) : "",
+]));
 const references = Object.fromEntries(Object.entries(referenceText).map(([segment, text]) => [segment, parseFasta(text)]));
 const equivalence = Object.fromEntries(Object.entries(references).map(([segment, records]) => {
   const byName = new Map();
@@ -381,7 +398,7 @@ function errorText() {
   return decoder.decode(new Uint8Array(runtime.memory.buffer, runtime.swig_error_ptr(), runtime.swig_error_len()));
 }
 
-const referenceAllocations = [referenceText.V, referenceText.D, referenceText.J, ""].map(putText);
+const referenceAllocations = [referenceText.V, referenceText.D, referenceText.J, referenceText.C].map(putText);
 const genes = runtime.swig_init_database(...referenceAllocations.flat());
 referenceAllocations.forEach(([pointer]) => runtime.swig_free(pointer));
 if (genes < 0) throw new Error(errorText());
@@ -391,7 +408,7 @@ if (profile === "igblast_balanced") {
   balancedFilter = (await import("../src/balanced-calling-profile.ts")).applyBalancedDFilter;
 }
 
-const callMetrics = { V: emptyCallMetric(), D: emptyCallMetric(), J: emptyCallMetric() };
+const callMetrics = { V: emptyCallMetric(), D: emptyCallMetric(), J: emptyCallMetric(), C: emptyCallMetric() };
 const compatibleBoundaryMetrics = Object.fromEntries(
   ["v_sequence_start", "v_sequence_end", "d_sequence_start", "d_sequence_end", "j_sequence_start", "j_sequence_end"]
     .map((field) => [field, emptyBoundaryMetric()]),
@@ -400,7 +417,7 @@ const allBoundaryMetrics = Object.fromEntries(
   Object.keys(compatibleBoundaryMetrics).map((field) => [field, emptyBoundaryMetric()]),
 );
 const predictionFields = [
-  "sequence_id", "v_call", "d_call", "j_call",
+  "sequence_id", "v_call", "d_call", "j_call", "c_call",
   "v_sequence_start", "v_sequence_end", "d_sequence_start", "d_sequence_end",
   "j_sequence_start", "j_sequence_end", "v_score", "d_score", "j_score",
   "v_identity", "d_identity", "j_identity", "v_cigar", "d_cigar", "j_cigar",
@@ -433,12 +450,13 @@ for (let offset = 0; offset < truth.length; offset += batchSize) {
     const actual = truthById.get(prediction.sequence_id);
     if (!actual) throw new Error(`Unexpected prediction ${prediction.sequence_id}`);
     const scores = {};
-    for (const segment of ["V", "D", "J"]) {
+    for (const segment of ["V", "D", "J", "C"]) {
       const lower = segment.toLowerCase();
       const score = scoreCall(segment, actual[`${lower}_call`], prediction[`${lower}_call`]);
       scores[segment] = score;
       if (segment === "D" && score === null) tandemD += 1;
       addCallMetric(callMetrics[segment], score);
+      if (segment === "C") continue;
       const compatible = score?.containsTruth ?? false;
       for (const suffix of ["sequence_start", "sequence_end"]) {
         const field = `${lower}_${suffix}`;
@@ -505,6 +523,7 @@ if (args.get("compact") === "true") {
     V: report.callMetrics.V,
     D: report.callMetrics.D,
     J: report.callMetrics.J,
+    C: report.callMetrics.C,
     vEnd: report.boundaryMetrics.truthCompatibleCall.v_sequence_end,
     dStart: report.boundaryMetrics.truthCompatibleCall.d_sequence_start,
     dEnd: report.boundaryMetrics.truthCompatibleCall.d_sequence_end,

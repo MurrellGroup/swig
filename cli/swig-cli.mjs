@@ -7,10 +7,11 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
-import { createGunzip, gunzipSync, gzipSync } from "node:zlib";
+import { createGunzip, createGzip, gunzipSync, gzipSync } from "node:zlib";
 import { once } from "node:events";
 import { availableParallelism } from "node:os";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 //#region src/allele-refinement/evidence.ts
 function callTokens(value) {
 	return [...new Set(value.split(",").map((call) => call.trim()).filter(Boolean))];
@@ -2022,6 +2023,7 @@ const DEFAULT_CLI_CONFIG = {
 		callingProfile: "truth_optimized",
 		assignerStrategy: "riat_mp",
 		minimumIdentity: .6,
+		minimumConstantPrefixIdentity: null,
 		strand: 0,
 		airrMode: "preserve",
 		doubleD: {
@@ -2093,6 +2095,7 @@ const DEFAULT_CLI_CONFIG = {
 	output: {
 		directory: "swig-output",
 		prefix: "swig",
+		airrCompression: "none",
 		writeAnnotatedAirr: true,
 		writeLineageStudy: true
 	}
@@ -2141,6 +2144,7 @@ function normalizeCliConfig(value) {
 	annotation.workers = Math.max(0, Math.floor(finite(annotation.workers, 0)));
 	annotation.batchRecords = Math.max(0, Math.floor(finite(annotation.batchRecords, 0)));
 	annotation.minimumIdentity = Math.max(0, Math.min(1, finite(annotation.minimumIdentity, .6)));
+	annotation.minimumConstantPrefixIdentity = value.annotation?.minimumConstantPrefixIdentity === null || value.annotation?.minimumConstantPrefixIdentity === void 0 ? null : Math.max(0, Math.min(1, finite(value.annotation.minimumConstantPrefixIdentity, 0)));
 	const normalizedSubsample = {
 		...DEFAULT_CLI_CONFIG.preprocessing.subsample,
 		...subsample
@@ -2214,7 +2218,8 @@ function normalizeCliConfig(value) {
 		},
 		output: {
 			...DEFAULT_CLI_CONFIG.output,
-			...value.output
+			...value.output,
+			airrCompression: value.output?.airrCompression === "gzip" ? "gzip" : "none"
 		}
 	};
 }
@@ -3528,7 +3533,7 @@ var ShmAccumulator = class {
 };
 //#endregion
 //#region cli-src/swig-cli.mjs
-const VERSION = "0.38.3";
+const VERSION = "0.38.5";
 const CLI_STREAM_HIGH_WATER_MARK = 8 * 1024 * 1024;
 const CLI_GZIP_CHUNK_SIZE = 1024 * 1024;
 const CLI_DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -3540,13 +3545,13 @@ function defaultCliAssets() {
 	};
 }
 function usage() {
-	return `swig-cli ${VERSION}\n\nRun a complete non-phylogenetic Swig pipeline:\n  swig-cli run reads.fastq.gz --out swig-output\n  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N]\n\nRun only streaming V(D)J assignment (AIRR outfmt 19):\n  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -out calls.airr.tsv\n\nPrepare custom germlines once and reuse their inferred annotations:\n  swig-cli prepare-reference -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -organism human -ig_seqtype Ig --out-prefix refs/custom\n\nDisplay bundled-data attribution and license:\n  swig-cli notices\n\nCreate an editable config:\n  swig-cli init swig.config.json\n\nSingle-input metadata options:\n  --sample SAMPLE_ID  --donor SUBJECT_ID  --dataset DATASET_ID\n\nSamples with the same subjectId/--donor are treated as the same donor.\nLineage phylogenetics is intentionally not run by swig-cli.`;
+	return `swig-cli ${VERSION}\n\nRun a complete non-phylogenetic Swig pipeline:\n  swig-cli run reads.fastq.gz --out swig-output\n  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N] [--airr-compression none|gzip]\n\nRun only streaming V(D)J assignment (AIRR outfmt 19):\n  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -out calls.airr.tsv\n\nPrepare custom germlines once and reuse their inferred annotations:\n  swig-cli prepare-reference -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -organism human -ig_seqtype Ig --out-prefix refs/custom\n\nDisplay bundled-data attribution and license:\n  swig-cli notices\n\nCreate an editable config:\n  swig-cli init swig.config.json\n\nSingle-input metadata options:\n  --sample SAMPLE_ID  --donor SUBJECT_ID  --dataset DATASET_ID\n\nSamples with the same subjectId/--donor are treated as the same donor.\nLineage phylogenetics is intentionally not run by swig-cli.`;
 }
 function prepareReferenceUsage() {
 	return `swig-cli ${VERSION} prepare-reference\n\nInfer, validate, and persist reusable SWIGMETA germline annotations.\n\nRequired:\n  -germline_db_V FASTA  -germline_db_J FASTA  --out-prefix PREFIX\n\nOptional references and exact metadata:\n  -germline_db_D FASTA  -c_region_db FASTA\n  -custom_internal_data FILE  -auxiliary_data FILE  -d_frame_data FILE\n  -organism NAME (default human)  -ig_seqtype Ig|TCR (default Ig)\n\nMatching controls:\n  --match-mode strict|permissive|best-guess  (default strict)\n  --best-guess             Alias for --match-mode best-guess; disables identity floors\n  --nearest-candidates N   Non-gene candidates aligned after named candidates fail\n  --v-same-gene-min-identity X  --v-nearest-min-identity X\n  --j-same-gene-min-identity X  --j-nearest-min-identity X\n  --require-complete       Exit nonzero if any V/J record remains unresolved\n\nOutputs are PREFIX.V/D/J/C.fasta, PREFIX.swig-reference.json, and\nPREFIX.annotation-diagnostics.tsv. The manifest can be passed directly to\nswig-cli --vdj with --prepared-reference.`;
 }
 function vdjUsage() {
-	return `swig-cli ${VERSION} --vdj\n\nLow-overhead, streaming SwiftIG V(D)J assignment with IgBLAST-style option names.\n\nRequired:\n  -out AIRR_TSV, plus either --prepared-reference MANIFEST or\n  -germline_db_V FASTA and -germline_db_J FASTA\n\nInput and optional references:\n  -query FASTA            Query FASTA or '-' for stdin (default '-')\n  -germline_db_D FASTA    D germline FASTA\n  -c_region_db FASTA      Constant-region FASTA\n\nAnnotation modes (default: assignments only; CDR/FWR fields remain empty):\n  -custom_internal_data FILE  IgBLAST V .ndm.imgt data (1-based inclusive intervals)\n  -auxiliary_data FILE        IgBLAST J .aux data (0-based frame/CDR3 stop)\n  -d_frame_data FILE          IgBLAST D frame-one starts\n  --swigannots                Infer/validate metadata as in Swig Web\n\n  --prepared-reference FILE   Reuse a prepare-reference manifest and its FASTAs\n  --match-mode MODE           Metadata transfer only: strict, permissive, best-guess\n  --best-guess                Disable metadata-transfer identity floors (not read mapping)\nExecution:\n  -num_threads N          Exact worker count; --workers N overrides it\n  --workers N             Exact workers with no CLI cap; 0 chooses up to 8\n  --batch-records N       Records per bounded WASM batch; 0/omitted selects 2000, 1000,\n                          or 500 according to worker count\n  --assigner NAME         riat_mp (default), aer, aer_robust, or standard\n  --calling-profile NAME  truth_optimized (default), r_optimized or sensitive_d\n                          (AER-R only), igblast_balanced, or igblast_compatible\n    r_optimized: 4-nt D signal floor; joint D cost 12, evidence-relaxed to 10\n    sensitive_d: same signal floor and scores; fixed joint D cost 10 (a bare 4-mer scores 8)\n  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\nThe germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\nnot IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally.`;
+	return `swig-cli ${VERSION} --vdj\n\nLow-overhead, streaming SwiftIG V(D)J assignment with IgBLAST-style option names.\n\nRequired:\n  -out AIRR_TSV, plus either --prepared-reference MANIFEST or\n  -germline_db_V FASTA and -germline_db_J FASTA\n\nInput and optional references:\n  -query FASTA            Query FASTA or '-' for stdin (default '-')\n  -germline_db_D FASTA    D germline FASTA\n  -c_region_db FASTA      Constant-region FASTA\n\nAnnotation modes (default: assignments only; CDR/FWR fields remain empty):\n  -custom_internal_data FILE  IgBLAST V .ndm.imgt data (1-based inclusive intervals)\n  -auxiliary_data FILE        IgBLAST J .aux data (0-based frame/CDR3 stop)\n  -d_frame_data FILE          IgBLAST D frame-one starts\n  --swigannots                Infer/validate metadata as in Swig Web\n\n  --prepared-reference FILE   Reuse a prepare-reference manifest and its FASTAs\n  --match-mode MODE           Metadata transfer only: strict, permissive, best-guess\n  --best-guess                Disable metadata-transfer identity floors (not read mapping)\nExecution:\n  -num_threads N          Exact worker count; --workers N overrides it\n  --workers N             Exact workers with no CLI cap; 0 chooses up to 8\n  --batch-records N       Records per bounded WASM batch; 0/omitted selects 2000, 1000,\n                          or 500 according to worker count\n  --assigner NAME         riat_mp (default), aer, aer_robust, or standard\n  --calling-profile NAME  truth_optimized (default), r_optimized or sensitive_d\n                          (AER-R only), igblast_balanced, or igblast_compatible\n    r_optimized: 4-nt D signal floor; joint D cost 12, evidence-relaxed to 10\n    sensitive_d: same signal floor and scores; fixed joint D cost 10 (a bare 4-mer scores 8)\n  C calls use calibrated post-J evidence; short 5'-anchored C tracts can pass without a fixed 30-nt floor\n  --minimum-c-prefix-identity X  Optional 0..1 identity gate over the complete covered C prefix\n  -strand both|plus|minus -outfmt 19 -organism NAME -ig_seqtype Ig|TCR\n\nThe germline options take FASTA files, not makeblastdb binary prefixes. Output is SwiftIG AIRR,\nnot IgBLAST pairwise/tabular formatting. The output path is mandatory and is written incrementally;\na path ending in .gz is gzip-compressed.`;
 }
 function thirdPartyNotices() {
 	return "Bundled IMGT/GENE-DB reference data\n\nSource: IMGT/GENE-DB release 202632-7, retrieved 2026-08-08.\nCopyright © 1995-2026 IMGT®, the international ImMunoGeneTics information system®.\nAttribution: IMGT®, the international ImMunoGeneTics information system®, https://www.imgt.org/, Institute of Human Genetics, Université de Montpellier and CNRS.\nLicense: CC BY 4.0, https://creativecommons.org/licenses/by/4.0/\nTerms: https://www.imgt.org/about/termsofuse.php\nCitation: Giudicelli V, Chaume D, Lefranc M-P. Nucleic Acids Research. 2005;33:D593-D597. https://doi.org/10.1093/nar/gki010\n\nSwig modifies the source data by selecting and reorganizing IG/TR V/D/J/C records, normalizing and ungapping nucleotide sequences, deriving compact coordinate metadata, selecting one source sequence per allele identifier, and joining selected coding IGH/TR constant exons. Membrane-only and untranslated constant exons are omitted. IMGT, Université de Montpellier, and CNRS do not endorse Swig or warrant the modified pack or its use.";
@@ -3593,6 +3598,7 @@ function parseVdjArguments(rawArgs, context = "vdj") {
 		["--germline-db-d", "-germline_db_D"],
 		["--germline-db-j", "-germline_db_J"],
 		["--c-region-db", "-c_region_db"],
+		["--min-c-prefix-identity", "--minimum-c-prefix-identity"],
 		["--out-prefix", "-out"]
 	]);
 	const valued = new Set([
@@ -3614,6 +3620,7 @@ function parseVdjArguments(rawArgs, context = "vdj") {
 		"--workers",
 		"--batch-records",
 		"--minimum-identity",
+		"--minimum-c-prefix-identity",
 		"--assigner",
 		"--calling-profile",
 		"-min_D_match",
@@ -4090,7 +4097,7 @@ var ChmmPool = class {
 		this.available = [];
 	}
 };
-function workerInitialization(wasmPath, references, callingProfile, assignerStrategy, tuning) {
+function workerInitialization(wasmPath, references, callingProfile, assignerStrategy, tuning, minimumConstantPrefixIdentity = null) {
 	return {
 		wasmPath,
 		referenceV: references.V,
@@ -4099,6 +4106,7 @@ function workerInitialization(wasmPath, references, callingProfile, assignerStra
 		referenceC: references.C,
 		callingProfile,
 		assignerStrategy,
+		minimumConstantPrefixIdentity,
 		hasTuning: Boolean(tuning),
 		aerRProfile: Boolean(tuning?.aerRProfile),
 		tuningDMatch: tuning?.dMatch ?? 0,
@@ -4813,14 +4821,43 @@ function writeChunk(stream, chunk) {
 function createCliWriteStream(path) {
 	return createWriteStream(path, { highWaterMark: CLI_STREAM_HIGH_WATER_MARK });
 }
+function createVdjOutput(path) {
+	const file = createCliWriteStream(path);
+	if (!/\.gz$/i.test(path)) return {
+		stream: file,
+		opened: once(file, "open"),
+		finish: () => finishWritable(file),
+		destroy: () => file.destroy()
+	};
+	const gzip = createGzip();
+	const completed = pipeline(gzip, file);
+	return {
+		stream: gzip,
+		opened: once(file, "open"),
+		finish: async () => {
+			gzip.end();
+			await completed;
+		},
+		destroy: () => {
+			gzip.destroy();
+			file.destroy();
+			completed.catch(() => {});
+		}
+	};
+}
+function airrOutputName(prefix, kind, compression) {
+	return `${prefix}.${kind}.airr.tsv${compression === "gzip" ? ".gz" : ""}`;
+}
 async function finishWritable(stream) {
+	const completed = once(stream, "finish");
 	stream.end();
-	await once(stream, "finish");
+	await completed;
 }
 async function writeRowsFile(path, headers, rows, include = () => true) {
-	const stream = createCliWriteStream(path);
+	const output = createVdjOutput(path);
+	const stream = output.stream;
 	try {
-		await once(stream, "open");
+		await output.opened;
 		await writeChunk(stream, `${headers.join("	")}\n`);
 		let batch = [];
 		for (let ordinal = 0; ordinal < rows.length; ordinal += 1) {
@@ -4832,9 +4869,9 @@ async function writeRowsFile(path, headers, rows, include = () => true) {
 			}
 		}
 		if (batch.length) await writeChunk(stream, serializeRowBody(headers, batch));
-		await finishWritable(stream);
+		await output.finish();
 	} catch (error) {
-		stream.destroy();
+		output.destroy();
 		throw error;
 	}
 }
@@ -4955,12 +4992,14 @@ async function runPipeline(config, base, assets) {
 	if (config.annotation.airrMode === "preserve" && config.annotation.doubleD.mode !== "off" && config.inputs.some((input) => detectFormat(input.path, input.format) === "airr")) throw new Error("Double-D screening of AIRR input requires annotation.airrMode = \"reannotate\".");
 	const needsAnnotation = config.inputs.some((input) => detectFormat(input.path, input.format) !== "airr" || config.annotation.airrMode === "reannotate");
 	const annotationBatchRecords = config.annotation.batchRecords || automaticBatchRecords(config.annotation.workers);
-	const pool = needsAnnotation ? new WasmPool(config.annotation.workers, workerInitialization(assets.wasmPath, references, config.annotation.callingProfile, config.annotation.assignerStrategy)) : null;
+	const pool = needsAnnotation ? new WasmPool(config.annotation.workers, workerInitialization(assets.wasmPath, references, config.annotation.callingProfile, config.annotation.assignerStrategy, void 0, config.annotation.minimumConstantPrefixIdentity)) : null;
 	if (pool) {
 		process.stderr.write(`Starting SwiftIG pool (${config.annotation.workers} worker${config.annotation.workers === 1 ? "" : "s"}; ${annotationBatchRecords.toLocaleString()} records/batch).\n`);
 		await pool.start();
 	}
-	const annotatedStream = config.output.writeAnnotatedAirr ? createCliWriteStream(join(outputDirectory, `${prefix}.annotated.airr.tsv`)) : null;
+	const annotatedName = airrOutputName(prefix, "annotated", config.output.airrCompression);
+	const annotatedOutput = config.output.writeAnnotatedAirr ? createVdjOutput(join(outputDirectory, annotatedName)) : null;
+	const annotatedStream = annotatedOutput?.stream ?? null;
 	let annotatedOutputHeaders = null;
 	const rows = [];
 	const headers = [];
@@ -4969,7 +5008,7 @@ async function runPipeline(config, base, assets) {
 	let eligibleRecords = 0;
 	let fastqFilterStats = emptyFastqQualityFilterStats(config.preprocessing.fastqFilter.enabled, false);
 	try {
-		if (annotatedStream) await once(annotatedStream, "open");
+		if (annotatedOutput) await annotatedOutput.opened;
 		for (let datasetIndex = 0; datasetIndex < config.inputs.length; datasetIndex += 1) {
 			const input = config.inputs[datasetIndex];
 			const preserveAirr = detectFormat(input.path, input.format) === "airr" && config.annotation.airrMode === "preserve";
@@ -5037,12 +5076,12 @@ async function runPipeline(config, base, assets) {
 			fastqFilterStats = addFastqQualityFilterStats(fastqFilterStats, preprocessingState.fastqFilter);
 		}
 	} catch (error) {
-		annotatedStream?.destroy();
+		annotatedOutput?.destroy();
 		throw error;
 	} finally {
 		await pool?.close();
 	}
-	if (annotatedStream) await finishWritable(annotatedStream);
+	if (annotatedOutput) await annotatedOutput.finish();
 	rows.forEach((row, ordinal) => {
 		if (!row.sequence_id) row.sequence_id = `swig_${ordinal + 1}`;
 	});
@@ -5165,7 +5204,8 @@ async function runPipeline(config, base, assets) {
 	rows.forEach((row, ordinal) => {
 		row.swig_retained = activeMask[ordinal] ? "T" : "F";
 	});
-	await writeRowsFile(join(outputDirectory, `${prefix}.processed.airr.tsv`), headers, rows, (_, ordinal) => Boolean(activeMask[ordinal]));
+	const processedName = airrOutputName(prefix, "processed", config.output.airrCompression);
+	await writeRowsFile(join(outputDirectory, processedName), headers, rows, (_, ordinal) => Boolean(activeMask[ordinal]));
 	let lineageStudy = null;
 	if (config.output.writeLineageStudy && lineages) {
 		process.stderr.write("Writing lazy lineage-study bundle…\n");
@@ -5181,6 +5221,11 @@ async function runPipeline(config, base, assets) {
 		annotatedRecords,
 		retainedRecords: retained,
 		lineages: lineages?.lineageCount ?? 0,
+		outputs: {
+			annotated: config.output.writeAnnotatedAirr ? annotatedName : null,
+			processed: processedName,
+			airrCompression: config.output.airrCompression
+		},
 		references: { metadataPreparation: {
 			enabled: config.references.prepareMetadata,
 			segments: loadedReferences.preparation
@@ -5312,14 +5357,17 @@ async function runVdj(rawArgs, assets) {
 	if (outputPath !== "-") await mkdir(dirname(outputPath), { recursive: true });
 	const prepared = await prepareVdjReferences(options, assets);
 	const tuning = vdjTuning(options, callingProfile);
-	const pool = new WasmPool(workers, workerInitialization(assets.wasmPath, prepared.references, callingProfile, assigner, tuning));
+	const minimumConstantPrefixIdentity = options["--minimum-c-prefix-identity"] === void 0 ? null : parseFiniteOption(options["--minimum-c-prefix-identity"], "--minimum-c-prefix-identity");
+	if (minimumConstantPrefixIdentity !== null && (minimumConstantPrefixIdentity < 0 || minimumConstantPrefixIdentity > 1)) throw new Error("--minimum-c-prefix-identity must be between 0 and 1.");
+	const pool = new WasmPool(workers, workerInitialization(assets.wasmPath, prepared.references, callingProfile, assigner, tuning, minimumConstantPrefixIdentity));
 	await pool.start();
-	const output = outputPath === "-" ? process.stdout : createCliWriteStream(outputPath);
+	const outputHandle = outputPath === "-" ? null : createVdjOutput(outputPath);
+	const output = outputHandle?.stream ?? process.stdout;
 	let outputHeader = null;
 	let records = 0;
 	let completed = false;
 	try {
-		if (outputPath !== "-") await once(output, "open");
+		if (outputHandle) await outputHandle.opened;
 		const assignerLabel = assigner === "riat_mp" ? "RIAT-MP" : assigner === "aer" ? "AER" : assigner === "aer_robust" ? "AER-R (experimental)" : "standard SwiftIG";
 		const profileLabel = callingProfile === "r_optimized" ? "R-optimized" : callingProfile === "sensitive_d" ? "Sensitive-D" : callingProfile === "igblast_balanced" ? "IgBLAST-balanced" : callingProfile === "igblast_compatible" ? "IgBLAST-agreement" : "truth-optimized";
 		process.stderr.write(`Streaming SwiftIG V(D)J assignments (${prepared.mode}; ${workers} worker${workers === 1 ? "" : "s"}; ${batchRecords.toLocaleString()} records/batch; ${assignerLabel}; ${profileLabel} profile) to ${outputPath}.\n`);
@@ -5358,10 +5406,10 @@ async function runVdj(rawArgs, assets) {
 			if (pending.length >= Math.max(2, workers * 2)) await consume(pending.shift());
 		}
 		while (pending.length) await consume(pending.shift());
-		if (outputPath !== "-") await finishWritable(output);
+		if (outputHandle) await outputHandle.finish();
 		completed = true;
 	} finally {
-		if (!completed && outputPath !== "-") output.destroy();
+		if (!completed && outputHandle) outputHandle.destroy();
 		await pool.close();
 	}
 	process.stderr.write(`Completed ${records.toLocaleString()} streaming V(D)J assignment${records === 1 ? "" : "s"}.\n`);
@@ -5436,6 +5484,14 @@ async function runCli(assets = defaultCliAssets()) {
 		...raw.annotation ?? {},
 		workers: parseIntegerOption(commandWorkers, "--workers", { minimum: 0 })
 	};
+	const commandCompression = argumentValue(rest, "--airr-compression");
+	if (commandCompression !== void 0) {
+		if (!["none", "gzip"].includes(commandCompression)) throw new Error("--airr-compression must be none or gzip.");
+		raw.output = {
+			...raw.output ?? {},
+			airrCompression: commandCompression
+		};
+	}
 	const config = normalizeCliConfig(raw);
 	if (![
 		"standard",

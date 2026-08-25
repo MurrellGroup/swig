@@ -39,7 +39,7 @@ async function downloadResponse(url) {
     const encoder = new TextEncoder();
     let chunkIndex = -1;
     let chunkReader = null;
-    const body = new ReadableStream({
+    let body = new ReadableStream({
       async pull(controller) {
         try {
           while (true) {
@@ -81,9 +81,14 @@ async function downloadResponse(url) {
         database.close();
       },
     });
+    const gzip = url.searchParams.get("compression") === "gzip";
+    if (gzip) {
+      if (typeof CompressionStream === "undefined") throw new Error("Gzip streaming is unavailable in this browser.");
+      body = body.pipeThrough(new CompressionStream("gzip"));
+    }
     return new Response(body, {
       headers: {
-        "Content-Type": "text/tab-separated-values; charset=utf-8",
+        "Content-Type": gzip ? "application/gzip" : "text/tab-separated-values; charset=utf-8",
         "Content-Disposition": `attachment; filename="${safeName}"`,
         "Cache-Control": "no-store",
       },

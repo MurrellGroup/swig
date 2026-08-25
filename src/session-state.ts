@@ -1,6 +1,7 @@
 import type { CompiledReferences, ScopeKey } from "./reference-pack";
 import type { RepertoireSelectionOptions } from "./repertoire-selection";
 import type { MissingAlleleDashboard, MissingAlleleOptions } from "./germline-evidence";
+import type { PersonalizedGermlineDashboard, PersonalizedGermlineOptions } from "./personalized-germline";
 import type { ShmDashboard, ShmMetricKey } from "./shm-analysis";
 import type { AssignerStrategy, CallingProfile } from "./swiftig-runtime";
 import type { DatasetManifestEntry, PipelinePlan, StudyDesign } from "./study-design";
@@ -81,6 +82,7 @@ export interface PostAnalysisSessionSnapshot {
   phyloUca?: PhyloUcaSavedState;
   shm?: { metric: ShmMetricKey; dashboard: ShmDashboard; sampleOrder?: string[] };
   missingAlleles?: { options: MissingAlleleOptions; dashboard: MissingAlleleDashboard; selectedCandidateIds?: string[] };
+  personalizedGermline?: { options: PersonalizedGermlineOptions; dashboard: PersonalizedGermlineDashboard };
 }
 
 export interface SwigSession {
@@ -99,6 +101,7 @@ export interface SwigSession {
     callingProfile?: CallingProfile;
     assignerStrategy?: AssignerStrategy;
     minimumIdentity: number;
+    minimumConstantPrefixIdentity?: number | null;
     strand: 0 | 1 | 2;
     subsample?: { enabled: boolean; size: number; seed: number };
     fastqFilter?: FastqQualityFilterOptions;

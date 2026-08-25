@@ -26,4 +26,14 @@ struct ReferenceDatabaseStatistics {
     const ReferenceDatabaseStatistics& database,
     const Scoring& scoring) noexcept;
 
+// Expected number of random gapless score paths reaching at least `score`
+// across a fixed number of explicitly admitted start hypotheses. This uses
+// the same fitted exponential score tail as the local-alignment calibration,
+// but removes the inappropriate full query/reference search area when both
+// ends of a biological feature are independently anchored.
+[[nodiscard]] std::optional<double> calibrated_anchored_score_evalue(
+    int score,
+    std::size_t opportunities,
+    const Scoring& scoring) noexcept;
+
 }  // namespace swiftig

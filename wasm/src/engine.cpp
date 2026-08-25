@@ -84,6 +84,34 @@ bool canonical_base(char base) {
     return base == 'A' || base == 'C' || base == 'G' || base == 'T';
 }
 
+std::optional<double> covered_c_prefix_identity(
+    const std::string& downstream,
+    const SegmentHit& hit) {
+    const auto& alignment = hit.alignment;
+    // Infer the query position corresponding to C-reference base zero. If the
+    // local hit begins too far inside the reference to be covered by the query,
+    // a complete-prefix identity cannot be established.
+    if (alignment.query_start < alignment.reference_start) return std::nullopt;
+    const auto query_origin = alignment.query_start - alignment.reference_start;
+    if (query_origin + alignment.reference_start > downstream.size()) {
+        return std::nullopt;
+    }
+    std::size_t leading_matches = 0;
+    for (std::size_t position = 0; position < alignment.reference_start; ++position) {
+        const auto query_base = downstream[query_origin + position];
+        const auto reference_base = hit.gene->sequence[position];
+        if (canonical_base(query_base) && query_base == reference_base) {
+            ++leading_matches;
+        }
+    }
+    // Insertions and deletions are deliberately counted in the denominator:
+    // this is a strict covered-prefix identity, not a second local HSP score.
+    const auto columns = alignment.reference_start + alignment.alignment_columns();
+    if (columns == 0) return std::nullopt;
+    return static_cast<double>(leading_matches + alignment.matches) /
+        static_cast<double>(columns);
+}
+
 int substitution_score(char query, char reference, const Scoring& scoring) {
     if (!canonical_base(query) || !canonical_base(reference)) return 0;
     return query == reference ? scoring.match : scoring.mismatch;
@@ -751,6 +779,64 @@ void merge_exact_substring_calls(SegmentHit& selected, const SegmentIndex& index
     }
 }
 
+void merge_exact_anchored_calls(
+    SegmentHit& selected,
+    const SegmentIndex& index,
+    std::size_t maximum_reference_offset,
+    const std::string& query,
+    double minimum_prefix_identity) {
+    if (selected.alignment.aligned_query.empty() ||
+        selected.alignment.aligned_query != selected.alignment.aligned_reference ||
+        selected.alignment.aligned_query.find('-') != std::string::npos ||
+        !std::all_of(
+            selected.alignment.aligned_query.begin(),
+            selected.alignment.aligned_query.end(), canonical_base)) return;
+    std::unordered_set<std::string> present;
+    std::size_t start = 0;
+    while (start <= selected.call.size()) {
+        const auto end = selected.call.find(',', start);
+        present.insert(selected.call.substr(
+            start, end == std::string::npos ? std::string::npos : end - start));
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    for (const auto& gene : index.genes()) {
+        if (present.contains(gene.name) ||
+            !same_or_unknown_locus(gene.locus, selected.gene->locus)) continue;
+        bool matches = false;
+        const auto last_offset = std::min(maximum_reference_offset, gene.sequence.size());
+        for (std::size_t offset = 0; offset <= last_offset; ++offset) {
+            if (offset + selected.alignment.aligned_query.size() > gene.sequence.size()) break;
+            if (gene.sequence.compare(
+                    offset, selected.alignment.aligned_query.size(),
+                    selected.alignment.aligned_query) == 0) {
+                if (minimum_prefix_identity > 0.0) {
+                    if (selected.alignment.query_start < offset) continue;
+                    const auto query_origin = selected.alignment.query_start - offset;
+                    if (query_origin + offset > query.size()) continue;
+                    std::size_t prefix_matches = 0;
+                    for (std::size_t position = 0; position < offset; ++position) {
+                        if (canonical_base(query[query_origin + position]) &&
+                            query[query_origin + position] == gene.sequence[position]) {
+                            ++prefix_matches;
+                        }
+                    }
+                    const auto columns = offset + selected.alignment.alignment_columns();
+                    const auto identity = columns == 0 ? 0.0 :
+                        static_cast<double>(prefix_matches + selected.alignment.matches) /
+                        static_cast<double>(columns);
+                    if (identity < minimum_prefix_identity) continue;
+                }
+                matches = true;
+                break;
+            }
+        }
+        if (!matches) continue;
+        selected.call += "," + gene.name;
+        present.insert(gene.name);
+    }
+}
+
 std::vector<SegmentHit> uncertain_alternatives(
     const SegmentHit& selected,
     const std::vector<SegmentHit>& hits) {
@@ -831,8 +917,11 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
         query.begin(), query.end(), [](char base) {
             return base == 'A' || base == 'C' || base == 'G' || base == 'T';
         }));
+    const double minimum_identity = &index == &database_.c
+        ? options_.min_c_identity
+        : options_.min_identity;
     const auto minimum_possible_matches = static_cast<std::size_t>(
-        std::ceil(static_cast<double>(min_length) * options_.min_identity));
+        std::ceil(static_cast<double>(min_length) * minimum_identity));
     if (canonical_bases < minimum_possible_matches) return {};
     const std::size_t pool_size = std::max<std::size_t>(top_n * 4, 16);
     const std::size_t candidate_limit = std::min(
@@ -917,7 +1006,7 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
     const auto accept_alignment = [&](const Candidate& candidate, Alignment alignment) {
         const auto& gene = index.genes()[candidate.gene_index];
         if (!alignment.valid() || aligned_bases(alignment) < min_length ||
-            alignment.identity() < options_.min_identity) return;
+            alignment.identity() < minimum_identity) return;
         hits.push_back(SegmentHit{&gene, std::move(alignment), gene.name, query.size()});
     };
     const auto align_batch = [&](const std::array<const Candidate*, 4>& batch,
@@ -1140,6 +1229,70 @@ std::vector<SegmentHit> AnnotationEngine::align_candidates(
         }
     }
     return hits;
+}
+
+std::vector<SegmentHit> AnnotationEngine::align_constant_candidates(
+    const std::string& query,
+    const SegmentHit& selected_j,
+    const std::string& locus_filter) const {
+    if (database_.c.empty() || query.empty()) return {};
+
+    // C is a post-J annotation. Search from the documented one-base J/C
+    // reference overlap rather than aligning long constant references against
+    // the complete V(D)J read. Besides preventing an upstream local island from
+    // becoming a C call, this removes most C-search DP work on ordinary reads.
+    const auto search_start = selected_j.alignment.query_end > 0
+        ? selected_j.alignment.query_end - 1 : 0;
+    if (search_start >= query.size()) return {};
+    const std::string downstream = query.substr(search_start);
+    auto hits = align_candidates(
+        downstream, database_.c, options_.top_c, options_.c_scoring,
+        options_.min_c_length, locus_filter);
+
+    std::size_t locus_reference_count = 0;
+    for (const auto& gene : database_.c.genes()) {
+        if (locus_filter.empty() || same_or_unknown_locus(locus_filter, gene.locus)) {
+            ++locus_reference_count;
+        }
+    }
+    const auto anchored_opportunities = locus_reference_count *
+        (options_.max_anchored_c_query_offset + 1) *
+        (options_.max_anchored_c_reference_offset + 1);
+
+    std::vector<SegmentHit> accepted;
+    accepted.reserve(hits.size());
+    for (auto& hit : hits) {
+        const auto local_support = calibrated_alignment_evalue(
+            hit.alignment.score, hit.search_query_length, c_statistics_,
+            options_.c_scoring);
+        const bool ordinary_local =
+            aligned_bases(hit.alignment) >= options_.min_unanchored_c_length &&
+            local_support && *local_support <= options_.max_c_evalue;
+        const bool anchored_geometry =
+            hit.alignment.insertions == 0 && hit.alignment.deletions == 0 &&
+            hit.alignment.query_start <= options_.max_anchored_c_query_offset &&
+            hit.alignment.reference_start <= options_.max_anchored_c_reference_offset;
+        const auto anchored_support = anchored_geometry
+            ? calibrated_anchored_score_evalue(
+                hit.alignment.score, anchored_opportunities, options_.c_scoring)
+            : std::nullopt;
+        const bool anchored = anchored_support &&
+            *anchored_support <= options_.max_anchored_c_evalue;
+        if (!ordinary_local && !anchored) continue;
+        hit.prefix_identity = covered_c_prefix_identity(downstream, hit);
+        if (options_.min_c_prefix_identity > 0.0 &&
+            (!hit.prefix_identity ||
+             *hit.prefix_identity < options_.min_c_prefix_identity)) {
+            continue;
+        }
+        hit.support = anchored && (!ordinary_local || *anchored_support < *local_support)
+            ? anchored_support : local_support;
+        hit.alignment.query_start += search_start;
+        hit.alignment.query_end += search_start;
+        refresh_airr_cigar(hit.alignment, query.size(), hit.gene->sequence.size());
+        accepted.push_back(std::move(hit));
+    }
+    return accepted;
 }
 
 std::vector<SegmentHit> AnnotationEngine::align_v_allele_tree(
@@ -2109,47 +2262,13 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation_aer_r
     const std::string locus = result.v ? result.v->gene->locus
         : (result.j ? result.j->gene->locus : "");
     if (!database_.c.empty() && result.j) {
-        auto c_hits = align_candidates(
-            sequence, database_.c, options_.top_c, options_.c_scoring,
-            options_.min_c_length, locus);
-        struct ConstantChoice {
-            SegmentHit j;
-            SegmentHit c;
-            double rank_gain = -std::numeric_limits<double>::infinity();
-        };
-        std::optional<ConstantChoice> constant;
-        for (const auto& original_c : c_hits) {
-            if (original_c.alignment.query_start + 1 >= result.j->alignment.query_end) {
-                const auto gain = original_c.alignment.score * 0.25;
-                if (!constant || gain > constant->rank_gain) {
-                    constant = ConstantChoice{*result.j, original_c, gain};
-                }
-                continue;
-            }
-            const auto low = std::max(
-                result.j->alignment.query_start + 1,
-                original_c.alignment.query_start);
-            const auto high = std::min(
-                result.j->alignment.query_end,
-                original_c.alignment.query_end - 1);
-            for (std::size_t boundary = low; boundary <= high && low <= high; ++boundary) {
-                const auto j = clip_right(*result.j, boundary, options_.j_scoring);
-                const auto c = clip_left(original_c, boundary, options_.c_scoring);
-                if (!j || !c || !long_enough(*j, options_.min_j_length) ||
-                    !long_enough(*c, options_.min_c_length)) continue;
-                const auto gain = static_cast<double>(
-                    j->alignment.score - result.j->alignment.score) +
-                    c->alignment.score * 0.25;
-                if (!constant || gain > constant->rank_gain) {
-                    constant = ConstantChoice{*j, *c, gain};
-                }
-            }
-        }
-        if (constant && constant->rank_gain > 0.0) {
-            result.j = constant->j;
-            result.c = constant->c;
-            result.rank_score += constant->rank_gain;
+        auto c_hits = align_constant_candidates(sequence, *result.j, locus);
+        if (!c_hits.empty()) {
+            result.c = c_hits.front();
             merge_equivalent_calls(*result.c, c_hits);
+            merge_exact_anchored_calls(
+                *result.c, database_.c, options_.max_anchored_c_reference_offset,
+                sequence, options_.min_c_prefix_identity);
             result.c_alternatives = uncertain_alternatives(*result.c, c_hits);
         }
     }
@@ -2361,19 +2480,14 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation(
 
     const std::string locus = result.v ? result.v->gene->locus : (result.j ? result.j->gene->locus : "");
     if (!database_.c.empty() && result.j) {
-        auto c_hits = align_candidates(
-            sequence, database_.c, options_.top_c, options_.c_scoring, options_.min_c_length, locus);
-        std::vector<SegmentHit> viable_c_hits;
-        for (const auto& hit : c_hits) {
-            // NCBI C references may carry one leading J-derived base to complete a codon.
-            if (!result.j || hit.alignment.query_start + 1 >= result.j->alignment.query_end) {
-                viable_c_hits.push_back(hit);
-            }
-        }
-        if (!viable_c_hits.empty()) {
-            result.c = viable_c_hits.front();
-            merge_equivalent_calls(*result.c, viable_c_hits);
-            result.c_alternatives = uncertain_alternatives(*result.c, viable_c_hits);
+        auto c_hits = align_constant_candidates(sequence, *result.j, locus);
+        if (!c_hits.empty()) {
+            result.c = c_hits.front();
+            merge_equivalent_calls(*result.c, c_hits);
+            merge_exact_anchored_calls(
+                *result.c, database_.c, options_.max_anchored_c_reference_offset,
+                sequence, options_.min_c_prefix_identity);
+            result.c_alternatives = uncertain_alternatives(*result.c, c_hits);
         }
     }
 
@@ -2387,7 +2501,6 @@ AnnotationEngine::OrientationResult AnnotationEngine::annotate_orientation(
         result.j_alternatives = uncertain_alternatives(*result.j, j_hits);
     }
     if (result.d) result.rank_score += result.d->alignment.score * 0.5;
-    if (result.c) result.rank_score += result.c->alignment.score * 0.25;
     return result;
 }
 
@@ -2435,6 +2548,7 @@ Annotation AnnotationEngine::annotate(const SequenceRecord& record, const Annota
                                     const Scoring& scoring,
                                     const ReferenceDatabaseStatistics& statistics) {
         if (!hit) return;
+        if (hit->support) return;
         const auto query_length = hit->search_query_length > 0
             ? hit->search_query_length : annotation.oriented_sequence.size();
         hit->support = calibrated_alignment_evalue(

@@ -71,6 +71,10 @@ private:
         const Scoring& scoring,
         std::size_t min_length,
         const std::vector<Candidate>* candidate_hints = nullptr) const;
+    [[nodiscard]] std::vector<SegmentHit> align_constant_candidates(
+        const std::string& query,
+        const SegmentHit& selected_j,
+        const std::string& locus_filter) const;
     void annotate_junction(Annotation& annotation) const;
     void annotate_v_regions(Annotation& annotation) const;
     void stitch_alignment(Annotation& annotation) const;

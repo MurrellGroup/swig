@@ -96,12 +96,16 @@ struct SegmentHit {
     const Gene* gene = nullptr;
     Alignment alignment;
     std::string call;
-    // Length of the query span searched to produce this hit. D is searched in
-    // the V/J-bounded junction; V, J, and C use the complete oriented query.
+    // Length of the query span searched to produce this hit. D uses the
+    // V/J-bounded junction, C uses the post-J slice, and V/J use the complete
+    // oriented query.
     std::size_t search_query_length = 0;
     // Calibrated BLAST-form expectation value for this SwiftIG score. Missing
     // when a caller supplies a scoring tuple without an offline calibration.
     std::optional<double> support;
+    // For C hits, identity over the complete covered reference prefix rather
+    // than only the positive-scoring local alignment island.
+    std::optional<double> prefix_identity;
 
     [[nodiscard]] bool valid() const noexcept { return gene != nullptr && alignment.valid(); }
 };
@@ -185,7 +189,22 @@ struct EngineOptions {
     std::size_t min_v_length = 24;
     std::size_t min_d_match = 6;
     std::size_t min_j_length = 10;
-    std::size_t min_c_length = 30;
+    // Short 5'-constant amplicons can be informative when they begin where C
+    // must begin. Twelve bases is only a candidate-generation floor: the
+    // anchored or ordinary local chance-match gate below remains decisive.
+    std::size_t min_c_length = 12;
+    std::size_t min_unanchored_c_length = 30;
+    std::size_t max_anchored_c_query_offset = 8;
+    std::size_t max_anchored_c_reference_offset = 3;
+    // Constant regions are not expected to carry V-region-like SHM. A
+    // reported call must satisfy this independent identity floor and either
+    // the stringent ordinary-local or short anchored chance-alignment gate.
+    double min_c_identity = 0.90;
+    // Optional stricter user gate over every base from the inferred C origin
+    // through the end of the local C hit. Zero leaves this extra gate off.
+    double min_c_prefix_identity = 0.0;
+    double max_c_evalue = 1e-5;
+    double max_anchored_c_evalue = 1e-4;
     double min_identity = 0.60;
     int band_width = 28;
     int max_band_width = 256;

@@ -4,6 +4,7 @@ import test from "node:test";
 import "fake-indexeddb/auto";
 import { alignmentText, tableHeader, tableRow, treeNexus } from "../src/export-formats.ts";
 import { augmentReferenceFasta, candidateFasta, MissingAlleleAccumulator, requiresCompleteGermlineWarning, type MissingAlleleCandidate } from "../src/germline-evidence.ts";
+import { PersonalizedGermlineAccumulator, personalizedGermlineFasta, shmContextMutability } from "../src/personalized-germline.ts";
 import { filterReferenceFasta, parseReferenceFasta } from "../src/reference-fasta.ts";
 import { DEFAULT_REPERTOIRE_SELECTION, selectRepertoire } from "../src/repertoire-selection.ts";
 import { AirrResultStore } from "../src/result-store.ts";
@@ -96,6 +97,39 @@ test("clonal expansion cannot inflate missing-V support",()=>{
   for(let index=1;index<5;index+=1)rows.push({row:germlineRow(reference,index,[50]),ordinal:ordinal++,lineageId:index+1});
   for(let index=5;index<25;index+=1)rows.push({row:germlineRow(reference,index,[]),ordinal:ordinal++,lineageId:index+1});
   const result=runMissingAllele(rows,reference);assert.equal(result.independentUnits,25);assert.equal(result.candidates.length,0);
+});
+
+function personalizedRow(parent:string,query:string,id:string,call="IGHV1-1*01"):Record<string,string>{
+  return {sequence_id:id,subject_id:"donor_1",locus:"IGH",v_call:call,v_germline_start:"1",v_sequence_alignment:query,v_germline_alignment:parent};
+}
+
+test("personalized germline representative is the lowest current-assignment V-SHM row, not a random row",()=>{
+  const reference="ACGT".repeat(50);const changed=[...reference];for(const position of [10,20,30,40,50])changed[position-1]=changed[position-1]==="A"?"C":"A";
+  const accumulator=new PersonalizedGermlineAccumulator(`>IGHV1-1*01\n${reference}\n`,{minimumAlignedBases:100,minimumNovelSupport:20});
+  accumulator.add(personalizedRow(reference,changed.join(""),"high-shm"),0,1);
+  accumulator.add(personalizedRow(reference,reference,"low-shm"),1,1);
+  assert.deepEqual(accumulator.selectedRepresentativeOrdinals(),[1]);
+});
+
+test("personalized germline fit recovers a two-allele expressed set with one vote per lineage",()=>{
+  const first="ACGT".repeat(50);const second=[...first];second[49]=second[49]==="A"?"C":"A";const secondSequence=second.join("");
+  const fasta=`>IGHV1-1*01 SWIGMETA=1,2,3\n${first}\n>IGHV1-1*02 SWIGMETA=1,2,3\n${secondSequence}\n>IGHV9-9*01\n${first}\n`;
+  const accumulator=new PersonalizedGermlineAccumulator(fasta,{minimumAlignedBases:100,minimumNovelSupport:100});
+  for(let lineage=1;lineage<=60;lineage+=1){const query=lineage<=30?first:secondSequence;accumulator.add(personalizedRow(first,query,`lineage-${lineage}`),lineage,lineage);for(let copy=0;copy<10;copy+=1)accumulator.add(personalizedRow(first,query,`lineage-${lineage}-copy-${copy}`),1000+lineage*10+copy,lineage);}
+  const dashboard=accumulator.finish();const gene=dashboard.pools[0].genes.find((item)=>item.gene==="IGHV1-1");assert.ok(gene);assert.equal(dashboard.representativeLineages,60);assert.deepEqual(gene.activeAlleles.map((item)=>item.names[0]).sort(),["IGHV1-1*01","IGHV1-1*02"]);assert.ok(gene.activeAlleles.every((item)=>Math.abs(item.frequency-.5)<.02));
+});
+
+test("personalized germline fit can retain a recurrent same-length novel substitution haplotype",()=>{
+  const reference="ACGT".repeat(50);const novel=[...reference];for(const position of [50,80])novel[position-1]=novel[position-1]==="A"?"C":"A";
+  const fasta=`>IGHV1-1*01 SWIGMETA=1,2,3\n${reference}\n>IGHV9-9*01\n${reference}\n`;
+  const accumulator=new PersonalizedGermlineAccumulator(fasta,{minimumAlignedBases:100,minimumNovelSupport:4});for(let lineage=1;lineage<=24;lineage+=1)accumulator.add(personalizedRow(reference,novel.join(""),`novel-${lineage}`),lineage,lineage);
+  const dashboard=accumulator.finish();const allele=dashboard.pools[0].genes.find((item)=>item.gene==="IGHV1-1")?.activeAlleles[0];assert.ok(allele);assert.equal(allele.known,false);assert.deepEqual(allele.substitutions.map((item)=>item.position),[50,80]);
+  const personalized=personalizedGermlineFasta(fasta,dashboard,dashboard.pools[0].id);assert.match(personalized,/SWIG_PERSONALIZED=novel/);assert.match(personalized,/>IGHV9-9\*01/);assert.doesNotMatch(personalized,/>IGHV1-1\*01(?:\s|\n)/);
+});
+
+test("personalized germline SHM prior distinguishes classic hot, neutral, and cold contexts",()=>{
+  assert.ok(shmContextMutability("AACTA",2)>shmContextMutability("GGCAA",2));
+  assert.ok(shmContextMutability("GGCAA",2)>shmContextMutability("CTCAA",2));
 });
 
 test("double-D positive repertoire selection uses sparse evidence and composes call/CDR3 filters", async () => {

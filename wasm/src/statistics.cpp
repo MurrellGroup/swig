@@ -100,4 +100,19 @@ std::optional<double> calibrated_alignment_evalue(
     return std::exp(log_evalue);
 }
 
+std::optional<double> calibrated_anchored_score_evalue(
+    int score,
+    std::size_t opportunities,
+    const Scoring& scoring) noexcept {
+    const auto* calibration = find_calibration(scoring);
+    if (!calibration || score <= 0 || opportunities == 0) return std::nullopt;
+    const double log_evalue = std::log(static_cast<double>(opportunities)) -
+        calibration->lambda * static_cast<double>(score);
+    if (log_evalue <= std::log(std::numeric_limits<double>::denorm_min())) return 0.0;
+    if (log_evalue >= std::log(std::numeric_limits<double>::max())) {
+        return std::numeric_limits<double>::max();
+    }
+    return std::exp(log_evalue);
+}
+
 }  // namespace swiftig

@@ -10,6 +10,7 @@ interface SwiftIgExports extends WebAssembly.Exports {
   swig_free: (pointer: number) => void;
   swig_set_calling_profile: (profile: number) => number;
   swig_set_assigner_strategy: (strategy: number) => number;
+  swig_set_c_prefix_identity: (identityPerMille: number) => number;
   swig_init_database: (
     vPointer: number, vSize: number, dPointer: number, dSize: number,
     jPointer: number, jSize: number, cPointer: number, cSize: number,
@@ -40,6 +41,7 @@ interface InitializeRequest {
   references: { V: string; D: string; J: string; C: string };
   callingProfile: CallingProfile;
   assignerStrategy: AssignerStrategy;
+  minimumConstantPrefixIdentity: number | null;
 }
 
 interface AnnotateRequest {
@@ -102,6 +104,11 @@ async function initialize(request: InitializeRequest) {
         request.callingProfile === "sensitive_d" ? 3 : 1,
   ) !== 0) {
     throw new Error("SwiftIG rejected the selected calling profile.");
+  }
+  const cPrefixIdentity = request.minimumConstantPrefixIdentity === null
+    ? 0 : Math.round(request.minimumConstantPrefixIdentity * 1000);
+  if (exports.swig_set_c_prefix_identity(cPrefixIdentity) !== 0) {
+    throw new Error("SwiftIG rejected the covered C-prefix identity threshold.");
   }
   const allocations = [
     putText(exports, request.references.V),

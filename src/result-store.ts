@@ -308,7 +308,7 @@ function addCallCounts(top: Map<string, number>, fractional: Map<string, number>
 }
 
 function isotypeLabel(call: string): string {
-  const gene = topCall(call).toUpperCase().replace(/\*.*$/, "");
+  const gene = call.toUpperCase().replace(/\*.*$/, "");
   const heavy = gene.match(/IGH([MDE])(?:\d+)?$/) ?? gene.match(/IGH(G|A)(\d+)?$/);
   if (heavy) return `Ig${heavy[1]}${heavy[2] ?? ""}`;
   if (gene.startsWith("IGKC")) return "Igκ constant";
@@ -321,10 +321,17 @@ export function inferIsotype(
   call: string,
   alignedSequence: string,
   identity: number | null,
+  support: number | null = null,
 ): string {
   const alignedBases = alignedSequence.replace(/[-.\s]/g, "").length;
-  if (!call || alignedBases < 30 || (identity ?? 0) < 0.65) return "";
-  return isotypeLabel(call);
+  const longLocalEvidence = alignedBases >= 30;
+  const shortAnchoredEvidence = alignedBases >= 12 && support !== null && support <= 1e-4;
+  if (!call || (identity ?? 0) < 0.90 || (!longLocalEvidence && !shortAnchoredEvidence)) return "";
+  const labels = [...new Set(calls(call).map(isotypeLabel).filter(Boolean))];
+  if (labels.length <= 1) return labels[0] ?? "";
+  if (labels.every((label) => /^IgG\d*$/.test(label))) return "IgG";
+  if (labels.every((label) => /^IgA\d*$/.test(label))) return "IgA";
+  return labels.join("/");
 }
 
 interface RepertoireBucket {
@@ -744,7 +751,7 @@ export class AirrResultStore {
         if (!clean) return "";
         const values = clean.split("\t");
         const at = (name: string) => values[incomingPositions[name]] ?? "";
-        return `${clean}\t${inferIsotype(at("c_call"), at("c_sequence_alignment"), numeric(at("c_identity")))}`;
+        return `${clean}\t${inferIsotype(at("c_call"), at("c_sequence_alignment"), numeric(at("c_identity")), numeric(at("c_support")))}`;
       }).join("\n");
       normalizedHeader += "\tisotype";
     }
@@ -840,6 +847,7 @@ export class AirrResultStore {
           at(values, "c_call"),
           at(values, "c_sequence_alignment"),
           numeric(at(values, "c_identity")),
+          numeric(at(values, "c_support")),
         ),
         productive: at(values, "productive"),
         cdr3: at(values, "cdr3"),
@@ -1180,10 +1188,11 @@ export class AirrResultStore {
     }
   }
 
-  streamingDownloadUrl(baseUrl: string, name: string): string {
+  streamingDownloadUrl(baseUrl: string, name: string, compression: "none"|"gzip" = "none"): string {
     const url = new URL(`${baseUrl}__swig_download__`, globalThis.location?.href);
     url.searchParams.set("database", this.databaseName);
     url.searchParams.set("name", name);
+    if(compression==="gzip")url.searchParams.set("compression","gzip");
     return url.href;
   }
 

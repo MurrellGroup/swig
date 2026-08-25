@@ -47,6 +47,8 @@ export interface CliAnnotationConfig {
   callingProfile: CallingProfile;
   assignerStrategy: AssignerStrategy;
   minimumIdentity: number;
+  /** Optional extra gate over the complete query-covered C-reference prefix. */
+  minimumConstantPrefixIdentity: number | null;
   strand: 0 | 1 | 2;
   /** Re-run SwiftIG on AIRR `sequence`, or trust the existing AIRR calls. */
   airrMode: "reannotate" | "preserve";
@@ -94,6 +96,7 @@ export interface SwigCliConfig {
   output: {
     directory: string;
     prefix: string;
+    airrCompression: "none" | "gzip";
     writeAnnotatedAirr: boolean;
     writeLineageStudy: boolean;
   };
@@ -156,6 +159,7 @@ export const DEFAULT_CLI_CONFIG: SwigCliConfig = {
     callingProfile: "truth_optimized",
     assignerStrategy: "riat_mp",
     minimumIdentity: 0.6,
+    minimumConstantPrefixIdentity: null,
     strand: 0,
     airrMode: "preserve",
     doubleD: { mode: "off", minimumVjSpan: 40, seedLength: 11, pseudoTrim: 5, maximumPseudoMismatches: 3, minimumScoreGain: 8 },
@@ -178,7 +182,7 @@ export const DEFAULT_CLI_CONFIG: SwigCliConfig = {
     shm: { ...DEFAULT_PIPELINE_PLAN.shm, enabled: true },
     missingAlleles: { ...DEFAULT_MISSING_ALLELE_OPTIONS, enabled: false },
   },
-  output: { directory: "swig-output", prefix: "swig", writeAnnotatedAirr: true, writeLineageStudy: true },
+  output: { directory: "swig-output", prefix: "swig", airrCompression: "none", writeAnnotatedAirr: true, writeLineageStudy: true },
 };
 
 function finite(value: unknown, fallback: number): number {
@@ -211,6 +215,9 @@ export function normalizeCliConfig(value: PartialSwigCliConfig): SwigCliConfig {
   annotation.workers=Math.max(0,Math.floor(finite(annotation.workers,0)));
   annotation.batchRecords=Math.max(0,Math.floor(finite(annotation.batchRecords,0)));
   annotation.minimumIdentity=Math.max(0,Math.min(1,finite(annotation.minimumIdentity,0.6)));
+  annotation.minimumConstantPrefixIdentity=value.annotation?.minimumConstantPrefixIdentity===null||value.annotation?.minimumConstantPrefixIdentity===undefined
+    ? null
+    : Math.max(0,Math.min(1,finite(value.annotation.minimumConstantPrefixIdentity,0)));
   const normalizedSubsample={...DEFAULT_CLI_CONFIG.preprocessing.subsample,...subsample};
   normalizedSubsample.enabled=Boolean(normalizedSubsample.enabled);
   normalizedSubsample.size=Math.max(1,Math.floor(finite(normalizedSubsample.size,10_000)));
@@ -236,7 +243,7 @@ export function normalizeCliConfig(value: PartialSwigCliConfig): SwigCliConfig {
       shm:{...DEFAULT_CLI_CONFIG.pipeline.shm,...shm},
       missingAlleles:{...DEFAULT_CLI_CONFIG.pipeline.missingAlleles,...missing},
     },
-    output:{...DEFAULT_CLI_CONFIG.output,...value.output},
+    output:{...DEFAULT_CLI_CONFIG.output,...value.output,airrCompression:value.output?.airrCompression==="gzip"?"gzip":"none"},
   };
 }
 
@@ -251,6 +258,7 @@ export interface BrowserCliExport {
   callingProfile: CallingProfile;
   assignerStrategy: AssignerStrategy;
   minimumIdentity: number;
+  minimumConstantPrefixIdentity?: number | null;
   strand: 0|1|2;
   fastqFilter?: FastqQualityFilterOptions;
   subsample?: CliPreprocessingConfig["subsample"];
@@ -334,7 +342,7 @@ export function cliConfigFromBrowser(run: BrowserCliExport): SwigCliConfig {
     inputs:run.datasets.map((dataset)=>{const source=(dataset as DatasetManifestEntry & {source?:unknown}).source;return {path:dataset.inputPath??dataset.inputName,inputName:dataset.inputName,inline:typeof source==="string"?source:undefined,format:dataset.inputFormat??"auto",gzipRange:dataset.gzipRange?{...dataset.gzipRange}:undefined,datasetId:dataset.datasetId,sampleId:dataset.sampleId,subjectId:dataset.subjectId,cohort:dataset.cohort,timepoint:dataset.timepoint,compartment:dataset.compartment??""};}),
     references:{species:run.species,scope:run.scope,inline:{V:run.references.V,D:run.references.D,J:run.references.J,C:run.references.C}},
     preprocessing:{fastqFilter:run.fastqFilter,subsample:run.subsample},
-    annotation:{workers:run.workers,callingProfile:run.callingProfile,assignerStrategy:run.assignerStrategy,minimumIdentity:run.minimumIdentity,strand:run.strand,airrMode:"reannotate",doubleD:run.doubleD},
+    annotation:{workers:run.workers,callingProfile:run.callingProfile,assignerStrategy:run.assignerStrategy,minimumIdentity:run.minimumIdentity,minimumConstantPrefixIdentity:run.minimumConstantPrefixIdentity??null,strand:run.strand,airrMode:"reannotate",doubleD:run.doubleD},
     pipeline:{
       collapse:{...run.pipeline.collapse,denoise:run.collapseOptions},
       chimera:{...run.pipeline.chimera,...run.chimeraOptions},

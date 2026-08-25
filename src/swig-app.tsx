@@ -18,6 +18,7 @@ import { preprocessGermlinesInWorker } from "./germline-preprocess-client";
 import { RepertoireDashboard } from "./repertoire-charts";
 import { PostAnalysisWorkbench, type PostAnalysisSessionHandle } from "./post-analysis";
 import { tableExtension, type TableExportFormat } from "./export-formats";
+import { compressedExtension, compressedMime, compressedName, outputWriter, type OutputCompression } from "./gzip-output";
 import {
   allelesToFasta,
   availableScopes,
@@ -194,6 +195,7 @@ interface ResultSession {
   callingProfile: CallingProfile;
   assignerStrategy: AssignerStrategy;
   minimumIdentity: number;
+  minimumConstantPrefixIdentity: number | null;
   strand: 0 | 1 | 2;
   doubleD: DoubleDScreenOptions;
   doubleDCount: number;
@@ -204,7 +206,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.38.3";
+const APP_VERSION = "0.38.5";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -591,6 +593,7 @@ async function sessionArtifact(
       callingProfile: session.callingProfile,
       assignerStrategy: session.assignerStrategy,
       minimumIdentity: session.minimumIdentity,
+      minimumConstantPrefixIdentity: session.minimumConstantPrefixIdentity,
       strand: session.strand,
       subsample: { enabled:session.subsampleSize!==null,size:session.subsampleSize??10_000,seed:session.subsampleSeed??1 },
       fastqFilter: copyFastqQualityFilter(session.fastqFilter),
@@ -880,7 +883,12 @@ function ResultDetail({ row, onClose }: { row: AirrRow; onClose: () => void }) {
     if (!row[`${segment}_call`] || !start || !end || !sequenceLength) return [];
     return [{ segment, call: row[`${segment}_call`], left: (start - 1) / sequenceLength * 100, width: Math.max(1.5, (end - start + 1) / sequenceLength * 100) }];
   });
-  const isotype = row.isotype || inferIsotype(row.c_call, row.c_sequence_alignment, row.c_identity ? Number(row.c_identity) : null);
+  const isotype = row.isotype || inferIsotype(
+    row.c_call,
+    row.c_sequence_alignment,
+    row.c_identity ? Number(row.c_identity) : null,
+    row.c_support ? Number(row.c_support) : null,
+  );
   const uncertainSegments = ["v", "d", "j", "c"].flatMap((segment) => {
     const selected = splitCalls(row[`${segment}_call`] || "");
     const alternatives = parseAlternatives(row[`${segment}_alternatives`] || "");
@@ -978,6 +986,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
   const [doubleDDownloading, setDoubleDDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
   const [downloadFormat,setDownloadFormat]=useState<TableExportFormat>("tsv");
+  const [downloadCompression,setDownloadCompression]=useState<OutputCompression>("none");
   const [savingSession,setSavingSession]=useState(false);
   const [cliConfigExporting,setCliConfigExporting]=useState(false);
   const [projectSaveStatus,setProjectSaveStatus]=useState(session.project?session.projectStatus||"Project state current":"");
@@ -1192,38 +1201,44 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     setDownloading(true);
     setDownloadError("");
     try {
-      const name = formattedOutputName(session.inputName,downloadFormat);
+      const name = compressedName(formattedOutputName(session.inputName,downloadFormat),downloadCompression);
       const picker = savePicker();
       if (picker) {
         const handle = await picker.call(window, {
           suggestedName: name,
-          types: [{ description: "AIRR rearrangement table", accept: { "text/plain": [tableExtension(downloadFormat)] } }],
+          types: [{ description: downloadCompression==="gzip"?"Gzip-compressed AIRR rearrangement table":"AIRR rearrangement table", accept: { [compressedMime("text/plain",downloadCompression)]: [compressedExtension(tableExtension(downloadFormat),downloadCompression)] } }],
         });
-        const writable = await handle.createWritable();
+        const writable = outputWriter(await handle.createWritable(),downloadCompression);
         try {
           await session.store.writeAirrFormat(downloadFormat,(part) => writable.write(part),undefined,controller.signal);
           await writable.close();
         } catch (error) {
-          await writable.abort?.();
+          await writable.abort(error);
           throw error;
         }
-      } else if(downloadFormat==="tsv") {
+      } else if(downloadFormat==="tsv"&&!session.streamedDirectly&&!session.store.hasStudyMetadataOverrides) {
+        try {
+          await registerDownloadWorker();
+          const anchor = document.createElement("a");
+          anchor.href = session.store.streamingDownloadUrl(import.meta.env.BASE_URL, name, downloadCompression);
+          anchor.download = name;
+          anchor.click();
+        } catch {
+          if(downloadCompression==="none")downloadBlob(await session.store.airrBlob(controller.signal), name);
+          else throw new Error("This browser could not create the streaming gzip download. Use Chrome/Edge on HTTPS so Swig can stream through Save As.");
+        }
+      } else if(downloadFormat==="tsv"&&downloadCompression==="none") {
         if (session.streamedDirectly || session.store.hasStudyMetadataOverrides) {
           downloadBlob(await session.store.airrBlob(controller.signal), name);
           return;
         }
-        try {
-          await registerDownloadWorker();
-          const anchor = document.createElement("a");
-          anchor.href = session.store.streamingDownloadUrl(import.meta.env.BASE_URL, name);
-          anchor.download = name;
-          anchor.click();
-        } catch {
-          downloadBlob(await session.store.airrBlob(controller.signal), name);
-        }
       } else {
-        if(session.outputBytes>256*1024*1024)throw new Error("This converted export is too large for a memory-backed browser download. Use Chrome/Edge on HTTPS so Swig can stream it through Save As, or use AIRR TSV.");
-        const parts:BlobPart[]=[];await session.store.writeAirrFormat(downloadFormat,async(part)=>{parts.push(part instanceof Uint8Array?part.slice().buffer:part);},undefined,controller.signal);downloadBlob(new Blob(parts,{type:"text/plain;charset=utf-8"}),name);
+        if(session.outputBytes>256*1024*1024)throw new Error("This converted or gzip export is too large for a memory-backed browser download. Use Chrome/Edge on HTTPS so Swig can stream it through Save As.");
+        const parts:BlobPart[]=[];
+        const writable=outputWriter({write:async(part)=>{parts.push(part instanceof Uint8Array?part.slice().buffer:part);}},downloadCompression);
+        try{await session.store.writeAirrFormat(downloadFormat,writable.write,undefined,controller.signal);await writable.close();}
+        catch(error){await writable.abort(error);throw error;}
+        downloadBlob(new Blob(parts,{type:compressedMime("text/plain;charset=utf-8",downloadCompression)}),name);
       }
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
@@ -1240,25 +1255,27 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
     setDoubleDDownloading(true);
     setDownloadError("");
     try {
-      const name = formattedDoubleDOutputName(session.inputName,downloadFormat);
+      const name = compressedName(formattedDoubleDOutputName(session.inputName,downloadFormat),downloadCompression);
       const picker = savePicker();
       if (picker) {
         const handle = await picker.call(window, {
           suggestedName: name,
-          types: [{ description: "Swig double-D evidence table", accept: { "text/plain": [tableExtension(downloadFormat)] } }],
+          types: [{ description: downloadCompression==="gzip"?"Gzip-compressed Swig double-D evidence table":"Swig double-D evidence table", accept: { [compressedMime("text/plain",downloadCompression)]: [compressedExtension(tableExtension(downloadFormat),downloadCompression)] } }],
         });
-        const writable = await handle.createWritable();
+        const writable = outputWriter(await handle.createWritable(),downloadCompression);
         try {
           await session.store.writeDoubleDFormat(downloadFormat,(part) => writable.write(part),controller.signal);
           await writable.close();
         } catch (error) {
-          await writable.abort?.();
+          await writable.abort(error);
           throw error;
         }
       } else {
         const parts: BlobPart[] = [];
-        await session.store.writeDoubleDFormat(downloadFormat,async (part) => { parts.push(part as BlobPart); },controller.signal);
-        downloadBlob(new Blob(parts, { type: "text/plain;charset=utf-8" }), name);
+        const writable=outputWriter({write:async(part)=>{parts.push(part instanceof Uint8Array?part.slice().buffer:part);}},downloadCompression);
+        try{await session.store.writeDoubleDFormat(downloadFormat,writable.write,controller.signal);await writable.close();}
+        catch(error){await writable.abort(error);throw error;}
+        downloadBlob(new Blob(parts, { type: compressedMime("text/plain;charset=utf-8",downloadCompression) }), name);
       }
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
@@ -1288,9 +1305,10 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
       const post=postSessionRef.current?await postSessionRef.current.snapshot(controller.signal):session.postAnalysis??{workingStages:[]};
       const state=cliStateFromPostAnalysis(session.pipeline,post);
       const config=cliConfigFromBrowser({
-        studyName:session.inputName,studyDesign:session.studyDesign,datasets,references:session.references,species:session.species,scope:session.scope,workers:session.workers,callingProfile:session.callingProfile,assignerStrategy:session.assignerStrategy,minimumIdentity:session.minimumIdentity,strand:session.strand,fastqFilter:session.fastqFilter,subsample:{enabled:session.subsampleSize!==null,size:session.subsampleSize??10_000,seed:session.subsampleSeed??1},doubleD:session.doubleD,pipeline:state.pipeline,
+        studyName:session.inputName,studyDesign:session.studyDesign,datasets,references:session.references,species:session.species,scope:session.scope,workers:session.workers,callingProfile:session.callingProfile,assignerStrategy:session.assignerStrategy,minimumIdentity:session.minimumIdentity,minimumConstantPrefixIdentity:session.minimumConstantPrefixIdentity,strand:session.strand,fastqFilter:session.fastqFilter,subsample:{enabled:session.subsampleSize!==null,size:session.subsampleSize??10_000,seed:session.subsampleSeed??1},doubleD:session.doubleD,pipeline:state.pipeline,
         collapseOptions:state.collapseOptions,chimeraOptions:state.chimeraOptions,selectionOptions:state.selectionOptions,alleleOptions:state.alleleOptions,lineageOptions:state.lineageOptions,missingAlleleOptions:state.missingAlleleOptions,
       });
+      config.output.airrCompression=downloadCompression;
       if(config.pipeline.chimera.enabled&&config.pipeline.chimera.msaSource==="selected"&&!config.pipeline.chimera.uploadedMsa.trim()){
         const msa=await runKalignTask(session.references[config.pipeline.chimera.segment],controller.signal);
         prepareReferenceMsa(msa);config.pipeline.chimera.msaSource="upload";config.pipeline.chimera.uploadedMsa=msa;config.pipeline.chimera.uploadedMsaName=`${config.pipeline.chimera.segment.toLowerCase()}-reference-msa.fasta`;
@@ -1324,6 +1342,7 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
       <div className="results-rail-section results-rail-export">
         <span className="results-rail-section-label">Files</span>
         <label><span>Table format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label>
+        <label><span>Compression</span><select value={downloadCompression} onChange={(event)=>setDownloadCompression(event.target.value as OutputCompression)}><option value="none">None</option><option value="gzip">Gzip (.gz)</option></select></label>
         <button className={downloading?"post-cancel":"primary"} type="button" onClick={()=>downloading?exportAbortRef.current?.abort():void downloadAll()} disabled={doubleDDownloading}>{downloading?"Cancel results export":`Download ${downloadFormat.toUpperCase()}`}</button>
         {session.doubleDCount>0&&<button className={doubleDDownloading?"post-cancel":undefined} type="button" onClick={()=>doubleDDownloading?exportAbortRef.current?.abort():void downloadDoubleD()} disabled={downloading}>{doubleDDownloading?"Cancel evidence export":`Double-D evidence · ${session.doubleDCount.toLocaleString()}`}</button>}
         <button className={savingSession?"post-cancel":undefined} type="button" onClick={()=>savingSession?sessionSaveAbortRef.current?.abort():void saveAnalysisSession()}>{savingSession?"Cancel session save":"Save portable session"}</button>
@@ -1345,13 +1364,13 @@ function ResultsPage({ session, onNewAnalysis }: { session: ResultSession; onNew
       <article><span>Loci observed</span><strong>{facets.loci.length}</strong><small>{facets.loci.map((item)=>item.value).join(" · ")||"none"}</small></article>
       {session.doubleD.mode!=="off"&&<article><span>Supported Double-D</span><strong>{session.doubleDCount.toLocaleString()}</strong><small>opt-in evidence screen</small></article>}
     </div>
-    <details className="run-technical-details"><summary>Run settings</summary><div><span>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"}</span><span>{assignerStrategyLabel(session.assignerStrategy)}</span><span>{callingProfileLabel(session.callingProfile)} calling</span><span>{session.workers} WASM worker{session.workers===1?"":"s"}</span><span>{bytes(session.outputBytes)} AIRR</span>{session.subsampleSize&&<span>subsampled from {session.inputTotal.toLocaleString()} input records · seed {session.subsampleSeed}</span>}{fastqQualityResultText(session)&&<span>{fastqQualityResultText(session).replace(/^ · /,"")}</span>}{session.doubleD.mode!=="off"&&<span>Double-D: {session.doubleD.mode==="all"?"all eligible junctions":`V–J span ≥ ${session.doubleD.minimumVjSpan} nt`}</span>}</div></details>
+    <details className="run-technical-details"><summary>Run settings</summary><div><span>{datasets.length.toLocaleString()} dataset{datasets.length===1?"":"s"}</span><span>{assignerStrategyLabel(session.assignerStrategy)}</span><span>{callingProfileLabel(session.callingProfile)} calling</span><span>{session.workers} WASM worker{session.workers===1?"":"s"}</span><span>{bytes(session.outputBytes)} AIRR</span>{session.minimumConstantPrefixIdentity!==null&&<span>covered C-prefix identity ≥ {Math.round(session.minimumConstantPrefixIdentity*100)}%</span>}{session.subsampleSize&&<span>subsampled from {session.inputTotal.toLocaleString()} input records · seed {session.subsampleSeed}</span>}{fastqQualityResultText(session)&&<span>{fastqQualityResultText(session).replace(/^ · /,"")}</span>}{session.doubleD.mode!=="off"&&<span>Double-D: {session.doubleD.mode==="all"?"all eligible junctions":`V–J span ≥ ${session.doubleD.minimumVjSpan} nt`}</span>}</div></details>
     {session.project&&<div className="repertoire-project-status"><strong>{session.project.root.name}</strong><span>{projectSaveStatus}</span></div>}
   </section>;
 
   const focusedOverview = session.webMode === "repertoire" ? null : <section className="focused-results-overview">
     <div><span className="section-kicker">{session.webMode === "lineage" ? "Single lineage ready" : "VDJ annotation complete"}</span><h1>{session.total.toLocaleString()} sequence{session.total === 1 ? "" : "s"}</h1><p>{session.summary.assigned.toLocaleString()} V+J assigned · {session.summary.withCdr3.toLocaleString()} CDR3 called · {session.seconds.toFixed(2)} s · {assignerStrategyLabel(session.assignerStrategy)}</p></div>
-    <div className="focused-results-actions"><label><span>Download format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><button className={downloading?"post-cancel":"post-primary"} type="button" onClick={()=>downloading?exportAbortRef.current?.abort():void downloadAll()}>{downloading?"Cancel export":`Download ${downloadFormat.toUpperCase()}`}</button><button className={savingSession?"post-cancel":undefined} type="button" onClick={()=>savingSession?sessionSaveAbortRef.current?.abort():void saveAnalysisSession()}>{savingSession?"Cancel session save":"Save session"}</button><button type="button" onClick={onNewAnalysis}>New analysis</button></div>
+    <div className="focused-results-actions"><label><span>Download format</span><select value={downloadFormat} onChange={(event)=>setDownloadFormat(event.target.value as TableExportFormat)}><option value="tsv">AIRR TSV</option><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select></label><label><span>Compression</span><select value={downloadCompression} onChange={(event)=>setDownloadCompression(event.target.value as OutputCompression)}><option value="none">None</option><option value="gzip">Gzip (.gz)</option></select></label><button className={downloading?"post-cancel":"post-primary"} type="button" onClick={()=>downloading?exportAbortRef.current?.abort():void downloadAll()}>{downloading?"Cancel export":`Download ${downloadFormat.toUpperCase()}${downloadCompression==="gzip"?".GZ":""}`}</button><button className={savingSession?"post-cancel":undefined} type="button" onClick={()=>savingSession?sessionSaveAbortRef.current?.abort():void saveAnalysisSession()}>{savingSession?"Cancel session save":"Save session"}</button><button type="button" onClick={onNewAnalysis}>New analysis</button></div>
     {downloadError && <p className="run-error" role="alert">{downloadError}</p>}
   </section>;
 
@@ -1492,6 +1511,8 @@ export default function SwigApp() {
   const [databaseBusy, setDatabaseBusy] = useState(false);
   const [pendingDatabaseId,setPendingDatabaseId]=useState<string|null>(null);
   const [minimumIdentity, setMinimumIdentity] = useState(0.6);
+  const [constantPrefixIdentityEnabled, setConstantPrefixIdentityEnabled] = useState(false);
+  const [minimumConstantPrefixIdentity, setMinimumConstantPrefixIdentity] = useState(0.97);
   const [callingProfile, setCallingProfile] = useState<CallingProfile>("truth_optimized");
   const [assignerStrategy, setAssignerStrategy] = useState<AssignerStrategy>("riat_mp");
   const [strand, setStrand] = useState<0 | 1 | 2>(0);
@@ -1824,7 +1845,7 @@ export default function SwigApp() {
       setSessionLoadProgress({records:store.count,total:store.count,stage:"Local AIRR indexes ready"});
       const restoredWebMode=saved.analysis.webMode??"repertoire";
       setWebMode(restoredWebMode);
-      setSession({id:Date.now(),webMode:restoredWebMode,store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:saved.analysis.subsample?.enabled?saved.analysis.subsample.size:null,subsampleSeed:saved.analysis.subsample?.enabled?saved.analysis.subsample.seed:null,fastqFilter:copyFastqQualityFilter(saved.analysis.fastqFilter),fastqFilterStats:saved.analysis.fastqFilterStats??emptyFastqQualityFilterStats(Boolean(saved.analysis.fastqFilter?.enabled),false),references:saved.analysis.references,referenceExclusions:Object.fromEntries(Object.entries(saved.analysis.referenceExclusions??{}).map(([key,names])=>[key,[...names]])),callingProfile:saved.analysis.callingProfile??"truth_optimized",assignerStrategy:saved.analysis.assignerStrategy??"riat_mp",minimumIdentity:saved.analysis.minimumIdentity,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true,project:restoredProject});
+      setSession({id:Date.now(),webMode:restoredWebMode,store,total:store.count,seconds:0,inputName:saved.analysis.inputName,datasets:restoredDatasets,studyDesign:saved.analysis.studyDesign??"longitudinal",pipeline:copyPipeline(saved.analysis.pipeline),species:saved.analysis.species,scope:saved.analysis.scope,facets:store.facets(),summary:store.summary,workers:saved.analysis.workers,outputBytes:store.outputBytes,streamedDirectly:false,inputTotal:store.count,subsampleSize:saved.analysis.subsample?.enabled?saved.analysis.subsample.size:null,subsampleSeed:saved.analysis.subsample?.enabled?saved.analysis.subsample.seed:null,fastqFilter:copyFastqQualityFilter(saved.analysis.fastqFilter),fastqFilterStats:saved.analysis.fastqFilterStats??emptyFastqQualityFilterStats(Boolean(saved.analysis.fastqFilter?.enabled),false),references:saved.analysis.references,referenceExclusions:Object.fromEntries(Object.entries(saved.analysis.referenceExclusions??{}).map(([key,names])=>[key,[...names]])),callingProfile:saved.analysis.callingProfile??"truth_optimized",assignerStrategy:saved.analysis.assignerStrategy??"riat_mp",minimumIdentity:saved.analysis.minimumIdentity,minimumConstantPrefixIdentity:saved.analysis.minimumConstantPrefixIdentity??null,strand:saved.analysis.strand,doubleD:dd,doubleDCount:store.doubleDCount,sampleColors:createSampleColorMap(restoredDatasets,saved.analysis.sampleColors),postAnalysis:saved.postAnalysis,restored:true,project:restoredProject});
       if(restoredProject){setProjectWorkspace(restoredProject);const run=activeProjectRun(restoredProject);if(run)await appendProjectLog(restoredProject,run,"project_opened",{records:store.count});setProjectStatus(`Restored ${run?.id??"active run"}`);}
       setPendingLoadedSession(null);setSessionLoadProgress({records:store.count,total:store.count,stage:"Session restored"});setPage("results");window.scrollTo({top:0});
     }catch(error){if(store)await store.clear();if(isAbortError(error))setSessionLoadProgress({records:0,total:saved.linkedAirr.records,stage:"Session restoration cancelled; no state was changed"});else setSessionLoadError(error instanceof Error?error.message:String(error));}finally{if(sessionLoadAbortRef.current===controller)sessionLoadAbortRef.current=null;setLoadingSession(false);}
@@ -2266,7 +2287,7 @@ export default function SwigApp() {
       }
       if(controller.signal.aborted)throw new DOMException("Config export cancelled.","AbortError");
       const config=cliConfigFromBrowser({
-        studyName:activeInputName,studyDesign,datasets:activeDatasets,references:compiled,species:species.name,scope:activeScope,workers:workerCount,callingProfile,assignerStrategy,minimumIdentity,strand,fastqFilter:copyFastqQualityFilter(fastqFilter),subsample:{enabled:subsampleEnabled,size:Math.max(1,Math.floor(subsampleSize)),seed:Math.trunc(subsampleSeed)},doubleD:{mode:doubleDMode,minimumVjSpan:Math.round(doubleDMinimumSpan),seedLength:Math.round(doubleDSeedLength),pseudoTrim:Math.round(doubleDPseudoTrim),maximumPseudoMismatches:Math.round(doubleDMaximumPseudoMismatches),minimumScoreGain:Math.round(doubleDMinimumScoreGain)},pipeline:exportPipeline,
+        studyName:activeInputName,studyDesign,datasets:activeDatasets,references:compiled,species:species.name,scope:activeScope,workers:workerCount,callingProfile,assignerStrategy,minimumIdentity,minimumConstantPrefixIdentity:constantPrefixIdentityEnabled?minimumConstantPrefixIdentity:null,strand,fastqFilter:copyFastqQualityFilter(fastqFilter),subsample:{enabled:subsampleEnabled,size:Math.max(1,Math.floor(subsampleSize)),seed:Math.trunc(subsampleSeed)},doubleD:{mode:doubleDMode,minimumVjSpan:Math.round(doubleDMinimumSpan),seedLength:Math.round(doubleDSeedLength),pseudoTrim:Math.round(doubleDPseudoTrim),maximumPseudoMismatches:Math.round(doubleDMaximumPseudoMismatches),minimumScoreGain:Math.round(doubleDMinimumScoreGain)},pipeline:exportPipeline,
       });
       downloadBlob(new Blob([`${JSON.stringify(config,null,2)}\n`],{type:"application/json"}),`${activeInputName.replace(/\.[^.]+$/,"")||"swig"}.swig-cli.json`);
     }catch(error){if(!isAbortError(error))setRunError(error instanceof Error?error.message:String(error));}
@@ -2499,6 +2520,7 @@ export default function SwigApp() {
             callingProfile,
             assignerStrategy,
             minimumIdentity,
+            minimumConstantPrefixIdentity: constantPrefixIdentityEnabled ? minimumConstantPrefixIdentity : null,
             strand,
             workers: workerCount,
             countHint: input.count,
@@ -2566,6 +2588,7 @@ export default function SwigApp() {
         callingProfile,
         assignerStrategy,
         minimumIdentity,
+        minimumConstantPrefixIdentity: constantPrefixIdentityEnabled ? minimumConstantPrefixIdentity : null,
         strand,
         doubleD,
         doubleDCount: store.doubleDCount,
@@ -2749,7 +2772,9 @@ export default function SwigApp() {
                     <label><span>Search strand</span><select value={strand} onChange={(event) => setStrand(Number(event.target.value) as 0 | 1 | 2)}><option value={0}>Both orientations</option><option value={1}>Plus only</option><option value={2}>Minus only</option></select></label>
                     <label><span>Parallel compute workers</span><CommitNumberInput min="1" max={browserWorkerLimit()} step="1" value={workerCount} onCommit={(value)=>setWorkerCount(Math.max(1,Math.min(browserWorkerLimit(),Math.round(value))))}/><small>{recommendedWorkerCount()} recommended on this device · {browserWorkerLimit()} maximum</small></label>
                     {!focusedWebMode && <label><span>AIRR results destination</span><select disabled={Boolean(projectWorkspace)} value={projectWorkspace?"project":outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}>{projectWorkspace&&<option value="project">Project directory · save while analyzing</option>}<option value="auto">Auto · ask to save large results</option><option value="browser">Browser · compressed local index</option><option value="disk">File · save while analyzing</option></select></label>}
-                    <label className="minimum-slider"><span>Minimum alignment identity <b>{Math.round(minimumIdentity * 100)}%</b></span><input type="range" min="0.45" max="0.9" step="0.01" value={minimumIdentity} onChange={(event) => setMinimumIdentity(Number(event.target.value))} /></label>
+                    <label className="minimum-slider"><span>Minimum alignment identity <b>{Math.round(minimumIdentity * 100)}%</b></span><input type="range" min="0.45" max="0.9" step="0.01" value={minimumIdentity} onChange={(event) => setMinimumIdentity(Number(event.target.value))} /><small>V/D/J floor; C uses ≥90% identity plus position-aware chance support, including short 5′-anchored tracts.</small></label>
+                    <label><span>Covered C-prefix identity gate</span><select value={constantPrefixIdentityEnabled?"on":"off"} onChange={(event)=>setConstantPrefixIdentityEnabled(event.target.value==="on")}><option value="off">Off · evidence-calibrated C calling</option><option value="on">On · require a user-set C-prefix identity</option></select><small>Optional. A failed C gate clears only C fields; V/D/J calls and boundaries are retained.</small></label>
+                    {constantPrefixIdentityEnabled&&<label className="minimum-slider"><span>Minimum covered C-prefix identity <b>{Math.round(minimumConstantPrefixIdentity*100)}%</b></span><input type="range" min="0.9" max="1" step="0.01" value={minimumConstantPrefixIdentity} onChange={(event)=>setMinimumConstantPrefixIdentity(Number(event.target.value))}/><small>Counts the complete covered prefix from C-reference base 1 through the end of the matching tract, including mismatches and indels that local alignment could otherwise skip.</small></label>}
                     <p className="scientific-note calling-profile-note"><span>i</span>{assignerStrategy === "aer_robust" ? "AER-R is an experimental, separately selectable AER derivative. It scores complete non-overlapping V–D–J alternatives without mutating the independent V/J candidates: retain-D/clip-V-or-J and retain-V/J/clip-D allocations are committed only from the winning partition. It can expand uncertain boundaries to conserved V/J anchors and accept a long high-identity D alignment even when SHM interrupts every ordinary exact-run seed (at least 14 matches across 16 aligned bases and a conservative aggregate score). Its quality-triggered D search can widen behind an existing short call, so reassessment is not restricted to no-D results. A strongly V-supported read with no valid V/J partition also checks the complete small J set. Ordinary AER is unchanged." : assignerStrategy === "aer" ? "AER uses the ordinary full V-allele index, then increases exact affine-alignment depth only when leading 9-mer vote counts remain ambiguous (5% relative or 8 weighted votes; maximum 16 candidates). D and J use the selected calling profile's calibrated exact paths." : assignerStrategy === "riat_mp" ? "RIAT-MP indexes representative V roots, aligns up to three roots, propagates score changes through close-allele trees, and tests at most two root traceback geometries within four raw-score units when the provisional winner contains an indel. It performs no descendant V alignments. D and J retain the selected profile's calibrated exact paths." : "Standard SwiftIG exactly aligns the three leading strong-seed V candidates; weak-seed and seedless cases retain the existing safety pool. D and J retain the selected profile's calibrated exact paths."}</p>
                     <p className="scientific-note calling-profile-note"><span>i</span>{callingProfile === "igblast_compatible" ? "Selected solely for agreement with the supplied IgBLAST calls: D +2/−4/−11/−1, minimum 5-nt exact run, 3 candidates; J +2/−4/−13/−1, 2 candidates. Calibrated on simulated human IGH; it is not an IgBLAST implementation." : callingProfile === "igblast_balanced" ? "Maximizes IgBLAST agreement subject to combined V/D/J first-call and fair-scored truth accuracy exceeding IgBLAST on the supplied simulation. It uses the IgBLAST-agreement settings, then removes a D call only when its strongest support is exactly five consecutive matches and j_sequence_start − v_sequence_end ≤ 11 nt. Calibrated on simulated human IGH." : callingProfile === "r_optimized" ? "AER-R-only experimental profile jointly calibrated on the supplied lower-SHM and IgG-like KIMDB macaque simulations with an ambiguity-aware proper score and separate endpoint loss. V uses +2/−3/−9/−1; D uses +2/−3/−13/−1, a 4-nt exact-run floor, and a 12-point D-presence cost relaxed to 10 for raw D score ≥ 20 or support from at least two distinct exact template sequences; same-span alternatives within one raw-score point are reported; J uses +2/−3/−17/−2. It is not claimed to generalize beyond these calibration regimes." : callingProfile === "sensitive_d" ? "Sensitive-D uses the same 4-nt signal floor and segment scores as R-optimized, then applies a fixed 10-point joint D-presence cost. It reports the strongest defensible D hypothesis in substantially more low-evidence junctions while still requiring an exact four-base run or the existing strong distributed-D evidence; a bare four-base exact seed scores only 8 and cannot clear the joint cost by itself. On the supplied lower-SHM and IgG-like simulations it recovers about half of the D-bearing reads still missed by R-optimized at an approximately 0.2-percentage-point fair D-accuracy cost; it remains experimental and AER-R-only." : "Default profile selected for simulated ground-truth accuracy. Optional calibration profiles are never selected automatically."}</p>
                     </div>

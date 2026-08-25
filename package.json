@@ -1,6 +1,6 @@
 {
   "name": "swig-cli",
-  "version": "0.38.3",
+  "version": "0.38.5",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "check": "tsc --noEmit",
     "test": "npm run test:stream && npm run test:store && npm run test:germline && npm run test:alignment && npm run test:post && npm run test:wasm && npm run test:cli",
-    "test:stream": "node --experimental-strip-types --test tests/sequence-stream.test.ts tests/project-directory.test.ts",
+    "test:stream": "node --experimental-strip-types --test tests/sequence-stream.test.ts tests/project-directory.test.ts tests/gzip-output.test.ts",
     "test:store": "node --experimental-strip-types --test tests/result-store.test.ts",
     "test:germline": "node --experimental-strip-types --test tests/germline-preprocess.test.ts",
     "test:alignment": "node --experimental-strip-types --test tests/alignment-model.test.ts tests/balanced-calling-profile.test.ts",

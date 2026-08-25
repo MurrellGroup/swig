@@ -33,6 +33,10 @@ test("small CLI configs receive analysis defaults and explicit donor grouping",(
   assert.equal(config.pipeline.shm.enabled,true);
   assert.equal(config.annotation.workers,0,"zero means choose the host default at CLI startup");
   assert.equal(config.annotation.assignerStrategy,"riat_mp");
+  assert.equal(config.annotation.minimumConstantPrefixIdentity,null);
+  assert.equal(config.output.airrCompression,"none");
+  assert.equal(normalizeCliConfig({annotation:{minimumConstantPrefixIdentity:.98},output:{airrCompression:"gzip"}}).annotation.minimumConstantPrefixIdentity,.98);
+  assert.equal(normalizeCliConfig({output:{airrCompression:"gzip"}}).output.airrCompression,"gzip");
   assert.equal(normalizeCliConfig({annotation:{assignerStrategy:"aer_robust"}}).annotation.assignerStrategy,"aer_robust");
   assert.equal(normalizeCliConfig({annotation:{callingProfile:"r_optimized"}}).annotation.callingProfile,"r_optimized");
   assert.equal(normalizeCliConfig({annotation:{callingProfile:"sensitive_d"}}).annotation.callingProfile,"sensitive_d");
@@ -55,6 +59,7 @@ test("browser CLI export preserves exact references, methods, and sample-to-dono
     callingProfile:"truth_optimized",
     assignerStrategy:"aer",
     minimumIdentity:0.7,
+    minimumConstantPrefixIdentity:0.98,
     strand:0,
     fastqFilter:{enabled:true,maximumExpectedErrors:0.2,phredOffset:33,trim3Prime:{enabled:true,windowSize:6,minimumMeanPhred:25,minimumLength:100}},
     subsample:{enabled:true,size:12_345,seed:19},
@@ -72,6 +77,7 @@ test("browser CLI export preserves exact references, methods, and sample-to-dono
   assert.equal(config.pipeline.selection.sampleId,"day_30");
   assert.equal(config.annotation.workers,3);
   assert.equal(config.annotation.airrMode,"reannotate");
+  assert.equal(config.annotation.minimumConstantPrefixIdentity,0.98);
   assert.equal(config.preprocessing.fastqFilter.trim3Prime.minimumMeanPhred,25);
   assert.deepEqual(config.preprocessing.subsample,{enabled:true,size:12_345,seed:19});
 });

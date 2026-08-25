@@ -1,6 +1,6 @@
 # Swig methods index
 
-This index is the implementation-facing methods map for Swig 0.38.3. It covers every runnable analysis block from file intake through phylogenetic UCA inference. The UI may summarize a method in one sentence; the linked document is the specification.
+This index is the implementation-facing methods map for Swig 0.38.5. It covers every runnable analysis block from file intake through phylogenetic UCA inference. The UI may summarize a method in one sentence; the linked document is the specification.
 
 ## Evidence labels used in these documents
 
@@ -24,7 +24,7 @@ This index is the implementation-facing methods map for Swig 0.38.3. It covers e
 | Exact collapse, FAD-compatible denoising, conservative error model, indel-aware error model | [Collapse and denoising](methods/06_COLLAPSE_AND_DENOISING.md) |
 | CHMMAIRRa fitting, posterior filter, detailed Viterbi reconstruction | [Chimera inference](methods/07_CHIMERA_INFERENCE.md) |
 | CDR3-based lineage assignment, lineage table, explicit merges | [Lineage assignment](methods/08_LINEAGE_ASSIGNMENT.md) |
-| SHM distributions and two-pass possible-missing-V screen | [Post-lineage SHM and germline evidence](methods/09_SHM_AND_GERMLINE_DIAGNOSTICS.md) |
+| SHM distributions, two-pass possible-missing-V screen, and personalized expressed V-set inference | [Post-lineage SHM and germline evidence](methods/09_SHM_AND_GERMLINE_DIAGNOSTICS.md) |
 | Targeted sequence search, query V/J inference, fixed-point expansion, lineage neighbours | [Retrieval and neighbour search](methods/10_RETRIEVAL_AND_NEIGHBOURS.md) |
 | Closest-member/consensus lineage root, quick/Kalign alignment, Alivibe round trip, FastTree and rooting | [Alignment and phylogeny](methods/11_ALIGNMENT_AND_PHYLOGENY.md) |
 | Fixed-tree UCA model, HMM, ML/grid/Gibbs-MH placement, posterior logos/tracks/exports | [Phylogenetic UCA inference](PHYLO_UCA_INFERENCE.md) |

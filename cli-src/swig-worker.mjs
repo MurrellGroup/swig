@@ -31,6 +31,8 @@ async function initialize(message){
   // and then applies the shared post-filter below.
   const profile=message.callingProfile==="truth_optimized"?0:message.callingProfile==="r_optimized"?2:message.callingProfile==="sensitive_d"?3:1;
   if(runtime.swig_set_calling_profile(profile)!==0)throw new Error("SwiftIG rejected the calling profile.");
+  const cPrefixIdentity=message.minimumConstantPrefixIdentity==null?0:Math.round(message.minimumConstantPrefixIdentity*1000);
+  if(typeof runtime.swig_set_c_prefix_identity!=="function"||runtime.swig_set_c_prefix_identity(cPrefixIdentity)!==0)throw new Error("SwiftIG rejected the covered C-prefix identity threshold.");
   callingProfile=message.callingProfile;
   if(message.hasTuning){
     if(typeof runtime.swig_set_tuning_options!=="function")throw new Error("This SwiftIG build does not expose the requested D/J compatibility controls.");

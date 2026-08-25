@@ -34,6 +34,7 @@ export interface RunOptions {
   callingProfile: CallingProfile;
   assignerStrategy: AssignerStrategy;
   minimumIdentity: number;
+  minimumConstantPrefixIdentity?: number | null;
   strand: 0 | 1 | 2;
   workers: number;
   countHint?: number | null;
@@ -190,6 +191,7 @@ export function runSwiftIg(options: RunOptions): Promise<RunResult> {
       callingProfile: options.callingProfile,
       assignerStrategy: options.assignerStrategy,
       minimumIdentity: options.minimumIdentity,
+      minimumConstantPrefixIdentity: options.minimumConstantPrefixIdentity ?? null,
       strand: options.strand,
       workers: options.workers,
       countHint: options.countHint ?? null,
