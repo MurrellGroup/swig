@@ -28,6 +28,23 @@ export function sequenceSourceSize(source: SequenceSource): number {
   return source.members.reduce((total, member) => total + Math.max(0, member.end - member.start), 0);
 }
 
+/** Cheap workload proxy. Gzip ISIZE is modulo 2^32, so wrapped sizes use a rough expansion estimate. */
+export async function estimateSequenceCharacters(source: SequenceSource): Promise<number> {
+  if (typeof source === "string") return source.length;
+  const grouped = isGzipMemberSource(source);
+  const file = grouped ? source.file : source;
+  if (!grouped && !file.name.toLowerCase().endsWith(".gz")) return file.size;
+  const ranges = grouped ? source.members : [{ start: 0, end: file.size }];
+  let total = 0;
+  for (const range of ranges) {
+    if (range.end - range.start < 18) { total += Math.max(1, range.end - range.start) * 4; continue; }
+    const trailer = await file.slice(range.end - 4, range.end).arrayBuffer();
+    const size = new DataView(trailer).getUint32(0, true);
+    total += size > 0 && range.end - range.start < 512 * 1024 * 1024 ? size : (range.end - range.start) * 4;
+  }
+  return total;
+}
+
 export interface SequenceBatch {
   index: number;
   text: string;
@@ -36,6 +53,8 @@ export interface SequenceBatch {
 }
 
 export interface SequenceStreamProgress {
+  charactersRead: number;
+  totalCharacters: number;
   bytesRead: number;
   totalBytes: number;
   recordsRead: number;
@@ -218,6 +237,7 @@ async function* lines(
   signal: AbortSignal | undefined,
   onBytes: (bytesRead: number, totalBytes: number) => void,
   onCarry: (characters: number) => void,
+  onConsumed?: (characters: number) => void,
 ): AsyncGenerator<string> {
   let carry = "";
   for await (const chunk of decodedChunks(source, signal, onBytes)) {
@@ -226,13 +246,14 @@ async function* lines(
     while (true) {
       const end = carry.indexOf("\n", start);
       if (end < 0) break;
+      onConsumed?.(end + 1 - start);
       yield carry.slice(start, end).replace(/\r$/, "");
       start = end + 1;
     }
     carry = carry.slice(start);
     onCarry(carry.length);
   }
-  if (carry) yield carry.replace(/\r$/, "");
+  if (carry) { onConsumed?.(carry.length); yield carry.replace(/\r$/, ""); }
 }
 
 export async function* fastaRecords(source: AsyncIterable<string>): AsyncGenerator<string> {
@@ -462,6 +483,8 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
     : 0;
   let bytesRead = 0;
   let totalBytes = sequenceSourceSize(options.source);
+  const totalCharacters = await estimateSequenceCharacters(options.source);
+  let charactersRead = 0;
   let recordsRead = 0;
   let recordsEligible = 0;
   let recordsSelected = 0;
@@ -474,6 +497,7 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
     filterOptions.enabled && options.format === 2,
   );
   const report = () => options.onProgress?.({
+    charactersRead, totalCharacters,
     bytesRead,
     totalBytes,
     recordsRead,
@@ -494,6 +518,7 @@ export async function* streamSequenceBatches(options: SequenceStreamOptions): As
     (characters) => {
       maxCarryCharacters = Math.max(maxCarryCharacters, characters);
     },
+    (characters) => { charactersRead += characters; },
   );
 
   const parsedRecords = async function* (): AsyncGenerator<StreamRecord> {

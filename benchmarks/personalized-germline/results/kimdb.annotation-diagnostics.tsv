@@ -1,0 +1,841 @@
+segment	name	locus	status	annotation_source	taxonomic_tier	match_kind	template	identity	attempted_candidates	best_candidate	best_identity	rejections
+V	IGHV1-105*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-138*01	0.942568	12	IGHV1-138*01	0.942568	
+V	IGHV1-105*01_S0606	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-138*01	0.945946	12	IGHV1-138*01	0.945946	
+V	IGHV1-124*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-180*01	1.000000	12	IGHV1-180*01	1.000000	
+V	IGHV1-124*01_S1765	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-180*01	0.996622	12	IGHV1-180*01	0.996622	
+V	IGHV1-124*01_S6748	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-180*01	0.996622	12	IGHV1-180*01	0.996622	
+V	IGHV1-124*01_S7834	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-180*01	0.996622	12	IGHV1-180*01	0.996622	
+V	IGHV1-138*01	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.859532	1	IGHV1-138*01	0.859532	
+V	IGHV1-138*01_S2054	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.859532	1	IGHV1-138*01	0.859532	
+V	IGHV1-138*01_S2593	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.861953	1	IGHV1-138*01	0.861953	
+V	IGHV1-138*01_S3445	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.862876	1	IGHV1-138*01	0.862876	
+V	IGHV1-138*01_S4144	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.855219	1	IGHV1-138*01	0.855219	
+V	IGHV1-138*01_S6073	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.861953	1	IGHV1-138*01	0.861953	
+V	IGHV1-138*01_S8042	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.859060	1	IGHV1-138*01	0.859060	
+V	IGHV1-138*01_S8712	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.862876	1	IGHV1-138*01	0.862876	
+V	IGHV1-138*01_S8841	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.856187	1	IGHV1-138*01	0.856187	
+V	IGHV1-138*01_S8860	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.862876	1	IGHV1-138*01	0.862876	
+V	IGHV1-138*01_S9115	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.859532	1	IGHV1-138*01	0.859532	
+V	IGHV1-138*01_S9603	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV1-138*01	0.853333	1	IGHV1-138*01	0.853333	
+V	IGHV1-138*02	IGH	transferred	validated IMGT-boundary transfer	0	same_gene	IGHV1-138*01	0.862876	1	IGHV1-138*01	0.862876	
+V	IGHV1-170*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-156*01	1.000000	12	IGHV1-156*01	1.000000	
+V	IGHV1-170*01_S3055	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-156D*01	1.000000	12	IGHV1-156D*01	1.000000	
+V	IGHV1-193*01_S6037	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-70*01	1.000000	12	IGHV1-70*01	1.000000	
+V	IGHV1-58*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-198*01	0.986486	12	IGHV1-198*01	0.986486	
+V	IGHV1-60*01_S1918	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-200*01	0.959459	12	IGHV1-200*01	0.959459	
+V	IGHV1-60*01_S7602	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-200*01	0.962838	12	IGHV1-200*01	0.962838	
+V	IGHV1-60*01_S7772	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-200*01	0.976351	12	IGHV1-200*01	0.976351	
+V	IGHV1-84*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.989865	12	IGHV1-111*01	0.989865	
+V	IGHV1-84*01_S0025	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.959596	12	IGHV1-111*01	0.959596	
+V	IGHV1-84*01_S0240	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.969697	12	IGHV1-111*01	0.969697	
+V	IGHV1-84*01_S0302	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.966330	12	IGHV1-111*01	0.966330	
+V	IGHV1-84*01_S2805	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.952703	12	IGHV1-111*01	0.952703	
+V	IGHV1-84*01_S4663	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.979798	12	IGHV1-111*01	0.979798	
+V	IGHV1-84*01_S5228	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.956229	12	IGHV1-111*01	0.956229	
+V	IGHV1-84*01_S5842	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.969697	12	IGHV1-111*01	0.969697	
+V	IGHV1-84*01_S8557	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.966330	12	IGHV1-111*01	0.966330	
+V	IGHV1-84*01_S9171	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.989899	12	IGHV1-111*01	0.989899	
+V	IGHV1-84*01_S9366	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-111*01	0.983108	12	IGHV1-111*01	0.983108	
+V	IGHV1-NL_1*01_S2052	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-200*01	0.983108	12	IGHV1-200*01	0.983108	
+V	IGHV1-NL_1*01_S6622	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-200*01	0.979730	12	IGHV1-200*01	0.979730	
+V	IGHV1-NL_1*01_S8523	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-200*01	0.979730	12	IGHV1-200*01	0.979730	
+V	IGHV1-NL_2*01_S0023	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-138*01	0.979730	12	IGHV1-138*01	0.979730	
+V	IGHV1-NL_2*01_S2228	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-138*01	0.976351	12	IGHV1-138*01	0.976351	
+V	IGHV1-NL_2*01_S3477	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-138*01	0.983108	12	IGHV1-138*01	0.983108	
+V	IGHV1-NL_2*01_S3568	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-138*01	0.962838	12	IGHV1-138*01	0.962838	
+V	IGHV1-NL_2*01_S5797	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-138*01	0.989865	12	IGHV1-138*01	0.989865	
+V	IGHV1-NL_2*01_S5959	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-138*01	0.986486	12	IGHV1-138*01	0.986486	
+V	IGHV1-NL_2*01_S7386	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-138*01	0.986486	12	IGHV1-138*01	0.986486	
+V	IGHV1-NL_2*01_S9896	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-138*01	0.986486	12	IGHV1-138*01	0.986486	
+V	IGHV2-118*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-152*01	0.963455	12	IGHV2-152*01	0.963455	below_identity:7
+V	IGHV2-118*01_S2768	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-152*01	0.960133	12	IGHV2-152*01	0.960133	below_identity:7
+V	IGHV2-118*01_S3831	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-161*01	0.950166	12	IGHV2-161*01	0.950166	below_identity:7
+V	IGHV2-118*01_S4527	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-174*01	0.960133	12	IGHV2-174*01	0.960133	below_identity:7
+V	IGHV2-118*01_S4531	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-152*01	0.956811	12	IGHV2-152*01	0.956811	below_identity:7
+V	IGHV2-118*01_S4632	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-152*01	0.966777	12	IGHV2-152*01	0.966777	below_identity:7
+V	IGHV2-118*01_S6364	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-174*01	0.956811	12	IGHV2-174*01	0.956811	below_identity:7
+V	IGHV2-118*01_S8501	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-152*01	0.960133	12	IGHV2-152*01	0.960133	below_identity:7
+V	IGHV2-118*01_S8953	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-161*01	0.946844	12	IGHV2-161*01	0.946844	below_identity:7
+V	IGHV2-173*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-161*01	0.976744	12	IGHV2-161*01	0.976744	below_identity:7
+V	IGHV2-173*01_S2781	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-161*01	0.973422	12	IGHV2-161*01	0.973422	below_identity:7
+V	IGHV2-173*01_S9930	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-161*01	0.993355	12	IGHV2-161*01	0.993355	below_identity:7
+V	IGHV2-69*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	1.000000	12	IGHV2-95*01	1.000000	below_identity:7
+V	IGHV2-69*01_S2332	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.990033	12	IGHV2-95*01	0.990033	below_identity:7
+V	IGHV2-69*01_S2408	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.983389	12	IGHV2-95*01	0.983389	below_identity:7
+V	IGHV2-69*01_S2931	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.993355	12	IGHV2-95*01	0.993355	below_identity:7
+V	IGHV2-69*01_S4797	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.986711	12	IGHV2-95*01	0.986711	below_identity:7
+V	IGHV2-69*01_S5121	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.996678	12	IGHV2-95*01	0.996678	below_identity:7
+V	IGHV2-69*01_S6153	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.990033	12	IGHV2-95*01	0.990033	below_identity:7
+V	IGHV2-69*01_S8510	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.996678	12	IGHV2-95*01	0.996678	below_identity:7
+V	IGHV2-69*01_S8735	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.993355	12	IGHV2-95*01	0.993355	below_identity:7
+V	IGHV2-69*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.996678	12	IGHV2-95*01	0.996678	below_identity:7
+V	IGHV2-69*02_S0779	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.993355	12	IGHV2-95*01	0.993355	below_identity:7
+V	IGHV2-69*02_S8202	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-95*01	0.990033	12	IGHV2-95*01	0.990033	below_identity:7
+V	IGHV2-7*02_S1732	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-10*01	0.970100	12	IGHV2-10*01	0.970100	below_identity:7
+V	IGHV2-7*02_S3534	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-10*01	0.963455	12	IGHV2-10*01	0.963455	below_identity:7
+V	IGHV2-7*02_S4078	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-10*01	0.960133	12	IGHV2-10*01	0.960133	below_identity:7
+V	IGHV2-7*02_S4285	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-10*01	0.966777	12	IGHV2-10*01	0.966777	below_identity:7
+V	IGHV2-NL_1*01_S2133	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-152*01	0.973422	12	IGHV2-152*01	0.973422	below_identity:7
+V	IGHV2-NL_1*01_S2488	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-174*01	0.983389	12	IGHV2-174*01	0.983389	below_identity:7
+V	IGHV2-NL_1*01_S3296	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-174*01	0.986711	12	IGHV2-174*01	0.986711	below_identity:7
+V	IGHV2-NL_1*01_S4514	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-161*01	0.953488	12	IGHV2-161*01	0.953488	below_identity:7
+V	IGHV2-NL_1*01_S5211	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-174*01	0.980066	12	IGHV2-174*01	0.980066	below_identity:7
+V	IGHV2-NL_1*01_S5431	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-174*01	0.970100	12	IGHV2-174*01	0.970100	below_identity:7
+V	IGHV2-NL_1*01_S5779	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-174*01	0.996678	12	IGHV2-174*01	0.996678	below_identity:7
+V	IGHV2-NL_1*01_S7874	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-174*01	0.986711	12	IGHV2-174*01	0.986711	below_identity:7
+V	IGHV2-NL_1*01_S9725	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-152*01	0.996678	12	IGHV2-152*01	0.996678	below_identity:7
+V	IGHV2-NL_2*01_S2193	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-161*01	0.953488	12	IGHV2-161*01	0.953488	below_identity:7
+V	IGHV2-NL_2*01_S8873	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-161*01	0.950166	12	IGHV2-161*01	0.950166	below_identity:7
+V	IGHV3-100*01	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-100*01	0.875000	1	IGHV3-100*01	0.875000	
+V	IGHV3-100*01_S2822	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-100*01	0.875000	1	IGHV3-100*01	0.875000	
+V	IGHV3-100*01_S4205	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-100*01	0.878378	1	IGHV3-100*01	0.878378	
+V	IGHV3-100*01_S4375	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-100*01	0.878378	1	IGHV3-100*01	0.878378	
+V	IGHV3-100*02_S9884	IGH	transferred	validated IMGT-boundary transfer	0	same_gene	IGHV3-100*01	0.878378	1	IGHV3-100*01	0.878378	
+V	IGHV3-103*01	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-103*01	0.864865	1	IGHV3-103*01	0.864865	
+V	IGHV3-103*01_S2756	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-103*01	0.861486	1	IGHV3-103*01	0.861486	
+V	IGHV3-119*01	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-119*01	0.864865	1	IGHV3-119*01	0.864865	
+V	IGHV3-119*01_S9769	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-119*01	0.851351	1	IGHV3-119*01	0.851351	
+V	IGHV3-119*02	IGH	transferred	validated IMGT-boundary transfer	0	same_gene	IGHV3-119*01	0.861486	1	IGHV3-119*01	0.861486	
+V	IGHV3-120*01_S4231	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-176*01	0.983278	12	IGHV3-176*01	0.983278	
+V	IGHV3-122*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	0.996622	12	IGHV3-178*01	0.996622	
+V	IGHV3-122*01_S2709	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	0.996622	12	IGHV3-178*01	0.996622	
+V	IGHV3-122*01_S2730	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	0.996622	12	IGHV3-178*01	0.996622	
+V	IGHV3-122*01_S5299	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	0.986486	12	IGHV3-178*01	0.986486	
+V	IGHV3-122*01_S6138	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	0.993243	12	IGHV3-178*01	0.993243	
+V	IGHV3-122*01_S8125	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	0.993243	12	IGHV3-178*01	0.993243	
+V	IGHV3-122*01_S8388	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	1.000000	12	IGHV3-178*01	1.000000	
+V	IGHV3-127*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	0.986486	12	IGHV3-183*01	0.986486	
+V	IGHV3-127*01_S1834	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	0.966216	12	IGHV3-183*01	0.966216	
+V	IGHV3-127*01_S2849	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	0.996622	12	IGHV3-183*01	0.996622	
+V	IGHV3-127*01_S3041	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	0.989865	12	IGHV3-183*01	0.989865	
+V	IGHV3-127*01_S3553	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	0.983108	12	IGHV3-183*01	0.983108	
+V	IGHV3-127*01_S5171	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	0.993243	12	IGHV3-183*01	0.993243	
+V	IGHV3-127*01_S5510	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	1.000000	12	IGHV3-183*01	1.000000	
+V	IGHV3-127*01_S6769	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	0.996622	12	IGHV3-183*01	0.996622	
+V	IGHV3-127*01_S7059	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	0.989865	12	IGHV3-183*01	0.989865	
+V	IGHV3-127*01_S8923	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	0.993243	12	IGHV3-183*01	0.993243	
+V	IGHV3-127*01_S9779	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-183*01	0.993243	12	IGHV3-183*01	0.993243	
+V	IGHV3-128*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.996689	12	IGHV3-184*01	0.996689	
+V	IGHV3-128*01_S1128	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.986755	12	IGHV3-184*01	0.986755	
+V	IGHV3-128*01_S3120	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.983444	12	IGHV3-184*01	0.983444	
+V	IGHV3-128*01_S5770	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.973510	12	IGHV3-184*01	0.973510	
+V	IGHV3-128*01_S6966	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.986755	12	IGHV3-184*01	0.986755	
+V	IGHV3-128*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.993377	12	IGHV3-184*01	0.993377	
+V	IGHV3-128*02_S0204	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.990066	12	IGHV3-184*01	0.990066	
+V	IGHV3-128*02_S1375	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.983444	12	IGHV3-184*01	0.983444	
+V	IGHV3-128*02_S1569	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.976821	12	IGHV3-184*01	0.976821	
+V	IGHV3-128*02_S1570	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.990066	12	IGHV3-184*01	0.990066	
+V	IGHV3-128*02_S2156	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.983444	12	IGHV3-184*01	0.983444	
+V	IGHV3-128*02_S2995	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.983444	12	IGHV3-184*01	0.983444	
+V	IGHV3-128*02_S3121	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.986755	12	IGHV3-184*01	0.986755	
+V	IGHV3-128*02_S5001	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.986755	12	IGHV3-184*01	0.986755	
+V	IGHV3-128*02_S6042	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.990066	12	IGHV3-184*01	0.990066	
+V	IGHV3-128*02_S6299	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-184*01	0.980132	12	IGHV3-184*01	0.980132	
+V	IGHV3-141*01_S2525	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-201*01	0.966443	12	IGHV3-201*01	0.966443	
+V	IGHV3-141*01_S3493	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-78*01	0.962838	12	IGHV3-78*01	0.962838	
+V	IGHV3-141*01_S4264	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-67*01	0.969595	12	IGHV3-67*01	0.969595	
+V	IGHV3-141*01_S5017	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-67*01	0.969595	12	IGHV3-67*01	0.969595	
+V	IGHV3-141*01_S5053	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-201*01	0.993289	12	IGHV3-201*01	0.993289	
+V	IGHV3-141*01_S6168	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-67*01	0.972973	12	IGHV3-67*01	0.972973	
+V	IGHV3-141*01_S8690	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-201*01	1.000000	12	IGHV3-201*01	1.000000	
+V	IGHV3-141*02_S1149	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-78*01	0.966216	12	IGHV3-78*01	0.966216	
+V	IGHV3-141*02_S2868	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-78*01	0.986486	12	IGHV3-78*01	0.986486	
+V	IGHV3-141*02_S4530	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-67*01	0.969799	12	IGHV3-67*01	0.969799	
+V	IGHV3-141*02_S6589	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-67*01	0.986486	12	IGHV3-67*01	0.986486	
+V	IGHV3-143*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-72*01	1.000000	12	IGHV3-72*01	1.000000	
+V	IGHV3-143*01_S1151	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-72*01	0.996587	12	IGHV3-72*01	0.996587	
+V	IGHV3-152*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-38*01	0.996689	12	IGHV3-38*01	0.996689	
+V	IGHV3-152*01_S1133	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-38*01	0.980132	12	IGHV3-38*01	0.980132	
+V	IGHV3-152*01_S1340	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-38*01	0.980132	12	IGHV3-38*01	0.980132	
+V	IGHV3-152*01_S5891	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-38*01	0.983444	12	IGHV3-38*01	0.983444	
+V	IGHV3-152*01_S7388	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-38*01	0.990066	12	IGHV3-38*01	0.990066	
+V	IGHV3-172*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-153D*01	0.996689	12	IGHV3-153D*01	0.996689	
+V	IGHV3-172*01_S0072	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-153D*01	0.993377	12	IGHV3-153D*01	0.993377	
+V	IGHV3-172*01_S0577	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-153D*01	0.993377	12	IGHV3-153D*01	0.993377	
+V	IGHV3-172*01_S0645	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-153D*01	0.996689	12	IGHV3-153D*01	0.996689	
+V	IGHV3-172*01_S1597	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-153D*01	0.996689	12	IGHV3-153D*01	0.996689	
+V	IGHV3-172*01_S2175	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-153D*01	0.996689	12	IGHV3-153D*01	0.996689	
+V	IGHV3-172*01_S8488	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-153D*01	1.000000	12	IGHV3-153D*01	1.000000	
+V	IGHV3-172*01_S8824	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-153*01	1.000000	12	IGHV3-153*01	1.000000	
+V	IGHV3-175*01	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-175*01	0.828947	1	IGHV3-175*01	0.828947	
+V	IGHV3-175*01_S1248	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-175*01	0.832237	1	IGHV3-175*01	0.832237	
+V	IGHV3-175*01_S1614	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-175*01	0.825658	1	IGHV3-175*01	0.825658	
+V	IGHV3-177*01_S1591	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-28*01	0.989865	12	IGHV3-28*01	0.989865	
+V	IGHV3-177*01_S4102	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-28*01	0.969595	12	IGHV3-28*01	0.969595	
+V	IGHV3-177*01_S5369	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-28*01	0.972973	12	IGHV3-28*01	0.972973	
+V	IGHV3-177*01_S6408	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-28*01	0.983108	12	IGHV3-28*01	0.983108	
+V	IGHV3-177*01_S8387	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-28*01	0.969595	12	IGHV3-28*01	0.969595	
+V	IGHV3-177*01_S8409	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-28*01	0.983108	12	IGHV3-28*01	0.983108	
+V	IGHV3-177*01_S8970	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-28*01	0.966216	12	IGHV3-28*01	0.966216	
+V	IGHV3-187*01_S1090	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.970199	12	IGHV3-16*01	0.970199	
+V	IGHV3-187*01_S1133	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.983444	12	IGHV3-16*01	0.983444	
+V	IGHV3-187*01_S1387	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.986755	12	IGHV3-16*01	0.986755	
+V	IGHV3-187*01_S2144	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.973510	12	IGHV3-16*01	0.973510	
+V	IGHV3-187*01_S3395	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.970199	12	IGHV3-16*01	0.970199	
+V	IGHV3-187*01_S4220	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.983444	12	IGHV3-16*01	0.983444	
+V	IGHV3-187*01_S4259	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.970199	12	IGHV3-16*01	0.970199	
+V	IGHV3-187*01_S6840	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.970199	12	IGHV3-16*01	0.970199	
+V	IGHV3-187*01_S8951	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.983444	12	IGHV3-16*01	0.983444	
+V	IGHV3-187*01_S8972	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.986755	12	IGHV3-16*01	0.986755	
+V	IGHV3-187*01_S9930	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.966887	12	IGHV3-16*01	0.966887	
+V	IGHV3-187*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	1.000000	12	IGHV3-16*01	1.000000	
+V	IGHV3-187*02_S6102	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.996689	12	IGHV3-16*01	0.996689	
+V	IGHV3-187*02_S8458	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.996689	12	IGHV3-16*01	0.996689	
+V	IGHV3-28*01	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-28*01	1.000000	1	IGHV3-28*01	1.000000	
+V	IGHV3-28*01_S0096	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-28*01	0.996622	1	IGHV3-28*01	0.996622	
+V	IGHV3-28*01_S3792	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-28*01	0.979730	1	IGHV3-28*01	0.979730	
+V	IGHV3-28*01_S5419	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-28*01	0.996622	1	IGHV3-28*01	0.996622	
+V	IGHV3-28*01_S5703	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-28*01	0.993243	1	IGHV3-28*01	0.993243	
+V	IGHV3-28*01_S7540	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-28*01	0.993243	1	IGHV3-28*01	0.993243	
+V	IGHV3-28*01_S8684	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-28*01	0.993243	1	IGHV3-28*01	0.993243	
+V	IGHV3-34*01_S1309	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-34*01	0.972973	1	IGHV3-34*01	0.972973	
+V	IGHV3-34*01_S1458	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-34*01	0.972973	1	IGHV3-34*01	0.972973	
+V	IGHV3-34*01_S2915	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-34*01	0.976351	1	IGHV3-34*01	0.976351	
+V	IGHV3-36*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-110*01	0.943333	12	IGHV3-110*01	0.943333	
+V	IGHV3-36*01_S5206	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-37*01	0.946488	12	IGHV3-37*01	0.946488	
+V	IGHV3-36*01_S6650	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-37*01	0.936455	12	IGHV3-37*01	0.936455	
+V	IGHV3-36*01_S7141	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-37*01	0.939799	12	IGHV3-37*01	0.939799	
+V	IGHV3-36*01_S9128	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-37*01	0.939799	12	IGHV3-37*01	0.939799	
+V	IGHV3-37*01_S4420	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-37*01	0.841060	1	IGHV3-37*01	0.841060	
+V	IGHV3-37*01_S6325	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-37*01	0.834437	1	IGHV3-37*01	0.834437	
+V	IGHV3-37*01_S6630	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-37*01	0.837748	1	IGHV3-37*01	0.837748	
+V	IGHV3-37*01_S9699	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-37*01	0.854305	1	IGHV3-37*01	0.854305	
+V	IGHV3-5*01	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-5*01	0.838926	1	IGHV3-5*01	0.838926	
+V	IGHV3-5*01_S0388	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-5*01	0.842282	1	IGHV3-5*01	0.842282	
+V	IGHV3-5*01_S0969	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-5*01	0.838926	1	IGHV3-5*01	0.838926	
+V	IGHV3-5*01_S2703	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-5*01	0.835570	1	IGHV3-5*01	0.835570	
+V	IGHV3-5*01_S4091	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-5*01	0.838926	1	IGHV3-5*01	0.838926	
+V	IGHV3-5*01_S6059	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-5*01	0.842282	1	IGHV3-5*01	0.842282	
+V	IGHV3-50*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	0.983108	12	IGHV3-54*01	0.983108	
+V	IGHV3-50*01_S1524	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	0.976351	12	IGHV3-54*01	0.976351	
+V	IGHV3-50*01_S1879	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	0.986486	12	IGHV3-54*01	0.986486	
+V	IGHV3-50*01_S3548	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	0.976351	12	IGHV3-54*01	0.976351	
+V	IGHV3-50*01_S4628	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	0.979730	12	IGHV3-54*01	0.979730	
+V	IGHV3-50*01_S5299	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	0.952703	12	IGHV3-54*01	0.952703	
+V	IGHV3-50*01_S6687	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	0.983108	12	IGHV3-54*01	0.983108	
+V	IGHV3-50*01_S7243	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	0.979730	12	IGHV3-54*01	0.979730	
+V	IGHV3-50*01_S9079	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	0.966216	12	IGHV3-54*01	0.966216	
+V	IGHV3-50*02_S9583	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	1.000000	12	IGHV3-54*01	1.000000	
+V	IGHV3-52*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-58*01	0.990066	12	IGHV3-58*01	0.990066	
+V	IGHV3-52*01_S3960	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-58*01	0.986755	12	IGHV3-58*01	0.986755	
+V	IGHV3-52*01_S8160	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-58*01	0.993377	12	IGHV3-58*01	0.993377	
+V	IGHV3-52*02_S2646	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-58*01	0.986755	12	IGHV3-58*01	0.986755	
+V	IGHV3-52*02_S4550	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-58*01	0.990066	12	IGHV3-58*01	0.990066	
+V	IGHV3-52*02_S5117	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-58*01	0.983444	12	IGHV3-58*01	0.983444	
+V	IGHV3-53*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	1.000000	12	IGHV3-59*01	1.000000	
+V	IGHV3-53*01_S0543	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.983108	12	IGHV3-59*01	0.983108	
+V	IGHV3-53*01_S1252	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.969595	12	IGHV3-59*01	0.969595	
+V	IGHV3-53*01_S1558	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.986486	12	IGHV3-59*01	0.986486	
+V	IGHV3-53*01_S2000	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	0.993243	12	IGHV3-178*01	0.993243	
+V	IGHV3-53*01_S2253	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.986486	12	IGHV3-59*01	0.986486	
+V	IGHV3-53*01_S2949	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.996622	12	IGHV3-59*01	0.996622	
+V	IGHV3-53*01_S3027	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.966216	12	IGHV3-59*01	0.966216	
+V	IGHV3-53*01_S3451	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.989865	12	IGHV3-59*01	0.989865	
+V	IGHV3-53*01_S3647	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.989865	12	IGHV3-59*01	0.989865	
+V	IGHV3-53*01_S4071	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.996622	12	IGHV3-59*01	0.996622	
+V	IGHV3-53*01_S4256	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	0.986486	12	IGHV3-178*01	0.986486	
+V	IGHV3-53*01_S4423	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.972973	12	IGHV3-59*01	0.972973	
+V	IGHV3-53*01_S5688	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	0.989865	12	IGHV3-178*01	0.989865	
+V	IGHV3-53*01_S7463	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.996622	12	IGHV3-59*01	0.996622	
+V	IGHV3-53*01_S8116	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.996622	12	IGHV3-59*01	0.996622	
+V	IGHV3-53*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.993243	12	IGHV3-59*01	0.993243	
+V	IGHV3-53*02_S0150	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-178*01	0.986486	12	IGHV3-178*01	0.986486	
+V	IGHV3-73*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	0.979730	12	IGHV3-100*01	0.979730	
+V	IGHV3-73*01_S3636	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	0.983108	12	IGHV3-100*01	0.983108	
+V	IGHV3-73*01_S6942	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	0.983108	12	IGHV3-100*01	0.983108	
+V	IGHV3-73*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	0.996622	12	IGHV3-100*01	0.996622	
+V	IGHV3-73*02_S0085	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	0.993243	12	IGHV3-100*01	0.993243	
+V	IGHV3-73*02_S3937	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	0.986486	12	IGHV3-100*01	0.986486	
+V	IGHV3-73*02_S4412	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	0.986486	12	IGHV3-100*01	0.986486	
+V	IGHV3-73*02_S5005	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	0.989865	12	IGHV3-100*01	0.989865	
+V	IGHV3-73*02_S7884	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	0.989865	12	IGHV3-100*01	0.989865	
+V	IGHV3-73*02_S7955	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	1.000000	12	IGHV3-100*01	1.000000	
+V	IGHV3-73*02_S8830	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-100*01	0.976351	12	IGHV3-100*01	0.976351	
+V	IGHV3-76*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.962963	12	IGHV3-103*01	0.962963	
+V	IGHV3-76*01_S0794	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.966330	12	IGHV3-103*01	0.966330	
+V	IGHV3-76*01_S4285	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.969697	12	IGHV3-103*01	0.969697	
+V	IGHV3-76*01_S5420	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.969697	12	IGHV3-103*01	0.969697	
+V	IGHV3-76*01_S6599	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.969697	12	IGHV3-103*01	0.969697	
+V	IGHV3-76*02_S2075	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.989761	12	IGHV3-103*01	0.989761	
+V	IGHV3-76*02_S4190	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.993174	12	IGHV3-103*01	0.993174	
+V	IGHV3-83*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-110*01	0.986622	12	IGHV3-110*01	0.986622	
+V	IGHV3-83*01_S5932	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-110*01	0.979933	12	IGHV3-110*01	0.979933	
+V	IGHV3-83*01_S9109	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-110*01	0.966555	12	IGHV3-110*01	0.966555	
+V	IGHV3-83*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-110*01	0.979933	12	IGHV3-110*01	0.979933	
+V	IGHV3-83*02_S2462	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-110*01	0.969900	12	IGHV3-110*01	0.969900	
+V	IGHV3-83*02_S9518	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-110*01	0.973244	12	IGHV3-110*01	0.973244	
+V	IGHV3-87*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-115*01	0.986486	12	IGHV3-115*01	0.986486	
+V	IGHV3-87*01_S6311	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-115*01	0.979730	12	IGHV3-115*01	0.979730	
+V	IGHV3-88*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.973597	12	IGHV3-116*01	0.973597	
+V	IGHV3-88*01_S1523	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.963576	12	IGHV3-116*01	0.963576	
+V	IGHV3-88*01_S4297	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.970297	12	IGHV3-116*01	0.970297	
+V	IGHV3-88*01_S6384	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.983444	12	IGHV3-116*01	0.983444	
+V	IGHV3-88*01_S6871	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.976898	12	IGHV3-116*01	0.976898	
+V	IGHV3-88*01_S9155	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.973597	12	IGHV3-116*01	0.973597	
+V	IGHV3-88*01_S9315	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.970297	12	IGHV3-116*01	0.970297	
+V	IGHV3-88*01_S9470	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.970297	12	IGHV3-116*01	0.970297	
+V	IGHV3-88*02_S1355	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.973510	12	IGHV3-116*01	0.973510	
+V	IGHV3-88*02_S3953	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.980132	12	IGHV3-116*01	0.980132	
+V	IGHV3-88*02_S5187	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.970199	12	IGHV3-116*01	0.970199	
+V	IGHV3-88*02_S5672	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.986755	12	IGHV3-116*01	0.986755	
+V	IGHV3-88*02_S7485	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.993377	12	IGHV3-116*01	0.993377	
+V	IGHV3-88*02_S7590	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.966887	12	IGHV3-116*01	0.966887	
+V	IGHV3-88*02_S7929	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.963576	12	IGHV3-116*01	0.963576	
+V	IGHV3-88*02_S9033	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.990066	12	IGHV3-116*01	0.990066	
+V	IGHV3-88*02_S9774	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.970199	12	IGHV3-116*01	0.970199	
+V	IGHV3-9*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-13*01	1.000000	12	IGHV3-13*01	1.000000	
+V	IGHV3-9*01_S0778	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-13*01	0.993333	12	IGHV3-13*01	0.993333	
+V	IGHV3-9*01_S4754	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-13*01	0.996667	12	IGHV3-13*01	0.996667	
+V	IGHV3-9*01_S5797	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-13*01	0.990000	12	IGHV3-13*01	0.990000	
+V	IGHV3-9*01_S7896	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-13*01	0.996667	12	IGHV3-13*01	0.996667	
+V	IGHV3-9*01_S8326	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-13*01	0.996667	12	IGHV3-13*01	0.996667	
+V	IGHV3-9*01_S8777	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-13*01	0.996667	12	IGHV3-13*01	0.996667	
+V	IGHV3-9*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-13*01	0.996667	12	IGHV3-13*01	0.996667	
+V	IGHV3-94*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.962838	12	IGHV3-59*01	0.962838	
+V	IGHV3-94*01_S3427	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.969595	12	IGHV3-59*01	0.969595	
+V	IGHV3-94*01_S4458	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.966216	12	IGHV3-59*01	0.966216	
+V	IGHV3-94*01_S5120	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.966216	12	IGHV3-59*01	0.966216	
+V	IGHV3-94*01_S7982	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-59*01	0.976351	12	IGHV3-59*01	0.976351	
+V	IGHV3-NL_1*01_S1080	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-136*01	0.969900	12	IGHV3-136*01	0.969900	
+V	IGHV3-NL_1*01_S2031	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-136*01	0.959459	12	IGHV3-136*01	0.959459	
+V	IGHV3-NL_1*01_S2788	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-136*01	0.993243	12	IGHV3-136*01	0.993243	
+V	IGHV3-NL_1*01_S3947	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-136*01	0.939189	12	IGHV3-136*01	0.939189	
+V	IGHV3-NL_1*01_S4331	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-136*01	1.000000	12	IGHV3-136*01	1.000000	
+V	IGHV3-NL_1*01_S4549	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-136*01	0.952703	12	IGHV3-136*01	0.952703	
+V	IGHV3-NL_1*01_S5238	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-136*01	0.979730	12	IGHV3-136*01	0.979730	
+V	IGHV3-NL_1*01_S9422	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-136*01	0.996622	12	IGHV3-136*01	0.996622	
+V	IGHV3-NL_1*01_S9854	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-136*01	0.952703	12	IGHV3-136*01	0.952703	
+V	IGHV3-NL_10*02_S1970	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.946128	12	IGHV3-103*01	0.946128	
+V	IGHV3-NL_10*02_S2212	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.952862	12	IGHV3-103*01	0.952862	
+V	IGHV3-NL_11*01_S2687	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.945946	12	IGHV3-103*01	0.945946	
+V	IGHV3-NL_11*01_S3736	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.949324	12	IGHV3-103*01	0.949324	
+V	IGHV3-NL_11*01_S4619	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.949324	12	IGHV3-103*01	0.949324	
+V	IGHV4-144*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.996656	12	IGHV4-73*01	0.996656	
+V	IGHV3-NL_11*01_S5714	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.962838	12	IGHV3-103*01	0.962838	
+V	IGHV3-NL_11*01_S6390	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.952703	12	IGHV3-103*01	0.952703	
+V	IGHV3-NL_11*01_S8390	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.949324	12	IGHV3-103*01	0.949324	
+V	IGHV3-NL_11*01_S8458	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.939189	12	IGHV3-103*01	0.939189	
+V	IGHV3-NL_11*01_S8670	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.945946	12	IGHV3-103*01	0.945946	
+V	IGHV3-NL_11*01_S9627	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.962838	12	IGHV3-103*01	0.962838	
+V	IGHV3-NL_11*02_S2668	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.959459	12	IGHV3-103*01	0.959459	
+V	IGHV3-NL_12*02_S1760	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.930464	12	IGHV3-116*01	0.930464	
+V	IGHV3-NL_12*02_S2468	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.930464	12	IGHV3-116*01	0.930464	
+V	IGHV3-NL_12*02_S5864	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.927152	12	IGHV3-116*01	0.927152	
+V	IGHV3-NL_12*02_S6994	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-116*01	0.930464	12	IGHV3-116*01	0.930464	
+V	IGHV3-NL_13*01_S2791	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-32*01	0.989761	12	IGHV3-32*01	0.989761	
+V	IGHV3-NL_13*01_S3277	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-32*01	0.996587	12	IGHV3-32*01	0.996587	
+V	IGHV3-NL_13*01_S3940	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-32*01	0.986348	12	IGHV3-32*01	0.986348	
+V	IGHV3-NL_13*01_S5549	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-32*01	0.993174	12	IGHV3-32*01	0.993174	
+V	IGHV3-NL_13*01_S5767	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-32*01	0.979522	12	IGHV3-32*01	0.979522	
+V	IGHV3-NL_14*01_S0218	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.956081	12	IGHV3-134*01	0.956081	
+V	IGHV3-NL_14*01_S0721	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.956081	12	IGHV3-134*01	0.956081	
+V	IGHV3-NL_14*01_S1113	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.932432	12	IGHV3-134*01	0.932432	
+V	IGHV3-NL_14*01_S1995	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.952703	12	IGHV3-134*01	0.952703	
+V	IGHV3-NL_14*01_S4949	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.945946	12	IGHV3-134*01	0.945946	
+V	IGHV3-NL_14*01_S6089	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.945946	12	IGHV3-134*01	0.945946	
+V	IGHV3-NL_14*01_S6338	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.935811	12	IGHV3-134*01	0.935811	
+V	IGHV3-NL_14*01_S7643	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.952703	12	IGHV3-134*01	0.952703	
+V	IGHV3-NL_14*01_S7988	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.935811	12	IGHV3-134*01	0.935811	
+V	IGHV3-NL_14*01_S8830	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.949324	12	IGHV3-134*01	0.949324	
+V	IGHV3-NL_14*01_S9303	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.939189	12	IGHV3-134*01	0.939189	
+V	IGHV3-NL_14*01_S9823	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.945946	12	IGHV3-134*01	0.945946	
+V	IGHV3-NL_15*01_S0604	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.983108	12	IGHV3-134*01	0.983108	
+V	IGHV3-NL_15*01_S2828	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.983108	12	IGHV3-134*01	0.983108	
+V	IGHV3-NL_15*01_S3018	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.979730	12	IGHV3-134*01	0.979730	
+V	IGHV3-NL_15*01_S4749	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.966216	12	IGHV3-134*01	0.966216	
+V	IGHV3-NL_15*01_S5125	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	1.000000	12	IGHV3-134*01	1.000000	
+V	IGHV3-NL_15*01_S7302	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.983108	12	IGHV3-134*01	0.983108	
+V	IGHV3-NL_16*01_S5133	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-46*01	0.979730	12	IGHV3-46*01	0.979730	
+V	IGHV3-NL_16*01_S8234	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-46*01	0.979730	12	IGHV3-46*01	0.979730	
+V	IGHV3-NL_17*01_S0507	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-30*01	0.970199	12	IGHV3-30*01	0.970199	
+V	IGHV3-NL_17*01_S1160	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-30*01	0.973510	12	IGHV3-30*01	0.973510	
+V	IGHV3-NL_17*01_S3909	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-30*01	0.976821	12	IGHV3-30*01	0.976821	
+V	IGHV3-NL_17*01_S4250	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-30*01	0.976821	12	IGHV3-30*01	0.976821	
+V	IGHV3-NL_17*01_S4257	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-30*01	0.986755	12	IGHV3-30*01	0.986755	
+V	IGHV3-NL_17*01_S4736	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-30*01	0.973510	12	IGHV3-30*01	0.973510	
+V	IGHV3-NL_17*01_S5770	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-30*01	0.980132	12	IGHV3-30*01	0.980132	
+V	IGHV3-NL_17*01_S6544	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-30*01	0.970199	12	IGHV3-30*01	0.970199	
+V	IGHV3-NL_17*01_S8244	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-30*01	0.983444	12	IGHV3-30*01	0.983444	
+V	IGHV3-NL_17*01_S9589	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-30*01	0.986755	12	IGHV3-30*01	0.986755	
+V	IGHV3-NL_18*01_S0984	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-118*01	0.986755	12	IGHV3-118*01	0.986755	
+V	IGHV3-NL_18*01_S3867	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-118*01	1.000000	12	IGHV3-118*01	1.000000	
+V	IGHV3-NL_18*01_S5825	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-118*01	0.976821	12	IGHV3-118*01	0.976821	
+V	IGHV3-NL_18*01_S6383	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-118*01	0.990066	12	IGHV3-118*01	0.990066	
+V	IGHV3-NL_18*01_S7053	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-118*01	0.983444	12	IGHV3-118*01	0.983444	
+V	IGHV3-NL_19*01_S2472	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-186*01	0.940397	12	IGHV3-186*01	0.940397	
+V	IGHV3-NL_19*01_S4000	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-118*01	0.933775	12	IGHV3-118*01	0.933775	
+V	IGHV3-NL_19*01_S5168	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-186*01	0.940397	12	IGHV3-186*01	0.940397	
+V	IGHV3-NL_19*01_S5460	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-186*01	0.927152	12	IGHV3-186*01	0.927152	
+V	IGHV3-NL_19*01_S6635	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-186*01	0.927152	12	IGHV3-186*01	0.927152	
+V	IGHV3-NL_19*01_S6894	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-186*01	0.937086	12	IGHV3-186*01	0.937086	
+V	IGHV3-NL_19*01_S7515	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-186*01	0.953642	12	IGHV3-186*01	0.953642	
+V	IGHV3-NL_19*01_S9323	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-186*01	0.940397	12	IGHV3-186*01	0.940397	
+V	IGHV3-NL_2*01_S1693	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-119*01	1.000000	12	IGHV3-119*01	1.000000	
+V	IGHV3-NL_2*01_S3900	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-119*01	0.996622	12	IGHV3-119*01	0.996622	
+V	IGHV3-NL_2*01_S5884	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-119*01	0.993243	12	IGHV3-119*01	0.993243	
+V	IGHV3-NL_2*01_S6117	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-119*01	0.993243	12	IGHV3-119*01	0.993243	
+V	IGHV3-NL_4*01_S0257	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-28*01	0.952703	12	IGHV3-28*01	0.952703	
+V	IGHV3-NL_4*01_S2727	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-28*01	0.959459	12	IGHV3-28*01	0.959459	
+V	IGHV3-NL_4*01_S6405	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-124*01	0.952703	12	IGHV3-124*01	0.952703	
+V	IGHV3-NL_4*01_S9067	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-28*01	0.956081	12	IGHV3-28*01	0.956081	
+V	IGHV3-NL_4*01_S9392	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-124*01	0.956081	12	IGHV3-124*01	0.956081	
+V	IGHV3-NL_4*01_S9635	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-124*01	0.962838	12	IGHV3-124*01	0.962838	
+V	IGHV3-NL_5*01_S8361	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-16*01	0.947020	12	IGHV3-16*01	0.947020	
+V	IGHV3-NL_6*02_S7808	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-37*01	0.996622	12	IGHV3-37*01	0.996622	
+V	IGHV3-NL_7*01_S0199	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-54*01	0.925676	12	IGHV3-54*01	0.925676	
+V	IGHV3-NL_8*01_S7860	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-8*01	0.939597	12	IGHV3-8*01	0.939597	
+V	IGHV3-NL_8*01_S9578	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-8*01	0.929530	12	IGHV3-8*01	0.929530	
+V	IGHV3-NL_8*01_S7474	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-8*01	0.939597	12	IGHV3-8*01	0.939597	
+V	IGHV3-NL_9*01_S6098	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-103*01	0.952862	12	IGHV3-103*01	0.952862	
+V	IGHV4-117*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-173*01	1.000000	12	IGHV4-173*01	1.000000	
+V	IGHV4-117*01_S0201	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-92*01	0.969900	12	IGHV4-92*01	0.969900	
+V	IGHV4-117*01_S0312	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-173*01	0.996622	12	IGHV4-173*01	0.996622	
+V	IGHV4-117*01_S0333	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-173*01	0.972973	12	IGHV4-173*01	0.972973	
+V	IGHV4-117*01_S0992	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-92*01	0.976589	12	IGHV4-92*01	0.976589	
+V	IGHV4-117*01_S1924	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.993243	12	IGHV4-147*01	0.993243	
+V	IGHV4-117*01_S2204	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-173*01	0.976351	12	IGHV4-173*01	0.976351	
+V	IGHV4-117*01_S2932	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-173*01	0.993243	12	IGHV4-173*01	0.993243	
+V	IGHV4-117*01_S3225	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-173*01	0.983108	12	IGHV4-173*01	0.983108	
+V	IGHV4-117*01_S3417	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.983108	12	IGHV4-160*01	0.983108	
+V	IGHV4-117*01_S3779	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-92*01	0.973244	12	IGHV4-92*01	0.973244	
+V	IGHV4-117*01_S4879	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.989865	12	IGHV4-160*01	0.989865	
+V	IGHV4-117*01_S4901	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.993243	12	IGHV4-160*01	0.993243	
+V	IGHV4-117*01_S5807	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	1.000000	12	IGHV4-147*01	1.000000	
+V	IGHV4-117*01_S5847	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	1.000000	12	IGHV4-160*01	1.000000	
+V	IGHV4-117*01_S6342	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-173*01	0.979730	12	IGHV4-173*01	0.979730	
+V	IGHV4-117*01_S6852	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.996622	12	IGHV4-160*01	0.996622	
+V	IGHV4-117*01_S8404	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-173*01	0.996622	12	IGHV4-173*01	0.996622	
+V	IGHV4-144*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.996656	12	IGHV4-73*01	0.996656	
+V	IGHV4-144*01_S2055	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.993311	12	IGHV4-73*01	0.993311	
+V	IGHV4-144*01_S2372	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.979933	12	IGHV4-73*01	0.979933	
+V	IGHV4-144*01_S2658	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.979933	12	IGHV4-73*01	0.979933	
+V	IGHV4-144*01_S3008	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.976589	12	IGHV4-73*01	0.976589	
+V	IGHV4-144*01_S3064	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.989967	12	IGHV4-73*01	0.989967	
+V	IGHV4-144*01_S3113	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.979933	12	IGHV4-73*01	0.979933	
+V	IGHV4-144*01_S3676	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	1.000000	12	IGHV4-73*01	1.000000	
+V	IGHV4-144*01_S4873	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.973244	12	IGHV4-73*01	0.973244	
+V	IGHV4-144*01_S5374	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.993311	12	IGHV4-73*01	0.993311	
+V	IGHV4-144*01_S7342	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.983278	12	IGHV4-73*01	0.983278	
+V	IGHV4-144*01_S8596	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.993311	12	IGHV4-73*01	0.993311	
+V	IGHV4-144*01_S9923	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.993311	12	IGHV4-73*01	0.993311	
+V	IGHV4-149*01_S0794	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.986486	12	IGHV4-80*01	0.986486	
+V	IGHV4-149*01_S1166	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.979730	12	IGHV4-80*01	0.979730	
+V	IGHV4-149*01_S1430	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.979730	12	IGHV4-80*01	0.979730	
+V	IGHV4-149*01_S1992	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.979730	12	IGHV4-80*01	0.979730	
+V	IGHV4-149*01_S2001	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.976351	12	IGHV4-80*01	0.976351	
+V	IGHV4-149*01_S3418	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.983108	12	IGHV4-80*01	0.983108	
+V	IGHV4-149*01_S3573	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.976351	12	IGHV4-80*01	0.976351	
+V	IGHV4-149*01_S4098	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.983108	12	IGHV4-80*01	0.983108	
+V	IGHV4-149*01_S5300	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.976351	12	IGHV4-80*01	0.976351	
+V	IGHV4-149*01_S5636	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.983108	12	IGHV4-80*01	0.983108	
+V	IGHV4-149*01_S5861	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.976351	12	IGHV4-80*01	0.976351	
+V	IGHV4-149*01_S6502	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.976351	12	IGHV4-80*01	0.976351	
+V	IGHV4-149*01_S7944	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.983108	12	IGHV4-80*01	0.983108	
+V	IGHV4-149*01_S8005	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.976351	12	IGHV4-80*01	0.976351	
+V	IGHV4-149*01_S8526	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.976351	12	IGHV4-80*01	0.976351	
+V	IGHV4-149*01_S9484	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.979730	12	IGHV4-80*01	0.979730	
+V	IGHV4-149*01_S9613	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.976351	12	IGHV4-80*01	0.976351	
+V	IGHV4-149*02_S6878	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-92*01	0.996656	12	IGHV4-92*01	0.996656	
+V	IGHV4-149*02_S8521	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-92*01	1.000000	12	IGHV4-92*01	1.000000	
+V	IGHV4-150*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	1.000000	12	IGHV4-81*01	1.000000	
+V	IGHV4-150*01_S0749	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.986486	12	IGHV4-81*01	0.986486	
+V	IGHV4-150*01_S1822	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.986486	12	IGHV4-81*01	0.986486	
+V	IGHV4-150*01_S1985	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.983108	12	IGHV4-81*01	0.983108	
+V	IGHV4-150*01_S2067	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.989865	12	IGHV4-81*01	0.989865	
+V	IGHV4-150*01_S2344	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.976589	12	IGHV4-81*01	0.976589	
+V	IGHV4-150*01_S5542	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.986486	12	IGHV4-81*01	0.986486	
+V	IGHV4-150*01_S6885	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.993243	12	IGHV4-81*01	0.993243	
+V	IGHV4-150*01_S8038	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.996622	12	IGHV4-81*01	0.996622	
+V	IGHV4-150*01_S8107	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.993243	12	IGHV4-81*01	0.993243	
+V	IGHV4-150*01_S9374	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.989865	12	IGHV4-81*01	0.989865	
+V	IGHV4-150*01_S9891	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-81*01	0.979730	12	IGHV4-81*01	0.979730	
+V	IGHV4-174*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-173*01	0.983108	12	IGHV4-173*01	0.983108	
+V	IGHV4-174*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.983108	12	IGHV4-160*01	0.983108	
+V	IGHV4-174*02_S3984	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.966216	12	IGHV4-147*01	0.966216	
+V	IGHV4-174*02_S5400	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.983108	12	IGHV4-160*01	0.983108	
+V	IGHV4-67*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.993311	12	IGHV4-93*01	0.993311	
+V	IGHV4-67*01_S0439	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.973244	12	IGHV4-93*01	0.973244	
+V	IGHV4-67*01_S4509	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.983278	12	IGHV4-93*01	0.983278	
+V	IGHV4-67*01_S6131	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.972973	12	IGHV4-160*01	0.972973	
+V	IGHV4-67*01_S8827	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.989967	12	IGHV4-93*01	0.989967	
+V	IGHV4-67*01_S8901	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.989967	12	IGHV4-93*01	0.989967	
+V	IGHV4-67*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	1.000000	12	IGHV4-93*01	1.000000	
+V	IGHV4-67*02_S6848	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.996656	12	IGHV4-93*01	0.996656	
+V	IGHV4-67*02_S7550	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.993311	12	IGHV4-93*01	0.993311	
+V	IGHV4-67*02_S8103	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.996656	12	IGHV4-93*01	0.996656	
+V	IGHV4-67*02_S8671	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.996656	12	IGHV4-93*01	0.996656	
+V	IGHV4-67*02_S8878	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.996656	12	IGHV4-93*01	0.996656	
+V	IGHV4-72*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	1.000000	12	IGHV4-99*01	1.000000	
+V	IGHV4-72*01_S1622	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.996656	12	IGHV4-99*01	0.996656	
+V	IGHV4-72*01_S2051	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.986622	12	IGHV4-99*01	0.986622	
+V	IGHV4-72*01_S8261	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.996656	12	IGHV4-99*01	0.996656	
+V	IGHV4-79*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-106*01	1.000000	12	IGHV4-106*01	1.000000	
+V	IGHV4-79*01_S1478	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-106*01	0.993311	12	IGHV4-106*01	0.993311	
+V	IGHV4-79*02_S9501	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.996622	12	IGHV4-80*01	0.996622	
+V	IGHV4-93*01	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV4-93*01	0.913907	1	IGHV4-93*01	0.913907	
+V	IGHV4-93*01_S0054	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV4-93*01	0.916667	1	IGHV4-93*01	0.916667	
+V	IGHV4-93*01_S0171	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV4-93*01	0.903010	1	IGHV4-93*01	0.903010	
+V	IGHV4-93*01_S0998	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV4-93*01	0.913907	1	IGHV4-93*01	0.913907	
+V	IGHV4-93*01_S1164	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV4-93*01	0.913043	1	IGHV4-93*01	0.913043	
+V	IGHV4-93*01_S5203	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV4-93*01	0.917219	1	IGHV4-93*01	0.917219	
+V	IGHV4-93*01_S6528	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV4-93*01	0.913907	1	IGHV4-93*01	0.913907	
+V	IGHV4-93*01_S8059	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV4-93*01	0.906355	1	IGHV4-93*01	0.906355	
+V	IGHV4-NL_1*01_S0419	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.979933	12	IGHV4-169*01	0.979933	
+V	IGHV4-NL_1*01_S0477	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.986486	12	IGHV4-169*01	0.986486	
+V	IGHV4-NL_1*01_S0689	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.966216	12	IGHV4-169*01	0.966216	
+V	IGHV4-NL_1*01_S0860	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.986486	12	IGHV4-169*01	0.986486	
+V	IGHV4-NL_1*01_S1134	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.962838	12	IGHV4-169*01	0.962838	
+V	IGHV4-NL_1*01_S1456	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.962838	12	IGHV4-169*01	0.962838	
+V	IGHV4-NL_1*01_S1593	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.993243	12	IGHV4-169*01	0.993243	
+V	IGHV4-NL_1*01_S1908	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.966216	12	IGHV4-169*01	0.966216	
+V	IGHV4-NL_1*01_S2370	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.993243	12	IGHV4-169*01	0.993243	
+V	IGHV4-NL_1*01_S2710	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.976589	12	IGHV4-169*01	0.976589	
+V	IGHV4-NL_1*01_S4155	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.993243	12	IGHV4-169*01	0.993243	
+V	IGHV4-NL_1*01_S4750	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.986486	12	IGHV4-169*01	0.986486	
+V	IGHV4-NL_1*01_S5296	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.976351	12	IGHV4-169*01	0.976351	
+V	IGHV4-NL_1*01_S5424	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.993243	12	IGHV4-169*01	0.993243	
+V	IGHV4-NL_1*01_S5917	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.986486	12	IGHV4-169*01	0.986486	
+V	IGHV4-NL_1*01_S7240	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.979730	12	IGHV4-169*01	0.979730	
+V	IGHV4-NL_1*01_S7297	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.972973	12	IGHV4-169*01	0.972973	
+V	IGHV4-NL_1*01_S8446	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.979730	12	IGHV4-169*01	0.979730	
+V	IGHV4-NL_1*01_S8621	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.993243	12	IGHV4-169*01	0.993243	
+V	IGHV4-NL_1*01_S8720	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.989865	12	IGHV4-169*01	0.989865	
+V	IGHV4-NL_1*01_S9290	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.972973	12	IGHV4-169*01	0.972973	
+V	IGHV4-NL_1*01_S9508	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.996622	12	IGHV4-169*01	0.996622	
+V	IGHV4-NL_1*02_S1702	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.959459	12	IGHV4-169*01	0.959459	
+V	IGHV4-NL_1*02_S1777	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.969595	12	IGHV4-169*01	0.969595	
+V	IGHV4-NL_1*02_S1821	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.986486	12	IGHV4-169*01	0.986486	
+V	IGHV4-NL_1*02_S2070	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.966216	12	IGHV4-169*01	0.966216	
+V	IGHV4-NL_1*02_S2275	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.979730	12	IGHV4-169*01	0.979730	
+V	IGHV4-NL_1*02_S2524	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.972973	12	IGHV4-169*01	0.972973	
+V	IGHV4-NL_1*02_S3654	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.983108	12	IGHV4-169*01	0.983108	
+V	IGHV4-NL_1*02_S4188	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.956081	12	IGHV4-169*01	0.956081	
+V	IGHV4-NL_1*02_S4582	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.976351	12	IGHV4-169*01	0.976351	
+V	IGHV4-NL_1*02_S5113	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.966216	12	IGHV4-169*01	0.966216	
+V	IGHV4-NL_1*02_S5220	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.959459	12	IGHV4-169*01	0.959459	
+V	IGHV4-NL_1*02_S8056	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.979730	12	IGHV4-169*01	0.979730	
+V	IGHV4-NL_1*02_S8887	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.979730	12	IGHV4-169*01	0.979730	
+V	IGHV4-NL_1*02_S8977	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.979730	12	IGHV4-169*01	0.979730	
+V	IGHV4-NL_10*01_S0458	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.952703	12	IGHV4-160*01	0.952703	
+V	IGHV4-NL_10*01_S6744	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.956081	12	IGHV4-160*01	0.956081	
+V	IGHV4-NL_10*01_S7684	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.949324	12	IGHV4-165*01	0.949324	
+V	IGHV4-NL_10*02_S9348	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.956081	12	IGHV4-165*01	0.956081	
+V	IGHV4-NL_11*01_S0325	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-122*01	0.953642	12	IGHV4-122*01	0.953642	
+V	IGHV4-NL_11*01_S4651	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-122*01	0.956954	12	IGHV4-122*01	0.956954	
+V	IGHV4-NL_11*01_S5570	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-122*01	0.966887	12	IGHV4-122*01	0.966887	
+V	IGHV4-NL_11*01_S9942	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-122*01	0.956954	12	IGHV4-122*01	0.956954	
+V	IGHV4-NL_12*01_S5174	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-106*01	0.963211	12	IGHV4-106*01	0.963211	
+V	IGHV4-NL_12*01_S8068	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-106*01	0.963211	12	IGHV4-106*01	0.963211	
+V	IGHV4-NL_13*01_S9624	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-122*01	0.953642	12	IGHV4-122*01	0.953642	
+V	IGHV4-NL_13*01_S9744	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-122*01	0.963576	12	IGHV4-122*01	0.963576	
+V	IGHV4-NL_15*01_S5717	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.953177	12	IGHV4-127*01	0.953177	
+V	IGHV4-NL_15*01_S7687	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.949833	12	IGHV4-127*01	0.949833	
+V	IGHV4-NL_16*01_S2138	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-106*01	0.953177	12	IGHV4-106*01	0.953177	
+V	IGHV4-NL_16*01_S2324	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-106*01	0.953177	12	IGHV4-106*01	0.953177	
+V	IGHV4-NL_16*01_S3062	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-106*01	0.949833	12	IGHV4-106*01	0.949833	
+V	IGHV4-NL_16*01_S3640	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-106*01	0.953177	12	IGHV4-106*01	0.953177	
+V	IGHV4-NL_17*01_S0904	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.959866	12	IGHV4-143*01	0.959866	
+V	IGHV4-NL_17*01_S0936	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.953642	12	IGHV4-143*01	0.953642	
+V	IGHV4-NL_17*01_S2080	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.963211	12	IGHV4-143*01	0.963211	
+V	IGHV4-NL_17*01_S2142	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.960265	12	IGHV4-143*01	0.960265	
+V	IGHV4-NL_17*01_S2333	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.953642	12	IGHV4-143*01	0.953642	
+V	IGHV4-NL_17*01_S2469	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.950331	12	IGHV4-143*01	0.950331	
+V	IGHV4-NL_17*01_S2814	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.946488	12	IGHV4-93*01	0.946488	
+V	IGHV4-NL_17*01_S3082	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.950331	12	IGHV4-143*01	0.950331	
+V	IGHV4-NL_17*01_S4004	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.966555	12	IGHV4-143*01	0.966555	
+V	IGHV4-NL_17*01_S4099	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.963576	12	IGHV4-143*01	0.963576	
+V	IGHV4-NL_17*01_S4839	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.956522	12	IGHV4-93*01	0.956522	
+V	IGHV4-NL_17*01_S4954	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.956522	12	IGHV4-93*01	0.956522	
+V	IGHV4-NL_17*01_S5431	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.953177	12	IGHV4-93*01	0.953177	
+V	IGHV4-NL_17*01_S6727	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.949833	12	IGHV4-93*01	0.949833	
+V	IGHV4-NL_17*01_S7355	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.960265	12	IGHV4-143*01	0.960265	
+V	IGHV4-NL_19*01_S1944	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.956954	12	IGHV4-143*01	0.956954	
+V	IGHV4-NL_19*01_S2661	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.943709	12	IGHV4-143*01	0.943709	
+V	IGHV4-NL_19*01_S3005	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.947020	12	IGHV4-143*01	0.947020	
+V	IGHV4-NL_20*01_S0030	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.953177	12	IGHV4-127*01	0.953177	
+V	IGHV4-NL_20*01_S2908	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.959866	12	IGHV4-127*01	0.959866	
+V	IGHV4-NL_20*01_S3862	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.959866	12	IGHV4-127*01	0.959866	
+V	IGHV4-NL_20*01_S3868	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.956522	12	IGHV4-127*01	0.956522	
+V	IGHV4-NL_20*01_S4754	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.966555	12	IGHV4-127*01	0.966555	
+V	IGHV4-NL_20*01_S5229	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.959866	12	IGHV4-127*01	0.959866	
+V	IGHV4-NL_20*01_S6186	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.963211	12	IGHV4-127*01	0.963211	
+V	IGHV4-NL_20*01_S6889	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.956522	12	IGHV4-127*01	0.956522	
+V	IGHV4-NL_20*01_S7244	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.949833	12	IGHV4-143*01	0.949833	
+V	IGHV4-NL_21*01_S0138	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	1.000000	12	IGHV4-127*01	1.000000	
+V	IGHV4-NL_21*01_S0142	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.996656	12	IGHV4-127*01	0.996656	
+V	IGHV4-NL_21*01_S1118	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.996656	12	IGHV4-127*01	0.996656	
+V	IGHV4-NL_21*01_S3257	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.989967	12	IGHV4-127*01	0.989967	
+V	IGHV4-NL_21*01_S4478	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.959866	12	IGHV4-127*01	0.959866	
+V	IGHV4-NL_21*01_S6308	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.996656	12	IGHV4-127*01	0.996656	
+V	IGHV4-NL_21*01_S6468	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.976589	12	IGHV4-127*01	0.976589	
+V	IGHV4-NL_21*01_S6650	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.993311	12	IGHV4-127*01	0.993311	
+V	IGHV4-NL_21*01_S7469	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.983278	12	IGHV4-165*01	0.983278	
+V	IGHV4-NL_21*01_S9849	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.989967	12	IGHV4-127*01	0.989967	
+V	IGHV4-NL_22*01_S2393	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.953177	12	IGHV4-127*01	0.953177	
+V	IGHV4-NL_22*01_S2980	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.949833	12	IGHV4-76*01	0.949833	
+V	IGHV4-NL_22*01_S5234	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.949833	12	IGHV4-76*01	0.949833	
+V	IGHV4-NL_22*01_S6977	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.943144	12	IGHV4-76*01	0.943144	
+V	IGHV4-NL_22*01_S9255	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.953177	12	IGHV4-76*01	0.953177	
+V	IGHV4-NL_23*01_S1296	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.936455	12	IGHV4-127*01	0.936455	
+V	IGHV4-NL_23*01_S4212	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.936455	12	IGHV4-127*01	0.936455	
+V	IGHV4-NL_23*01_S6914	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.943144	12	IGHV4-127*01	0.943144	
+V	IGHV4-NL_23*01_S7000	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.943144	12	IGHV4-127*01	0.943144	
+V	IGHV4-NL_23*01_S7678	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.939799	12	IGHV4-127*01	0.939799	
+V	IGHV4-NL_24*01_S0809	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.949833	12	IGHV4-127*01	0.949833	
+V	IGHV4-NL_24*01_S1628	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.963211	12	IGHV4-127*01	0.963211	
+V	IGHV4-NL_24*01_S2784	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.949833	12	IGHV4-127*01	0.949833	
+V	IGHV4-NL_24*01_S5697	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.956522	12	IGHV4-127*01	0.956522	
+V	IGHV4-NL_24*01_S7468	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.953177	12	IGHV4-127*01	0.953177	
+V	IGHV4-NL_24*01_S7595	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.959866	12	IGHV4-127*01	0.959866	
+V	IGHV4-NL_24*01_S8809	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.956522	12	IGHV4-127*01	0.956522	
+V	IGHV4-NL_24*01_S9400	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.963211	12	IGHV4-127*01	0.963211	
+V	IGHV4-NL_25*01_S0581	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.986622	12	IGHV4-76*01	0.986622	
+V	IGHV4-NL_25*01_S2780	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.996656	12	IGHV4-76*01	0.996656	
+V	IGHV4-NL_25*01_S6200	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.973244	12	IGHV4-76*01	0.973244	
+V	IGHV4-NL_25*01_S6383	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.966555	12	IGHV4-76*01	0.966555	
+V	IGHV4-NL_25*01_S6604	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.986622	12	IGHV4-76*01	0.986622	
+V	IGHV4-NL_25*01_S6960	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.983278	12	IGHV4-76*01	0.983278	
+V	IGHV4-NL_25*01_S8389	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.986622	12	IGHV4-76*01	0.986622	
+V	IGHV4-NL_25*01_S8575	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.983278	12	IGHV4-76*01	0.983278	
+V	IGHV4-NL_25*01_S9478	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.989967	12	IGHV4-76*01	0.989967	
+V	IGHV4-NL_25*01_S9955	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.986622	12	IGHV4-76*01	0.986622	
+V	IGHV4-NL_26*01_S2261	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-76*01	0.973244	12	IGHV4-76*01	0.973244	
+V	IGHV4-NL_27*01_S0673	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.939189	12	IGHV4-160*01	0.939189	
+V	IGHV4-NL_27*01_S1458	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.936455	12	IGHV4-99*01	0.936455	
+V	IGHV4-NL_27*01_S2822	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.933110	12	IGHV4-99*01	0.933110	
+V	IGHV4-NL_27*01_S2979	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.939799	12	IGHV4-99*01	0.939799	
+V	IGHV4-NL_27*01_S3198	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.933110	12	IGHV4-160*01	0.933110	
+V	IGHV4-NL_27*01_S3510	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.933110	12	IGHV4-127*01	0.933110	
+V	IGHV4-NL_27*01_S4348	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.936455	12	IGHV4-99*01	0.936455	
+V	IGHV4-NL_27*01_S5151	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.943144	12	IGHV4-99*01	0.943144	
+V	IGHV4-NL_27*01_S5706	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.936455	12	IGHV4-160*01	0.936455	
+V	IGHV4-NL_27*01_S5720	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.943144	12	IGHV4-160*01	0.943144	
+V	IGHV4-NL_27*01_S5829	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.946488	12	IGHV4-160*01	0.946488	
+V	IGHV4-NL_27*01_S6960	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.942568	12	IGHV4-160*01	0.942568	
+V	IGHV4-NL_27*01_S7150	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.936455	12	IGHV4-160*01	0.936455	
+V	IGHV4-NL_27*01_S7431	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.942568	12	IGHV4-160*01	0.942568	
+V	IGHV4-NL_27*01_S7643	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.939799	12	IGHV4-99*01	0.939799	
+V	IGHV4-NL_27*01_S7871	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.935811	12	IGHV4-160*01	0.935811	
+V	IGHV4-NL_27*01_S9001	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.949324	12	IGHV4-165*01	0.949324	
+V	IGHV4-NL_27*01_S9596	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.943144	12	IGHV4-99*01	0.943144	
+V	IGHV4-NL_28*01_S1050	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.925676	12	IGHV4-160*01	0.925676	
+V	IGHV4-NL_28*01_S2610	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.923077	12	IGHV4-65*01	0.923077	
+V	IGHV4-NL_28*01_S8057	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.922297	12	IGHV4-165*01	0.922297	
+V	IGHV4-NL_29*01_S1425	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.972973	12	IGHV4-165*01	0.972973	
+V	IGHV4-NL_29*01_S3018	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.969595	12	IGHV4-165*01	0.969595	
+V	IGHV4-NL_29*01_S3761	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.979730	12	IGHV4-165*01	0.979730	
+V	IGHV4-NL_29*01_S5315	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.966216	12	IGHV4-165*01	0.966216	
+V	IGHV4-NL_29*01_S9610	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.969595	12	IGHV4-165*01	0.969595	
+V	IGHV4-NL_29*01_S9965	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.966216	12	IGHV4-165*01	0.966216	
+V	IGHV4-NL_3*01_S1577	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.956522	12	IGHV4-147*01	0.956522	
+V	IGHV4-NL_3*01_S7576	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.959866	12	IGHV4-147*01	0.959866	
+V	IGHV4-NL_3*01_S7864	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-106*01	0.956811	12	IGHV4-106*01	0.956811	
+V	IGHV4-NL_30*01_S4251	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.949324	12	IGHV4-160*01	0.949324	
+V	IGHV4-NL_31*01_S1675	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.956081	12	IGHV4-160*01	0.956081	
+V	IGHV4-NL_31*01_S7693	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.959459	12	IGHV4-160*01	0.959459	
+V	IGHV4-NL_32*01_S3033	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.969595	12	IGHV4-147*01	0.969595	
+V	IGHV4-NL_33*01_S1148	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.993311	12	IGHV4-65*01	0.993311	
+V	IGHV4-NL_33*01_S2532	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	1.000000	12	IGHV4-65*01	1.000000	
+V	IGHV4-NL_33*01_S3086	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.993311	12	IGHV4-65*01	0.993311	
+V	IGHV4-NL_33*01_S4143	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.976589	12	IGHV4-65*01	0.976589	
+V	IGHV4-NL_33*01_S4377	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.983278	12	IGHV4-65*01	0.983278	
+V	IGHV4-NL_33*01_S4467	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.986622	12	IGHV4-65*01	0.986622	
+V	IGHV4-NL_33*01_S5330	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.986622	12	IGHV4-65*01	0.986622	
+V	IGHV4-NL_33*01_S5535	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.979933	12	IGHV4-65*01	0.979933	
+V	IGHV4-NL_33*01_S6730	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.983278	12	IGHV4-65*01	0.983278	
+V	IGHV4-NL_33*01_S8127	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.993311	12	IGHV4-65*01	0.993311	
+V	IGHV4-NL_33*01_S9428	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.979933	12	IGHV4-65*01	0.979933	
+V	IGHV4-NL_34*01_S4637	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.959866	12	IGHV4-65*01	0.959866	
+V	IGHV4-NL_34*01_S4749	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.953333	12	IGHV4-143*01	0.953333	
+V	IGHV4-NL_36*01_S0211	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.983108	12	IGHV4-165*01	0.983108	
+V	IGHV4-NL_36*01_S0538	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.969595	12	IGHV4-165*01	0.969595	
+V	IGHV4-NL_36*01_S0848	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.986486	12	IGHV4-165*01	0.986486	
+V	IGHV4-NL_36*01_S0936	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.966555	12	IGHV4-99*01	0.966555	
+V	IGHV4-NL_36*01_S3269	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.983108	12	IGHV4-165*01	0.983108	
+V	IGHV4-NL_36*01_S3780	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.962838	12	IGHV4-165*01	0.962838	
+V	IGHV4-NL_36*01_S5000	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.989865	12	IGHV4-165*01	0.989865	
+V	IGHV4-NL_36*01_S5319	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.976351	12	IGHV4-165*01	0.976351	
+V	IGHV4-NL_36*01_S5847	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.979730	12	IGHV4-165*01	0.979730	
+V	IGHV4-NL_36*01_S6474	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.983108	12	IGHV4-165*01	0.983108	
+V	IGHV4-NL_36*01_S6687	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.979730	12	IGHV4-165*01	0.979730	
+V	IGHV4-NL_36*01_S6973	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.986486	12	IGHV4-165*01	0.986486	
+V	IGHV4-NL_36*01_S7873	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.972973	12	IGHV4-165*01	0.972973	
+V	IGHV4-NL_36*01_S8200	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.989865	12	IGHV4-165*01	0.989865	
+V	IGHV4-NL_36*01_S9506	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.983108	12	IGHV4-165*01	0.983108	
+V	IGHV4-NL_36*01_S9644	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.986486	12	IGHV4-165*01	0.986486	
+V	IGHV4-NL_38*01_S0981	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.969900	12	IGHV4-143*01	0.969900	
+V	IGHV4-NL_38*01_S2187	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.966555	12	IGHV4-165*01	0.966555	
+V	IGHV4-NL_38*01_S5467	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.956081	12	IGHV4-165*01	0.956081	
+V	IGHV4-NL_38*01_S6639	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.952703	12	IGHV4-165*01	0.952703	
+V	IGHV4-NL_38*01_S6935	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.963211	12	IGHV4-165*01	0.963211	
+V	IGHV4-NL_38*01_S6954	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.963211	12	IGHV4-143*01	0.963211	
+V	IGHV4-NL_38*01_S8437	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.966555	12	IGHV4-143*01	0.966555	
+V	IGHV4-NL_38*01_S9244	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.963211	12	IGHV4-165*01	0.963211	
+V	IGHV4-NL_38*01_S9472	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.959866	12	IGHV4-165*01	0.959866	
+V	IGHV4-NL_4*01_S5211	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.983108	12	IGHV4-160*01	0.983108	
+V	IGHV4-NL_4*01_S8866	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.966555	12	IGHV4-160*01	0.966555	
+V	IGHV4-NL_40*01_S0696	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.969900	12	IGHV4-165*01	0.969900	
+V	IGHV4-NL_40*01_S0979	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.963211	12	IGHV4-165*01	0.963211	
+V	IGHV4-NL_40*01_S5093	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.966555	12	IGHV4-165*01	0.966555	
+V	IGHV4-NL_40*01_S6921	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.963211	12	IGHV4-165*01	0.963211	
+V	IGHV4-NL_40*01_S9974	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.966555	12	IGHV4-165*01	0.966555	
+V	IGHV4-NL_42*01_S3076	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.949324	12	IGHV4-169*01	0.949324	
+V	IGHV4-NL_42*01_S3572	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.952703	12	IGHV4-169*01	0.952703	
+V	IGHV4-NL_42*01_S3666	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.949324	12	IGHV4-169*01	0.949324	
+V	IGHV4-NL_42*01_S6064	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.945946	12	IGHV4-169*01	0.945946	
+V	IGHV4-NL_43*01_S4510	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.996656	12	IGHV4-143*01	0.996656	
+V	IGHV4-NL_5*01_S0876	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.976351	12	IGHV4-160*01	0.976351	
+V	IGHV4-NL_5*01_S1492	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.976351	12	IGHV4-160*01	0.976351	
+V	IGHV4-NL_5*01_S2528	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.962838	12	IGHV4-147*01	0.962838	
+V	IGHV4-NL_5*01_S2634	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-93*01	0.956522	12	IGHV4-93*01	0.956522	
+V	IGHV4-NL_5*01_S4603	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.966216	12	IGHV4-147*01	0.966216	
+V	IGHV4-NL_5*01_S5158	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.966216	12	IGHV4-147*01	0.966216	
+V	IGHV4-NL_5*01_S5308	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.973510	12	IGHV4-165*01	0.973510	
+V	IGHV4-NL_5*01_S5442	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-65*01	0.956522	12	IGHV4-65*01	0.956522	
+V	IGHV4-NL_5*01_S6060	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.966216	12	IGHV4-147*01	0.966216	
+V	IGHV4-NL_5*01_S6281	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.979730	12	IGHV4-160*01	0.979730	
+V	IGHV4-NL_5*01_S7147	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.972973	12	IGHV4-147*01	0.972973	
+V	IGHV4-NL_5*01_S8078	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.966216	12	IGHV4-147*01	0.966216	
+V	IGHV4-NL_5*01_S8645	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.969595	12	IGHV4-147*01	0.969595	
+V	IGHV4-NL_5*01_S8781	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.969595	12	IGHV4-147*01	0.969595	
+V	IGHV4-NL_5*01_S8913	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-143*01	0.963211	12	IGHV4-143*01	0.963211	
+V	IGHV4-NL_6*01_S0677	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-73*01	0.946488	12	IGHV4-73*01	0.946488	
+V	IGHV4-NL_6*01_S1133	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.925676	12	IGHV4-160*01	0.925676	
+V	IGHV4-NL_6*01_S4760	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.922297	12	IGHV4-160*01	0.922297	
+V	IGHV4-NL_6*01_S5805	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.922297	12	IGHV4-160*01	0.922297	
+V	IGHV4-NL_7*02_S0143	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-147*01	0.956081	12	IGHV4-147*01	0.956081	
+V	IGHV4-NL_8*02_S1304	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.952703	12	IGHV4-160*01	0.952703	
+V	IGHV4-NL_9*01_S1435	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.969595	12	IGHV4-165*01	0.969595	
+V	IGHV4-NL_9*01_S2406	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.959459	12	IGHV4-165*01	0.959459	
+V	IGHV4-NL_9*01_S3502	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.972973	12	IGHV4-165*01	0.972973	
+V	IGHV4-NL_9*01_S4567	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.969595	12	IGHV4-165*01	0.969595	
+V	IGHV4-NL_9*01_S4804	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-169*01	0.956081	12	IGHV4-169*01	0.956081	
+V	IGHV4-NL_9*01_S4906	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.972973	12	IGHV4-165*01	0.972973	
+V	IGHV4-NL_9*01_S4990	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-127*01	0.969900	12	IGHV4-127*01	0.969900	
+V	IGHV4-NL_9*01_S6142	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.969595	12	IGHV4-165*01	0.969595	
+V	IGHV4-NL_9*01_S6766	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.966216	12	IGHV4-165*01	0.966216	
+V	IGHV4-NL_9*01_S9889	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.969595	12	IGHV4-165*01	0.969595	
+V	IGHV5-15*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.989865	12	IGHV5-20*01	0.989865	below_identity:4
+V	IGHV5-15*01_S0203	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.993243	12	IGHV5-20*01	0.993243	below_identity:4
+V	IGHV5-15*01_S0308	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.993243	12	IGHV5-20*01	0.993243	below_identity:6
+V	IGHV5-15*01_S2502	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.989865	12	IGHV5-20*01	0.989865	below_identity:4
+V	IGHV5-15*01_S2952	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.986486	12	IGHV5-20*01	0.986486	below_identity:6
+V	IGHV5-15*01_S3383	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.986486	12	IGHV5-20*01	0.986486	below_identity:4
+V	IGHV5-15*01_S4790	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.989865	12	IGHV5-20*01	0.989865	below_identity:6
+V	IGHV5-15*01_S5299	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.986486	12	IGHV5-20*01	0.986486	below_identity:4
+V	IGHV5-15*01_S6979	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.979730	12	IGHV5-20*01	0.979730	below_identity:5
+V	IGHV5-15*01_S8661	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.986486	12	IGHV5-20*01	0.986486	below_identity:4
+V	IGHV5-15*01_S8725	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.986486	12	IGHV5-20*01	0.986486	below_identity:8
+V	IGHV5-15*01_S9061	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-20*01	0.996622	12	IGHV5-20*01	0.996622	below_identity:6
+V	IGHV5-157*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.996622	12	IGHV5-43*01	0.996622	below_identity:7
+V	IGHV5-157*01_S0308	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.983108	12	IGHV5-43*01	0.983108	below_identity:7
+V	IGHV5-157*01_S3631	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.989865	12	IGHV5-43*01	0.989865	below_identity:7
+V	IGHV5-157*01_S5960	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.993243	12	IGHV5-43*01	0.993243	below_identity:7
+V	IGHV5-157*01_S6479	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.996622	12	IGHV5-43*01	0.996622	below_identity:7
+V	IGHV5-157*01_S8185	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.993243	12	IGHV5-43*01	0.993243	below_identity:7
+V	IGHV5-157*01_S8626	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.989865	12	IGHV5-43*01	0.989865	below_identity:7
+V	IGHV5-157*02_S3096	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.969595	12	IGHV5-43*01	0.969595	below_identity:4
+V	IGHV5-157*02_S3440	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.972973	12	IGHV5-43*01	0.972973	below_identity:5
+V	IGHV5-157*02_S5108	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.976351	12	IGHV5-43*01	0.976351	below_identity:5
+V	IGHV5-157*02_S7648	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.972973	12	IGHV5-43*01	0.972973	below_identity:4
+V	IGHV5-157*02_S8705	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV5-43*01	0.972973	12	IGHV5-43*01	0.972973	below_identity:4
+V	IGHV6-1*01	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV6-1*01	0.996721	1	IGHV6-1*01	0.996721	
+V	IGHV6-1*02	IGH	transferred	validated IMGT-boundary transfer	0	same_gene	IGHV6-1*01	1.000000	1	IGHV6-1*01	1.000000	
+V	IGHV6-1*02_S1768	IGH	transferred	validated IMGT-boundary transfer	0	same_gene	IGHV6-1*01	0.996721	1	IGHV6-1*01	0.996721	
+V	IGHV7-135*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-193*01	0.993243	12	IGHV7-193*01	0.993243	
+V	IGHV7-135*01_S4281	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-193*01	0.989865	12	IGHV7-193*01	0.989865	
+V	IGHV7-135*01_S9086	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-193*01	0.996622	12	IGHV7-193*01	0.996622	
+V	IGHV7-135*02_S1424	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-193*01	1.000000	12	IGHV7-193*01	1.000000	
+V	IGHV7-86*01	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.996622	12	IGHV7-114*01	0.996622	
+V	IGHV7-86*01_S0200	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.993243	12	IGHV7-114*01	0.993243	
+V	IGHV7-86*01_S0351	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.986486	12	IGHV7-114*01	0.986486	
+V	IGHV7-86*01_S0772	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.983108	12	IGHV7-114*01	0.983108	
+V	IGHV7-86*01_S2268	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.986486	12	IGHV7-114*01	0.986486	
+V	IGHV7-86*01_S3594	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.989865	12	IGHV7-114*01	0.989865	
+V	IGHV7-86*01_S3619	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.979730	12	IGHV7-114*01	0.979730	
+V	IGHV7-86*01_S4789	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.996622	12	IGHV7-114*01	0.996622	
+V	IGHV7-86*01_S6180	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.993243	12	IGHV7-114*01	0.993243	
+V	IGHV7-86*01_S6208	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.972973	12	IGHV7-114*01	0.972973	
+V	IGHV7-86*01_S7736	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.986486	12	IGHV7-114*01	0.986486	
+V	IGHV7-86*01_S8420	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.983108	12	IGHV7-114*01	0.983108	
+V	IGHV7-86*01_S9209	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.976351	12	IGHV7-114*01	0.976351	
+V	IGHV7-86*02	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV7-114*01	0.993243	12	IGHV7-114*01	0.993243	
+V	IGHV4-NL_36*01_S0326	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-165*01	0.996622	12	IGHV4-165*01	0.996622	
+V	IGHV4-NL_27*01_S7628	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-99*01	0.939799	12	IGHV4-99*01	0.939799	
+V	IGHV4-NL_12*01_S2985	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-106*01	0.963211	12	IGHV4-106*01	0.963211	
+V	IGHV4-174*02_S2437	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-160*01	0.983108	12	IGHV4-160*01	0.983108	
+V	IGHV4-149*01_S2329	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV4-80*01	0.979730	12	IGHV4-80*01	0.979730	
+V	IGHV3-NL_18*01_S1419	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-186*01	0.986755	12	IGHV3-186*01	0.986755	
+V	IGHV3-NL_14*01_S0414	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-134*01	0.959459	12	IGHV3-134*01	0.959459	
+V	IGHV3-NL_1*01_S7175	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-136*01	0.956081	12	IGHV3-136*01	0.956081	
+V	IGHV3-5*01_S6435	IGH	transferred	validated IMGT-boundary transfer	0	same_allele	IGHV3-5*01	0.835570	1	IGHV3-5*01	0.835570	
+V	IGHV3-36*01_S4906	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-37*01	0.943144	12	IGHV3-37*01	0.943144	
+V	IGHV3-143*01_S8819	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV3-72*01	0.993174	12	IGHV3-72*01	0.993174	
+V	IGHV2-NL_1*01_S0252	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV2-174*01	0.983389	12	IGHV2-174*01	0.983389	below_identity:7
+V	IGHV1-NL_1*01_S2608	IGH	transferred	validated IMGT-boundary transfer	0	nearest	IGHV1-200*01	0.979730	12	IGHV1-200*01	0.979730	
+D	IGHD1-1*01	IGH	normalized	none					0			
+D	IGHD1-2*01	IGH	normalized	none					0			
+D	IGHD1-3*01	IGH	normalized	none					0			
+D	IGHD1-4*01	IGH	normalized	none					0			
+D	IGHD1-5*01	IGH	normalized	none					0			
+D	IGHD1-6*01	IGH	normalized	none					0			
+D	IGHD1-7*01	IGH	normalized	none					0			
+D	IGHD1-8*01	IGH	normalized	none					0			
+D	IGHD2-10*01	IGH	normalized	none					0			
+D	IGHD2-10*01_S295	IGH	normalized	none					0			
+D	IGHD2-10*01_S8741	IGH	normalized	none					0			
+D	IGHD2-11*01	IGH	normalized	none					0			
+D	IGHD2-11*01_S1259	IGH	normalized	none					0			
+D	IGHD2-12*01	IGH	normalized	none					0			
+D	IGHD2-13*01	IGH	normalized	none					0			
+D	IGHD2-14*01	IGH	normalized	none					0			
+D	IGHD2-14*02_S0040	IGH	normalized	none					0			
+D	IGHD2-14*02_S0100	IGH	normalized	none					0			
+D	IGHD2-14*02_S1717	IGH	normalized	none					0			
+D	IGHD2-9*01	IGH	normalized	none					0			
+D	IGHD3-15*01	IGH	normalized	none					0			
+D	IGHD3-16*01	IGH	normalized	none					0			
+D	IGHD3-17*01	IGH	normalized	none					0			
+D	IGHD3-18*01	IGH	normalized	none					0			
+D	IGHD3-19*02_S4720	IGH	normalized	none					0			
+D	IGHD3-20*01	IGH	normalized	none					0			
+D	IGHD3-41*01	IGH	normalized	none					0			
+D	IGHD3-41*01_S1308	IGH	normalized	none					0			
+D	IGHD3-41*01_S1524	IGH	normalized	none					0			
+D	IGHD3-41*01_S4389	IGH	normalized	none					0			
+D	IGHD3-41*01_S8240	IGH	normalized	none					0			
+D	IGHD4-21*01	IGH	normalized	none					0			
+D	IGHD4-23*01	IGH	normalized	none					0			
+D	IGHD4-24*01	IGH	normalized	none					0			
+D	IGHD4-25*01	IGH	normalized	none					0			
+D	IGHD5-27*01	IGH	normalized	none					0			
+D	IGHD5-28*01	IGH	normalized	none					0			
+D	IGHD5-29*01	IGH	normalized	none					0			
+D	IGHD5-31*01	IGH	normalized	none					0			
+D	IGHD5-32*01	IGH	normalized	none					0			
+D	IGHD5-32*01_S0263	IGH	normalized	none					0			
+D	IGHD5-32*01_S0995	IGH	normalized	none					0			
+D	IGHD5-32*01_S2987	IGH	normalized	none					0			
+D	IGHD6-33*01	IGH	normalized	none					0			
+D	IGHD6-34*01	IGH	normalized	none					0			
+D	IGHD6-35*01	IGH	normalized	none					0			
+D	IGHD6-36*01	IGH	normalized	none					0			
+D	IGHD6-38*01	IGH	normalized	none					0			
+D	IGHD6-38*01_S4618	IGH	normalized	none					0			
+D	IGHD6-39*01	IGH	normalized	none					0			
+D	IGHD6-39*01_S0850	IGH	normalized	none					0			
+D	IGHD7-40*01	IGH	normalized	none					0			
+J	IGHJ1-1*01	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ1*02	0.980769	9	IGHJ1*02	0.980769	below_identity:2
+J	IGHJ2*01	IGH	transferred	validated J-anchor transfer	0	same_allele	IGHJ2*01	1.000000	1	IGHJ2*01	1.000000	
+J	IGHJ2*01_S5087	IGH	transferred	validated J-anchor transfer	0	same_allele	IGHJ2*01	0.981132	1	IGHJ2*01	0.981132	
+J	IGHJ3-2*01	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ3*01	1.000000	9	IGHJ3*01	1.000000	below_identity:3
+J	IGHJ4-3*01	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ4*01	1.000000	9	IGHJ4*01	1.000000	below_identity:2
+J	IGHJ4-3*01_S9191	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ4*01	0.979167	9	IGHJ4*01	0.979167	below_identity:3
+J	IGHJ5-4*01	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ5-1*02	0.960784	9	IGHJ5-1*02	0.960784	below_identity:2
+J	IGHJ5-4*02	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ5-1*02	1.000000	9	IGHJ5-1*02	1.000000	below_identity:2
+J	IGHJ5-4*03	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ5-1*02	0.980392	9	IGHJ5-1*02	0.980392	below_identity:2
+J	IGHJ5-5*01	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ5-2*02	1.000000	9	IGHJ5-2*02	1.000000	below_identity:3
+J	IGHJ5-5*01_S6098	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ5-2*02	0.980392	9	IGHJ5-2*02	0.980392	below_identity:2
+J	IGHJ5-5*02	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ5-2*02	0.980392	9	IGHJ5-2*02	0.980392	below_identity:3
+J	IGHJ6-6*01	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ6*01	1.000000	9	IGHJ6*01	1.000000	below_identity:3
+J	IGHJ6-6*01_S0171	IGH	transferred	validated J-anchor transfer	0	nearest	IGHJ6*01	0.981481	9	IGHJ6*01	0.981481	below_identity:3

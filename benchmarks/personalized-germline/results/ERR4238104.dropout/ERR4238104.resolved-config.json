@@ -1,0 +1,233 @@
+{
+  "schema": 1,
+  "application": "swig-cli",
+  "studyName": "swig-study",
+  "studyDesign": "independent",
+  "inputs": [
+    {
+      "path": "/workspace/scratch/202f26ac37de/validation/ERR4238104.300k.fasta",
+      "sampleId": "ERR4238104",
+      "subjectId": "ERR4238104",
+      "format": "auto",
+      "datasetId": "ERR4238104.300k",
+      "cohort": "",
+      "timepoint": "",
+      "compartment": ""
+    }
+  ],
+  "references": {
+    "species": "Macaca mulatta_AG07107",
+    "scope": "IGH",
+    "prepareMetadata": false,
+    "files": {
+      "V": "/workspace/scratch/202f26ac37de/validation/ERR4238104.dropout.V.fasta",
+      "D": "/workspace/scratch/202f26ac37de/validation/kimdb.D.fasta",
+      "J": "/workspace/scratch/202f26ac37de/validation/kimdb.J.fasta"
+    }
+  },
+  "preprocessing": {
+    "fastqFilter": {
+      "enabled": false,
+      "maximumExpectedErrors": 0.01,
+      "phredOffset": 33,
+      "trim3Prime": {
+        "enabled": false,
+        "windowSize": 4,
+        "minimumMeanPhred": 20,
+        "minimumLength": 50
+      }
+    },
+    "subsample": {
+      "enabled": false,
+      "size": 10000,
+      "seed": 1
+    }
+  },
+  "annotation": {
+    "workers": 8,
+    "batchRecords": 0,
+    "callingProfile": "r_optimized",
+    "assignerStrategy": "aer_robust",
+    "minimumIdentity": 0.6,
+    "minimumConstantPrefixIdentity": null,
+    "strand": 0,
+    "airrMode": "preserve",
+    "doubleD": {
+      "mode": "off",
+      "minimumVjSpan": 40,
+      "seedLength": 11,
+      "pseudoTrim": 5,
+      "maximumPseudoMismatches": 3,
+      "minimumScoreGain": 8
+    }
+  },
+  "pipeline": {
+    "collapse": {
+      "enabled": true,
+      "mode": "indel",
+      "key": "trimmed",
+      "scope": "sample",
+      "unresolvedPolicy": "discard",
+      "respectConstantCall": true,
+      "denoise": {
+        "mode": "indel",
+        "errorRate": 0.00473,
+        "alpha": 0.01,
+        "callResolution": "allele",
+        "ambiguity": "strict",
+        "minimumParentCount": 2,
+        "ambiguousPolicy": "exclude",
+        "unresolvedPolicy": "discard",
+        "fadNeighborThreshold": 1,
+        "fadMethod": 2,
+        "expectedZeroErrorFraction": 1,
+        "maximumHammingDistance": 1,
+        "maximumEditDistance": 2,
+        "minimumIndelParentRatio": 2,
+        "maxCandidatesPerVariant": 50000,
+        "scope": "sample",
+        "respectConstantCall": true
+      }
+    },
+    "chimera": {
+      "enabled": false,
+      "segment": "V",
+      "model": "auto",
+      "posteriorThreshold": 0.95,
+      "retainUnevaluated": true,
+      "msaSource": "selected",
+      "uploadedMsa": "",
+      "uploadedMsaName": "",
+      "priorProbability": 0.05,
+      "baseMutationProbability": 0.05,
+      "mutationRates": [
+        0,
+        0.0179,
+        0.0357,
+        0.0536,
+        0.0714,
+        0.0893,
+        0.1071,
+        0.125,
+        0.1429,
+        0.1607,
+        0.1786,
+        0.1964,
+        0.2143,
+        0.2321,
+        0.25
+      ],
+      "mutationSwitchProbability": 0,
+      "minimumDfr": 1,
+      "detailed": false
+    },
+    "selection": {
+      "sequenceId": "",
+      "datasetId": "",
+      "sampleId": "",
+      "subjectId": "",
+      "cohort": "",
+      "timepoint": "",
+      "compartment": "",
+      "locus": "",
+      "vCall": "",
+      "vCallIncludeAmbiguous": false,
+      "d1Call": "",
+      "d1CallIncludeAmbiguous": false,
+      "d2Call": "",
+      "jCall": "",
+      "jCallIncludeAmbiguous": false,
+      "cCall": "",
+      "cCallIncludeAmbiguous": false,
+      "isotype": "",
+      "cdr3Nt": "",
+      "cdr3Aa": "",
+      "motif": "",
+      "motifTarget": "cdr3_aa",
+      "motifSyntax": "substring",
+      "motifMode": "any",
+      "productive": "any",
+      "completeVdj": "any",
+      "vjInFrame": "any",
+      "stopCodon": "any",
+      "hasD": "any",
+      "hasCdr3": "any",
+      "doubleD": "any",
+      "minCdr3NtLength": 0,
+      "maxCdr3NtLength": 0,
+      "minCdr3AaLength": 0,
+      "maxCdr3AaLength": 0,
+      "minVIdentity": 0,
+      "minJIdentity": 0,
+      "minVMutation": 0,
+      "maxVMutation": 0,
+      "enabled": false
+    },
+    "alleleRefinement": {
+      "model": "dirichlet",
+      "scope": "subject",
+      "segments": [
+        "V",
+        "J"
+      ],
+      "alphaPerAllele": 0.1,
+      "activeSetPriorActiveFraction": 0.15,
+      "activeSetInclusionThreshold": 0.5,
+      "activeSetTailShape": 0.35,
+      "activeSetFrequencyFloor": 0.000001,
+      "activeSetQuadraturePoints": 12,
+      "activeSetMaxSweeps": 8,
+      "baselineNeighbourOdds": 0.01,
+      "shmLeakageSensitivity": 1,
+      "maximumNeighbourOdds": 0.25,
+      "maximumShm": 0.3,
+      "neighbourRadius": 2,
+      "alternativeScoreTemperature": 2,
+      "unscoredAlternativeWeight": 0.25,
+      "maxCandidatesPerRow": 32,
+      "weighting": "unique",
+      "maxIterations": 100,
+      "convergenceTolerance": 0.000001,
+      "enabled": false,
+      "reassignmentPolicy": "confidence",
+      "applyMinimumPosterior": 0.8
+    },
+    "lineage": {
+      "enabled": true,
+      "scope": "subject",
+      "identity": 0.85,
+      "resolution": "gene",
+      "ambiguity": "overlap",
+      "productiveOnly": true,
+      "maxCandidateComparisons": 50000
+    },
+    "shm": {
+      "enabled": false,
+      "metric": "vNtRate"
+    },
+    "missingAlleles": {
+      "unit": "lineage",
+      "minimumIndependentUnits": 6,
+      "minimumCoveredUnits": 20,
+      "minimumAlleleFraction": 0.2,
+      "maximumShmRate": 0.08,
+      "minimumAlignedBases": 180,
+      "maximumCandidateSnps": 6,
+      "maximumPValue": 0.000001,
+      "minimumDistinctJCalls": 3,
+      "minimumDistinctJunctionLengths": 3,
+      "minimumDistinctCdr3s": 6,
+      "minimumLinkedFraction": 0.9,
+      "minimumNearGermlineUnits": 3,
+      "maximumOtherAlternateFraction": 0.02,
+      "enabled": false
+    }
+  },
+  "output": {
+    "directory": "/workspace/scratch/202f26ac37de/validation/ERR4238104.dropout",
+    "prefix": "ERR4238104",
+    "airrCompression": "gzip",
+    "writeAnnotatedAirr": true,
+    "writeLineageStudy": true
+  }
+}

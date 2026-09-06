@@ -1,0 +1,71 @@
+{
+  "application": "swig-cli",
+  "version": "0.38.5",
+  "completedAt": "2026-09-06T13:11:36.833Z",
+  "inputRecords": 300000,
+  "eligibleRecords": 300000,
+  "annotatedRecords": 300000,
+  "retainedRecords": 78422,
+  "lineages": 15101,
+  "outputs": {
+    "annotated": "ERR4238110.annotated.airr.tsv.gz",
+    "processed": "ERR4238110.processed.airr.tsv.gz",
+    "airrCompression": "gzip"
+  },
+  "references": {
+    "metadataPreparation": {
+      "enabled": false,
+      "segments": {}
+    }
+  },
+  "preprocessing": {
+    "subsample": {
+      "enabled": false,
+      "size": 10000,
+      "seed": 1
+    },
+    "fastqFilter": {
+      "options": {
+        "enabled": false,
+        "maximumExpectedErrors": 0.01,
+        "phredOffset": 33,
+        "trim3Prime": {
+          "enabled": false,
+          "windowSize": 4,
+          "minimumMeanPhred": 20,
+          "minimumLength": 50
+        }
+      },
+      "stats": {
+        "enabled": false,
+        "applicable": false,
+        "recordsEvaluated": 0,
+        "recordsRetained": 0,
+        "recordsPassedThrough": 0,
+        "recordsRejectedExpectedErrors": 0,
+        "recordsRejectedMinimumLength": 0,
+        "recordsTrimmed": 0,
+        "basesTrimmed": 0
+      }
+    }
+  },
+  "collapse": {
+    "mode": "indel",
+    "inputRecords": 300000,
+    "inputAbundance": 300000,
+    "uniqueRecords": 78422,
+    "collapsedRecords": 221578,
+    "warnings": [
+      "25,523 records without a usable trimmed sequence or both V/J calls were discarded from the downstream representative set."
+    ]
+  },
+  "chimera": null,
+  "alleleRefinement": null,
+  "shm": null,
+  "missingAlleles": null,
+  "lineageStudy": {
+    "manifest": "ERR4238110.swig-lineage-study.json.gz",
+    "airr": "ERR4238110.lineages.airr.tsv",
+    "records": 63005
+  }
+}

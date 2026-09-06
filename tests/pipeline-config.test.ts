@@ -32,7 +32,7 @@ test("small CLI configs receive analysis defaults and explicit donor grouping",(
   assert.equal(config.pipeline.lineage.scope,"subject");
   assert.equal(config.pipeline.shm.enabled,true);
   assert.equal(config.annotation.workers,0,"zero means choose the host default at CLI startup");
-  assert.equal(config.annotation.assignerStrategy,"riat_mp");
+  assert.equal(config.annotation.assignerStrategy,"aer_robust");
   assert.equal(config.annotation.minimumConstantPrefixIdentity,null);
   assert.equal(config.output.airrCompression,"none");
   assert.equal(normalizeCliConfig({annotation:{minimumConstantPrefixIdentity:.98},output:{airrCompression:"gzip"}}).annotation.minimumConstantPrefixIdentity,.98);
@@ -128,4 +128,13 @@ test("browser CLI export preserves the AER-R-only Sensitive-D profile",()=>{
   const config=cliConfigFromBrowser({studyName:"sensitive D",studyDesign:"independent",datasets:[],references,species:"Macaca mulatta",scope:"IGH",workers:2,callingProfile:"sensitive_d",assignerStrategy:"aer_robust",minimumIdentity:0.6,strand:1,doubleD:{mode:"off",minimumVjSpan:40,seedLength:11,pseudoTrim:5,maximumPseudoMismatches:3,minimumScoreGain:8},pipeline:{...DEFAULT_PIPELINE_PLAN,enabled:false}});
   assert.equal(config.annotation.callingProfile,"sensitive_d");
   assert.equal(config.annotation.assignerStrategy,"aer_robust");
+});
+
+test("assignment defaults choose AER-R/R-optimized while explicit legacy strategies remain usable",()=>{
+  const defaults=normalizeCliConfig({});
+  assert.equal(defaults.annotation.assignerStrategy,"aer_robust");
+  assert.equal(defaults.annotation.callingProfile,"r_optimized");
+  const explicit=normalizeCliConfig({annotation:{assignerStrategy:"riat_mp"}});
+  assert.equal(explicit.annotation.assignerStrategy,"riat_mp");
+  assert.equal(explicit.annotation.callingProfile,"truth_optimized");
 });

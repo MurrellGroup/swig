@@ -1,7 +1,9 @@
-import { l as prepareReferenceMsa, m as threadSequenceToMsa, r as chmmairraDistanceFromReference, u as runChmm } from "./chunks/post-analysis-core-tTuqWlbd.mjs";
+import { l as prepareReferenceMsa, m as threadSequenceToMsa, r as chmmairraDistanceFromReference, u as runChmm } from "./chunks/post-analysis-core-CuBDaqFF.mjs";
 import { parentPort } from "node:worker_threads";
 //#region cli-src/chmmairra-worker.mjs
-let msa = null, options = null, minDfr = 1;
+let msa = null;
+let options = null;
+let minDfr = 1;
 const cache = /* @__PURE__ */ new Map();
 const send = (message) => parentPort ? parentPort.postMessage(message) : globalThis.postMessage(message);
 function initialize(message) {

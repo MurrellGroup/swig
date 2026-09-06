@@ -1,0 +1,37 @@
+{
+  "inputs": [
+    {
+      "path": "/workspace/scratch/202f26ac37de/validation/ERR4238104.300k.fasta",
+      "sampleId": "ERR4238104",
+      "subjectId": "ERR4238104"
+    }
+  ],
+  "references": {
+    "species": "Macaca mulatta_AG07107",
+    "scope": "IGH",
+    "prepareMetadata": false,
+    "files": {
+      "V": "/workspace/scratch/202f26ac37de/validation/kimdb.V.fasta",
+      "D": "/workspace/scratch/202f26ac37de/validation/kimdb.D.fasta",
+      "J": "/workspace/scratch/202f26ac37de/validation/kimdb.J.fasta"
+    }
+  },
+  "annotation": {
+    "assignerStrategy": "aer_robust",
+    "callingProfile": "r_optimized",
+    "workers": 8
+  },
+  "pipeline": {
+    "collapse": {
+      "mode": "indel"
+    },
+    "shm": {
+      "enabled": false
+    }
+  },
+  "output": {
+    "directory": "/workspace/scratch/202f26ac37de/validation/ERR4238104.full",
+    "airrCompression": "gzip",
+    "prefix": "ERR4238104"
+  }
+}

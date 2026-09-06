@@ -1,0 +1,368 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> swig-cli@0.38.7 test
+> npm run test:stream && npm run test:store && npm run test:germline && npm run test:alignment && npm run test:post && npm run test:wasm && npm run test:cli
+
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> swig-cli@0.38.7 test:stream
+> node --experimental-strip-types --test tests/sequence-stream.test.ts tests/project-directory.test.ts tests/gzip-output.test.ts
+
+✔ bounded gzip writer round-trips strings, bytes, and streamed Blobs (12.220343ms)
+✔ uncompressed writer preserves bytes and output naming is explicit (0.373776ms)
+✔ nested directory names supply donor suggestions (3.471515ms)
+✔ flat selected directories require a donor decision (1.121094ms)
+✔ ordinary independently selected files do not trigger directory grouping (0.207443ms)
+✔ project directories write a numbered run, latest state, checkpoint, manifest, and log (21.714803ms)
+✔ incremental FASTA parser normalizes wrapped records into bounded batches (9.173807ms)
+✔ incremental FASTQ parser supports wrapped sequence and quality lines (1.655149ms)
+✔ FASTQ expected-error threshold is inclusive and rejects the next lower quality (3.504115ms)
+✔ 3-prime trimming happens before expected-error filtering (60.57777ms)
+✔ 3-prime trimming rejects reads shorter than the configured retained length (0.377299ms)
+✔ enabled FASTQ filtering passes FASTA through unchanged and reports the bypass (0.409914ms)
+✔ reservoir subsampling draws only from FASTQ reads that pass quality filtering (1.496444ms)
+✔ gzip FASTQ is decompressed and parsed without whole-file text conversion (20.620404ms)
+✔ concatenated gzip datasets are detected, named, split, or decoded as one bounded source (6.861746ms)
+✔ block gzip members that continue a record are merged without being presented as separate datasets (14.928509ms)
+✔ AIRR input retains its header in every compute batch (0.939181ms)
+✔ seeded reservoir subsampling is exact, reproducible, and input-order stable (6.907758ms)
+✔ AIRR reservoir sampling keeps the header and scans all source rows (1.142597ms)
+✔ 50k gzip FASTA stress path and 10k reservoir sample remain batch-bounded (1834.604933ms)
+✔ 50k-read FASTQ expected-error filtering remains linear and batch-bounded (1135.802445ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3474.990485
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> swig-cli@0.38.7 test:store
+> node --experimental-strip-types --test tests/result-store.test.ts
+
+✔ 50k AIRR records are committed, filtered, retrieved, and exported batchwise (5846.179129ms)
+✔ gene and allele filters distinguish unambiguous from multi-hit calls (5.096441ms)
+✔ constant-region evidence yields isotype facets and repertoire summaries (2.984036ms)
+✔ study metadata is indexed for dataset, sample, donor, cohort, timepoint, and compartment filtering (12.904817ms)
+✔ cancelling metadata re-indexing aborts the transaction and retains the previous index (6280.133025ms)
+✔ saved study metadata is materialized during the first import without changing the AIRR fingerprint (5.340193ms)
+✔ lineage export adds AIRR clone_id values and leaves excluded records blank (2.527914ms)
+✔ lineage export preserves original clone_id and adds an explicit derived merge column (2.429253ms)
+✔ masked AIRR scans yield only active ordinals and report filtered progress totals (2.412882ms)
+✔ double-D evidence is indexed and exported separately without rewriting the AIRR table (7.824654ms)
+✔ direct output keeps byte offsets usable for on-demand detail (1.53523ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 12388.843632
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> swig-cli@0.38.7 test:germline
+> node --experimental-strip-types --test tests/germline-preprocess.test.ts
+
+✔ V delineation transfers from the nearest annotated relative without using functionality labels (7.831553ms)
+✔ V coordinate transfer retains boundaries across a sequence-level frameshift (2.533348ms)
+✔ best-guess metadata matching removes identity rejection but preserves structural validation (2.701606ms)
+✔ a V sequence that does not span the mapped IMGT intervals is not assigned fabricated boundaries (40.569303ms)
+✔ J homology resolves multiple motif candidates but still verifies the mapped F/W-G anchor (0.714845ms)
+✔ IgBLAST-compatible preparation and annotation preserve each file's coordinate convention (1.212506ms)
+✔ germline preprocessing rejects a locus mismatch (0.595737ms)
+✔ the KI catalog exposes human IGH/TCR and macaque IGH collections by matching taxon and locus (1.189711ms)
+✔ database choices prefer the compatible KI collection and retain IMGT as fallback (0.52845ms)
+✔ published databases compose by receptor, locus, and segment (0.507948ms)
+✔ a locus-specific replacement retains IMGT records from the other combined-chain loci (0.644187ms)
+✔ per-cell allele exclusions alter the initial composed assignment FASTA only in that locus and segment (2.272677ms)
+✔ bundled KIMDB files are intact FASTA exports (1.188163ms)
+✔ the built IMGT pack includes assembled heavy-chain and TCR constant references (0.2669ms)
+✔ every bundled KIMDB macaque V and J record receives validated in-browser annotation (14643.625142ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 14982.534686
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> swig-cli@0.38.7 test:alignment
+> node --experimental-strip-types --test tests/alignment-model.test.ts tests/balanced-calling-profile.test.ts
+
+✔ the layered track model preserves AIRR region and germline coordinates (2.707459ms)
+✔ per-segment amino-acid alignment uses the rearrangement frame rather than optimizing a new frame (0.863059ms)
+✔ codon projection preserves phase and emits only complete triplet columns (0.156ms)
+✔ AA-guided MSA translation uses X for ambiguous codons and back-translates gaps as codon triplets (1.691806ms)
+✔ the lineage productivity filter requires an explicit AIRR productive value (0.221414ms)
+✔ AIRR metadata for a row deleted from the MSA cannot leak into UCA preparation (0.399391ms)
+✔ the balanced profile clears only weak D calls in short V-J spans (1.69878ms)
+✔ six-base support is retained and double-D standard calls are reconciled (0.304407ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 192.716028
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> swig-cli@0.38.7 test:post
+> node --experimental-strip-types --test tests/post-analysis-core.test.ts tests/study-design.test.ts tests/pipeline-config.test.ts tests/lineage-study.test.ts tests/analysis-extensions.test.ts tests/alignment-provenance.test.ts tests/alivibe-roundtrip.test.ts tests/ui-regressions.test.ts tests/assignment-telemetry.test.ts tests/phylogeny.test.ts tests/lineage-phylogeny.test.ts tests/lineage-neighbours.test.ts tests/uploaded-lineage-tree.test.ts tests/kabat-numbering.test.ts tests/chimera-view-model.test.ts tests/phylo-uca.test.ts tests/allele-refinement.test.ts tests/assignment-progress.test.ts tests/personalized-model.test.ts
+
+✔ a complete gap-only alignment correction is accepted and fingerprinted (3.423372ms)
+✔ Alivibe correction may delete bad rows and nucleotide characters (1.696181ms)
+✔ manual alignment import cannot mutate nucleotides or duplicate identifiers (4.599111ms)
+✔ FastTree preparation preserves the exact corrected gaps and row order (0.566594ms)
+✔ Alivibe returns the exact complete ordered NT rows, including manually placed gaps (3.256239ms)
+✔ Alivibe rejects stale, AA, empty, or internally inconsistent returns (0.832736ms)
+✔ an older editor can return its unchanged nucleotide snapshot but cannot run the current MSA bridge (0.199215ms)
+✔ a nucleotide return cannot cross lineage or alignment boundaries (0.592221ms)
+✔ the bundled Alivibe bridge snapshots the same NT state used by its viewer/export and initializes controls first (3.080151ms)
+✔ MurrellGroup components do not carry duplicate third-party license notices (1.097064ms)
+✔ reference graph collapses sequence-identical labels and retains bounded nucleotide neighbours (2.077708ms)
+✔ one-SNP neighbour leakage increases with SHM but retains an explicit floor and cap (0.285902ms)
+✔ the interactive error-model diagnostic uses the fitted sparse kernel and excludes the primary from alternative bars (1.526931ms)
+✔ hard assignment projection counts MAP reassignments and exposes vanished alleles (1.36848ms)
+✔ literal co-optimal calls begin equal and graph neighbours receive geometric non-zero evidence (3.622896ms)
+✔ sparse Dirichlet updates resolve ambiguous rows using repertoire-wide support (9.452581ms)
+✔ fast hurdle active set retains supported alleles and gives leakage-only neighbours exact zero usage (24.118557ms)
+✔ fast hurdle output uses the existing confidence and hard-count adjudication path (4.493597ms)
+✔ Dirichlet pools are isolated by donor (2.619524ms)
+✔ Dirichlet normalization retains implicit prior mass for every locus-matched database node (1.361573ms)
+✔ posterior call policies are explicit and resetting restores the immutable AIRR calls (0.381409ms)
+✔ saved sessions round-trip sparse posterior vectors and apply state (9.609377ms)
+✔ posterior sidecar streams the complete sparse responsibility vector (2.235709ms)
+✔ active-set sidecar reconstructs zero responsibility for excluded sparse candidates (12.155602ms)
+✔ tabular, alignment, and tree serializers cover standard interchange formats (4.981673ms)
+✔ SHM metrics distinguish synonymous and replacement changes and retain multiplicity (3.940011ms)
+✔ two-pass missing-V screen uses germline coordinates and emits independent-lineage evidence (13.134219ms)
+✔ reference exclusions are exact and preserve aligned FASTA metadata (0.531612ms)
+✔ selected missing-V candidates export alone and append to an annotated V reference (5.652792ms)
+✔ large or numerous possible-missing-V signals trigger the complete-reference warning (0.452883ms)
+✔ a parent-reference nucleotide anywhere else in a supporting lineage vetoes that lineage (76.91634ms)
+✔ recurrent third nucleotide states suppress a hotspot-like candidate (29.720571ms)
+✔ co-occurring candidate substitutions remain one linked haplotype rather than singleton warnings (6.162104ms)
+✔ clonal expansion cannot inflate missing-V support (14.97217ms)
+✔ personalized germline representative is the lowest current-assignment V-SHM row, not a random row (2.001403ms)
+✔ personalized germline fit recovers a two-allele expressed set with one vote per lineage (375.999303ms)
+✔ personalized germline fit can retain a recurrent same-length novel substitution haplotype (96.109569ms)
+✔ personalized germline SHM prior distinguishes classic hot, neutral, and cold contexts (0.216936ms)
+✔ double-D positive repertoire selection uses sparse evidence and composes call/CDR3 filters (84.992817ms)
+✔ repertoire call filters expose an explicit ambiguous-assignment policy (16.076995ms)
+✔ AIRR session fingerprint is invariant to batch boundaries and changes with content (69.994764ms)
+✔ linked sessions gzip round-trip typed analysis vectors without embedding AIRR rows (80.714477ms)
+✔ equal-sized remaining files retain their share of progress (1.533083ms)
+✔ buffered or dispatched records are not committed work (0.394101ms)
+✔ subsampling tracks scan plus committed selected reads (0.220355ms)
+✔ gzip workload and streaming fraction use expanded characters, not read-ahead bytes (62.293839ms)
+✔ assignment throughput is a time-aware EMA of acknowledged AIRR records (1.308813ms)
+✔ initial assignment telemetry has stable, valid worker and counter fields (1.143504ms)
+✔ chimera visualization removes only columns that are gaps in query and both displayed parents (2.903342ms)
+✔ parent-match highlighter categories depend only on literal nucleotide identity (4.519676ms)
+✔ Kabat labels are projected back through codon-alignment gaps (1.979867ms)
+✔ Kabat projection warns but still numbers an alignment with a terminal partial codon (0.714993ms)
+✔ Kabat projection replaces stop codons for numbering and reports them (0.760554ms)
+✔ lineage germline defaults to the closest member and keeps consensus as an explicit mode (7.753035ms)
+✔ closest-member ranking gives V and J identities equal segment weight (0.373506ms)
+✔ reference quick view anchors rows on the V germline coordinate (1.104812ms)
+✔ reference quick view carries the AIRR biological phase after V-reference padding (4.961405ms)
+✔ Double-D lineage roots replace the baseline D with explicit D1 and D2 (1.443032ms)
+✔ Double-D coordinates project through gaps in the combined AIRR query (0.789275ms)
+✔ Double-D lineages select a VDDJ-aware root member instead of a cleaner single-D composite (0.315465ms)
+✔ Double-D consensus votes only VDDJ-aware templates and leaves ordinary VDJ behavior unchanged (0.495535ms)
+✔ an incomplete imported D2 sidecar is reported and never partially projected (0.998521ms)
+✔ CDR3 neighbour search crosses assignment boundaries but preserves V/J and study constraints (10.112201ms)
+✔ indel-aware neighbours admit CDR3 length variation and can tolerate one noisy germline call (11.110816ms)
+✔ inferred germline identity treats N as unknown while retaining indel cost (0.437371ms)
+✔ sample colors are stable, editable associations (5.845096ms)
+✔ germline N is inferred at the UCA without creating an N mutation (6.263408ms)
+✔ known germline bases constrain the UCA and gaps remain parsimony states (0.50288ms)
+✔ codon translation preserves codon columns (0.299397ms)
+✔ Alivibe frame offset preserves a complete gap codon without accepting split codons (0.931174ms)
+✔ amino-acid branch mapping omits synonymous nucleotide changes (0.33337ms)
+✔ custom selection accepts alignment ranges and Kabat-style labels (1.483616ms)
+✔ non-contiguous alignment runs receive a half-cell visual separator (4.688946ms)
+✔ motif mapping supports ungapped AA motifs and nucleotide IUPAC codes (23.453559ms)
+✔ lineage-study manifests validate ordered exact byte ranges (3.9225ms)
+✔ lazy lineage loading reads only the selected AIRR byte slice (11.709632ms)
+✔ equal length does not authorize compensating-indel coordinate swaps (11.252354ms)
+✔ discrete search cost includes positions, nucleotides and parent identity (0.154909ms)
+✔ aligned leave-gene-out SHM rejects accumulation but retains an intercept (970.229048ms)
+✔ boundary likelihood treats downstream junction bases symmetrically (2.251675ms)
+✔ a novel allele competes against alternatives derived from different parents (167.368589ms)
+✔ adding a second subject cannot change the first subject inference (62.378159ms)
+✔ junction composition excludes the first templated D/J nucleotide (0.288827ms)
+✔ phylogenetic UCA defaults use zero leakage and continuous Gibbs/MH (1.742364ms)
+✔ HMM annotation display collapses duplicate D registers into one mixed allele row (8.525969ms)
+✔ HMM annotation display follows weighted V, NT, D-block, NT, J order (19.666383ms)
+✔ marginalized annotation puts one summed NT mixture above V, D, and J (3.316242ms)
+✔ V/J screen profile mixes allele nucleotides independently and omits the junction (0.620299ms)
+✔ GTR4 and gap-aware GTR5 transition matrices are stochastic and reversible (5.44205ms)
+✔ automatic character selection uses GTR4 without gaps and GTR5 with an observed gap (7.801983ms)
+✔ terminal tip gaps are missing data while internal gaps are exact fifth-state observations (0.548309ms)
+✔ automatic character selection ignores leading and trailing gap runs (12.775905ms)
+✔ frequency-logo vectors are normalized and exact codon projection preserves complete versus split gaps (3.542999ms)
+✔ observed-only preparation removes the guide and columns missing at every observed tip (1.894313ms)
+✔ observed-only preparation retains a column that is an internal gap in every tip (1.283929ms)
+✔ factorized HMM returns a complete V-to-J joint path (35.629382ms)
+✔ exact codon posterior retains germline-candidate correlation that site products lose (35.355597ms)
+✔ end-to-end inference roots at a zero-length UCA carrier and preserves the full pendant branch (369.530933ms)
+✔ exact HMM FFBS draws reproduce the forward-backward nucleotide posterior (400.011753ms)
+✔ grid inference reports its exact zero-plus-logarithmic pendant grid (43.036932ms)
+✔ Gibbs/MH keeps pendant length continuous and emits mixing diagnostics (20.909881ms)
+✔ J states can enter only on concrete projected J nucleotides (1.366398ms)
+✔ one UCA-branch mismatch plus six D matches beats an all-NT explanation at zero leakage (8.024369ms)
+✔ prior-predictive generator reproduces displayed means and D-count probabilities (291.568426ms)
+✔ FastTree Newick extraction ignores diagnostics before and after the complete tree (6.681049ms)
+✔ quoted Newick labels, comments, scientific lengths, and outgroup rooting round trip (1.317459ms)
+✔ incomplete FastTree output is rejected locally (0.6625ms)
+✔ phylogram layout preserves FastTree zero-length branches (0.780348ms)
+✔ phylogram expands fractional branch lengths across the complete tree viewport (1.077139ms)
+✔ tree layout has no hidden horizontal floor when the width is compressed to zero (0.386526ms)
+✔ Newick serialization writes an explicit length for every edge, including zero-length tips (15.209161ms)
+✔ germline rerooting preserves every pairwise patristic distance (0.958135ms)
+✔ ladderization reorders clades without changing topology or branch lengths (20.950917ms)
+✔ platform-dependent FastTreeDbl floor resolutions collapse to one stable polytomy (0.939071ms)
+✔ short terminal branches are retained and supported internal lengths are not collapsed (11.736055ms)
+✔ small CLI configs receive analysis defaults and explicit donor grouping (3.674328ms)
+✔ browser CLI export preserves exact references, methods, and sample-to-donor map (3.861523ms)
+✔ completed interactive settings map back to executable CLI fields without losing advanced options (1.809127ms)
+✔ pre-run export embeds a pasted dataset instead of emitting an unusable text-file path (0.423461ms)
+✔ browser CLI export preserves the AER-R-only R-optimized profile (0.307467ms)
+✔ browser CLI export preserves the AER-R-only Sensitive-D profile (0.263175ms)
+✔ assignment defaults choose AER-R/R-optimized while explicit legacy strategies remain usable (0.210366ms)
+✔ deduplication retains abundance and representative membership (6.950211ms)
+✔ exact deduplication sums an existing AIRR duplicate_count (0.316623ms)
+✔ collapse partitions on C gene by default without using constant-tail sequence length (0.329131ms)
+✔ exact collapse discards unusable keys by default and can retain them unchanged (37.483231ms)
+✔ partition-worker exact collapse and denoising are byte-for-byte deterministic (15.5601ms)
+✔ Poisson strict upper tail matches known probabilities used by FAD method 2 (0.328478ms)
+✔ FAD-compatible denoising preserves multiplicity and partitions by V/J calls (1.643289ms)
+✔ denoising reports variant and finalization progress and respects C-gene partitions (3.411874ms)
+✔ conservative denoising merges plausible one-base errors but retains isolated singletons (7.401727ms)
+✔ denoising discards unresolved records by default and can retain them explicitly (15.503321ms)
+✔ bounded edit profiling distinguishes substitutions, insertions, deletions and mixed paths (0.456229ms)
+✔ method D completely finds one-base insertions and deletions at every sequence boundary (196.937155ms)
+✔ method D verifies two-edit paths and preserves similarly abundant indel variants (1.383038ms)
+✔ deduplicated active representatives retain collapsed abundance in lineage summaries (4.660661ms)
+✔ lineages use V/J ambiguity overlap, exact CDR3 length, and bounded Hamming distance (4.926085ms)
+✔ lineage summaries retain exact active Double-D membership for explorer filtering (0.577103ms)
+✔ sequence query and single-linkage expansion recover a transitive CDR3 neighborhood (2.554251ms)
+✔ the cumulative active mask is honored by lineage assignment, query, and expansion (1.008462ms)
+✔ per-query inferred V/J constraints preserve seed-specific V-J combinations (2.31867ms)
+✔ CHMMera BW port separates the published chimera and non-chimera example (3.870407ms)
+✔ CHMMera discretized Bayesian mode reports detailed parent switches (1.054079ms)
+✔ AIRR local alignments are threaded onto an uploaded reference MSA (2.025511ms)
+✔ CHMMAIRRa threading maps ambiguous observations to N and DFR counts gaps and N mismatches (2.959613ms)
+✔ 50k post-analysis records retain bounded compact state and avoid all-pairs lineage comparisons (1850.030942ms)
+✔ AIRR batches receive collision-safe IDs and explicit study metadata (4.656665ms)
+✔ double-D batches retain the relative record index while receiving study metadata (0.516081ms)
+✔ collapse scope treats technical libraries as one sample without crossing samples (1.891129ms)
+✔ lineages can span longitudinal samples within a donor but never cross donors (34.243033ms)
+✔ per-sample lineage read counts survive an explicit cross-sample collapse (0.961513ms)
+✔ longitudinal/compartmental defaults keep collapse within sample and lineages within donor (0.293565ms)
+✔ clickable individual-sequence views retain CDR3 context (11.314492ms)
+✔ FASTQ quality control is an initially collapsed pre-assignment step (4.809866ms)
+✔ the web entry point exposes three focused workflows and keeps UCA trees observed-only (20.469546ms)
+✔ concatenated gzip uploads require an explicit merged-versus-separate sample choice (2.016286ms)
+✔ session restoration applies saved metadata during the first index pass (4.871004ms)
+✔ analysis-scale running states expose cancellation and every interface family has a method document (13.40197ms)
+✔ personalized germline inference is isolated beside missing-V diagnostics and selects lowest current V-SHM (4.575833ms)
+✔ assignment progress uses stable geometry and live scheduler telemetry (112.597161ms)
+✔ assignment is one progressive action page while independent result tools remain contextual (23.986207ms)
+✔ allele pooling exposes parameter-responsive reference and hard assignment diagnostics (4.155013ms)
+✔ post-analysis skipping, richer lineage rows, CLI export, and lazy lineage studies remain exposed (7.499903ms)
+✔ lineage alignment offers direct Alivibe-compatible MSA and retains manual round trip (4.656238ms)
+✔ phylogenetic UCA posterior uses contour-bounded embedded glyphs and aligned HMM tracks (7.914514ms)
+✔ uploaded lineage trees accept original sequence IDs and restore Swig alignment names (39.168782ms)
+✔ uploaded lineage trees accept complete zero-based FastTree-style tips (0.590514ms)
+✔ ordinary display trees may retain the germline guide but are marked ineligible as observed-only UCA trees (2.478121ms)
+✔ uploaded lineage trees reject incomplete, duplicate, or length-free inputs (10.370204ms)
+ℹ tests 169
+ℹ suites 0
+ℹ pass 169
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3285.083114
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> swig-cli@0.38.7 test:wasm
+> node --experimental-strip-types --test tests/swiftig-wasm.test.mjs tests/alivibe-msa-wasm.test.mjs
+
+✔ Alivibe WASM literal-scoring route matches the pinned refinedMSA output exactly (181.991639ms)
+✔ nucleotide MSA scores N as a symmetric wildcard without changing gap costs (8.630887ms)
+✔ amino-acid MSA scores X as a wildcard while keeping asparagine N literal (1.099957ms)
+✔ Alivibe WASM preserves the original order-sensitive behavior (75.5912ms)
+✔ Alivibe WASM matches deterministic mutation/indel fixtures (347.892422ms)
+✔ Alivibe MSA codec rejects malformed and non-rectangular results (0.853024ms)
+✔ reference pack covers complete IG and TR loci (5.524525ms)
+✔ calling profiles are explicit, switchable, and reject unknown profile identifiers (26.842694ms)
+✔ joint boundary scoring recovers a strong KIMDB D tract swallowed by a gappy V tail (381.660731ms)
+✔ R-optimized corrects representative junction-facing V over-extension regressions (164.836166ms)
+✔ R-optimized conditions D presence on score and independent template support (106.485702ms)
+✔ both optimized profiles admit a mutation-interrupted four-base-run D candidate (88.003959ms)
+✔ Sensitive-D lowers only the post-signal joint D threshold (190.017965ms)
+✔ R-optimized profiles commit V/J boundaries only from the winning complete partition (166.158035ms)
+✔ AER-R accepts strong distributed D evidence instead of a short exact-seed decoy (386.494126ms)
+✔ AER-R short D calls cannot crowd a stronger distributed match out of traceback (134.098891ms)
+✔ terminal SHM does not masquerade as missing V 5-prime or J 3-prime sequence (19.853358ms)
+✔ standard, RIAT-MP, AER, and experimental AER-R strategies initialize explicitly (42.238396ms)
+✔ development simulator finds net AER-R boundary gains without changing ordinary AER (1949.12148ms)
+✔ AER-R's gated complete-J retry recovers strong-V seed-pruning failures (158.37815ms)
+✔ AER-R double-D rescue improves mutation-tolerant tandem detection only when selected (850.790712ms)
+✔ optimized RIAT-MP/AER kernels and AIRR writer are byte-identical to retained reference implementations (2746.089121ms)
+✔ WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, and J-only swaps (25.649915ms)
+✔ constant calling is post-J, stringent, primer-tolerant, and VDJ-invariant (39.560488ms)
+✔ calibrated AIRR support uses the supplied segment database search space (7.118999ms)
+✔ bundled macaque KIMDB references produce complete IMGT region and CDR calls end to end (15938.250012ms)
+✔ opt-in double-D screening is sparse and leaves the standard AIRR result byte-for-byte unchanged (28.349367ms)
+ℹ tests 27
+ℹ suites 0
+ℹ pass 27
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 23877.639439
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> swig-cli@0.38.7 test:cli
+> node scripts/build-cli.mjs && node --test tests/cli-smoke.test.mjs
+
+✔ the CLI pipeline runs annotation through lazy lineage-study export (669.818329ms)
+✔ CLI FASTQ preprocessing matches browser QC, wrapped parsing, and per-dataset reservoir sampling (386.970383ms)
+✔ CLI can address separate samples inside one concatenated gzip and preserves member names (534.795262ms)
+✔ CLI AIRR mode can either preserve calls or reannotate sequence, including browser-accepted CSV input (607.128919ms)
+✔ CLI CHMMAIRRa uses the configured worker pool without changing output (700.625247ms)
+✔ CLI FAD denoising runs independent V/J partitions in workers without changing output (485.703585ms)
+✔ CLI executes a browser-exported pasted input embedded in the JSON config (352.347755ms)
+✔ CLI prepares local V/J metadata by default and honors the config opt-out (586.590341ms)
+✔ pipeline CLI requires an explicit output directory and command-line workers override config (1038.717265ms)
+✔ --vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes without downstream state (3661.940998ms)
+✔ --vdj preserves the R-optimized versus Sensitive-D joint threshold under explicit tuning (617.832124ms)
+✔ prepare-reference persists diagnostics and a hash-checked manifest reusable by --vdj (824.664464ms)
+✔ prepare-reference logs allele-level rejection reasons and can require complete metadata (792.990063ms)
+✔ --vdj refuses to accumulate output when no destination is supplied (464.145667ms)
+✔ CLI exposes the embedded IMGT data notice (109.396022ms)
+✔ personalized-germline CLI streams gzip AIRR into the shared engine and exports a recovered allele (564.742509ms)
+ℹ tests 16
+ℹ suites 0
+ℹ pass 16
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 12740.110033
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.0.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+npm notice To update run: npm install -g npm@12.0.2
+npm notice

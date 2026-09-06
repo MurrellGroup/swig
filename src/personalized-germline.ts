@@ -1,3 +1,7 @@
+import { boundaryLogLikelihood, downstreamJunction, TERMINAL_WINDOW } from "./shm-model/boundary.ts";
+import { hs5fRate } from "./shm-model/hs5f.ts";
+import { substitutionCompatible } from "./shm-model/alignment.ts";
+import { AlignedRateCalibration, baseAt, discoveryCost, testHaplotype } from "./shm-model/discovery.ts";
 import { parseReferenceFasta, serializeReferenceFasta, type ReferenceFastaRecord } from "./reference-fasta.ts";
 
 export interface PersonalizedGermlineOptions {
@@ -60,6 +64,7 @@ export interface PersonalizedGermlineGeneResult {
   relativeLogLikelihood: number;
   iterations: number;
   converged: boolean;
+  proposalEvidence?: Array<{id:string;gain:number;support:number;coverage:number;baseline:string;selected:boolean}>;
 }
 
 export interface PersonalizedGermlinePool {
@@ -73,7 +78,7 @@ export interface PersonalizedGermlinePool {
 export interface PersonalizedGermlineDashboard {
   version: 1;
   mode: "lowest-current-v-shm-per-lineage";
-  contextModel: "fixed-aid-5mer-hotspot-coldspot";
+  contextModel: "hs5f-aligned-leave-gene-out";
   options: PersonalizedGermlineOptions;
   inputRecords: number;
   eligibleRecords: number;
@@ -108,6 +113,8 @@ interface Observation {
   alignedBases: number;
   positions: Uint16Array;
   query: string;
+  terminal?: {start:number;query:string};
+  junction?: string;
 }
 
 interface Candidate {
@@ -119,6 +126,7 @@ interface Candidate {
   substitutions: PersonalizedSubstitution[];
   directSupport: number;
   directCoverage: number;
+  searchCost?: number;
 }
 
 interface CandidateProposal {
@@ -175,7 +183,7 @@ function hammingDistance(left: string, right: string, maximum = Number.POSITIVE_
 }
 
 /**
- * Cheap fixed context prior. It uses the classic AID WRCY/RGYW hot spots,
+ * Legacy motif annotation helper; personalized inference now uses HS5F. It uses the classic AID WRCY/RGYW hot spots,
  * SYC/GRS cold spots, and WA/TW polymerase-eta hot spots inside a 5-mer
  * window. It is deliberately labelled as a motif prior, not as S5F.
  */
@@ -228,14 +236,22 @@ function parseObservation(
   options: PersonalizedGermlineOptions,
 ): Observation | null {
   if (!(lineageId > 0)) return null;
-  const parent = callTokens(row.v_call ?? "").map((call) => byName.get(call)).find((value): value is ReferenceNode => Boolean(value));
+  let parent = callTokens(row.v_call ?? "").map((call) => byName.get(call)).find((value): value is ReferenceNode => Boolean(value));
   if (!parent) return null;
   const queryAlignment = cleanAlignment(row.v_sequence_alignment ?? "");
   const germlineAlignment = cleanAlignment(row.v_germline_alignment ?? "");
   if (!queryAlignment || !germlineAlignment) return null;
   const reportedStart = Math.floor(Number(row.v_germline_start));
+  const alignmentCost=(node:ReferenceNode)=>{
+    let p=Math.max(0,reportedStart-1),cost=0;
+    for(const b of germlineAlignment){if(b==="-")continue;if(BASES.test(b)&&node.sequence[p]!==b)cost++;p++;}
+    return cost;
+  };
+  parent=callTokens(row.v_call??"").map(name=>byName.get(name)).filter((node):node is ReferenceNode=>Boolean(node)).sort((a,b)=>alignmentCost(a)-alignmentCost(b))[0]??parent;
   let position = Number.isFinite(reportedStart) && reportedStart > 0 ? reportedStart - 1 : 0;
   const positions: number[] = [];
+  const rawPositions = new Map<number,number>();
+  let rawPosition=Math.max(0,Math.floor(Number(row.v_sequence_start)||1)-1);
   const query: string[] = [];
   let currentAligned = 0;
   let currentMismatches = 0;
@@ -244,15 +260,27 @@ function parseObservation(
     const germlineBase = germlineAlignment[column];
     if (germlineBase !== "-") position += 1;
     const queryBase = queryAlignment[column];
+    if (queryBase !== "-") rawPosition += 1;
+    if (germlineBase !== "-" && queryBase !== "-") rawPositions.set(position,rawPosition);
     if (BASES.test(queryBase) && BASES.test(germlineBase)) {
       currentAligned += 1;
       if (queryBase !== germlineBase) currentMismatches += 1;
     }
-    if (!BASES.test(queryBase) || position < 1 || position > parent.sequence.length || !BASES.test(parent.sequence[position - 1])) continue;
+    if (germlineBase === "-" || !BASES.test(queryBase) || position < 1 || position > parent.sequence.length || !BASES.test(parent.sequence[position - 1])) continue;
     positions.push(position);
     query.push(queryBase);
   }
   if (positions.length < options.minimumAlignedBases) return null;
+  const cutoff=parent.sequence.length-TERMINAL_WINDOW;
+  let raw=(row.sequence??"").toUpperCase();
+  if (/^(T|true|1)$/i.test(row.rev_comp??"")) raw=[...raw].reverse().map(b=>({A:"T",C:"G",G:"C",T:"A"}[b]??"N")).join("");
+  const anchor=rawPositions.get(cutoff);
+  const terminal=raw&&anchor!==undefined?{start:cutoff+1,query:raw.slice(anchor,anchor+TERMINAL_WINDOW)}:undefined;
+  // Reconstruct both matching and nonmatching downstream bases from the same anchor.
+  // Without raw sequence, terminal bases are missing evidence, not committed V matches.
+  while(positions.length&&positions[positions.length-1]>cutoff){positions.pop();query.pop();}
+  if(terminal)for(let i=0;i<terminal.query.length;i++)if(BASES.test(terminal.query[i])){positions.push(terminal.start+i);query.push(terminal.query[i]);}
+
   const subjectId = (row.subject_id || "unassigned-subject").trim() || "unassigned-subject";
   return {
     ordinal,
@@ -265,6 +293,8 @@ function parseObservation(
     alignedBases: positions.length,
     positions: Uint16Array.from(positions),
     query: query.join(""),
+    terminal,
+    junction:raw&&anchor!==undefined?downstreamJunction(raw,anchor+TERMINAL_WINDOW,Number(row.d_sequence_start),Number(row.j_sequence_start)):undefined,
   };
 }
 
@@ -395,13 +425,13 @@ function proposeNovelCandidates(
   return { proposals: ordered.slice(0, maximum), truncated: ordered.length > maximum };
 }
 
-function exposure(observation: Observation, commonSequence: string, excluded: Uint8Array, sequencingErrorRate: number): number {
+function exposure(observation: Observation, commonSequence: string, sequencingErrorRate: number): number {
   let mismatches = 0;
   const weights: number[] = [];
   for (let offset = 0; offset < observation.positions.length; offset += 1) {
     const index = observation.positions[offset] - 1;
-    if (excluded[index] || !BASES.test(commonSequence[index])) continue;
-    weights.push(shmContextMutability(commonSequence, index));
+    if (index>=commonSequence.length-TERMINAL_WINDOW || !BASES.test(commonSequence[index])) continue;
+    weights.push(hs5fRate(commonSequence, index));
     if (observation.query[offset] !== commonSequence[index]) mismatches += 1;
   }
   if (!weights.length) return 0.02;
@@ -423,35 +453,47 @@ function exposure(observation: Observation, commonSequence: string, excluded: Ui
   return tau;
 }
 
-function normalizedEmissions(observations: readonly Observation[], candidates: readonly Candidate[], sequencingErrorRate: number): Float64Array[] {
-  const length = candidates[0]?.sequence.length ?? 0;
-  const excluded = new Uint8Array(length);
-  for (let index = 0; index < length; index += 1) {
-    const base = candidates[0].sequence[index];
-    if (candidates.every((candidate) => candidate.sequence[index] === base)) continue;
-    for (let halo = Math.max(0, index - 2); halo <= Math.min(length - 1, index + 2); halo += 1) excluded[halo] = 1;
-  }
-  const context = candidates.map((candidate) => Float32Array.from(candidate.sequence, (_, index) => shmContextMutability(candidate.sequence, index)));
+function normalizedEmissions(observations: readonly Observation[], candidates: readonly Candidate[], sequencingErrorRate: number, calibration: AlignedRateCalibration, knownRadius:number, novelRadius:number): Float64Array[] {
+  // Every competing hypothesis uses the same externally calibrated categorical
+  // transition model. A ratio fitted under another null cannot be multiplied
+  // into a raw HS5F parent likelihood: that makes cross-parent scores incomparable.
+  const rates = candidates.map(candidate => {
+    const proxy={...observations[0],gene:candidate.parent.gene,parent:candidate.parent};
+    return Array.from(candidate.sequence,(reference,index)=>Float64Array.from("ACGT",alternate=>{
+      if(alternate===reference)return 0;
+      const prior=calibration.prior(proxy,{position:index+1,reference,alternate});
+      return hs5fRate(candidate.sequence,index,alternate)*prior.shape/prior.rate;
+    }));
+  });
+  const context = rates.map(rows=>Float64Array.from(rows,row=>row.reduce((a,b)=>a+b,0)));
+  const compatibility = new Map([...new Set(observations.map(o=>o.parent))].map(p=>[p.index,candidates.map(c=>substitutionCompatible(p.sequence,c.sequence,c.known?knownRadius:knownRadius+novelRadius))]));
   const emissions: Float64Array[] = [];
   const error = Math.max(1e-8, Math.min(0.1, sequencingErrorRate));
   for (const observation of observations) {
-    const tau = exposure(observation, candidates[0].sequence, excluded, error);
+    const tau = exposure(observation, observation.parent.sequence, error);
     const logLikelihood = new Float64Array(candidates.length);
     let maximum = Number.NEGATIVE_INFINITY;
     for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
       const candidate = candidates[candidateIndex];
+      if (!compatibility.get(observation.parent.index)![candidateIndex]) { logLikelihood[candidateIndex] = -Infinity; continue; }
       let value = 0;
       for (let offset = 0; offset < observation.positions.length; offset += 1) {
         const index = observation.positions[offset] - 1;
+        if (index >= candidate.sequence.length-TERMINAL_WINDOW) continue;
         const germlineBase = candidate.sequence[index];
         if (!BASES.test(germlineBase)) continue;
         const mutation = 1 - Math.exp(-tau * context[candidateIndex][index]);
-        const probability = Math.max(error, Math.min(0.45, error + (1 - error) * mutation));
-        value += observation.query[offset] === germlineBase ? Math.log1p(-probability) : Math.log(probability / 3);
+        const probability = error + (1 - error) * mutation;
+        value += observation.query[offset] === germlineBase ? Math.log1p(-probability) : Math.log(Math.max(1e-12, error / 3 + (probability-error) * rates[candidateIndex][index]["ACGT".indexOf(observation.query[offset])] / Math.max(1e-12,context[candidateIndex][index])));
       }
+      if(observation.terminal)value+=boundaryLogLikelihood(candidate.sequence,observation.terminal.query,observation.terminal.start,(position,base)=>{
+        const index=position-1,mutation=1-Math.exp(-tau*context[candidateIndex][index]);
+        return base===candidate.sequence[index]?Math.log(Math.max(1e-12,(1-error)*(1-mutation))):Math.log(Math.max(1e-12,error/3+(1-error)*mutation*rates[candidateIndex][index]["ACGT".indexOf(base)]/Math.max(1e-12,context[candidateIndex][index])));
+      },calibration.trimming({...observation,gene:candidate.parent.gene}),calibration.junction({...observation,gene:candidate.parent.gene}));
       logLikelihood[candidateIndex] = value;
       maximum = Math.max(maximum, value);
     }
+    maximum=Math.max(...logLikelihood);
     emissions.push(Float64Array.from(logLikelihood, (value) => Math.max(1e-300, Math.exp(value - maximum))));
   }
   return emissions;
@@ -543,8 +585,8 @@ function additionGain(baseline: MixtureFit, candidate: number, emissions: readon
 function modelPenalty(active: readonly number[], candidates: readonly Candidate[], lineages: number): number {
   const logN = Math.log(Math.max(2, lineages));
   const frequencyParameters = Math.max(0, active.length - 1);
-  const learnedBases = active.reduce((sum, index) => sum + (candidates[index].known ? 0 : candidates[index].substitutions.length), 0);
-  return 0.5 * (frequencyParameters + learnedBases) * logN;
+  const searchCost = active.reduce((sum,index)=>sum+(candidates[index].known?0:(candidates[index].searchCost??discoveryCost(candidates[index].sequence.length,candidates[index].substitutions.length,candidates.length))),0);
+  return 0.5 * frequencyParameters * logN + searchCost;
 }
 
 function fitCandidateSet(
@@ -566,7 +608,7 @@ function fitCandidateSet(
   let active = [first];
   let fit = fitMixture(emissions, active, options);
   const gains = new Map<number, number>([[first, Number.POSITIVE_INFINITY]]);
-  const maximumActive = Math.max(1, Math.floor(options.maximumActiveAllelesPerGene));
+  const maximumActive = Math.max(1, Math.floor(options.maximumActiveAllelesPerGene) * new Set(observations.map(o=>o.gene)).size);
   while (active.length < Math.min(maximumActive, candidates.length)) {
     let best = -1;
     let bestAdjusted = Number.NEGATIVE_INFINITY;
@@ -574,8 +616,7 @@ function fitCandidateSet(
     for (let candidate = 0; candidate < candidates.length; candidate += 1) {
       if (active.includes(candidate)) continue;
       const gain = additionGain(fit, candidate, emissions);
-      const addedParameters = 1 + (candidates[candidate].known ? 0 : candidates[candidate].substitutions.length);
-      const adjusted = gain.raw - 0.5 * addedParameters * Math.log(Math.max(2, observations.length));
+      const adjusted = gain.raw - (modelPenalty([...active,candidate],candidates,observations.length)-modelPenalty(active,candidates,observations.length));
       if (adjusted > bestAdjusted || (adjusted === bestAdjusted && candidates[candidate].id.localeCompare(candidates[best]?.id ?? "") < 0)) {
         best = candidate;
         bestAdjusted = adjusted;
@@ -623,12 +664,16 @@ function inferGene(
   observations: readonly Observation[],
   nodes: readonly ReferenceNode[],
   options: PersonalizedGermlineOptions,
+  calibration: AlignedRateCalibration,
+  parentCount: number,
 ): { result: PersonalizedGermlineGeneResult; truncated: boolean } {
   const parents = [...new Set(observations.map((item) => item.parent))];
   const candidatesBySequence = new Map<string, Candidate>();
   for (const node of nodes) {
-    if (node.locus !== observations[0].locus || node.gene !== observations[0].gene || node.sequence.length !== observations[0].parent.sequence.length) continue;
-    if (!parents.some((parent) => hammingDistance(parent.sequence, node.sequence, options.maximumKnownAlleleSnps) <= options.maximumKnownAlleleSnps)) continue;
+    if (node.locus !== observations[0].locus || node.sequence.length !== observations[0].parent.sequence.length) continue;
+    if (!parents.some((parent) => substitutionCompatible(parent.sequence, node.sequence, options.maximumKnownAlleleSnps))) continue;
+    const alias=candidatesBySequence.get(node.sequence);
+    if(alias){alias.names.push(...node.names.filter(name=>!alias.names.includes(name)));continue;}
     candidatesBySequence.set(node.sequence, {
       id: node.names.join(","),
       names: [...node.names],
@@ -646,17 +691,46 @@ function inferGene(
       substitutions: [], directSupport: 0, directCoverage: observations.length,
     });
   }
-  const novel = proposeNovelCandidates(observations, options);
-  for (const proposal of novel.proposals) if (!candidatesBySequence.has(proposal.candidate.sequence)) candidatesBySequence.set(proposal.candidate.sequence, proposal.candidate);
+  const novel = proposeNovelCandidates(observations, {...options,maximumNovelCandidatesPerGene: options.maximumNovelCandidatesPerGene * new Set(observations.map(o=>o.gene)).size});
+  const diagnostics: NonNullable<PersonalizedGermlineGeneResult["proposalEvidence"]> = [];
+  const accepted: Candidate[] = [];
+  for (const proposal of [...novel.proposals].sort((a,b)=>a.candidate.substitutions.length-b.candidate.substitutions.length || b.candidate.directSupport-a.candidate.directSupport)) {
+    const candidate=proposal.candidate;
+    if(candidatesBySequence.has(candidate.sequence))continue;
+    if(candidate.sequence.length!==observations[0].parent.sequence.length)continue;
+    const subsets=accepted.filter(c=>c.parent===candidate.parent && c.substitutions.length<candidate.substitutions.length && c.substitutions.every(x=>candidate.substitutions.some(y=>x.position===y.position&&x.alternate===y.alternate))).sort((a,b)=>b.substitutions.length-a.substitutions.length||b.directSupport-a.directSupport);
+    const baseline=subsets[0];
+    const changes=candidate.substitutions.filter(c=>!baseline?.substitutions.some(b=>b.position===c.position&&b.alternate===c.alternate));
+    const items=observations.filter(o=>o.parent===candidate.parent && (!baseline||baseline.substitutions.every(c=>baseAt(o,c.position)===c.alternate)));
+    const test=testHaplotype(items,changes,candidate.substitutions,calibration,options.sequencingErrorRate,parentCount);
+    diagnostics.push({id:candidate.id,gain:test.gain,support:candidate.directSupport,coverage:candidate.directCoverage,baseline:baseline?.id??candidate.parent.names[0],selected:false});
+    if(!(test.gain>options.minimumLogEvidenceGain))continue;
+    candidate.searchCost=discoveryCost(candidate.sequence.length,candidate.substitutions.length,parentCount);
+    accepted.push(candidate);candidatesBySequence.set(candidate.sequence,candidate);
+  }
+  // An accepted allele must also compete with projections built on a different
+  // reference backbone. Original-parent-only subset tests cannot establish that
+  // the inherited distinguishing bases were actually observed together.
+  for(const candidate of [...accepted].sort((a,b)=>b.directSupport-a.directSupport)){
+    const alternatives=accepted.filter(other=>other!==candidate && candidatesBySequence.has(other.sequence) && other.parent!==candidate.parent && other.directSupport>candidate.directSupport && substitutionCompatible(other.sequence,candidate.sequence,options.maximumKnownAlleleSnps))
+      .sort((a,b)=>hammingDistance(a.sequence,candidate.sequence)-hammingDistance(b.sequence,candidate.sequence)||b.directSupport-a.directSupport);
+    const baseline=alternatives[0];if(!baseline)continue;
+    const proxyParent={...baseline.parent,sequence:baseline.sequence};
+    const changes=candidateSubstitutions(proxyParent,candidate.sequence);
+    const items=observations.filter(o=>o.parent===candidate.parent||o.parent===baseline.parent).map(o=>({...o,gene:proxyParent.gene,parent:proxyParent}));
+    const test=testHaplotype(items,changes,changes,calibration,options.sequencingErrorRate,parentCount);
+    diagnostics.push({id:candidate.id+" [conditional backbone]",gain:test.gain,support:candidate.directSupport,coverage:items.length,baseline:baseline.id,selected:false});
+    if(!(test.gain>options.minimumLogEvidenceGain))candidatesBySequence.delete(candidate.sequence);
+  }
   const candidates = [...candidatesBySequence.values()].sort((left, right) => Number(right.known) - Number(left.known) || left.id.localeCompare(right.id, undefined, { numeric: true }));
-  const emissions = normalizedEmissions(observations, candidates, options.sequencingErrorRate);
+  const emissions = normalizedEmissions(observations, candidates, options.sequencingErrorRate, calibration, options.maximumKnownAlleleSnps, options.maximumNovelSnps);
   for (let candidate = 0; candidate < candidates.length; candidate += 1) {
     let localBest = 0;
     for (const row of emissions) {
       const maximum = Math.max(...row);
       if (Math.abs(row[candidate] - maximum) <= 1e-12) localBest += 1 / Math.max(1, row.reduce((count, value) => count + Number(Math.abs(value - maximum) <= 1e-12), 0));
     }
-    candidates[candidate].directSupport = Math.max(candidates[candidate].directSupport, localBest);
+    if(candidates[candidate].known)candidates[candidate].directSupport = localBest;
   }
   const selected = fitCandidateSet(observations, candidates, emissions, options);
   const activeAlleles = selected.active.map((candidateIndex, activeIndex): PersonalizedGermlineAllele => {
@@ -684,7 +758,7 @@ function inferGene(
   return {
     truncated: novel.truncated,
     result: {
-      gene: observations[0].gene,
+      gene: [...new Set(observations.map(o=>o.gene))].sort().join(","),
       representativeLineages: observations.length,
       testedCandidates: candidates.length,
       proposedNovelCandidates: candidates.reduce((sum, candidate) => sum + Number(!candidate.known), 0),
@@ -692,6 +766,7 @@ function inferGene(
       relativeLogLikelihood: selected.fit.logLikelihood,
       iterations: selected.fit.iterations,
       converged: selected.fit.converged,
+      proposalEvidence: diagnostics.map(d=>({...d,selected:activeAlleles.some(a=>a.id===d.id)})),
     },
   };
 }
@@ -734,12 +809,24 @@ export class PersonalizedGermlineAccumulator {
   }
 
   finish(onProgress?: (processedGenes: number, totalGenes: number) => void): PersonalizedGermlineDashboard {
+    const observations=[...this.selected.values()];
+    const calibration=new AlignedRateCalibration(observations,this.options.sequencingErrorRate);
+    const subjectPools=new Map<string,Observation[]>();
+    for(const o of observations){const key=`${o.subjectId}\u0000${o.locus}`;const values=subjectPools.get(key)??[];values.push(o);subjectPools.set(key,values);}
+    const parentCounts=new Map<string,number>();
     const byGene = new Map<string, Observation[]>();
-    for (const observation of this.selected.values()) {
-      const key = `${observation.subjectId}\u0000${observation.locus}\u0000${observation.gene}`;
-      const values = byGene.get(key);
-      if (values) values.push(observation);
-      else byGene.set(key, [observation]);
+    for(const [poolKey,pool] of subjectPools){
+      const parents=[...new Set(pool.map(o=>o.parent))];parentCounts.set(poolKey,parents.length);
+      const roots=new Map(parents.map(p=>[p.index,p.index]));
+      const root=(id:number):number=>{let r=id;while(roots.get(r)!==r)r=roots.get(r)!;return r;};
+      for(let i=0;i<parents.length;i++)for(let j=0;j<i;j++){
+        const a=parents[i],b=parents[j];
+        if(substitutionCompatible(a.sequence,b.sequence,this.options.maximumKnownAlleleSnps))roots.set(root(a.index),root(b.index));
+      }
+      for (const observation of pool) {
+        const key = `${poolKey}\u0000${root(observation.parent.index)}\u0000${observation.parent.sequence.length}`;
+        const values=byGene.get(key);if(values)values.push(observation);else byGene.set(key,[observation]);
+      }
     }
     const entries = [...byGene.entries()].sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }));
     const poolByKey = new Map<string, PersonalizedGermlinePool>();
@@ -749,7 +836,8 @@ export class PersonalizedGermlineAccumulator {
     let proposalTruncations = 0;
     entries.forEach(([key, observations], index) => {
       const [subjectId, locus] = key.split("\u0000");
-      const inferred = inferGene(observations, this.nodes, this.options);
+      onProgress?.(index, entries.length);
+      const inferred = inferGene(observations, this.nodes, this.options, calibration, parentCounts.get(`${subjectId}\u0000${locus}`)!);
       if (inferred.truncated) proposalTruncations += 1;
       testedCandidates += inferred.result.testedCandidates;
       activeKnownAlleles += inferred.result.activeAlleles.reduce((sum, allele) => sum + Number(allele.known), 0);
@@ -779,7 +867,7 @@ export class PersonalizedGermlineAccumulator {
     return {
       version: 1,
       mode: "lowest-current-v-shm-per-lineage",
-      contextModel: "fixed-aid-5mer-hotspot-coldspot",
+      contextModel: "hs5f-aligned-leave-gene-out",
       options: { ...this.options },
       inputRecords: this.inputRecords,
       eligibleRecords: this.eligibleRecords,
@@ -825,7 +913,7 @@ export function personalizedGermlineFasta(referenceFasta: string, dashboard: Per
   const pool = dashboard.pools.find((item) => item.id === poolId);
   if (!pool) return "";
   const activeNames = new Set(pool.genes.flatMap((gene) => gene.activeAlleles.filter((allele) => allele.known).flatMap((allele) => allele.names)));
-  const testedGenes = new Set(pool.genes.map((gene) => gene.gene));
+  const testedGenes = new Set(pool.genes.flatMap((gene) => gene.gene.split(",")));
   const records = parseReferenceFasta(referenceFasta);
   const retained = records.filter((record) => {
     if (referenceLocus(record.name) !== pool.locus) return true;

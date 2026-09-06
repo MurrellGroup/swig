@@ -14,7 +14,7 @@ The minimum identity control is an acceptance floor for candidate alignments, no
 
 RIAT-MP, ordinary AER, and standard SwiftIG change V candidate retrieval/refinement only. AER-R is a separately selectable experimental AER derivative that also changes how uncertain V/D/J boundaries and candidates are adjudicated. Every strategy uses the selected calling-profile scores except that R-optimized and Sensitive-D are intentionally restricted to AER-R because they also change AER-R's endpoint and D-presence decisions. Ordinary exact-run evidence floors remain unchanged; AER-R alone has the conservative distributed-D alternative described below.
 
-RIAT-MP is the default for all three front-page workflows, hand-written/normalized CLI configs, and the direct `swig-cli --vdj` route. Either surface can select any strategy explicitly, and a browser-exported config records the web selection.
+AER-R with R-optimized is the default for all three front-page workflows, hand-written/normalized CLI configs, and the direct `swig-cli --vdj` route. Either surface can select any strategy explicitly, and a browser-exported config records the web selection.
 
 ### AER—Adaptive Exact Refinement
 
@@ -44,7 +44,7 @@ This two-stage quality trigger avoids both brittle cases: “no D” is not a sp
 
 The development simulator contains skewed allele use, V/D/J deletion, P/N addition, occasional tandem D, hotspot-weighted SHM, short indels, base-call errors, ambiguous bases, partial reads, flanks, reverse complements, fully trimmed-D controls, and exact base provenance. It and the compile-time all-reference candidate oracle live under `tests/`; neither is linked into the runtime WebAssembly. The oracle removes V/D/J candidate-count pruning but deliberately retains the production evidence rules, so it diagnoses candidate search rather than defining an unconstrained biological optimum. Results and limitations are in [`BENCHMARK_AER_ROBUST_0.37.7.md`](../../BENCHMARK_AER_ROBUST_0.37.7.md).
 
-### RIAT-MP (Swig default)
+### RIAT-MP
 
 RIAT-MP groups close V alleles into root-indexed trees. It aligns up to three representative roots and propagates sparse descendant differences without performing a full descendant alignment. When the provisional winner contains an indel, it tests at most two root traceback geometries within four raw-score units, with a 1,024-state traceback cap. This is a Swig/SwiftIG algorithm, not a literature package.
 
@@ -58,7 +58,7 @@ The standard strategy exactly aligns the three leading strong-seed V candidates.
 
 The three legacy profiles are orthogonal to V strategy. R-optimized and Sensitive-D are AER-R-only and are rejected with every other strategy.
 
-- **Truth-optimized (default):** the SwiftIG settings selected on the supplied simulated human-IGH truth data. Its ordinary D floor is a 6-nt exact run.
+- **Truth-optimized:** the SwiftIG settings selected on the supplied simulated human-IGH truth data. Its ordinary D floor is a 6-nt exact run.
 - **IgBLAST-agreement:** D scoring `+2/−4/−11/−1`, minimum 5-nt exact run and 3 candidates; J scoring `+2/−4/−13/−1` and 2 candidates. These values were selected for agreement with supplied IgBLAST calls.
 - **IgBLAST-balanced:** the agreement settings plus removal of a D call only when its strongest support is exactly five consecutive matches and `j_sequence_start − v_sequence_end ≤ 11`. It maximized tuning-set IgBLAST agreement subject to mean first-call and ambiguity-aware V/D/J truth accuracy exceeding IgBLAST on that simulation.
 - **R-optimized (experimental, AER-R only):** V `+2/−3/−9/−1`; D `+2/−3/−13/−1`, minimum 4-nt exact run, 2 candidates, and a 12-point cost for introducing D into the joint V–D–J partition. The cost is relaxed to 10 when the selected D hypothesis has raw score at least 20 or its exact ungapped tract occurs in at least two distinct locus-matched D template sequences. J uses `+2/−3/−17/−2`, 2 candidates. D alleles aligned to the same query span and within one raw alignment-score point of the selected D are emitted as a comma-separated uncertainty set. The 4-nt admission floor was promoted from 0.38.2 Sensitive-D because it improved fair D accuracy in both supplied simulations. The joint threshold was retained by uniform-set Brier score across the same simulations; it is not a posterior probability.
@@ -127,3 +127,9 @@ AER/RIAT production indexes use direct-address CSR k-mer hits and reusable gener
 - Co-optimal labels describe equal scores under this caller, not equal biological posterior probabilities.
 - C calls depend on sufficient calibrated post-J evidence and whether the selected C reference contains the relevant gene/isoform path. Very short reads may still be insufficient, especially with a large C database; a fixed minimum biological length is not asserted.
 - Important study-specific calls should be benchmarked against an independent workflow and suitable truth/control material.
+
+## Assignment progress
+
+Multi-file progress uses read counts only when all inputs have known counts. Otherwise every file uses the same expanded-file-size workload proxy; an unknown count is never assigned a one-read weight. Gzip footer sizes are read without a counting pass, with a rough compressed-size expansion fallback for large/wrapped sizes.
+
+Within a file, parsed character progress is discounted by the fraction of parsed records actually acknowledged by the AIRR store. Compressed read-ahead and dispatched batches are not completed assignments. End-of-input switches to the exact committed/parsed count. Subsampling separates the scan from selected-read commits. Index finalization reserves the last percentage; 100% is shown only when results are ready. These are approximate work fractions, not elapsed-time predictions.

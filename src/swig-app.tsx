@@ -1,3 +1,4 @@
+import { overallAssignmentProgress } from "./assignment-progress";
 import {
   ChangeEvent,
   DragEvent,
@@ -78,6 +79,7 @@ import {
   DEFAULT_FASTQ_QUALITY_FILTER,
   emptyFastqQualityFilterStats,
   streamSequenceBatches,
+  estimateSequenceCharacters,
   type FastqQualityFilterOptions,
   type FastqQualityFilterStats,
   type SequenceSource,
@@ -206,7 +208,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.38.5";
+const APP_VERSION = "0.38.7";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -1513,8 +1515,8 @@ export default function SwigApp() {
   const [minimumIdentity, setMinimumIdentity] = useState(0.6);
   const [constantPrefixIdentityEnabled, setConstantPrefixIdentityEnabled] = useState(false);
   const [minimumConstantPrefixIdentity, setMinimumConstantPrefixIdentity] = useState(0.97);
-  const [callingProfile, setCallingProfile] = useState<CallingProfile>("truth_optimized");
-  const [assignerStrategy, setAssignerStrategy] = useState<AssignerStrategy>("riat_mp");
+  const [callingProfile, setCallingProfile] = useState<CallingProfile>("r_optimized");
+  const [assignerStrategy, setAssignerStrategy] = useState<AssignerStrategy>("aer_robust");
   const [strand, setStrand] = useState<0 | 1 | 2>(0);
   const [workerCount, setWorkerCount] = useState(recommendedWorkerCount);
   const [outputStorage, setOutputStorage] = useState<OutputStorageMode>("auto");
@@ -2496,7 +2498,13 @@ export default function SwigApp() {
         let inputRecords = 0;
         let workers = 1;
         let fastqFilterStats = emptyFastqQualityFilterStats(fastqFilterSnapshot.enabled, false);
-        const weights = datasetSnapshot.map((input) => input.count ?? 1);
+        // Never mix exact read counts with a one-read placeholder for unknown inputs.
+        const allCounted = datasetSnapshot.every((input) => input.count !== null);
+        const estimates = allCounted ? datasetSnapshot.map((input) => input.count!)
+          : await Promise.all(datasetSnapshot.map((input) => estimateSequenceCharacters(input.source)));
+        const weights = estimates.map((estimate, index) => runSubsampleEnabled
+          ? Math.min(datasetSnapshot[index].count ?? (allCounted ? estimate : estimate / 500), Math.floor(subsampleSize))
+          : estimate);
         const totalWeight = weights.reduce((sum, value) => sum + value, 0) || datasetSnapshot.length;
         let completedWeight = 0;
         for (let datasetIndex = 0; datasetIndex < datasetSnapshot.length; datasetIndex += 1) {
@@ -2530,7 +2538,7 @@ export default function SwigApp() {
             signal: controller.signal,
             onProgress: (stage, value) => setProgress({
               stage: datasetSnapshot.length > 1 ? `${input.sampleId} · ${stage}` : stage,
-              value: Math.min(0.995, (completedWeight + Math.max(0, Math.min(1, value)) * weight) / totalWeight),
+              value: overallAssignmentProgress(completedWeight, weight, totalWeight, value),
             }),
             onTelemetry: setAssignmentTelemetry,
             onBatch: async (batch) => {
@@ -2767,8 +2775,8 @@ export default function SwigApp() {
                   <details className="advanced-settings progressive-settings">
                     <summary title="Assigner, calling profile, strand, workers, output storage, and identity floor"><span><b>Advanced options</b><small>Assigner, calling profile, strand, workers, output storage, and identity floor.</small></span></summary>
                     <div className="advanced-settings-grid">
-                    <label><span>Assignment strategy</span><select value={assignerStrategy} onChange={(event) => { const next=event.target.value as AssignerStrategy; setAssignerStrategy(next); if(next!=="aer_robust"&&(callingProfile==="r_optimized"||callingProfile==="sensitive_d"))setCallingProfile("truth_optimized"); }}><option value="riat_mp">RIAT-MP · root-indexed V allele tree · default</option><option value="aer">AER · adaptive exact V refinement</option><option value="aer_robust">AER-R · experimental joint V(D)J boundaries</option><option value="standard">Standard SwiftIG · fixed V depth</option></select></label>
-                    <label><span>Calling profile</span><select value={callingProfile} onChange={(event) => setCallingProfile(event.target.value as CallingProfile)}><option value="truth_optimized">Truth-optimized · default</option><option value="r_optimized" disabled={assignerStrategy!=="aer_robust"}>R-optimized · AER-R only</option><option value="sensitive_d" disabled={assignerStrategy!=="aer_robust"}>Sensitive-D · AER-R only</option><option value="igblast_balanced">IgBLAST-balanced · agreement + truth constraint</option><option value="igblast_compatible">IgBLAST-agreement · agreement only</option></select></label>
+                    <label><span>Assignment strategy</span><select value={assignerStrategy} onChange={(event) => { const next=event.target.value as AssignerStrategy; setAssignerStrategy(next); if(next!=="aer_robust"&&(callingProfile==="r_optimized"||callingProfile==="sensitive_d"))setCallingProfile("truth_optimized"); }}><option value="riat_mp">RIAT-MP · root-indexed V allele tree</option><option value="aer">AER · adaptive exact V refinement</option><option value="aer_robust">AER-R · joint V(D)J boundaries · default</option><option value="standard">Standard SwiftIG · fixed V depth</option></select></label>
+                    <label><span>Calling profile</span><select value={callingProfile} onChange={(event) => setCallingProfile(event.target.value as CallingProfile)}><option value="truth_optimized">Truth-optimized</option><option value="r_optimized" disabled={assignerStrategy!=="aer_robust"}>R-optimized · AER-R only · default</option><option value="sensitive_d" disabled={assignerStrategy!=="aer_robust"}>Sensitive-D · AER-R only</option><option value="igblast_balanced">IgBLAST-balanced · agreement + truth constraint</option><option value="igblast_compatible">IgBLAST-agreement · agreement only</option></select></label>
                     <label><span>Search strand</span><select value={strand} onChange={(event) => setStrand(Number(event.target.value) as 0 | 1 | 2)}><option value={0}>Both orientations</option><option value={1}>Plus only</option><option value={2}>Minus only</option></select></label>
                     <label><span>Parallel compute workers</span><CommitNumberInput min="1" max={browserWorkerLimit()} step="1" value={workerCount} onCommit={(value)=>setWorkerCount(Math.max(1,Math.min(browserWorkerLimit(),Math.round(value))))}/><small>{recommendedWorkerCount()} recommended on this device · {browserWorkerLimit()} maximum</small></label>
                     {!focusedWebMode && <label><span>AIRR results destination</span><select disabled={Boolean(projectWorkspace)} value={projectWorkspace?"project":outputStorage} onChange={(event) => setOutputStorage(event.target.value as OutputStorageMode)}>{projectWorkspace&&<option value="project">Project directory · save while analyzing</option>}<option value="auto">Auto · ask to save large results</option><option value="browser">Browser · compressed local index</option><option value="disk">File · save while analyzing</option></select></label>}

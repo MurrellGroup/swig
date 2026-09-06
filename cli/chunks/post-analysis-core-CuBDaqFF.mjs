@@ -1128,7 +1128,10 @@ var DenoiseAccumulator = class {
 		onProgress?.(0, finalizeTotal, "finalize");
 		for (let ordinal = 0; ordinal < this.records.length; ordinal += 1) {
 			const variantIndex = this.variantByOrdinal[ordinal];
-			if (variantIndex >= 0) representatives[ordinal] = this.variants[this.variants[variantIndex].target].representative;
+			if (variantIndex >= 0) {
+				const target = this.variants[this.variants[variantIndex].target];
+				representatives[ordinal] = target.representative;
+			}
 			reportFinalize();
 		}
 		for (const variant of this.variants) {
@@ -1551,7 +1554,7 @@ function assignLineages(records, options, dedup, activeMask, doubleDMask) {
 	const rootIds = new Int32Array(records.length);
 	const top = [];
 	const summaryLimit = 1e4;
-	const sizeBins = new Uint32Array(7);
+	const sizeBins = /* @__PURE__ */ new Uint32Array(7);
 	const vUsageMap = /* @__PURE__ */ new Map();
 	const jUsageMap = /* @__PURE__ */ new Map();
 	let lineageCount = 0;
@@ -1642,7 +1645,7 @@ function assignLineages(records, options, dedup, activeMask, doubleDMask) {
 		if (!value) return;
 		const values = map.get(id);
 		if (values) values.add(value);
-		else map.set(id, new Set([value]));
+		else map.set(id, /* @__PURE__ */ new Set([value]));
 	};
 	for (let index = 0; index < records.length; index += 1) {
 		const representative = dedup ? dedup.representatives[index] : index;

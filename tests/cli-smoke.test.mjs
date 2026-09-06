@@ -47,7 +47,8 @@ test("the CLI pipeline runs annotation through lazy lineage-study export",async(
       assert.match(gunzipSync(compressed).toString("utf8"),/^sequence_id\t/);
     }
     const resolved=JSON.parse(await readFile(join(output,"smoke.resolved-config.json"),"utf8"));
-    assert.equal(resolved.annotation.assignerStrategy,"riat_mp");
+    assert.equal(resolved.annotation.assignerStrategy,"aer_robust");
+    assert.equal(resolved.annotation.callingProfile,"r_optimized");
     assert.equal(resolved.output.airrCompression,"gzip");
     const airr=await readFile(join(output,"smoke.lineages.airr.tsv"));
     const headers=airr.toString("utf8").split("\n",1)[0].split("\t");
@@ -265,12 +266,16 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
 
     const plainPath=join(temporary,"plain.airr.tsv");
     const plain=runRawCli(root,[...common,"-out",plainPath]);
-    assert.equal(plain.status,0,plain.stderr);assert.match(plain.stderr,/assignments-only; 1 worker/);assert.match(plain.stderr,/RIAT-MP/);
+    assert.equal(plain.status,0,plain.stderr);assert.match(plain.stderr,/assignments-only; 1 worker/);assert.match(plain.stderr,/AER-R/);assert.match(plain.stderr,/R-optimized profile/);
     const plainRow=await readRow(plainPath);
     assert.equal(plainRow.v_call,v[0]);assert.equal(plainRow.j_call,j[0]);assert.equal(plainRow.cdr1,"");assert.equal(plainRow.cdr3,"");assert.equal(plainRow.region_definition,"");
-    assert.ok(plainRow.v_support&&Number.isFinite(Number(plainRow.v_support))&&Number(plainRow.v_support)>=0);
-    assert.ok(plainRow.d_support&&Number.isFinite(Number(plainRow.d_support))&&Number(plainRow.d_support)>=0);
-    assert.ok(plainRow.j_support&&Number.isFinite(Number(plainRow.j_support))&&Number(plainRow.j_support)>=0);
+    // Support is optional for scoring schemes without a calibrated E-value model.
+    for(const field of ["v_support","d_support","j_support"])assert.ok(plainRow[field]===""||(Number.isFinite(Number(plainRow[field]))&&Number(plainRow[field])>=0));
+    const legacyPath=join(temporary,"legacy.airr.tsv");
+    const legacy=runRawCli(root,[...common,"--assigner","riat_mp","--calling-profile","truth_optimized","-out",legacyPath]);
+    assert.equal(legacy.status,0,legacy.stderr);
+    const legacyRow=await readRow(legacyPath);
+    for(const field of ["v_support","d_support","j_support"])assert.ok(legacyRow[field]&&Number.isFinite(Number(legacyRow[field]))&&Number(legacyRow[field])>=0);
     assert.equal(plainRow.c_support,"");
 
     const gzipPath=join(temporary,"plain.airr.tsv.gz");
@@ -319,7 +324,7 @@ test("--vdj streams assignment-only, IgBLAST-data, and Swig-annotation modes wit
     const sensitiveRow=await readRow(sensitivePath);
     assert.equal(sensitiveRow.v_call,v[0]);assert.equal(sensitiveRow.j_call,j[0]);
 
-    const invalidProfile=runRawCli(root,[...common,"--calling-profile","r_optimized","-out",join(temporary,"invalid-profile.airr.tsv")]);
+    const invalidProfile=runRawCli(root,[...common,"--assigner","riat_mp","--calling-profile","r_optimized","-out",join(temporary,"invalid-profile.airr.tsv")]);
     assert.notEqual(invalidProfile.status,0);assert.match(invalidProfile.stderr,/requires --assigner aer_robust/);
 
     const igblastPath=join(temporary,"igblast-data.airr.tsv");
@@ -462,4 +467,22 @@ test("CLI exposes the embedded IMGT data notice",()=>{
   assert.match(result.stdout,/CC BY 4\.0/);
   assert.match(result.stdout,/Swig modifies the source data/);
   assert.match(result.stdout,/gki010/);
+});
+
+test("personalized-germline CLI streams gzip AIRR into the shared engine and exports a recovered allele",async()=>{
+ const root=resolve(import.meta.dirname,".."),temporary=await mkdtemp(join(root,"tmp-cli-personalized-"));
+ try{
+  const reference='ACGT'.repeat(60),bases=[...reference];bases[39]='A';bases[79]='A';const query=bases.join('');
+  const fasta=join(temporary,'V.fasta'),airr=join(temporary,'input.airr.tsv.gz'),out=join(temporary,'out');
+  await writeFile(fasta,`>IGHV1-1*01\n${reference}\n`);
+  const header=['sequence_id','subject_id','clone_id','v_call','v_germline_start','v_sequence_alignment','v_germline_alignment'];
+  const rows=Array.from({length:24},(_,i)=>[`read${i}`,'donor',i+1,'IGHV1-1*01',1,query,reference].join('\t'));
+  await writeFile(airr,gzipSync(header.join('\t')+'\n'+rows.join('\n')+'\n'));
+  const result=runRawCli(root,['personalized-germline','--airr',airr,'--v-reference',fasta,'--out',out]);assert.equal(result.status,0,result.stderr);
+  const dashboard=JSON.parse(await readFile(join(out,'personalized-germline.json'),'utf8'));
+  assert.equal(dashboard.representativeLineages,24);
+  assert.ok(dashboard.pools.flatMap(p=>p.genes).flatMap(g=>g.activeAlleles).some(a=>!a.known&&a.sequence===query));
+  assert.match(await readFile(join(out,'personalized_pool_1.V.fasta'),'utf8'),/SWIG_PERSONALIZED=novel/);
+  assert.match(await readFile(join(out,'personalized-germline.tsv'),'utf8'),/expected_lineages/);
+ }finally{await rm(temporary,{recursive:true,force:true});}
 });

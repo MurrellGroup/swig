@@ -45,7 +45,7 @@ test("the web entry point exposes three focused workflows and keeps UCA trees ob
   assert.match(app, /Single lineage analysis/);
   assert.match(app, /Swig runs on your machine\. Your sequence data are not uploaded/);
   assert.doesNotMatch(app, /Local annotation of/);
-  assert.match(app, /useState<AssignerStrategy>\("riat_mp"\)/);
+  assert.match(app, /useState<AssignerStrategy>\("aer_robust"\)/);
   assert.match(app, /!focusedWebMode && <section className=\{`analysis-card pipeline-card/);
   assert.match(app, /directLineage=\{session\.webMode === "lineage"\}/);
   assert.match(styles, /\.workflow-choice-grid[\s\S]*grid-template-columns: repeat\(3/);

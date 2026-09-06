@@ -1,3 +1,4 @@
+import { runPersonalizedGermline } from "./personalized-germline.mjs";
 import { createReadStream, createWriteStream, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -53,7 +54,7 @@ import {
 } from "../src/sequence-stream.ts";
 import { annotateAirrBatch, annotateDoubleDBatch, stableDatasetSeed } from "../src/study-design.ts";
 
-const VERSION="0.38.5";
+const VERSION="0.38.7";
 const CLI_STREAM_HIGH_WATER_MARK=8*1024*1024;
 const CLI_GZIP_CHUNK_SIZE=1024*1024;
 const CLI_DIRECTORY=dirname(fileURLToPath(import.meta.url));
@@ -68,7 +69,7 @@ function usage(){
     `Run a complete non-phylogenetic Swig pipeline:\n`+
     `  swig-cli run reads.fastq.gz --out swig-output\n`+
     `  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N] [--airr-compression none|gzip]\n\n`+
-    `Run only streaming V(D)J assignment (AIRR outfmt 19):\n`+
+    `Infer personalized V alleles from lineage-assigned AIRR:\n  swig-cli personalized-germline --airr processed.airr.tsv.gz --v-reference V.fasta --out germline\n\nRun only streaming V(D)J assignment (AIRR outfmt 19):\n`+
     `  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n`+
     `    -germline_db_J J.fasta -out calls.airr.tsv\n\n`+
     `Prepare custom germlines once and reuse their inferred annotations:\n`+
@@ -128,8 +129,8 @@ function vdjUsage(){
     `  --workers N             Exact workers with no CLI cap; 0 chooses up to 8\n`+
     `  --batch-records N       Records per bounded WASM batch; 0/omitted selects 2000, 1000,\n`+
     `                          or 500 according to worker count\n`+
-    `  --assigner NAME         riat_mp (default), aer, aer_robust, or standard\n`+
-    `  --calling-profile NAME  truth_optimized (default), r_optimized or sensitive_d\n`+
+    `  --assigner NAME         aer_robust (default), riat_mp, aer, or standard\n`+
+    `  --calling-profile NAME  r_optimized (default), truth_optimized or sensitive_d\n`+
     `                          (AER-R only), igblast_balanced, or igblast_compatible\n`+
     `    r_optimized: 4-nt D signal floor; joint D cost 12, evidence-relaxed to 10\n`+
     `    sensitive_d: same signal floor and scores; fixed joint D cost 10 (a bare 4-mer scores 8)\n`+
@@ -1110,9 +1111,9 @@ async function runVdj(rawArgs,assets){
   if(workers===0)workers=Math.max(1,Math.min(8,availableParallelism()));
   const requestedBatchRecords=options["--batch-records"]===undefined?0:parseIntegerOption(options["--batch-records"],"--batch-records",{minimum:0});
   const batchRecords=requestedBatchRecords||automaticBatchRecords(workers);
-  const assigner=String(options["--assigner"]??"riat_mp");
+  const assigner=String(options["--assigner"]??"aer_robust");
   if(!["standard","riat_mp","aer","aer_robust"].includes(assigner))throw new Error("--assigner must be standard, riat_mp, aer, or aer_robust.");
-  const callingProfile=String(options["--calling-profile"]??"truth_optimized");
+  const callingProfile=String(options["--calling-profile"]??(assigner==="aer_robust"?"r_optimized":"truth_optimized"));
   if(!["truth_optimized","igblast_compatible","igblast_balanced","r_optimized","sensitive_d"].includes(callingProfile))throw new Error("--calling-profile must be truth_optimized, r_optimized, sensitive_d, igblast_compatible, or igblast_balanced.");
   if((callingProfile==="r_optimized"||callingProfile==="sensitive_d")&&assigner!=="aer_robust")throw new Error(`--calling-profile ${callingProfile} requires --assigner aer_robust.`);
   const queryValue=String(options["-query"]??"-");
@@ -1163,6 +1164,7 @@ export async function runCli(assets=defaultCliAssets()){
   if(args.includes("--precompute_aux")||args.includes("--precompute-aux")){await runPrepareReference(args,assets);return;}
   if(args.includes("--vdj")){await runVdj(args,assets);return;}
   const command=args[0]&&!args[0].startsWith("-")?args[0]:"run";const rest=command===args[0]?args.slice(1):args;
+  if(command==="personalized-germline"){await runPersonalizedGermline(rest);return;}
   if(command==="prepare-reference"){await runPrepareReference(rest,assets);return;}
   if(hasFlag(args,"--help")||command==="help"){process.stdout.write(`${usage()}\n`);return;}
   if(hasFlag(args,"--version")||command==="version"){process.stdout.write(`${VERSION}\n`);return;}

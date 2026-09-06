@@ -42,24 +42,39 @@ This is a separate model from the high-specificity missing-V warning. It uses ev
 
 Swig selects the member with the lowest nucleotide mismatch rate in its **current** `v_sequence_alignment` versus `v_germline_alignment`. Ties prefer more aligned V bases and then the earlier AIRR ordinal. There is no random draw, temporal “early” requirement, allele-invariant mask, or circularity correction in this selection step. Lower-SHM observations are used simply because they carry more information about the rearranged germline allele.
 
-### Candidate and likelihood model
+### Candidate graph and homologous coordinates
 
-Each subject, locus, and called V gene is fitted independently. Candidate database alleles must have the same ungapped length as the current allele and fall within the configured Hamming radius. Recurrent, linked substitution patterns can additionally create same-length novel candidates; insertions, deletions, boundary changes, cross-gene swaps, and D/J hypotheses are not admitted.
+Each subject/locus is processed separately. Same-length V references may compete across gene labels only along explicitly substitution-compatible paths. The affine global alignment scores are match +2, mismatch -3, gap open -5, extension -1. An ungapped path may tie the optimum; a strictly better gapped path excludes that pair. This prevents compensating indels from authorizing raw-coordinate swaps. Every observation scores only directly compatible candidates, even inside a connected component.
 
-For each lineage observation, mutation exposure is estimated from covered positions that are invariant across the local candidate set. Candidate likelihoods use a fixed five-nucleotide-window motif prior:
+SHM calibration uses the published 1,024-context human silent five-mer targeting and substitution tables (HS5F; provenance in `src/shm-model/README.md`). Observed reference sequences are globally aligned to a common longest reference within each subject/locus/V family. Only mapped homologous positions and the same reference-to-alternate event share calibration. The tested physical gene label is excluded. Gapped columns without an anchor mapping do not borrow evidence.
 
-- WRCY/RGYW AID hot spots have relative mutability 5;
-- SYC/GRS cold spots have relative mutability 0.25;
-- WA/TW polymerase-eta hot spots have relative mutability 2;
-- other contexts have relative mutability 1.
+### Novel-haplotype validity test
 
-This is a cheap fixed context approximation, **not** the empirical 1,024-entry human-heavy S5F table. A small configurable sequencing-error floor is mixed into every site probability. Allele-discriminating positions and their ±2-nucleotide context halo do not contribute to the observation's mutation-exposure estimate.
+A proposal is a linked substitution haplotype. Mutation burden for that test excludes precisely its complete proposed site set, plus the uncertain last 12 V positions; it never masks the union of other proposals. Each proposed alternate has an effective SHM hazard and a Gamma random-effect prior learned across other aligned genes. Genes contribute equally to between-gene dispersion; large base counts do not collapse that dispersion to zero. Sparse calibration falls back to a unit-mean exponential rate prior. The prior is evaluated on log rate with its Jacobian included.
 
-### Stepwise allele-set search
+The null explains each alternate through its SHM hazard. The alternative adds one lineage-level mixture component for the complete linked allele. Covered site states and mutation burden (rounded to 0.0005) are grouped as sufficient statistics. Candidate-specific other-mutation exposure is held identical under null and alternative. Alternate-specific hazards can approach probability one rather than being capped at a fixed human substitution fraction.
 
-Within each expressed gene, Swig begins with the best penalized single allele. It tests an inactive candidate by optimizing the frequency transferred from the current mixture, using only the candidate's per-lineage emission and the cached current mixture. An accepted addition is followed by an exact EM frequency refit. Backward deletion removes components that become redundant.
+The test charges half log N for the added mixture frequency plus `log C(L,s) + s log 3 + log P` for discovering s nucleotide changes among L positions and P expressed parent sequences. Nested proposals are tested as additions to the most specific accepted subset, with support breaking ties. A second sequence-level conditional test compares weak proposals with better-supported accepted alleles on different reference backbones; inherited backbone bases must be supported too. This is a proposal-validity test, not a claim of a fully integrated posterior over all allele sets.
 
-The objective is log likelihood minus a BIC penalty for mixture-frequency parameters and every learned nucleotide in a novel candidate. The optional extra log-evidence threshold is applied after that penalty. Known and novel candidates therefore use the same likelihood, while data-derived sequences pay for the bases learned from the same repertoire.
+### Common final emission model and set selection
+
+All admitted known and novel sequences compete using the same categorical mutation model: HS5F alternate-specific rates multiplied by the mean of the leave-gene-out Gamma calibration. A lineage's exposure is anchored to its actual current parent alignment, excluding the uncertain terminal window, and cannot change with the size of the proposed candidate catalogue. The three alternate hazards define a total mutation hazard and a normalized substitution distribution; the sequencing-error floor completes the nucleotide probabilities.
+
+The final mixture does **not** multiply a ratio from the haplotype null into an uncorrected parent emission. That would make scores from different parent alleles incomparable. The joint validity test and the final common emission model are distinct documented stages.
+
+Greedy additions optimize a new mixture frequency, followed by an EM refit. Backward removal refits the remaining components. The set objective charges mixture-frequency BIC and the full sequence-search code length for each novel sequence. The active-allele setting is a generous computational guard per gene label, scaled to the number of observed genes in a component; it is not a diploid genotype or copy-number prior.
+
+### Terminal V uncertainty
+
+AIRR `sequence`, `rev_comp`, and `v_sequence_start` reconstruct raw downstream bases from an aligned anchor 12 nt before the V reference end. Query insertions advance raw query coordinates but never become a second observation at a germline position. Both matching and nonmatching downstream bases enter symmetrically. Without raw sequence/anchor coverage, terminal evidence is missing.
+
+The likelihood sums over V trimming states 0–12 (the last state includes deeper trimming). Trimmed bases follow a learned junction composition, not necessarily uniform A/C/G/T. Junction composition and trimming sufficient statistics come from other genes in the same subject/locus. Trimming uses a fixed broad geometric prior for one E step followed by leave-gene-out aggregation. `d_sequence_start` or `j_sequence_start`, when available, bounds the downstream composition sample. The terminal model is approximate; an unrecovered terminal base must not be counted as an exact allele recovery.
+
+### CLI
+
+`swig-cli personalized-germline --airr sample.processed.airr.tsv.gz --v-reference V.fasta --out personalized`
+
+Use the complete processed AIRR table with numeric `clone_id` or `lineage_id`, not a lineage-viewer export limited to the top displayed lineages. The command writes the dashboard JSON (including proposal evidence), evidence TSV and per-pool V FASTA. Web and CLI call the same TypeScript engine. New inference remains in a lazy Web Worker in the browser; V(D)J assignment remains WASM.
 
 The downloadable V FASTA is conservative: inferred active alleles replace only genes actually tested for the selected subject/locus. Untested genes and other loci remain unchanged. Novel records inherit the exact parent's `SWIGMETA` annotation. The download is a candidate reference and must be used in a complete new assignment run; the current analysis is never silently changed.
 
@@ -89,5 +104,5 @@ The screen is **custom and deliberately conservative**. It shares the problem of
 - Expressed repertoires cannot prove genomic presence/absence or copy number.
 - The binomial background is simplified and substitutions are not modeled with S5F context probabilities.
 - A warning must be validated by dedicated germline inference and, where important, genomic evidence.
-- Personalized inference covers expressed same-length V alleles only. A silent allele, unobserved gene, length-changing allele, or cross-gene reassignment cannot be resolved by this implementation.
-- The fixed motif likelihood is a computational approximation and may be misspecified for non-human species or non-heavy-chain loci.
+- Personalized inference covers expressed substitution-compatible V alleles. Silent genes, unsupported terminal bases and indel-containing alternatives remain unidentifiable.
+- The HS5F calibration, log-rate MAP test, fixed burden estimates, approximate boundary background and two-stage search are computational approximations. Paired dropout controls do not establish the truth of stable background candidates.

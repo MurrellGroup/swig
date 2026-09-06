@@ -1,0 +1,79 @@
+{
+  "animal": "ERR4238110",
+  "recoveries": [
+    {
+      "target": "IGHV1-NL_2*01_S3568",
+      "status": "exact",
+      "nearestCandidate": "IGHV1-NL_2*01_S2228__SWIGP_G15A_G148C_A149G_A175G_T180C_C283T",
+      "differences": [],
+      "nearExactBaselineCdr3s": 25,
+      "nearestSurvivingDistance": 6
+    },
+    {
+      "target": "IGHV3-37*01_S4420",
+      "status": "exact",
+      "nearestCandidate": "IGHV3-37*01_S6630__SWIGP_C27A_G29C_C71T_A91G_C132G",
+      "differences": [],
+      "nearExactBaselineCdr3s": 78,
+      "nearestSurvivingDistance": 5
+    },
+    {
+      "target": "IGHV4-NL_34*01_S4637",
+      "status": "exact",
+      "nearestCandidate": "IGHV4-NL_34*01_S4749__SWIGP_A151T_G152A_T234C_C298G",
+      "differences": [],
+      "nearExactBaselineCdr3s": 173,
+      "nearestSurvivingDistance": 4
+    },
+    {
+      "target": "IGHV2-118*01_S4527",
+      "status": "exact",
+      "nearestCandidate": "IGHV2-118*01_S6364__SWIGP_C66T_T127C_C130G",
+      "differences": [],
+      "nearExactBaselineCdr3s": 381,
+      "nearestSurvivingDistance": 3
+    },
+    {
+      "target": "IGHV5-157*01_S0308",
+      "status": "terminal-only",
+      "nearestCandidate": "IGHV5-157*02_S5108__SWIGP_G235A",
+      "differences": [
+        296
+      ],
+      "nearExactBaselineCdr3s": 586,
+      "nearestSurvivingDistance": 2
+    },
+    {
+      "target": "IGHV3-50*01",
+      "status": "exact",
+      "nearestCandidate": "IGHV3-50*01_S1879__SWIGP_G155C",
+      "differences": [],
+      "nearExactBaselineCdr3s": 1170,
+      "nearestSurvivingDistance": 1
+    }
+  ],
+  "exact": 5,
+  "terminalOnly": 1,
+  "dropoutInducedExtras": [],
+  "sharedNonTargetCandidates": [
+    "IGHV1-NL_1*01_S8523__SWIGP_G295T_G296A",
+    "IGHV1-NL_2*01_S5959__SWIGP_T209C_C225G",
+    "IGHV2-7*02_S4078__SWIGP_C301G",
+    "IGHV2-118*01_S6364__SWIGP_C66T_T127C_C130G_G200C",
+    "IGHV3-87*01__SWIGP_G45C_T153C",
+    "IGHV3-53*01_S4256__SWIGP_T31C_C75T",
+    "IGHV4-117*01_S3779__SWIGP_G120A_G246A_C250G_A299G",
+    "IGHV4-149*01_S1992__SWIGP_A295T",
+    "IGHV4-150*01__SWIGP_A295C",
+    "IGHV4-NL_24*01_S5697__SWIGP_G298C"
+  ],
+  "fullOnlyCandidates": [
+    "IGHV5-157*01_S0308__SWIGP_T296G"
+  ],
+  "fullNovel": 12,
+  "dropoutNovel": 16,
+  "fullLineages": 15101,
+  "dropoutLineages": 15104,
+  "fullFitSeconds": 40.81844735,
+  "dropoutFitSeconds": 31.619229613999995
+}

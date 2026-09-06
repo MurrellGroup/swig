@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import { assignmentCompletion } from "./assignment-progress";
 import {
   emptyFastqQualityFilterStats,
   streamSequenceBatches,
@@ -227,6 +228,7 @@ async function handleRequest(request: StartRequest) {
     let lastProgress = 0.14;
     let bytesRead = 0;
     let totalBytes = sequenceSourceSize(request.query);
+    let inputFraction = 0;
     let inputRecords = 0;
     let eligibleRecords = 0;
     let fastqFilterStats: FastqQualityFilterStats = emptyFastqQualityFilterStats(
@@ -282,18 +284,7 @@ async function handleRequest(request: StartRequest) {
     slots.forEach((slot) => installComputeHandler(slot, fail));
 
     const report = (stage: string) => {
-      const inputFraction = totalBytes ? Math.min(1, bytesRead / totalBytes) : 0;
-      let completion: number;
-      if (request.subsample) {
-        const selected = Math.max(1, Math.min(eligibleRecords || request.subsample.size, request.subsample.size));
-        completion = parsed === 0
-          ? inputFraction * 0.48
-          : 0.48 + Math.min(1, committed / selected) * 0.52;
-      } else {
-        completion = inputDone
-          ? (parsed ? committed / parsed : 0)
-          : Math.min(0.96, inputFraction * 0.92 + (parsed ? committed / parsed : 0) * 0.08);
-      }
+      const completion = assignmentCompletion({ acknowledged, parsed, inputDone, inputRecords, eligibleRecords, countHint: request.countHint, subsampleSize: request.subsample?.size, inputFraction });
       lastProgress = Math.max(lastProgress, 0.14 + completion * 0.82);
       postProgress(request.id, stage, Math.min(0.96, lastProgress));
     };
@@ -372,6 +363,7 @@ async function handleRequest(request: StartRequest) {
       subsample: request.subsample,
       fastqFilter: request.fastqFilter,
       onProgress: (state) => {
+        inputFraction = state.totalCharacters ? Math.min(1, state.charactersRead / state.totalCharacters) : 0;
         bytesRead = state.bytesRead;
         totalBytes = state.totalBytes;
         inputRecords = state.recordsRead;

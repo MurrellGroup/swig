@@ -156,8 +156,8 @@ export const DEFAULT_CLI_CONFIG: SwigCliConfig = {
   annotation: {
     workers: 0,
     batchRecords: 0,
-    callingProfile: "truth_optimized",
-    assignerStrategy: "riat_mp",
+    callingProfile: "r_optimized",
+    assignerStrategy: "aer_robust",
     minimumIdentity: 0.6,
     minimumConstantPrefixIdentity: null,
     strand: 0,
@@ -212,6 +212,7 @@ export function normalizeCliConfig(value: PartialSwigCliConfig): SwigCliConfig {
     return {...input,format:input.format??"auto",datasetId,sampleId,subjectId:safeIdentifier(input.subjectId??sampleId,`subject-${index+1}`),cohort:input.cohort??"",timepoint:input.timepoint??"",compartment:input.compartment??""};
   });
   const annotation={...DEFAULT_CLI_CONFIG.annotation,...value.annotation,doubleD:{...DEFAULT_CLI_CONFIG.annotation.doubleD,...value.annotation?.doubleD}};
+  if (value.annotation?.callingProfile === undefined && annotation.assignerStrategy !== "aer_robust") annotation.callingProfile = "truth_optimized";
   annotation.workers=Math.max(0,Math.floor(finite(annotation.workers,0)));
   annotation.batchRecords=Math.max(0,Math.floor(finite(annotation.batchRecords,0)));
   annotation.minimumIdentity=Math.max(0,Math.min(1,finite(annotation.minimumIdentity,0.6)));
