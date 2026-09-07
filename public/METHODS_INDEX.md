@@ -1,6 +1,6 @@
 # Swig methods index
 
-This index is the implementation-facing methods map for Swig 0.38.7. It covers every runnable analysis block from file intake through phylogenetic UCA inference. The UI may summarize a method in one sentence; the linked document is the specification.
+This index is the implementation-facing methods map for Swig 0.38.10. It covers every runnable analysis block from file intake through phylogenetic UCA inference. The UI may summarize a method in one sentence; the linked document is the specification.
 
 ## Evidence labels used in these documents
 
@@ -42,3 +42,8 @@ This index is the implementation-facing methods map for Swig 0.38.7. It covers e
 ## Reproducibility
 
 Saved sessions retain all settings needed to reproduce applied downstream state and store compact masks/vectors rather than a second AIRR table. Machine-readable outputs preserve original calls alongside any policy-selected calls. Defaults are starting values, not universal biological constants; each method document identifies the settings that require assay-, organism-, or dataset-specific sensitivity checks.
+
+
+## Separate experimental joint germline method (0.38.9)
+
+[Joint inherited / SHM model](methods/10_JOINT_INHERITED_SHM_MODEL.md) defines its single likelihood, split-data evidence, numerical bounds and limitations. It runs alongside the existing personalized-reference box.

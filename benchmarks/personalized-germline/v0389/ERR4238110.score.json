@@ -1,0 +1,188 @@
+{
+  "animal": "ERR4238110",
+  "full": {
+    "positive": 1,
+    "passes": 0
+  },
+  "panels": {
+    "dropout": {
+      "targets": [
+        {
+          "target": "IGHV1-NL_2*01_S3568",
+          "nearExactCdr3s": 25,
+          "nominated": true,
+          "logEvidence": 4.877475591600174,
+          "positive": true,
+          "passes": false,
+          "nullOptimizationGap": 9.749844458450951e-06,
+          "logThreshold": 9.738612909345894
+        },
+        {
+          "target": "IGHV3-37*01_S4420",
+          "nearExactCdr3s": 78,
+          "nominated": true,
+          "logEvidence": -21.424443966813726,
+          "positive": false,
+          "passes": false,
+          "nullOptimizationGap": 0.0017229878641700225,
+          "logThreshold": 9.738612909345894
+        },
+        {
+          "target": "IGHV4-NL_34*01_S4637",
+          "nearExactCdr3s": 173,
+          "nominated": true,
+          "logEvidence": 41.10547230551316,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 1.0281962306093213,
+          "logThreshold": 9.738612909345894
+        },
+        {
+          "target": "IGHV2-118*01_S4527",
+          "nearExactCdr3s": 381,
+          "nominated": true,
+          "logEvidence": -49.195069872297836,
+          "positive": false,
+          "passes": false,
+          "nullOptimizationGap": 0.6434944209186426,
+          "logThreshold": 9.738612909345894
+        },
+        {
+          "target": "IGHV5-157*01_S0308",
+          "nearExactCdr3s": 586,
+          "nominated": true,
+          "logEvidence": 18.455615646961633,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 0.3735017346546883,
+          "logThreshold": 9.738612909345894
+        },
+        {
+          "target": "IGHV3-50*01",
+          "nearExactCdr3s": 1170,
+          "nominated": true,
+          "logEvidence": 237.5539703689908,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 0.01878839720757952,
+          "logThreshold": 9.738612909345894
+        }
+      ],
+      "nominated": 6,
+      "positive": 4,
+      "passes": 3,
+      "positiveExtras": [
+        {
+          "id": "IGHV4-117*01_S3779__SWIGP_G120A_G246A_C250G",
+          "sequence": "CAGCTGCAGCTGCAGGAGTCGGGCCCAGGACTGGTGAAGCCTTCGGAGACCCTGTCCCTCACCTGCGCTGTCTCTGGTGGCTCTGTCAGCAGTAGTAACTGGTGGAGCTGGATCCGCCAACCCCCAGGGAAGGGACTGGAGTGGATTGGACGTATCTCTGGTAGTGGTGGGAGCACCAGCTACAACCCCTCCCTCACGAGTCGAGTCACCATTTCAACAGACACGTCCAAGAACCAGTTCTCCCTAAAGGTGAGCTCTGTGACCGCCGCGGACACGGCCGTGTATTACTGTGCGAGA",
+          "known": false,
+          "candidate": 3,
+          "logEvidence": 8.11463676513236,
+          "nullUpper": -116.91452083521783,
+          "gap": 9.052091584749178e-06,
+          "logThreshold": 9.738612909345894,
+          "positive": true,
+          "passes": false
+        }
+      ],
+      "passingExtras": [],
+      "positiveExtrasAbsentFull": [
+        {
+          "id": "IGHV4-117*01_S3779__SWIGP_G120A_G246A_C250G",
+          "sequence": "CAGCTGCAGCTGCAGGAGTCGGGCCCAGGACTGGTGAAGCCTTCGGAGACCCTGTCCCTCACCTGCGCTGTCTCTGGTGGCTCTGTCAGCAGTAGTAACTGGTGGAGCTGGATCCGCCAACCCCCAGGGAAGGGACTGGAGTGGATTGGACGTATCTCTGGTAGTGGTGGGAGCACCAGCTACAACCCCTCCCTCACGAGTCGAGTCACCATTTCAACAGACACGTCCAAGAACCAGTTCTCCCTAAAGGTGAGCTCTGTGACCGCCGCGGACACGGCCGTGTATTACTGTGCGAGA",
+          "known": false,
+          "candidate": 3,
+          "logEvidence": 8.11463676513236,
+          "nullUpper": -116.91452083521783,
+          "gap": 9.052091584749178e-06,
+          "logThreshold": 9.738612909345894,
+          "positive": true,
+          "passes": false
+        }
+      ]
+    },
+    "rare": {
+      "targets": [
+        {
+          "target": "IGHV4-67*02_S8671",
+          "nearExactCdr3s": 20,
+          "nominated": true,
+          "logEvidence": 3.8885557078948807,
+          "positive": true,
+          "passes": false,
+          "nullOptimizationGap": 1.5960017190508324e-05,
+          "logThreshold": 9.792555991828847
+        },
+        {
+          "target": "IGHV3-36*01_S7141",
+          "nearExactCdr3s": 21,
+          "nominated": true,
+          "logEvidence": -12.44077547316649,
+          "positive": false,
+          "passes": false,
+          "nullOptimizationGap": 9.943913704457685e-06,
+          "logThreshold": 9.792555991828847
+        },
+        {
+          "target": "IGHV3-28*01_S5703",
+          "nearExactCdr3s": 23,
+          "nominated": true,
+          "logEvidence": -37.317188067570385,
+          "positive": false,
+          "passes": false,
+          "nullOptimizationGap": 0.002887867669901567,
+          "logThreshold": 9.792555991828847
+        },
+        {
+          "target": "IGHV1-84*01_S8557",
+          "nearExactCdr3s": 24,
+          "nominated": true,
+          "logEvidence": 1.7607790229640656,
+          "positive": true,
+          "passes": false,
+          "nullOptimizationGap": 8.794296444847305e-06,
+          "logThreshold": 9.792555991828847
+        },
+        {
+          "target": "IGHV3-9*01",
+          "nearExactCdr3s": 26,
+          "nominated": true,
+          "logEvidence": -19.040453318714953,
+          "positive": false,
+          "passes": false,
+          "nullOptimizationGap": 9.779798588738231e-06,
+          "logThreshold": 9.792555991828847
+        },
+        {
+          "target": "IGHV3-NL_19*01_S4000",
+          "nearExactCdr3s": 26,
+          "nominated": true,
+          "logEvidence": -5.778825695318574,
+          "positive": false,
+          "passes": false,
+          "nullOptimizationGap": 9.972636178190442e-06,
+          "logThreshold": 9.792555991828847
+        }
+      ],
+      "nominated": 6,
+      "positive": 2,
+      "passes": 0,
+      "positiveExtras": [
+        {
+          "id": "IGHV3-87*01__SWIGP_G45C_T153C",
+          "sequence": "GAGGTGCAGCTGGCGGAGTCTGGGGGAGGCTTGGTCCAGCCTGGCGGGTCCCTGAGACTCTCCTGTGCAGCCTCCGGATTCACCTTCAGTGGCTACGAAATGCACTGGGTCCGCCAGGCTCCAGGGAAGGGGCTGGAGTCCGTCTCAGTTATCGGTGGTGATAGTAGTTACACACACTACGCAGACTCTGTGAAGGGCCGATTCACCATCTCCAGAGACAACGCCAAGAACTCGCTGTCTCTGCAAATGAACAGCCTGAGAGCCGAGGACACGGCCGTGTATTACTGTGCGAGA",
+          "known": false,
+          "candidate": 0,
+          "logEvidence": 4.689003639317502,
+          "nullUpper": -19.249331447534512,
+          "gap": 7.311654393049594e-07,
+          "logThreshold": 9.792555991828847,
+          "positive": true,
+          "passes": false
+        }
+      ],
+      "passingExtras": [],
+      "positiveExtrasAbsentFull": []
+    }
+  }
+}

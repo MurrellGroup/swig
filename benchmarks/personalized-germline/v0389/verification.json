@@ -1,0 +1,24 @@
+{
+  "version": "0.38.9",
+  "tests": {
+    "total": 278,
+    "passed": 278,
+    "failed": 0,
+    "stream": 21,
+    "store": 11,
+    "germline": 15,
+    "alignment": 8,
+    "post": 180,
+    "wasm": 27,
+    "cli": 16
+  },
+  "productionBuild": "passed",
+  "originalMethod": "Numerical inference unchanged; new research accessors only",
+  "sourceSha256": {
+    "src/unified-germline.ts": "72fb77e65f596b6a0f841280c18549d1e7b2f7d3dc951d863dd26cf575187d1a",
+    "src/shm-model/unified-mixture.ts": "3784413fe2fe413dee9d4c8a35ae012878aeae0ccd53acbacd87446bfd1ebdcd",
+    "src/shm-model/unified-kernel.ts": "923869c90e7ae2f3401c8ada9dc2ea7f232aad8a7cce5063e8524c1d3e6881d8",
+    "src/shm-model/discovery.ts": "4d30a66c92019c33669b661c1500bed7cd1140c45286ca8c00511091e763aa45",
+    "src/personalized-germline.ts": "0732010e2d08d18b2f5aac646da777f8b1114397c38798371afe88245786ca07"
+  }
+}

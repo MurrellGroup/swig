@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -8,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -27,6 +29,12 @@ using swiftig::GermlineDatabase;
 using swiftig::SequenceRecord;
 
 std::unique_ptr<GermlineDatabase> g_database;
+std::unique_ptr<AnnotationEngine> g_annotation_engine;
+int g_engine_minimum_identity = -1;
+int g_engine_strand = -1;
+constexpr std::size_t kAnnotationCacheCapacity = 4096;
+std::unordered_map<std::string, std::string> g_annotation_suffix_cache;
+std::deque<std::string> g_annotation_cache_order;
 std::optional<EngineOptions> g_engine_options_override;
 int g_calling_profile = 0;
 AssignerStrategy g_assigner_strategy = AssignerStrategy::Standard;
@@ -323,6 +331,25 @@ EngineOptions configured_options(int minimum_identity_per_mille, int strand) {
     return options;
 }
 
+void invalidate_annotation_engine() {
+    g_annotation_engine.reset();
+    g_engine_minimum_identity = -1;
+    g_engine_strand = -1;
+    g_annotation_suffix_cache.clear();
+    g_annotation_cache_order.clear();
+}
+
+AnnotationEngine& annotation_engine(int minimum_identity_per_mille, int strand) {
+    if (!g_annotation_engine || g_engine_minimum_identity != minimum_identity_per_mille ||
+        g_engine_strand != strand) {
+        g_annotation_engine = std::make_unique<AnnotationEngine>(
+            *g_database, configured_options(minimum_identity_per_mille, strand));
+        g_engine_minimum_identity = minimum_identity_per_mille;
+        g_engine_strand = strand;
+    }
+    return *g_annotation_engine;
+}
+
 }  // namespace
 
 extern "C" {
@@ -337,6 +364,7 @@ __attribute__((export_name("swig_set_calling_profile")))
 int swig_set_calling_profile(int profile) noexcept {
     if (profile < 0 || profile > 3) return -1;
     g_calling_profile = profile;
+    invalidate_annotation_engine();
     return 0;
 }
 
@@ -346,6 +374,7 @@ int swig_set_c_prefix_identity(int minimum_identity_per_mille) noexcept {
         return -1;
     }
     g_min_c_prefix_identity_per_mille = minimum_identity_per_mille;
+    invalidate_annotation_engine();
     return 0;
 }
 
@@ -354,6 +383,7 @@ int swig_set_assigner_strategy(int strategy) noexcept {
     if (strategy < static_cast<int>(AssignerStrategy::Standard) ||
         strategy > static_cast<int>(AssignerStrategy::AerRobust)) return -1;
     g_assigner_strategy = static_cast<AssignerStrategy>(strategy);
+    invalidate_annotation_engine();
     return 0;
 }
 
@@ -363,6 +393,7 @@ __attribute__((export_name("swig_set_optimized_kernels")))
 int swig_set_optimized_kernels(int enabled) noexcept {
     if (enabled != 0 && enabled != 1) return -1;
     g_optimized_kernels = enabled != 0;
+    invalidate_annotation_engine();
     return 0;
 }
 
@@ -388,6 +419,7 @@ int swig_init_database(
         !parse_germline(d_input, "D", false, d_genes) ||
         !parse_germline(j_input, "J", true, j_genes) ||
         !parse_germline(c_input, "C", false, c_genes)) return -1;
+    invalidate_annotation_engine();
     auto database = std::make_unique<GermlineDatabase>();
     if (g_assigner_strategy == AssignerStrategy::RiatMp) {
         // RIAT-MP indexes only one representative root per close-allele tree.
@@ -424,8 +456,7 @@ int swig_annotate(
     if (!memory_view(query_data, query_size, query_input)) return -1;
     std::vector<SequenceRecord> records;
     if (!parse_queries(query_input, format, records)) return -1;
-    const auto options = configured_options(minimum_identity_per_mille, strand);
-    AnnotationEngine engine(*g_database, options);
+    auto& engine = annotation_engine(minimum_identity_per_mille, strand);
     if (g_optimized_output) {
         g_result.clear();
         if (query_size <=
@@ -434,7 +465,30 @@ int swig_annotate(
         }
         swiftig::append_airr_header(g_result);
         for (const auto& record : records) {
+            if (const auto cached = g_annotation_suffix_cache.find(record.sequence);
+                cached != g_annotation_suffix_cache.end()) {
+                swiftig::append_airr_input_prefix(g_result, record);
+                g_result.append(cached->second);
+                continue;
+            }
+            const auto row_start = g_result.size();
             swiftig::append_airr_record(g_result, engine.annotate(record));
+            auto suffix_start = row_start;
+            for (int field = 0; field < 3; ++field) {
+                suffix_start = g_result.find('\t', suffix_start);
+                if (suffix_start == std::string::npos) break;
+                ++suffix_start;
+            }
+            if (suffix_start != std::string::npos) {
+                --suffix_start;  // Retain the separator before sequence_aa.
+                if (g_annotation_suffix_cache.size() == kAnnotationCacheCapacity) {
+                    g_annotation_suffix_cache.erase(g_annotation_cache_order.front());
+                    g_annotation_cache_order.pop_front();
+                }
+                g_annotation_cache_order.push_back(record.sequence);
+                g_annotation_suffix_cache.emplace(
+                    record.sequence, g_result.substr(suffix_start));
+            }
         }
     } else {
         std::ostringstream output;
@@ -473,7 +527,7 @@ int swig_annotate_double_d(
     std::vector<SequenceRecord> records;
     if (!parse_queries(query_input, format, records)) return -1;
     const auto engine_options = configured_options(minimum_identity_per_mille, strand);
-    AnnotationEngine engine(*g_database, engine_options);
+    auto& engine = annotation_engine(minimum_identity_per_mille, strand);
     swiftig::DoubleDOptions double_d_options;
     double_d_options.mode = mode == 1
         ? swiftig::DoubleDMode::All : mode == 2
@@ -645,11 +699,15 @@ int swig_set_tuning_options(
     options.top_j = static_cast<std::size_t>(std::clamp(top_j, 1, 1000));
     options.min_j_length = static_cast<std::size_t>(std::clamp(min_j_length, 1, 500));
     g_engine_options_override = options;
+    invalidate_annotation_engine();
     return 0;
 }
 
 __attribute__((export_name("swig_clear_tuning_options")))
-void swig_clear_tuning_options() noexcept { g_engine_options_override.reset(); }
+void swig_clear_tuning_options() noexcept {
+    g_engine_options_override.reset();
+    invalidate_annotation_engine();
+}
 
 // Companion to swig_set_tuning_options. Benchmarks use it for calibration;
 // the direct CLI also preserves R-optimized V decisions when a user overrides
@@ -670,6 +728,7 @@ int swig_set_v_tuning_options(
     g_engine_options_override->aer_r_optimized = aer_r_optimized != 0;
     g_engine_options_override->aer_r_d_presence_penalty_relaxation =
         aer_r_optimized != 0 ? 2 : 0;
+    invalidate_annotation_engine();
     return 0;
 }
 
@@ -682,6 +741,7 @@ int swig_set_aer_r_decision_tuning(int d_presence_penalty) noexcept {
     g_engine_options_override->aer_r_d_presence_penalty_relaxation = 0;
     g_engine_options_override->aer_r_d_presence_penalty =
         std::clamp(d_presence_penalty, 0, 100);
+    invalidate_annotation_engine();
     return 0;
 }
 
@@ -696,6 +756,7 @@ int swig_set_aer_r_profile_decision_tuning(int d_presence_penalty) noexcept {
     g_engine_options_override->aer_r_d_presence_penalty_relaxation = 2;
     g_engine_options_override->aer_r_d_presence_penalty =
         std::clamp(d_presence_penalty, 0, 100);
+    invalidate_annotation_engine();
     return 0;
 }
 
@@ -712,6 +773,7 @@ int swig_set_aer_r_profile_decision_tuning_v2(
     g_engine_options_override->aer_r_d_presence_penalty_relaxation =
         std::clamp(d_presence_penalty_relaxation, 0,
             g_engine_options_override->aer_r_d_presence_penalty);
+    invalidate_annotation_engine();
     return 0;
 }
 

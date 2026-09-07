@@ -1,0 +1,136 @@
+{
+  "animal": "ERR4238110",
+  "fullNovel": [
+    "IGHV1-NL_2*01_S5959__SWIGP_T209C_C225G",
+    "IGHV3-87*01__SWIGP_G45C_T153C",
+    "IGHV3-53*01_S4256__SWIGP_T31C_C75T",
+    "IGHV3-NL_11*01_S3736__SWIGP_T223G_A225C_A232T_C237G_C240T_T264C",
+    "IGHV4-117*01_S3779__SWIGP_G120A_G246A_C250G"
+  ],
+  "fullLineages": 15101,
+  "fullFitSeconds": 131.86861756300002,
+  "panels": {
+    "dropout": {
+      "recoveries": [
+        {
+          "target": "IGHV1-NL_2*01_S3568",
+          "nearExactCdr3s": 25,
+          "recovery": "IGHV1-NL_2*01_S2228__SWIGP_G15A_G148C_A149G_A175G_T180C_C283T",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-37*01_S4420",
+          "nearExactCdr3s": 78,
+          "recovery": "IGHV3-37*01_S6630__SWIGP_C27A_G29C_C71T_A91G_C132G",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV4-NL_34*01_S4637",
+          "nearExactCdr3s": 173,
+          "recovery": "IGHV4-NL_34*01_S4749__SWIGP_A151T_G152A_T234C",
+          "status": "terminal-only",
+          "differences": [
+            298
+          ]
+        },
+        {
+          "target": "IGHV2-118*01_S4527",
+          "nearExactCdr3s": 381,
+          "recovery": "IGHV2-118*01_S6364__SWIGP_C66T_T127C_C130G",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV5-157*01_S0308",
+          "nearExactCdr3s": 586,
+          "recovery": "IGHV5-157*02_S5108__SWIGP_G235A",
+          "status": "terminal-only",
+          "differences": [
+            296
+          ]
+        },
+        {
+          "target": "IGHV3-50*01",
+          "nearExactCdr3s": 1170,
+          "recovery": "IGHV3-50*01_S1879__SWIGP_G155C",
+          "status": "exact",
+          "differences": []
+        }
+      ],
+      "exact": 4,
+      "terminalOnly": 2,
+      "nonTargetCandidates": [
+        "IGHV1-NL_2*01_S5959__SWIGP_T209C_C225G",
+        "IGHV3-87*01__SWIGP_G45C_T153C",
+        "IGHV3-53*01_S4256__SWIGP_T31C_C75T",
+        "IGHV3-NL_11*01_S3736__SWIGP_T223G_A225C_A232T_C237G_C240T_T264C",
+        "IGHV4-117*01_S3779__SWIGP_G120A_G246A_C250G"
+      ],
+      "dropoutInducedExtras": [],
+      "lineages": 15104,
+      "fitSeconds": 136.281421508,
+      "proposalTruncations": 3
+    },
+    "rare": {
+      "recoveries": [
+        {
+          "target": "IGHV4-67*02_S8671",
+          "nearExactCdr3s": 20,
+          "recovery": "IGHV4-67*02__SWIGP_A218G",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-36*01_S7141",
+          "nearExactCdr3s": 21,
+          "recovery": "IGHV3-36*01_S4906__SWIGP_C114A",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-28*01_S5703",
+          "nearExactCdr3s": 23,
+          "recovery": "IGHV3-28*01_S0096__SWIGP_G292A",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV1-84*01_S8557",
+          "nearExactCdr3s": 24,
+          "recovery": "IGHV1-84*01_S0240__SWIGP_G222A",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-9*01",
+          "nearExactCdr3s": 26,
+          "recovery": "IGHV3-9*01_S4754__SWIGP_A240G",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-NL_19*01_S4000",
+          "nearExactCdr3s": 26,
+          "recovery": "IGHV3-NL_19*01_S5460__SWIGP_A164C_A207G",
+          "status": "exact",
+          "differences": []
+        }
+      ],
+      "exact": 6,
+      "terminalOnly": 0,
+      "nonTargetCandidates": [
+        "IGHV1-NL_2*01_S5959__SWIGP_T209C_C225G",
+        "IGHV3-87*01__SWIGP_G45C_T153C",
+        "IGHV3-53*01_S4256__SWIGP_T31C_C75T",
+        "IGHV3-NL_11*01_S3736__SWIGP_T223G_A225C_A232T_C237G_C240T_T264C",
+        "IGHV4-117*01_S3779__SWIGP_G120A_G246A_C250G"
+      ],
+      "dropoutInducedExtras": [],
+      "lineages": 15102,
+      "fitSeconds": 120.329720855,
+      "proposalTruncations": 3
+    }
+  }
+}

@@ -11,6 +11,7 @@ const BATCH_SIZE = Number(process.env.SWIG_BENCH_BATCH || 1000);
 const requestedWorkers = Number(process.env.SWIG_BENCH_WORKERS || 0);
 const WORKERS = requestedWorkers || Math.max(1, Math.min(8, os.availableParallelism() - 1));
 const STRATEGY = process.env.SWIG_BENCH_STRATEGY || "standard";
+const PROFILE = process.env.SWIG_BENCH_PROFILE || "truth_optimized";
 const encoder = new TextEncoder();
 
 const pack = JSON.parse(zlib.gunzipSync(
@@ -40,6 +41,7 @@ class Client {
     this.worker = new Worker(new URL("./benchmark-wasm-worker.mjs", import.meta.url), {
       workerData: {
         strategy: STRATEGY,
+        profile: PROFILE,
         wasmPath: process.env.SWIG_BENCH_WASM || "",
         reference: process.env.SWIG_BENCH_REFERENCE === "1",
         referenceOutput: process.env.SWIG_BENCH_REFERENCE_OUTPUT === "1",
@@ -121,6 +123,7 @@ const summary = {
   records: completed,
   workers: WORKERS,
   strategy: STRATEGY,
+  profile: PROFILE,
   germlineAllelesPerWorker: genes[0],
   batchSize: BATCH_SIZE,
   seconds: Number(seconds.toFixed(3)),

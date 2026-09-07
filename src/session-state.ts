@@ -1,3 +1,4 @@
+import type { UnifiedDashboard, UnifiedOptions } from "./unified-germline";
 import type { CompiledReferences, ScopeKey } from "./reference-pack";
 import type { RepertoireSelectionOptions } from "./repertoire-selection";
 import type { MissingAlleleDashboard, MissingAlleleOptions } from "./germline-evidence";
@@ -82,6 +83,7 @@ export interface PostAnalysisSessionSnapshot {
   phyloUca?: PhyloUcaSavedState;
   shm?: { metric: ShmMetricKey; dashboard: ShmDashboard; sampleOrder?: string[] };
   missingAlleles?: { options: MissingAlleleOptions; dashboard: MissingAlleleDashboard; selectedCandidateIds?: string[] };
+  unifiedGermline?: {options:UnifiedOptions;dashboard:UnifiedDashboard};
   personalizedGermline?: { options: PersonalizedGermlineOptions; dashboard: PersonalizedGermlineDashboard };
 }
 

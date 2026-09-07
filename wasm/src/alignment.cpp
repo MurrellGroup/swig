@@ -526,10 +526,14 @@ std::array<int, 4> local_align_affine_scores4(
         scoring.gap_extend, scoring.gap_extend, scoring.gap_extend, scoring.gap_extend};
     request_count = std::min<std::size_t>(request_count, 4);
     std::size_t maximum_reference_size = 0;
+    std::array<const char*, 4> reference_data{};
+    std::array<std::size_t, 4> reference_sizes{};
     for (std::size_t lane = 0; lane < request_count; ++lane) {
         if (requests[lane].reference) {
+            reference_data[lane] = requests[lane].reference->data();
+            reference_sizes[lane] = requests[lane].reference->size();
             maximum_reference_size = std::max(
-                maximum_reference_size, requests[lane].reference->size());
+                maximum_reference_size, reference_sizes[lane]);
         }
     }
     std::array<int, 4> result{};
@@ -547,9 +551,13 @@ std::array<int, 4> local_align_affine_scores4(
     std::array<std::size_t, 4> previous_low{1, 1, 1, 1};
     std::array<std::size_t, 4> previous_high{};
     for (std::size_t lane = 0; lane < request_count; ++lane) {
-        if (requests[lane].reference) previous_high[lane] = requests[lane].reference->size();
+        if (reference_data[lane]) previous_high[lane] = reference_sizes[lane];
     }
     Vec best = zero;
+    Vec valid_lanes{};
+    for (std::size_t lane = 0; lane < request_count; ++lane) {
+        valid_lanes[lane] = reference_data[lane] ? -1 : 0;
+    }
 
     const auto choose = [](Vec mask, Vec yes, Vec no) {
         return (mask & yes) | (~mask & no);
@@ -564,21 +572,20 @@ std::array<int, 4> local_align_affine_scores4(
         std::size_t union_low = maximum_reference_size + 1;
         std::size_t union_high = 0;
         for (std::size_t lane = 0; lane < request_count; ++lane) {
-            const auto* reference = requests[lane].reference;
-            if (!reference || reference->empty()) continue;
+            if (!reference_data[lane] || reference_sizes[lane] == 0) continue;
             if (requests[lane].band_width < 0) {
                 low[lane] = 1;
-                high[lane] = reference->size();
+                high[lane] = reference_sizes[lane];
             } else {
                 const long center = static_cast<long>(i) -
                     static_cast<long>(requests[lane].estimated_diagonal);
                 const long theoretical_low = center - requests[lane].band_width;
                 const long theoretical_high = center + requests[lane].band_width;
                 if (theoretical_high < 1 ||
-                    theoretical_low > static_cast<long>(reference->size())) continue;
+                    theoretical_low > static_cast<long>(reference_sizes[lane])) continue;
                 low[lane] = static_cast<std::size_t>(std::max<long>(1, theoretical_low));
                 high[lane] = static_cast<std::size_t>(std::min<long>(
-                    static_cast<long>(reference->size()), theoretical_high));
+                    static_cast<long>(reference_sizes[lane]), theoretical_high));
                 if (low[lane] > high[lane]) high[lane] = 0;
             }
             if (high[lane] != 0) {
@@ -591,17 +598,61 @@ std::array<int, 4> local_align_affine_scores4(
             continue;
         }
 
+        // Away from the narrow band edges, every real lane has the same
+        // recurrence geometry. Avoid rebuilding four lane masks and blending
+        // four vectors at every interior cell; edge cells retain the exact
+        // general recurrence below.
+        std::size_t common_low = union_low;
+        std::size_t common_high = union_high;
+        for (std::size_t lane = 0; lane < request_count; ++lane) {
+            if (!reference_data[lane] || high[lane] == 0 || previous_high[lane] == 0) {
+                common_high = 0;
+                break;
+            }
+            common_low = std::max(common_low,
+                std::max(low[lane], previous_low[lane] + 1));
+            common_high = std::min(common_high,
+                std::min(high[lane], previous_high[lane]));
+        }
+
         Vec deletion = neg_inf;
         const char query_base = query[i - 1];
         const bool query_canonical = is_canonical_base(query_base);
         for (std::size_t j = union_low; j <= union_high; ++j) {
+            if (j >= common_low && j <= common_high) {
+                Vec substitution_delta{};
+                for (std::size_t lane = 0; lane < request_count; ++lane) {
+                    const char reference_base = reference_data[lane][j - 1];
+                    substitution_delta[lane] = query_canonical && query_base == reference_base
+                        ? scoring.match
+                        : (query_canonical && is_canonical_base(reference_base)
+                            ? scoring.mismatch : 0);
+                }
+                const Vec insertion_open = previous[j] + gap_open;
+                const Vec insertion_extend = insertion_previous[j] + gap_extend;
+                Vec insertion = maximum(insertion_open, insertion_extend);
+                const Vec deletion_open = current[j - 1] + gap_open;
+                const Vec deletion_extend = deletion + gap_extend;
+                deletion = maximum(deletion_open, deletion_extend);
+                const Vec substitution = previous[j - 1] + substitution_delta;
+                Vec score = maximum(zero, substitution);
+                score = maximum(score, insertion);
+                score = maximum(score, deletion);
+                score = choose(valid_lanes, score, zero);
+                insertion = choose(valid_lanes, insertion, neg_inf);
+                deletion = choose(valid_lanes, deletion, neg_inf);
+                current[j] = score;
+                insertion_current[j] = insertion;
+                best = maximum(best, score);
+                continue;
+            }
             Vec active_mask{};
             Vec previous_mask{};
             Vec diagonal_mask{};
             Vec deletion_base_mask{};
             Vec substitution_delta{};
             for (std::size_t lane = 0; lane < 4; ++lane) {
-                const bool active = lane < request_count && requests[lane].reference &&
+                const bool active = lane < request_count && reference_data[lane] &&
                     j >= low[lane] && j <= high[lane];
                 active_mask[lane] = active ? -1 : 0;
                 previous_mask[lane] = active && j >= previous_low[lane] &&
@@ -610,7 +661,7 @@ std::array<int, 4> local_align_affine_scores4(
                     j - 1 <= previous_high[lane] ? -1 : 0;
                 deletion_base_mask[lane] = active && j != low[lane] ? -1 : 0;
                 if (active) {
-                    const char reference_base = (*requests[lane].reference)[j - 1];
+                    const char reference_base = reference_data[lane][j - 1];
                     substitution_delta[lane] = query_canonical && query_base == reference_base
                         ? scoring.match
                         : (query_canonical && is_canonical_base(reference_base)
@@ -670,10 +721,14 @@ std::array<Alignment, 4> local_align_affine_fast4(
     const Vec insertion_extension_bit{4, 4, 4, 4};
     const Vec deletion_extension_bit{8, 8, 8, 8};
     std::size_t maximum_reference_size = 0;
+    std::array<const char*, 4> reference_data{};
+    std::array<std::size_t, 4> reference_sizes{};
     for (std::size_t lane = 0; lane < request_count; ++lane) {
         if (requests[lane].reference) {
+            reference_data[lane] = requests[lane].reference->data();
+            reference_sizes[lane] = requests[lane].reference->size();
             maximum_reference_size = std::max(
-                maximum_reference_size, requests[lane].reference->size());
+                maximum_reference_size, reference_sizes[lane]);
         }
     }
     if (query.empty() || maximum_reference_size == 0) return results;
@@ -708,9 +763,13 @@ std::array<Alignment, 4> local_align_affine_fast4(
     std::array<std::size_t, 4> best_i{};
     std::array<std::size_t, 4> best_j{};
     for (std::size_t lane = 0; lane < request_count; ++lane) {
-        if (requests[lane].reference) previous_high[lane] = requests[lane].reference->size();
+        if (reference_data[lane]) previous_high[lane] = reference_sizes[lane];
     }
     Vec best = zero;
+    Vec valid_lanes{};
+    for (std::size_t lane = 0; lane < request_count; ++lane) {
+        valid_lanes[lane] = reference_data[lane] ? -1 : 0;
+    }
     const auto choose = [](Vec mask, Vec yes, Vec no) {
         return (mask & yes) | (~mask & no);
     };
@@ -724,20 +783,19 @@ std::array<Alignment, 4> local_align_affine_fast4(
         std::size_t union_low = maximum_reference_size + 1;
         std::size_t union_high = 0;
         for (std::size_t lane = 0; lane < request_count; ++lane) {
-            const auto* reference = requests[lane].reference;
-            if (!reference || reference->empty()) continue;
+            if (!reference_data[lane] || reference_sizes[lane] == 0) continue;
             if (requests[lane].band_width < 0) {
-                high[lane] = reference->size();
+                high[lane] = reference_sizes[lane];
             } else {
                 const long center = static_cast<long>(i) -
                     static_cast<long>(requests[lane].estimated_diagonal);
                 const long theoretical_low = center - requests[lane].band_width;
                 const long theoretical_high = center + requests[lane].band_width;
                 if (theoretical_high < 1 ||
-                    theoretical_low > static_cast<long>(reference->size())) continue;
+                    theoretical_low > static_cast<long>(reference_sizes[lane])) continue;
                 low[lane] = static_cast<std::size_t>(std::max<long>(1, theoretical_low));
                 high[lane] = static_cast<std::size_t>(std::min<long>(
-                    static_cast<long>(reference->size()), theoretical_high));
+                    static_cast<long>(reference_sizes[lane]), theoretical_high));
                 if (low[lane] > high[lane]) high[lane] = 0;
             }
             if (high[lane]) {
@@ -749,17 +807,80 @@ std::array<Alignment, 4> local_align_affine_fast4(
             previous_high.fill(0);
             continue;
         }
+        std::size_t common_low = union_low;
+        std::size_t common_high = union_high;
+        for (std::size_t lane = 0; lane < request_count; ++lane) {
+            if (!reference_data[lane] || high[lane] == 0 || previous_high[lane] == 0) {
+                common_high = 0;
+                break;
+            }
+            common_low = std::max(common_low,
+                std::max(low[lane], previous_low[lane] + 1));
+            common_high = std::min(common_high,
+                std::min(high[lane], previous_high[lane]));
+        }
         Vec deletion = neg_inf;
         const char query_base = query[i - 1];
         const bool query_canonical = is_canonical_base(query_base);
         for (std::size_t j = union_low; j <= union_high; ++j) {
+            if (j >= common_low && j <= common_high) {
+                Vec substitution_delta{};
+                for (std::size_t lane = 0; lane < request_count; ++lane) {
+                    const char reference_base = reference_data[lane][j - 1];
+                    substitution_delta[lane] = query_canonical && query_base == reference_base
+                        ? scoring.match
+                        : (query_canonical && is_canonical_base(reference_base)
+                            ? scoring.mismatch : 0);
+                }
+                const Vec insertion_open = previous[j] + gap_open;
+                const Vec insertion_extend = insertion_previous[j] + gap_extend;
+                const Vec insertion_extends = insertion_extend > insertion_open;
+                Vec insertion = choose(insertion_extends, insertion_extend, insertion_open);
+                const Vec deletion_open = current[j - 1] + gap_open;
+                const Vec deletion_extend = deletion + gap_extend;
+                const Vec deletion_extends = deletion_extend > deletion_open;
+                deletion = choose(deletion_extends, deletion_extend, deletion_open);
+                const Vec substitution = previous[j - 1] + substitution_delta;
+                Vec score = zero;
+                Vec direction = zero;
+                Vec better = substitution > score;
+                score = choose(better, substitution, score);
+                direction = choose(better, direction_match, direction);
+                better = insertion > score;
+                score = choose(better, insertion, score);
+                direction = choose(better, direction_insertion, direction);
+                better = deletion > score;
+                score = choose(better, deletion, score);
+                direction = choose(better, direction_deletion, direction);
+                score = choose(valid_lanes, score, zero);
+                direction = choose(valid_lanes, direction, zero);
+                insertion = choose(valid_lanes, insertion, neg_inf);
+                deletion = choose(valid_lanes, deletion, neg_inf);
+                current[j] = score;
+                insertion_current[j] = insertion;
+                const Vec code = direction |
+                    choose(insertion_extends, insertion_extension_bit, zero) |
+                    choose(deletion_extends, deletion_extension_bit, zero);
+                std::uint32_t packed = 0;
+                for (std::size_t lane = 0; lane < 4; ++lane) {
+                    packed |= (static_cast<std::uint32_t>(code[lane]) & 0xffU) <<
+                        (lane * 8U);
+                    if (score[lane] > best[lane]) {
+                        best_i[lane] = i;
+                        best_j[lane] = j;
+                    }
+                }
+                trace[i * columns + j] = packed;
+                best = maximum(best, score);
+                continue;
+            }
             Vec active_mask{};
             Vec previous_mask{};
             Vec diagonal_mask{};
             Vec deletion_base_mask{};
             Vec substitution_delta{};
             for (std::size_t lane = 0; lane < 4; ++lane) {
-                const bool active = lane < request_count && requests[lane].reference &&
+                const bool active = lane < request_count && reference_data[lane] &&
                     j >= low[lane] && j <= high[lane];
                 active_mask[lane] = active ? -1 : 0;
                 previous_mask[lane] = active && j >= previous_low[lane] &&
@@ -768,7 +889,7 @@ std::array<Alignment, 4> local_align_affine_fast4(
                     j - 1 <= previous_high[lane] ? -1 : 0;
                 deletion_base_mask[lane] = active && j != low[lane] ? -1 : 0;
                 if (active) {
-                    const char reference_base = (*requests[lane].reference)[j - 1];
+                    const char reference_base = reference_data[lane][j - 1];
                     substitution_delta[lane] = query_canonical && query_base == reference_base
                         ? scoring.match
                         : (query_canonical && is_canonical_base(reference_base)

@@ -367,6 +367,13 @@ void append_airr_header(std::string& output) {
     row.finish();
 }
 
+void append_airr_input_prefix(std::string& output, const SequenceRecord& record) {
+    FastRow row(output);
+    row.sanitized_field(record.id);
+    row.field(record.sequence);
+    row.sanitized_field(record.quality);
+}
+
 void append_airr_record(std::string& output, const Annotation& a) {
     FastRow row(output);
     row.sanitized_field(a.sequence_id); row.field(a.sequence); row.sanitized_field(a.quality); row.field(a.sequence_aa);

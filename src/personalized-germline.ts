@@ -1,4 +1,4 @@
-import { boundaryLogLikelihood, downstreamJunction, TERMINAL_WINDOW } from "./shm-model/boundary.ts";
+import { boundaryLogLikelihood, downstreamJunction, TERMINAL_WINDOW, INITIAL_JUNCTION_BASES } from "./shm-model/boundary.ts";
 import { hs5fRate } from "./shm-model/hs5f.ts";
 import { substitutionCompatible } from "./shm-model/alignment.ts";
 import { AlignedRateCalibration, baseAt, discoveryCost, testHaplotype } from "./shm-model/discovery.ts";
@@ -25,7 +25,7 @@ export const DEFAULT_PERSONALIZED_GERMLINE_OPTIONS: PersonalizedGermlineOptions 
   maximumKnownAlleleSnps: 8,
   maximumNovelSnps: 6,
   minimumNovelSupport: 4,
-  minimumNovelFraction: 0.05,
+  minimumNovelFraction: 0,
   maximumNovelCandidatesPerGene: 64,
   minimumLogEvidenceGain: 0,
   sequencingErrorRate: 0.001,
@@ -53,6 +53,7 @@ export interface PersonalizedGermlineAllele {
   directSupport: number;
   directCoverage: number;
   selectionGain: number | null;
+  discoveryGain?: number | null;
 }
 
 export interface PersonalizedGermlineGeneResult {
@@ -64,7 +65,7 @@ export interface PersonalizedGermlineGeneResult {
   relativeLogLikelihood: number;
   iterations: number;
   converged: boolean;
-  proposalEvidence?: Array<{id:string;gain:number;support:number;coverage:number;baseline:string;selected:boolean}>;
+  proposalEvidence?: Array<{id:string;gain:number;support:number;coverage:number;baseline:string;selected:boolean;reason?:string}>;
 }
 
 export interface PersonalizedGermlinePool {
@@ -78,7 +79,7 @@ export interface PersonalizedGermlinePool {
 export interface PersonalizedGermlineDashboard {
   version: 1;
   mode: "lowest-current-v-shm-per-lineage";
-  contextModel: "hs5f-aligned-leave-gene-out";
+  contextModel: "hs5f-hurdle-profiled-junction";
   options: PersonalizedGermlineOptions;
   inputRecords: number;
   eligibleRecords: number;
@@ -93,7 +94,7 @@ export interface PersonalizedGermlineDashboard {
   warnings: string[];
 }
 
-interface ReferenceNode {
+export interface ReferenceNode {
   index: number;
   locus: string;
   gene: string;
@@ -102,7 +103,7 @@ interface ReferenceNode {
   sequence: string;
 }
 
-interface Observation {
+export interface Observation {
   ordinal: number;
   lineageId: number;
   subjectId: string;
@@ -127,6 +128,7 @@ interface Candidate {
   directSupport: number;
   directCoverage: number;
   searchCost?: number;
+  proposalPriority?: number;
 }
 
 interface CandidateProposal {
@@ -275,7 +277,9 @@ function parseObservation(
   let raw=(row.sequence??"").toUpperCase();
   if (/^(T|true|1)$/i.test(row.rev_comp??"")) raw=[...raw].reverse().map(b=>({A:"T",C:"G",G:"C",T:"A"}[b]??"N")).join("");
   const anchor=rawPositions.get(cutoff);
-  const terminal=raw&&anchor!==undefined?{start:cutoff+1,query:raw.slice(anchor,anchor+TERMINAL_WINDOW)}:undefined;
+  // Downstream D/J templated bases cannot be evidence for a novel V end.
+  const downstreamStart=Number(row.d_sequence_start)>0?Number(row.d_sequence_start)-1:Number(row.j_sequence_start)>0?Number(row.j_sequence_start)-1:raw.length;
+  const terminal=raw&&anchor!==undefined?{start:cutoff+1,query:raw.slice(anchor,Math.max(anchor,Math.min(anchor+TERMINAL_WINDOW,downstreamStart)))}:undefined;
   // Reconstruct both matching and nonmatching downstream bases from the same anchor.
   // Without raw sequence, terminal bases are missing evidence, not committed V matches.
   while(positions.length&&positions[positions.length-1]>cutoff){positions.pop();query.pop();}
@@ -323,9 +327,12 @@ function candidateId(parent: ReferenceNode, substitutions: readonly Personalized
   return `${parent.names[0]}__SWIGP_${substitutions.map((item) => `${item.reference}${item.position}${item.alternate}`).join("_")}`.replace(/[^A-Za-z0-9_.|*+\-]/g, "_");
 }
 
-function proposalEvidence(observations: readonly Observation[], substitutions: readonly PersonalizedSubstitution[]): { support: number; coverage: number } {
+function proposalEvidence(observations: readonly Observation[], substitutions: readonly PersonalizedSubstitution[], counts:ReadonlyMap<Observation,{k:number;w:number;n:number}>, calibration:AlignedRateCalibration): { support: number; coverage: number; priority:number } {
   let support = 0;
-  let coverage = 0;
+  let coverage = 0,priority=0;
+  const interior=substitutions.filter(c=>c.position<=observations[0].parent.sequence.length-TERMINAL_WINDOW);
+  const omittedWeight=interior.reduce((sum,c)=>sum+hs5fRate(observations[0].parent.sequence,c.position-1),0);
+  const exposureCache=new Map<string,number>();
   for (const observation of observations) {
     let complete = true;
     let alternate = true;
@@ -339,14 +346,20 @@ function proposalEvidence(observations: readonly Observation[], substitutions: r
       if (base !== substitution.alternate) alternate = false;
     }
     if (complete) coverage += 1;
-    if (complete && alternate) support += 1;
+    if (complete && alternate){
+      support += 1;const c=counts.get(observation)!;
+      const k=c.k-interior.length,w=Math.max(0,c.w-omittedWeight),n=c.n-interior.length,key=k+'|'+w+'|'+n;
+      let naive=exposureCache.get(key);if(naive===undefined){naive=calibration.mutationExposureFromCounts(observation,k,w,n).naive;exposureCache.set(key,naive);}
+      priority+=naive;
+    }
   }
-  return { support, coverage };
+  return { support, coverage, priority };
 }
 
-function proposeNovelCandidates(
+export function proposeNovelCandidates(
   observations: readonly Observation[],
   options: PersonalizedGermlineOptions,
+  calibration:AlignedRateCalibration,
 ): { proposals: CandidateProposal[]; truncated: boolean } {
   const proposals = new Map<string, CandidateProposal>();
   const byParent = new Map<number, Observation[]>();
@@ -357,6 +370,10 @@ function proposeNovelCandidates(
   }
   for (const items of byParent.values()) {
     const parent = items[0].parent;
+    const counts=new Map(items.map(o=>{
+      let k=0,w=0,n=0;for(let i=0;i<o.positions.length;i++){const p=o.positions[i];if(p>parent.sequence.length-TERMINAL_WINDOW)continue;k+=Number(o.query[i]!==parent.sequence[p-1]);w+=hs5fRate(parent.sequence,p-1);n++;}
+      return [o,{k,w,n}] as const;
+    }));
     const coverage = new Uint32Array(parent.sequence.length + 1);
     const support = new Map<string, number>();
     for (const observation of items) {
@@ -388,15 +405,24 @@ function proposeNovelCandidates(
         if (event) substitutions.push(event);
       }
       substitutions.sort((left, right) => left.position - right.position || left.alternate.localeCompare(right.alternate));
-      if (!substitutions.length || substitutions.length > options.maximumNovelSnps) continue;
-      const signature = substitutions.map((item) => `${item.position}:${item.alternate}`).join("|");
-      const previous = patterns.get(signature);
-      if (previous) previous.observations += 1;
-      else patterns.set(signature, { substitutions, observations: 1 });
+      // Always propose the interior core independently of stochastic V/N tails.
+      // Terminal extensions must subsequently beat that core on their own evidence.
+      const core=substitutions.filter(c=>c.position<=parent.sequence.length-TERMINAL_WINDOW);
+      const observable=substitutions.filter(c=>c.position<=parent.sequence.length-INITIAL_JUNCTION_BASES);
+      // Unidentifiable final-two-base extensions never consume the candidate budget.
+      const variants=[...new Map([core,observable].map(cs=>[cs.map(c=>c.position+':'+c.alternate).join('|'),cs])).values()];
+      for(const changes of variants){
+        if (!changes.length || changes.length > options.maximumNovelSnps) continue;
+        const signature = changes.map((item) => `${item.position}:${item.alternate}`).join("|");
+        const previous = patterns.get(signature);
+        if (previous) previous.observations += 1;
+        else patterns.set(signature, { substitutions:changes, observations: 1 });
+      }
     }
     for (const pattern of patterns.values()) {
-      if (pattern.observations < options.minimumNovelSupport) continue;
-      const evidence = proposalEvidence(items, pattern.substitutions);
+      // A seed need not recur as a pristine exact pattern: further SHM may add
+      // other changes to carriers. Count independent linked support below.
+      const evidence = proposalEvidence(items, pattern.substitutions, counts, calibration);
       if (evidence.support < options.minimumNovelSupport || evidence.support / Math.max(1, evidence.coverage) < options.minimumNovelFraction) continue;
       const sequence = [...parent.sequence];
       pattern.substitutions.forEach((item) => { sequence[item.position - 1] = item.alternate; });
@@ -412,13 +438,15 @@ function proposeNovelCandidates(
           substitutions: pattern.substitutions,
           directSupport: evidence.support,
           directCoverage: evidence.coverage,
+          proposalPriority:evidence.priority,
         },
       };
       const existing = proposals.get(joined);
       if (!existing || proposal.candidate.directSupport > existing.candidate.directSupport) proposals.set(joined, proposal);
     }
   }
-  const ordered = [...proposals.values()].sort((left, right) => right.candidate.directSupport - left.candidate.directSupport
+  const ordered = [...proposals.values()].sort((left, right) => (right.candidate.proposalPriority??0)-(left.candidate.proposalPriority??0)
+    || right.candidate.directSupport - left.candidate.directSupport
     || right.candidate.directCoverage - left.candidate.directCoverage
     || left.signature.localeCompare(right.signature));
   const maximum = Math.max(0, Math.floor(options.maximumNovelCandidatesPerGene));
@@ -454,9 +482,7 @@ function exposure(observation: Observation, commonSequence: string, sequencingEr
 }
 
 function normalizedEmissions(observations: readonly Observation[], candidates: readonly Candidate[], sequencingErrorRate: number, calibration: AlignedRateCalibration, knownRadius:number, novelRadius:number): Float64Array[] {
-  // Every competing hypothesis uses the same externally calibrated categorical
-  // transition model. A ratio fitted under another null cannot be multiplied
-  // into a raw HS5F parent likelihood: that makes cross-parent scores incomparable.
+  // Every competing hypothesis uses the same calibrated categorical model.
   const rates = candidates.map(candidate => {
     const proxy={...observations[0],gene:candidate.parent.gene,parent:candidate.parent};
     return Array.from(candidate.sequence,(reference,index)=>Float64Array.from("ACGT",alternate=>{
@@ -484,11 +510,11 @@ function normalizedEmissions(observations: readonly Observation[], candidates: r
         if (!BASES.test(germlineBase)) continue;
         const mutation = 1 - Math.exp(-tau * context[candidateIndex][index]);
         const probability = error + (1 - error) * mutation;
-        value += observation.query[offset] === germlineBase ? Math.log1p(-probability) : Math.log(Math.max(1e-12, error / 3 + (probability-error) * rates[candidateIndex][index]["ACGT".indexOf(observation.query[offset])] / Math.max(1e-12,context[candidateIndex][index])));
+        value += observation.query[offset] === germlineBase ? Math.log1p(-error)-tau*context[candidateIndex][index] : Math.log(Math.max(1e-12, error / 3 + (probability-error) * rates[candidateIndex][index]["ACGT".indexOf(observation.query[offset])] / Math.max(1e-12,context[candidateIndex][index])));
       }
       if(observation.terminal)value+=boundaryLogLikelihood(candidate.sequence,observation.terminal.query,observation.terminal.start,(position,base)=>{
         const index=position-1,mutation=1-Math.exp(-tau*context[candidateIndex][index]);
-        return base===candidate.sequence[index]?Math.log(Math.max(1e-12,(1-error)*(1-mutation))):Math.log(Math.max(1e-12,error/3+(1-error)*mutation*rates[candidateIndex][index]["ACGT".indexOf(base)]/Math.max(1e-12,context[candidateIndex][index])));
+        return base===candidate.sequence[index]?Math.log1p(-error)-tau*context[candidateIndex][index]:Math.log(Math.max(1e-12,error/3+(1-error)*mutation*rates[candidateIndex][index]["ACGT".indexOf(base)]/Math.max(1e-12,context[candidateIndex][index])));
       },calibration.trimming({...observation,gene:candidate.parent.gene}),calibration.junction({...observation,gene:candidate.parent.gene}));
       logLikelihood[candidateIndex] = value;
       maximum = Math.max(maximum, value);
@@ -691,19 +717,25 @@ function inferGene(
       substitutions: [], directSupport: 0, directCoverage: observations.length,
     });
   }
-  const novel = proposeNovelCandidates(observations, {...options,maximumNovelCandidatesPerGene: options.maximumNovelCandidatesPerGene * new Set(observations.map(o=>o.gene)).size});
+  const novel = proposeNovelCandidates(observations, {...options,maximumNovelCandidatesPerGene: options.maximumNovelCandidatesPerGene * new Set(observations.map(o=>o.gene)).size},calibration);
   const diagnostics: NonNullable<PersonalizedGermlineGeneResult["proposalEvidence"]> = [];
   const accepted: Candidate[] = [];
   for (const proposal of [...novel.proposals].sort((a,b)=>a.candidate.substitutions.length-b.candidate.substitutions.length || b.candidate.directSupport-a.candidate.directSupport)) {
     const candidate=proposal.candidate;
     if(candidatesBySequence.has(candidate.sequence))continue;
     if(candidate.sequence.length!==observations[0].parent.sequence.length)continue;
+    const coreChanges=candidate.substitutions.filter(c=>c.position<=candidate.sequence.length-TERMINAL_WINDOW);
+    const hasBoundary=coreChanges.length<candidate.substitutions.length;
+    const coreSequence=[...candidate.parent.sequence];coreChanges.forEach(c=>coreSequence[c.position-1]=c.alternate);
+    if(hasBoundary&&coreChanges.length&&!candidatesBySequence.has(coreSequence.join(''))){
+      diagnostics.push({id:candidate.id,gain:-Infinity,support:candidate.directSupport,coverage:candidate.directCoverage,baseline:'Interior haplotype not supported independently',selected:false});continue;
+    }
     const subsets=accepted.filter(c=>c.parent===candidate.parent && c.substitutions.length<candidate.substitutions.length && c.substitutions.every(x=>candidate.substitutions.some(y=>x.position===y.position&&x.alternate===y.alternate))).sort((a,b)=>b.substitutions.length-a.substitutions.length||b.directSupport-a.directSupport);
     const baseline=subsets[0];
     const changes=candidate.substitutions.filter(c=>!baseline?.substitutions.some(b=>b.position===c.position&&b.alternate===c.alternate));
     const items=observations.filter(o=>o.parent===candidate.parent && (!baseline||baseline.substitutions.every(c=>baseAt(o,c.position)===c.alternate)));
     const test=testHaplotype(items,changes,candidate.substitutions,calibration,options.sequencingErrorRate,parentCount);
-    diagnostics.push({id:candidate.id,gain:test.gain,support:candidate.directSupport,coverage:candidate.directCoverage,baseline:baseline?.id??candidate.parent.names[0],selected:false});
+    diagnostics.push({id:candidate.id,gain:test.gain,support:candidate.directSupport,coverage:candidate.directCoverage,baseline:baseline?.id??candidate.parent.names[0],selected:false,reason:test.reason});
     if(!(test.gain>options.minimumLogEvidenceGain))continue;
     candidate.searchCost=discoveryCost(candidate.sequence.length,candidate.substitutions.length,parentCount);
     accepted.push(candidate);candidatesBySequence.set(candidate.sequence,candidate);
@@ -712,14 +744,15 @@ function inferGene(
   // reference backbone. Original-parent-only subset tests cannot establish that
   // the inherited distinguishing bases were actually observed together.
   for(const candidate of [...accepted].sort((a,b)=>b.directSupport-a.directSupport)){
-    const alternatives=accepted.filter(other=>other!==candidate && candidatesBySequence.has(other.sequence) && other.parent!==candidate.parent && other.directSupport>candidate.directSupport && substitutionCompatible(other.sequence,candidate.sequence,options.maximumKnownAlleleSnps))
+    const isSuperset=(other:Candidate)=>other.parent===candidate.parent&&other.substitutions.length>candidate.substitutions.length&&candidate.substitutions.every(c=>other.substitutions.some(s=>s.position===c.position&&s.alternate===c.alternate));
+    const alternatives=accepted.filter(other=>other!==candidate && candidatesBySequence.has(other.sequence) && ((other.parent!==candidate.parent&&other.directSupport>candidate.directSupport)||isSuperset(other)) && substitutionCompatible(other.sequence,candidate.sequence,options.maximumKnownAlleleSnps))
       .sort((a,b)=>hammingDistance(a.sequence,candidate.sequence)-hammingDistance(b.sequence,candidate.sequence)||b.directSupport-a.directSupport);
     const baseline=alternatives[0];if(!baseline)continue;
     const proxyParent={...baseline.parent,sequence:baseline.sequence};
     const changes=candidateSubstitutions(proxyParent,candidate.sequence);
-    const items=observations.filter(o=>o.parent===candidate.parent||o.parent===baseline.parent).map(o=>({...o,gene:proxyParent.gene,parent:proxyParent}));
+    const items=observations.filter(o=>(o.parent===candidate.parent||o.parent===baseline.parent)&&(!isSuperset(baseline)||candidate.substitutions.every(c=>baseAt(o,c.position)===c.alternate))).map(o=>({...o,gene:proxyParent.gene,parent:proxyParent}));
     const test=testHaplotype(items,changes,changes,calibration,options.sequencingErrorRate,parentCount);
-    diagnostics.push({id:candidate.id+" [conditional backbone]",gain:test.gain,support:candidate.directSupport,coverage:items.length,baseline:baseline.id,selected:false});
+    diagnostics.push({id:candidate.id+" [conditional backbone]",gain:test.gain,support:candidate.directSupport,coverage:items.length,baseline:baseline.id,selected:false,reason:test.reason});
     if(!(test.gain>options.minimumLogEvidenceGain))candidatesBySequence.delete(candidate.sequence);
   }
   const candidates = [...candidatesBySequence.values()].sort((left, right) => Number(right.known) - Number(left.known) || left.id.localeCompare(right.id, undefined, { numeric: true }));
@@ -752,6 +785,7 @@ function inferGene(
       localBestLineages,
       directSupport: candidate.directSupport,
       directCoverage: candidate.directCoverage,
+      discoveryGain: candidate.known?null:Math.min(...diagnostics.filter(d=>d.id===candidate.id||d.id===candidate.id+" [conditional backbone]").map(d=>d.gain)),
       selectionGain: Number.isFinite(selected.gains.get(candidateIndex) ?? NaN) ? selected.gains.get(candidateIndex)! : null,
     };
   }).sort((left, right) => right.frequency - left.frequency || left.id.localeCompare(right.id, undefined, { numeric: true }));
@@ -803,6 +837,9 @@ export class PersonalizedGermlineAccumulator {
       || (observation.shmRate === existing.shmRate && observation.alignedBases > existing.alignedBases)
       || (observation.shmRate === existing.shmRate && observation.alignedBases === existing.alignedBases && observation.ordinal < existing.ordinal)) this.selected.set(unit, observation);
   }
+
+  /** Read-only research input; does not perform inference or alter selection. */
+  researchSnapshot() { return { observations: [...this.selected.values()], references: [...this.nodes] }; }
 
   selectedRepresentativeOrdinals(): number[] {
     return [...this.selected.values()].map((item) => item.ordinal).sort((left, right) => left - right);
@@ -861,13 +898,15 @@ export class PersonalizedGermlineAccumulator {
     const skippedLineages = Math.max(0, this.seenLineages.size - this.selected.size);
     if (skippedLineages) warnings.push(`${skippedLineages.toLocaleString()} assigned lineage${skippedLineages === 1 ? " had" : "s had"} no member with a recognized V call and at least ${this.options.minimumAlignedBases} aligned V nucleotides.`);
     if ([...this.selected.values()].some((item) => item.subjectId === "unassigned-subject")) warnings.push("Rows without subject_id were pooled together. Supply subject identifiers before interpreting the result as a per-person genotype.");
-    if (proposalTruncations) warnings.push(`${proposalTruncations.toLocaleString()} gene fit${proposalTruncations === 1 ? " reached" : "s reached"} the novel-candidate cap; the highest direct-support hypotheses were retained.`);
+    if (proposalTruncations) warnings.push(`${proposalTruncations.toLocaleString()} gene fit${proposalTruncations === 1 ? " reached" : "s reached"} the novel-candidate cap; hypotheses with the largest expected unmutated-lineage support were retained. Increase the candidate cap before interpreting non-recovery in those genes.`);
     if (entries.some(([, observations]) => observations.length < 4)) warnings.push("Some expressed V genes have fewer than four usable lineage representatives; their active sets are weakly identified and should not be treated as genomic absence calls.");
+    warnings.push("Novel changes confined to the final two V bases are unresolved under the gene-specific junction-start model. Interior candidate sequences retain their parent terminal bases; those bases are not independently inferred.");
+    warnings.push("Discovery scores are model-comparison statistics, not calibrated false-discovery probabilities. Stable full-reference candidates still need independent validation.");
     warnings.push("Only expressed, same-length V-allele hypotheses are identifiable here. Untested genes are retained in downloaded references, and a final full reassignment is still required.");
     return {
       version: 1,
       mode: "lowest-current-v-shm-per-lineage",
-      contextModel: "hs5f-aligned-leave-gene-out",
+      contextModel: "hs5f-hurdle-profiled-junction",
       options: { ...this.options },
       inputRecords: this.inputRecords,
       eligibleRecords: this.eligibleRecords,
@@ -900,6 +939,7 @@ export function personalizedGermlineEvidenceRows(dashboard: PersonalizedGermline
     local_best_lineages: allele.localBestLineages,
     direct_support: allele.directSupport,
     direct_coverage: allele.directCoverage,
+    discovery_log_score: allele.discoveryGain ?? "known",
     bic_adjusted_selection_gain: allele.selectionGain ?? "initial",
   }))));
 }

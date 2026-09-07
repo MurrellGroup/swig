@@ -36,6 +36,12 @@ async function initialize(references) {
   if (runtime.swig_set_assigner_strategy(strategy) !== 0) {
     throw new Error("SwiftIG rejected the benchmark assignment strategy");
   }
+  const profile = workerData?.profile === "r_optimized" ? 2 :
+    workerData?.profile === "sensitive_d" ? 3 :
+    workerData?.profile === "igblast_compatible" ? 1 : 0;
+  if (runtime.swig_set_calling_profile(profile) !== 0) {
+    throw new Error("SwiftIG rejected the benchmark calling profile");
+  }
   if (workerData?.reference && runtime.swig_set_optimized_kernels) {
     runtime.swig_set_optimized_kernels(0);
   }

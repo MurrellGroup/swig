@@ -1,3 +1,4 @@
+import { runUnifiedGermline } from "./unified-germline.mjs";
 import { runPersonalizedGermline } from "./personalized-germline.mjs";
 import { createReadStream, createWriteStream, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -54,7 +55,7 @@ import {
 } from "../src/sequence-stream.ts";
 import { annotateAirrBatch, annotateDoubleDBatch, stableDatasetSeed } from "../src/study-design.ts";
 
-const VERSION="0.38.7";
+const VERSION="0.38.10";
 const CLI_STREAM_HIGH_WATER_MARK=8*1024*1024;
 const CLI_GZIP_CHUNK_SIZE=1024*1024;
 const CLI_DIRECTORY=dirname(fileURLToPath(import.meta.url));
@@ -69,7 +70,7 @@ function usage(){
     `Run a complete non-phylogenetic Swig pipeline:\n`+
     `  swig-cli run reads.fastq.gz --out swig-output\n`+
     `  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N] [--airr-compression none|gzip]\n\n`+
-    `Infer personalized V alleles from lineage-assigned AIRR:\n  swig-cli personalized-germline --airr processed.airr.tsv.gz --v-reference V.fasta --out germline\n\nRun only streaming V(D)J assignment (AIRR outfmt 19):\n`+
+    `Experimental joint inherited/SHM model: swig-cli joint-germline --help\n\nInfer personalized V alleles from lineage-assigned AIRR:\n  swig-cli personalized-germline --airr processed.airr.tsv.gz --v-reference V.fasta --out germline\n\nRun only streaming V(D)J assignment (AIRR outfmt 19):\n`+
     `  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n`+
     `    -germline_db_J J.fasta -out calls.airr.tsv\n\n`+
     `Prepare custom germlines once and reuse their inferred annotations:\n`+
@@ -1164,6 +1165,7 @@ export async function runCli(assets=defaultCliAssets()){
   if(args.includes("--precompute_aux")||args.includes("--precompute-aux")){await runPrepareReference(args,assets);return;}
   if(args.includes("--vdj")){await runVdj(args,assets);return;}
   const command=args[0]&&!args[0].startsWith("-")?args[0]:"run";const rest=command===args[0]?args.slice(1):args;
+  if(command==="joint-germline"){await runUnifiedGermline(rest);return;}
   if(command==="personalized-germline"){await runPersonalizedGermline(rest);return;}
   if(command==="prepare-reference"){await runPrepareReference(rest,assets);return;}
   if(hasFlag(args,"--help")||command==="help"){process.stdout.write(`${usage()}\n`);return;}

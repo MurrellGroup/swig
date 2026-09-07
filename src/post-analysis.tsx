@@ -42,6 +42,9 @@ import { alignmentExtension, alignmentText, tableExtension, tableHeader, tableRo
 import { compressedExtension, compressedMime, compressedName, outputWriter, type OutputCompression } from "./gzip-output";
 import { MissingAlleleAccumulator, DEFAULT_MISSING_ALLELE_OPTIONS, type MissingAlleleDashboard, type MissingAlleleOptions } from "./germline-evidence";
 import { DEFAULT_PERSONALIZED_GERMLINE_OPTIONS, type PersonalizedGermlineDashboard, type PersonalizedGermlineOptions } from "./personalized-germline";
+import { UnifiedGermlineRuntime } from "./unified-germline-runtime";
+import { DEFAULT_UNIFIED_OPTIONS, type UnifiedDashboard, type UnifiedOptions } from "./unified-germline";
+import { UnifiedGermlineResultsPanel } from "./unified-germline-panel";
 import { PersonalizedGermlineRuntime } from "./personalized-germline-runtime";
 import { GERMLINE_OUTGROUP, alignedSequenceFrameOffset, inferLineageGermline, isProductiveLineageRow, lineageInputFasta, type LineageGermlineMethod } from "./lineage-alignment";
 import {
@@ -442,6 +445,7 @@ function isAbortError(error: unknown): boolean {
 export function PostAnalysisWorkbench({ store, references, scope, loci, resultFacets, inputName, workers, callingProfile, assignerStrategy, minimumIdentity, strand, datasets = [], sampleColors = {}, defaultCollapseScope = "sample", defaultLineageScope = "sample", doubleDCount = 0, autoPipeline, sidebarTools, onInspect, onSessionChange, sessionHandleRef, initialSession, directLineage = false }: Props) {
   const runtime = useMemo(() => new PostAnalysisRuntime(store, workers), [store, workers]);
   const alleleRuntime = useMemo(() => new AlleleRefinementRuntime(), [store]);
+  const unifiedGermlineRuntime = useMemo(() => new UnifiedGermlineRuntime(), [store]);
   const personalizedGermlineRuntime = useMemo(() => new PersonalizedGermlineRuntime(), [store]);
   const postLockAbortRef = useRef<AbortController | null>(null);
   const cancellationRecoveryRef = useRef<Promise<void> | null>(null);
@@ -452,7 +456,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     runtime.terminate();
     alleleRuntime.terminate();
     personalizedGermlineRuntime.terminate();
-  }, [alleleRuntime, personalizedGermlineRuntime, runtime]);
+    unifiedGermlineRuntime.terminate();
+  }, [alleleRuntime, personalizedGermlineRuntime, unifiedGermlineRuntime, runtime]);
   const [busy, setBusy] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const [postLockState, setPostLockState] = useState<"unsupported" | "waiting" | "held">("unsupported");
@@ -521,6 +526,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [missingAlleleOptions, setMissingAlleleOptions] = useState<MissingAlleleOptions>({ ...DEFAULT_MISSING_ALLELE_OPTIONS });
   const [missingAlleles, setMissingAlleles] = useState<MissingAlleleDashboard | null>(null);
   const [selectedMissingAlleleIds, setSelectedMissingAlleleIds] = useState<Set<string>>(new Set());
+  const [unifiedOptions,setUnifiedOptions]=useState<UnifiedOptions>({...DEFAULT_UNIFIED_OPTIONS});
+  const [unifiedGermline,setUnifiedGermline]=useState<UnifiedDashboard|null>(null);
   const [personalizedGermlineOptions, setPersonalizedGermlineOptions] = useState<PersonalizedGermlineOptions>({ ...DEFAULT_PERSONALIZED_GERMLINE_OPTIONS });
   const [personalizedGermline, setPersonalizedGermline] = useState<PersonalizedGermlineDashboard | null>(null);
 
@@ -1034,7 +1041,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         editedAlignments:[...editedAlignments.values()].map((entry)=>({...entry,lineageIds:[...entry.lineageIds]})),
         lineageMerges:lineageMerges.map((merge)=>({...merge,originalLineageIds:[...merge.originalLineageIds]})),
         tree:treeRun?{rawNewick:treeRun.newick,rootedNewick:treeRun.rootedNewick,stableNewick:treeRun.stableNewick,source:treeRun.source,lineageIds:[...selectedLineageIds],run:{...treeRun}}:undefined,phyloUca:phyloUcaState??undefined,
-        shm:shmDashboard?{metric:shmMetric,dashboard:shmDashboard,sampleOrder:[...shmSampleOrder]}:undefined,missingAlleles:missingAlleles?{options:missingAlleleOptions,dashboard:missingAlleles,selectedCandidateIds:[...selectedMissingAlleleIds]}:undefined,personalizedGermline:personalizedGermline?{options:personalizedGermlineOptions,dashboard:personalizedGermline}:undefined} satisfies PostAnalysisSessionSnapshot;
+        shm:shmDashboard?{metric:shmMetric,dashboard:shmDashboard,sampleOrder:[...shmSampleOrder]}:undefined,missingAlleles:missingAlleles?{options:missingAlleleOptions,dashboard:missingAlleles,selectedCandidateIds:[...selectedMissingAlleleIds]}:undefined,unifiedGermline:unifiedGermline?{options:unifiedOptions,dashboard:unifiedGermline}:undefined,personalizedGermline:personalizedGermline?{options:personalizedGermlineOptions,dashboard:personalizedGermline}:undefined} satisfies PostAnalysisSessionSnapshot;
     }};
     sessionHandleRef.current=handle;
     return()=>{if(sessionHandleRef.current===handle)sessionHandleRef.current=null;};
@@ -1048,7 +1055,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     sessionChangeCallbackRef.current?.(reason);
   },[
     alignment,alignmentFrameOffset,alignmentProductiveOnly,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior,alleleOptions,alleleRefinement,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
-    missingAlleleOptions,missingAlleles,personalizedGermlineOptions,personalizedGermline,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
+    missingAlleleOptions,missingAlleles,personalizedGermlineOptions,personalizedGermline,unifiedOptions,unifiedGermline,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
     queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,skippedModules,
     selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,phyloUcaState,workingStages,
   ]);
@@ -1166,7 +1173,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         if(initialSession.alignment&&/(corrected|manual|alivibe|edited)/i.test(initialSession.alignment.source)){const lineageIds=initialSession.alignment.selectedLineageId?[initialSession.alignment.selectedLineageId]:[];const productiveOnly=Boolean(initialSession.alignmentProductiveOnly);const key=lineageAlignmentKey(lineageIds,productiveOnly);if(key&&!restoredEdited.has(key))restoredEdited.set(key,{key,lineageIds,productiveOnly,fasta:initialSession.alignment.fasta,source:initialSession.alignment.source,frameOffset:validAlignmentFrameOffset(initialSession.alignment.frameOffset),savedAt:new Date().toISOString()});}
         setEditedAlignments(restoredEdited);
         const chimera=initialSession.chimera;if(chimera?.dashboard&&chimera.probabilities&&chimera.dfr&&chimera.msa){const dashboard={...chimera.dashboard,probabilities:unpackSessionVector(chimera.probabilities) as Float32Array,dfr:unpackSessionVector(chimera.dfr) as Uint16Array} as unknown as ChmmDashboard;const rawOptions=chimera.options;const options=rawOptions as unknown as ChmmRunOptions;const inputMask=chimera.retainedMask?unpackSessionVector(chimera.retainedMask) as Uint8Array:null;setChmm(dashboard);setChmmRun({msa:chimera.msa,options,inputMask});setPreparedMsa(chimera.msa);setChmmFilterThreshold(chimera.filterThreshold);setChmmSegment(options.segment);if(rawOptions.chmmSource==="selected"||rawOptions.chmmSource==="upload")setChmmSource(rawOptions.chmmSource);if(typeof rawOptions.uploadedMsaName==="string")setUploadedMsaName(rawOptions.uploadedMsaName);if(rawOptions.chmmSource==="upload")setUploadedMsa(chimera.msa);}
-        if(initialSession.shm){setShmMetric(initialSession.shm.metric);setShmDashboard(initialSession.shm.dashboard);if(initialSession.shm.sampleOrder?.length)setShmSampleOrder([...initialSession.shm.sampleOrder]);}if(initialSession.missingAlleles){setMissingAlleleOptions({...DEFAULT_MISSING_ALLELE_OPTIONS,...initialSession.missingAlleles.options,unit:"lineage"});setMissingAlleles(initialSession.missingAlleles.dashboard?.validationPasses===2?initialSession.missingAlleles.dashboard:null);setSelectedMissingAlleleIds(new Set(initialSession.missingAlleles.selectedCandidateIds??[]));}if(initialSession.personalizedGermline){setPersonalizedGermlineOptions({...DEFAULT_PERSONALIZED_GERMLINE_OPTIONS,...initialSession.personalizedGermline.options});setPersonalizedGermline(initialSession.personalizedGermline.dashboard?.contextModel==="hs5f-aligned-leave-gene-out"?initialSession.personalizedGermline.dashboard:null);}
+        if(initialSession.unifiedGermline){setUnifiedOptions({...DEFAULT_UNIFIED_OPTIONS,...initialSession.unifiedGermline.options});setUnifiedGermline(initialSession.unifiedGermline.dashboard?.mode==="joint-inherited-somatic-split"?initialSession.unifiedGermline.dashboard:null);}
+        if(initialSession.shm){setShmMetric(initialSession.shm.metric);setShmDashboard(initialSession.shm.dashboard);if(initialSession.shm.sampleOrder?.length)setShmSampleOrder([...initialSession.shm.sampleOrder]);}if(initialSession.missingAlleles){setMissingAlleleOptions({...DEFAULT_MISSING_ALLELE_OPTIONS,...initialSession.missingAlleles.options,unit:"lineage"});setMissingAlleles(initialSession.missingAlleles.dashboard?.validationPasses===2?initialSession.missingAlleles.dashboard:null);setSelectedMissingAlleleIds(new Set(initialSession.missingAlleles.selectedCandidateIds??[]));}if(initialSession.personalizedGermline){setPersonalizedGermlineOptions({...DEFAULT_PERSONALIZED_GERMLINE_OPTIONS,...initialSession.personalizedGermline.options});setPersonalizedGermline(initialSession.personalizedGermline.dashboard?.contextModel==="hs5f-hurdle-profiled-junction"?initialSession.personalizedGermline.dashboard:null);}
         const q=initialSession.query??{};if(typeof q.queryText==="string")setQueryText(q.queryText);if(q.queryResultMode==="lineages"||q.queryResultMode==="sequences")setQueryResultMode(q.queryResultMode);
         if(Array.isArray(q.queryLineageHits))setQueryLineageHits(q.queryLineageHits as QueryLineageHit[]);
         const restoredHits=Array.isArray(q.queryHits)?q.queryHits as QueryHit[]:[];setQueryHits(restoredHits);const restoredExpansion=q.expanded as NonNullable<typeof expanded>|undefined;if(restoredExpansion)setExpanded(restoredExpansion);
@@ -1208,6 +1216,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       controller.abort();
       alleleRuntime.cancel();
       personalizedGermlineRuntime.cancel();
+      unifiedGermlineRuntime.cancel();
       if (recoverRuntime) {
         await runtime.cancelAndRestore((processed, total) => setProgress({ processed, total, unit: "AIRR records restored" }), true);
       } else {
@@ -1372,6 +1381,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setMissingAlleles(null);
     setSelectedMissingAlleleIds(new Set());
     setPersonalizedGermline(null);
+    setUnifiedGermline(null);
   }
 
   function clearDownstreamStageState() {
@@ -1589,6 +1599,23 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       return personalizedGermlineRuntime.finish((next)=>{setBusy(next.phase);setProgress({processed:next.processed,total:next.total,unit:"V-gene fits"});});
     });
     if(result)setPersonalizedGermline(result);
+  }
+
+  async function runUnifiedGermlineAnalysis() {
+    if(!lineages){setError("Personalized germline inference requires lineage assignments on the current selected population. Assign lineages first so every clone contributes exactly one observation.");return;}
+    const result=await operation("Testing a joint inherited/SHM model on held-out lineages",async(signal)=>{
+      const mask=await runtime.activeMask();
+      const assignments=await analysisLineageAssignments();
+      await unifiedGermlineRuntime.begin(references.V,unifiedOptions);
+      const fields=["sequence_id","sequence","rev_comp","subject_id","locus","v_call","v_sequence_start","v_sequence_end","d_sequence_start","j_sequence_start","v_germline_start","v_sequence_alignment","v_germline_alignment"];
+      setBusy("Joint inherited/SHM model · selecting the lowest-current-SHM member of every lineage");
+      await store.scanAirrRows(fields,async(rows)=>{
+        for(const row of rows)overlayRefinedCalls(row);
+        await unifiedGermlineRuntime.ingest(rows,assignments);
+      },{batchSize:1500,includeMask:mask??undefined,onProgress:(processed,total)=>setProgress({processed,total,unit:"AIRR records screened"}),signal});
+      return unifiedGermlineRuntime.finish((next)=>{setBusy(next.phase);setProgress({processed:next.processed,total:next.total,unit:"V-gene fits"});});
+    });
+    if(result)setUnifiedGermline(result);
   }
 
   async function downloadDeduplicated() {
@@ -1885,6 +1912,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setShmDashboard(null);
     setMissingAlleles(null);
     setPersonalizedGermline(null);
+    setUnifiedGermline(null);
     return merged;
   }
 
@@ -1893,6 +1921,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setShmDashboard(null);
     setMissingAlleles(null);
     setPersonalizedGermline(null);
+    setUnifiedGermline(null);
   }
 
   async function viewSelectedNeighbourGroup(merge = false) {
@@ -2841,18 +2870,29 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
             <label><span>Minimum aligned V bases</span><CommitNumberInput min="30" max="1000" value={personalizedGermlineOptions.minimumAlignedBases} onCommit={(minimumAlignedBases)=>{setPersonalizedGermlineOptions(value=>({...value,minimumAlignedBases}));setPersonalizedGermline(null);}} /></label>
             <label><span>Known-allele SNP radius</span><CommitNumberInput min="0" max="30" value={personalizedGermlineOptions.maximumKnownAlleleSnps} onCommit={(maximumKnownAlleleSnps)=>{setPersonalizedGermlineOptions(value=>({...value,maximumKnownAlleleSnps:Math.floor(maximumKnownAlleleSnps)}));setPersonalizedGermline(null);}} /></label>
             <label><span>Maximum novel SNPs</span><CommitNumberInput min="1" max="20" value={personalizedGermlineOptions.maximumNovelSnps} onCommit={(maximumNovelSnps)=>{setPersonalizedGermlineOptions(value=>({...value,maximumNovelSnps:Math.floor(maximumNovelSnps)}));setPersonalizedGermline(null);}} /></label>
+            <label><span>Novel candidate budget / gene</span><CommitNumberInput min="1" max="4096" value={personalizedGermlineOptions.maximumNovelCandidatesPerGene} onCommit={(maximumNovelCandidatesPerGene)=>{setPersonalizedGermlineOptions(value=>({...value,maximumNovelCandidatesPerGene:Math.floor(maximumNovelCandidatesPerGene)}));setPersonalizedGermline(null);}} /><small>Increase after a candidate-budget warning; larger searches take longer.</small></label>
             <label><span>Minimum novel support</span><CommitNumberInput min="2" max="10000" value={personalizedGermlineOptions.minimumNovelSupport} onCommit={(minimumNovelSupport)=>{setPersonalizedGermlineOptions(value=>({...value,minimumNovelSupport:Math.floor(minimumNovelSupport)}));setPersonalizedGermline(null);}} /></label>
-            <label><span>Minimum novel fraction</span><CommitNumberInput min="0.001" max="1" step="0.01" value={personalizedGermlineOptions.minimumNovelFraction} onCommit={(minimumNovelFraction)=>{setPersonalizedGermlineOptions(value=>({...value,minimumNovelFraction}));setPersonalizedGermline(null);}} /></label>
+            <label><span>Minimum novel fraction</span><CommitNumberInput min="0" max="1" step="0.001" value={personalizedGermlineOptions.minimumNovelFraction} onCommit={(minimumNovelFraction)=>{setPersonalizedGermlineOptions(value=>({...value,minimumNovelFraction}));setPersonalizedGermline(null);}} /><small>Default 0: no fraction cutoff; support and model evidence still apply.</small></label>
             <label><span>Extra log-evidence gain</span><CommitNumberInput min="0" max="100" step="0.5" value={personalizedGermlineOptions.minimumLogEvidenceGain} onCommit={(minimumLogEvidenceGain)=>{setPersonalizedGermlineOptions(value=>({...value,minimumLogEvidenceGain}));setPersonalizedGermline(null);}} /><small>Required after frequency and sequence-search penalties.</small></label>
             <label><span>Sequencing error floor</span><CommitNumberInput min="0.000001" max="0.1" step="0.0001" value={personalizedGermlineOptions.sequencingErrorRate} onCommit={(sequencingErrorRate)=>{setPersonalizedGermlineOptions(value=>({...value,sequencingErrorRate}));setPersonalizedGermline(null);}} /></label>
             <label><span>Active-allele computational guard / gene</span><CommitNumberInput min="1" max="30" value={personalizedGermlineOptions.maximumActiveAllelesPerGene} onCommit={(maximumActiveAllelesPerGene)=>{setPersonalizedGermlineOptions(value=>({...value,maximumActiveAllelesPerGene:Math.floor(maximumActiveAllelesPerGene)}));setPersonalizedGermline(null);}} /></label>
           </div></details>
-          <div className="algorithm-note"><strong>Lowest-SHM lineage row → calibrated SHM evidence → sparse allele set</strong><span>Each lineage contributes its lowest V-mismatch-rate member under the current assignment. Same-length, alignment-compatible alternatives compete across nearby genes. Novel haplotypes must beat a linked SHM null with leave-gene-out rate calibration and sequence-search penalties. The final mixture uses calibrated HS5F hazards and marginalizes terminal V trimming; subjects never share evidence.</span></div>
+          <div className="algorithm-note"><strong>Lowest-SHM lineage row → calibrated SHM evidence → sparse allele set</strong><span>Each lineage contributes its lowest V-mismatch-rate member under the current assignment. Same-length, alignment-compatible alternatives compete across nearby genes. Novel haplotypes must beat a linked SHM null with an unmutated component, flexible hotspot rates and sequence-search penalties. Boundary extensions must also beat gene-specific trimming and junction-start bias. Final-two-base changes remain unresolved. Subjects never share evidence.</span></div>
           <button className="post-primary amber" type="button" disabled={Boolean(busy)} onClick={()=>void runPersonalizedGermlineAnalysis()}>Infer personalized V set from {lineages?.lineageCount.toLocaleString()??"assigned"} lineages</button><p>This creates a downloadable candidate reference; it does not change current calls.</p>
+        </article>
+        <article><span className="section-kicker">Independent experimental method</span><h4>Joint inherited / SHM model</h4><a href="./methods/10_JOINT_INHERITED_SHM_MODEL.md" target="_blank" rel="noreferrer">Model, evidence rule and limitations ↗</a>
+          <p>Propose sequences on one half of the lineages, then test inheritance against a flexible somatic explanation on the other half. Both explanations use the same mutation and V-end likelihood. Results are separate from the existing personalized-reference method.</p>
+          <details className="post-advanced"><summary>Joint-model settings</summary><div className="control-grid three">
+            <label><span>Training candidate budget / component</span><CommitNumberInput min="1" max="512" value={unifiedOptions.maximumCandidates} onCommit={maximumCandidates=>{setUnifiedOptions(v=>({...v,maximumCandidates:Math.floor(maximumCandidates)}));setUnifiedGermline(null);}} /></label>
+            <label><span>Maximum fitting iterations</span><CommitNumberInput min="50" max="2000" value={unifiedOptions.maximumIterations} onCommit={maximumIterations=>{setUnifiedOptions(v=>({...v,maximumIterations:Math.floor(maximumIterations)}));setUnifiedGermline(null);}} /><small>Unfinished optimization lowers reported evidence conservatively.</small></label>
+          </div></details>
+          <div className="algorithm-note"><strong>Experimental evidence comparison</strong><span>This model can abstain when inherited and somatic explanations are indistinguishable. Final two V bases remain unresolved. Scores are not calibrated real-data false-positive probabilities. Large competitive components can take several minutes.</span></div>
+          <button className="post-primary amber" type="button" disabled={Boolean(busy)} onClick={()=>void runUnifiedGermlineAnalysis()}>Run joint inherited / SHM model</button>
         </article>
       </div>
       {shmDashboard?<ShmResultsPanel dashboard={shmDashboard} name={baseName(inputName)} color={chartColor} sampleColors={sampleColors} stratum={shmStratum} datasets={datasets} sampleOrder={shmSampleOrder} onSampleOrderChange={setShmSampleOrder}/>:null}
       {missingAlleles?<MissingAlleleResultsPanel dashboard={missingAlleles} name={baseName(inputName)} referenceFasta={references.V} selectedIds={selectedMissingAlleleIds} onSelectedIdsChange={setSelectedMissingAlleleIds}/>:null}
+      {unifiedGermline?<UnifiedGermlineResultsPanel dashboard={unifiedGermline} name={baseName(inputName)}/>:null}
       {personalizedGermline?<PersonalizedGermlineResultsPanel dashboard={personalizedGermline} name={baseName(inputName)} referenceFasta={references.V}/>:null}
     </section>
 

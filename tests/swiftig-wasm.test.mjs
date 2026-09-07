@@ -793,6 +793,33 @@ test("optimized RIAT-MP/AER kernels and AIRR writer are byte-identical to retain
   }
 });
 
+test("the bounded repeated-sequence cache preserves identifiers and FASTQ qualities exactly", async () => {
+  const human = pack.species.find((entry) => entry.name === "Homo sapiens").loci.IGH;
+  const references = { V: asFasta(human.V), D: asFasta(human.D), J: asFasta(human.J), C: "" };
+  const sequence = `${human.V[0][1]}AACCGG${human.D[0][1]}TTG${human.J[0][1]}`;
+  const firstQuality = "I".repeat(sequence.length);
+  const secondQuality = "H".repeat(sequence.length);
+  const first = `@cache_first\n${sequence}\n+\n${firstQuality}\n`;
+  const second = `@cache_second\n${sequence}\n+\n${secondQuality}\n`;
+
+  const cached = await makeRuntime();
+  cached.setAssignerStrategy("aer_robust");
+  cached.setCallingProfile("r_optimized");
+  cached.initialize(references);
+  cached.annotate(first, 2, 1);
+  const cachedSecond = cached.annotate(second, 2, 1);
+
+  const reference = await makeRuntime();
+  reference.setAssignerStrategy("aer_robust");
+  reference.setCallingProfile("r_optimized");
+  reference.setOptimizedOutput(false);
+  reference.initialize(references);
+  const referenceSecond = reference.annotate(second, 2, 1);
+  assert.equal(cachedSecond.tsv, referenceSecond.tsv);
+  assert.equal(cachedSecond.rows[0].sequence_id, "cache_second");
+  assert.equal(cachedSecond.rows[0].quality, secondQuality);
+});
+
 test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, and J-only swaps", async () => {
   const human = pack.species.find((entry) => entry.name === "Homo sapiens");
   assert.ok(human, "human reference set is missing");

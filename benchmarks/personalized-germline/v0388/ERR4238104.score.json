@@ -1,0 +1,130 @@
+{
+  "animal": "ERR4238104",
+  "fullNovel": [
+    "IGHV3-76*01_S0794__SWIGP_G135A_A142G",
+    "IGHV3-120*01_S4231__SWIGP_A3G_G45C",
+    "IGHV3-NL_16*01_S5133__SWIGP_T32C_G33C_G67A_T159C",
+    "IGHV4-149*01_S1166__SWIGP_A215C_G220A_G273C",
+    "IGHV7-135*01_S9086__SWIGP_C182T"
+  ],
+  "fullLineages": 13395,
+  "fullFitSeconds": 132.008409089,
+  "panels": {
+    "dropout": {
+      "recoveries": [
+        {
+          "target": "IGHV2-NL_1*01_S7874",
+          "nearExactCdr3s": 319,
+          "recovery": "IGHV2-NL_1*01_S5779__SWIGP_G33C_T99A_G231A",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-NL_1*01_S9854",
+          "nearExactCdr3s": 490,
+          "recovery": "IGHV3-NL_1*01_S4549__SWIGP_T96C_A294T",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-NL_11*01_S3736",
+          "nearExactCdr3s": 984,
+          "recovery": "IGHV3-NL_11*01_S2687__SWIGP_G155A",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-NL_17*01_S4736",
+          "nearExactCdr3s": 569,
+          "recovery": "IGHV3-NL_17*01_S0507__SWIGP_C126G",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV4-149*01_S1166",
+          "nearExactCdr3s": 553,
+          "recovery": "IGHV4-149*01_S5300__SWIGP_T293G",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-94*01_S3427",
+          "nearExactCdr3s": 471,
+          "recovery": "IGHV3-94*01_S4458__SWIGP_T66C",
+          "status": "exact",
+          "differences": []
+        }
+      ],
+      "exact": 6,
+      "terminalOnly": 0,
+      "nonTargetCandidates": [
+        "IGHV3-76*01_S0794__SWIGP_G135A_A142G",
+        "IGHV3-120*01_S4231__SWIGP_A3G_G45C",
+        "IGHV3-NL_16*01_S5133__SWIGP_T32C_G33C_G67A_T159C"
+      ],
+      "dropoutInducedExtras": [],
+      "lineages": 13390,
+      "fitSeconds": 148.302577216,
+      "proposalTruncations": 2
+    },
+    "rare": {
+      "recoveries": [
+        {
+          "target": "IGHV3-73*02_S7884",
+          "nearExactCdr3s": 23,
+          "recovery": "IGHV3-73*02__SWIGP_T132G_C173T",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV5-15*01",
+          "nearExactCdr3s": 23,
+          "recovery": "IGHV5-15*01_S0203__SWIGP_A126G",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-88*01",
+          "nearExactCdr3s": 24,
+          "recovery": "IGHV3-88*01_S4297__SWIGP_C94T",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV1-170*01",
+          "nearExactCdr3s": 30,
+          "recovery": "IGHV1-170*01_S3055__SWIGP_G30A",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV1-138*01_S2593",
+          "nearExactCdr3s": 31,
+          "recovery": "IGHV1-138*01_S6073__SWIGP_T80A_A149G",
+          "status": "exact",
+          "differences": []
+        },
+        {
+          "target": "IGHV3-172*01_S8824",
+          "nearExactCdr3s": 31,
+          "recovery": "IGHV3-172*01_S8488__SWIGP_T134C",
+          "status": "exact",
+          "differences": []
+        }
+      ],
+      "exact": 6,
+      "terminalOnly": 0,
+      "nonTargetCandidates": [
+        "IGHV3-76*01_S0794__SWIGP_G135A_A142G",
+        "IGHV3-120*01_S4231__SWIGP_A3G_G45C",
+        "IGHV3-NL_16*01_S5133__SWIGP_T32C_G33C_G67A_T159C",
+        "IGHV4-149*01_S1166__SWIGP_A215C_G220A_G273C",
+        "IGHV7-135*01_S9086__SWIGP_C182T"
+      ],
+      "dropoutInducedExtras": [],
+      "lineages": 13396,
+      "fitSeconds": 125.25777197,
+      "proposalTruncations": 2
+    }
+  }
+}

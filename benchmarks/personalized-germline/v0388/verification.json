@@ -1,0 +1,22 @@
+{
+  "version": "0.38.8",
+  "tests": {
+    "total": 271,
+    "passed": 271,
+    "failed": 0,
+    "stream": 21,
+    "store": 11,
+    "germline": 15,
+    "alignment": 8,
+    "post": 173,
+    "wasm": 27,
+    "cli": 16
+  },
+  "typecheck": "passed",
+  "productionBuild": "passed",
+  "modelSources": {
+    "src/personalized-germline.ts": "a41e1a465f2340913c472a53b9604cb4aa73a75b5b9331839c1e05c1a37f9242",
+    "src/shm-model/discovery.ts": "864fa6735107abe3b6285052c70b449719eb9d4a4cd4615c8d6ffc778f07b7d0",
+    "src/shm-model/boundary.ts": "8c306339182fe84f7ab18173b1f4dfb588873898652cfba7c07f7489896ee5fa"
+  }
+}

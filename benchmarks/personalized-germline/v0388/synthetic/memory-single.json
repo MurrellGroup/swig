@@ -1,0 +1,1622 @@
+{
+  "result": {
+    "seed": 106,
+    "regime": "memory",
+    "sites": 1,
+    "frequency": 0.01,
+    "carriers": 39,
+    "recovered": false,
+    "extras": [],
+    "finite": true,
+    "seconds": 27.039204931
+  },
+  "dashboard": {
+    "version": 1,
+    "mode": "lowest-current-v-shm-per-lineage",
+    "contextModel": "hs5f-hurdle-profiled-junction",
+    "options": {
+      "minimumAlignedBases": 120,
+      "maximumKnownAlleleSnps": 8,
+      "maximumNovelSnps": 6,
+      "minimumNovelSupport": 4,
+      "minimumNovelFraction": 0,
+      "maximumNovelCandidatesPerGene": 64,
+      "minimumLogEvidenceGain": 0,
+      "sequencingErrorRate": 0.001,
+      "maximumActiveAllelesPerGene": 8,
+      "maximumIterations": 100,
+      "convergenceTolerance": 1e-7
+    },
+    "inputRecords": 7000,
+    "eligibleRecords": 7000,
+    "assignedLineages": 7000,
+    "representativeLineages": 7000,
+    "skippedLineages": 0,
+    "pools": [
+      {
+        "id": "personalized_pool_1",
+        "subjectId": "animal",
+        "locus": "IGH",
+        "representativeLineages": 7000,
+        "genes": [
+          {
+            "gene": "IGHV1-1",
+            "representativeLineages": 5000,
+            "testedCandidates": 1,
+            "proposedNovelCandidates": 0,
+            "activeAlleles": [
+              {
+                "id": "IGHV1-1*01",
+                "names": [
+                  "IGHV1-1*01"
+                ],
+                "sequence": "CTCGATATCGTCATATTTAGTACTCAGTCGGCCGACCCAATCTTAAAATAGCACAAGCCTGAATTACAAACCGTGTCTGGGTGACCTGCAAGATGCCCCGCGATGGATGGAACAAACGGAACAGATGCCCATAACAATACACAGGCCCGGATACATGGCTTGATCCAAGAGTGGGGGCAAGGAGGGTCAGAATTACGTTGCCACGTGGTTCTCGCTACGCGACTCAGTGGAGCTATCTCATGCGCCCCCTACCGGTATGTGGTGTGGGAGGTCTTGGAGCTGCTGTCCGGGTGACC",
+                "known": true,
+                "parentAllele": "IGHV1-1*01",
+                "substitutions": [],
+                "frequency": 1,
+                "expectedLineages": 5000,
+                "localBestLineages": 5000,
+                "directSupport": 5000,
+                "directCoverage": 5000,
+                "discoveryGain": null,
+                "selectionGain": null
+              }
+            ],
+            "relativeLogLikelihood": 0,
+            "iterations": 1,
+            "converged": true,
+            "proposalEvidence": [
+              {
+                "id": "IGHV1-1*01__SWIGP_G150T",
+                "gain": -13.966647647532934,
+                "support": 3640,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A70C",
+                "gain": -13.14388249933452,
+                "support": 1952,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G100T",
+                "gain": -1.0545327480021145,
+                "support": 159,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C59G",
+                "gain": -11.72857954627241,
+                "support": 152,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T78A",
+                "gain": -11.614143556952424,
+                "support": 147,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T64G",
+                "gain": -11.708080981126411,
+                "support": 142,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A192C",
+                "gain": -9.923195355301598,
+                "support": 141,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A139T",
+                "gain": -12.28802688802605,
+                "support": 141,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C166A",
+                "gain": -12.469103615262181,
+                "support": 140,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C188G",
+                "gain": -8.707251371079362,
+                "support": 139,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G144A",
+                "gain": -11.74121322774229,
+                "support": 139,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C99A",
+                "gain": -12.443082253373202,
+                "support": 139,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T199A",
+                "gain": -12.559824162961402,
+                "support": 138,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A93C",
+                "gain": -11.813102632322764,
+                "support": 137,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C9T",
+                "gain": -12.54699792713475,
+                "support": 136,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C148A",
+                "gain": -11.648101326650274,
+                "support": 134,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T2C",
+                "gain": -11.324094349757072,
+                "support": 131,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G181C",
+                "gain": -12.320363763857156,
+                "support": 131,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A180C",
+                "gain": -11.534639409420858,
+                "support": 130,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A22C",
+                "gain": -9.300315864489587,
+                "support": 130,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G31C",
+                "gain": -11.71064738013379,
+                "support": 129,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C33A",
+                "gain": -11.786212711099122,
+                "support": 129,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C273T",
+                "gain": -12.426964031580521,
+                "support": 128,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T275C",
+                "gain": -11.045988983446616,
+                "support": 127,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A226T",
+                "gain": -6.9311649470986625,
+                "support": 126,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C196G",
+                "gain": -12.161343156755972,
+                "support": 126,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G83T",
+                "gain": -12.138812390515252,
+                "support": 126,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T272C",
+                "gain": -12.07842083403241,
+                "support": 125,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G4T",
+                "gain": -11.567557406781386,
+                "support": 125,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A125G",
+                "gain": -12.65177130683983,
+                "support": 125,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G109C",
+                "gain": -11.557779421262605,
+                "support": 124,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T74G",
+                "gain": -12.648078532302204,
+                "support": 124,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C159T",
+                "gain": -12.099115264203558,
+                "support": 123,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G127T",
+                "gain": -12.447458041685902,
+                "support": 123,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C178T",
+                "gain": -11.794609288185509,
+                "support": 122,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G205T",
+                "gain": -11.093652843972702,
+                "support": 122,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A123T",
+                "gain": -11.952625227374849,
+                "support": 122,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T274C",
+                "gain": -12.282356295235925,
+                "support": 122,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A62T",
+                "gain": -12.564144277876974,
+                "support": 122,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A183T",
+                "gain": -12.124806138271449,
+                "support": 121,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G230C",
+                "gain": -7.479350435666814,
+                "support": 120,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T263A",
+                "gain": -11.269252403540374,
+                "support": 119,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G75A",
+                "gain": -11.670038643785372,
+                "support": 119,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A179T",
+                "gain": -12.129845441420027,
+                "support": 119,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C188A",
+                "gain": -12.331273307180052,
+                "support": 119,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G106A",
+                "gain": -12.055608646166572,
+                "support": 118,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A84T",
+                "gain": -11.264239962467197,
+                "support": 117,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C77G",
+                "gain": -11.466681345728968,
+                "support": 116,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T284G",
+                "gain": -10.832702325826656,
+                "support": 116,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G262A",
+                "gain": -11.864891267084001,
+                "support": 115,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C117A",
+                "gain": -11.673865699916885,
+                "support": 114,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A69C",
+                "gain": -10.461407334074774,
+                "support": 113,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A93G",
+                "gain": -11.264045578062248,
+                "support": 113,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G264A",
+                "gain": -11.509768805138801,
+                "support": 112,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_G229T",
+                "gain": -11.769217006290344,
+                "support": 111,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T164G",
+                "gain": -12.006215874892714,
+                "support": 110,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A153C",
+                "gain": -10.86012483102095,
+                "support": 109,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C58A",
+                "gain": -11.622387777007784,
+                "support": 105,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_T284A",
+                "gain": -11.754936656016607,
+                "support": 104,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A168C",
+                "gain": -11.355297923839682,
+                "support": 94,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C71A",
+                "gain": -7.916078043848896,
+                "support": 52,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A70C_C71G",
+                "gain": -19.966818019874474,
+                "support": 1911,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_C148A_G150T",
+                "gain": -16.36484648466226,
+                "support": 123,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-1*01__SWIGP_A5G_G150T",
+                "gain": -15.805315918684165,
+                "support": 115,
+                "coverage": 5000,
+                "baseline": "IGHV1-1*01",
+                "selected": false
+              }
+            ]
+          },
+          {
+            "gene": "IGHV1-2",
+            "representativeLineages": 500,
+            "testedCandidates": 1,
+            "proposedNovelCandidates": 0,
+            "activeAlleles": [
+              {
+                "id": "IGHV1-2*01",
+                "names": [
+                  "IGHV1-2*01"
+                ],
+                "sequence": "TGGCTAGAACTTCGTCAACGACGTGAGGGGTCTCTCTTAGAATGGTCGACCTGCTTAGTTCGCCTACATGTCTTTCATACCATAGAAGAACTCGCTCCCCAGCTGACCATAAGTGCCTCGCAATTGGCAGCCAATGGTCGCATTACCCTGATAAGGCTACACGGCACGATGTGATTCTTATGATCATGGAATTAAAATGTACGATGAAATGGTCTCTCGTAACGGATGAGAAACTGAGCGCGGACGATGGGCAAATCGGATTATGGCTGGTTCATACTGCCCAGCGATTTTAGCAG",
+                "known": true,
+                "parentAllele": "IGHV1-2*01",
+                "substitutions": [],
+                "frequency": 1,
+                "expectedLineages": 500,
+                "localBestLineages": 500,
+                "directSupport": 500,
+                "directCoverage": 500,
+                "discoveryGain": null,
+                "selectionGain": null
+              }
+            ],
+            "relativeLogLikelihood": 0,
+            "iterations": 1,
+            "converged": true,
+            "proposalEvidence": [
+              {
+                "id": "IGHV1-2*01__SWIGP_C4A",
+                "gain": -9.595523014035557,
+                "support": 17,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_A196C",
+                "gain": -9.570848214145308,
+                "support": 17,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_A180C",
+                "gain": -10.911827326504245,
+                "support": 17,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_T144G",
+                "gain": -9.983203127692683,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_A237T",
+                "gain": -10.13052787218151,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_C128A",
+                "gain": -8.535062162780228,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_G265T",
+                "gain": -7.509552744496921,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_C280T",
+                "gain": -9.784260062207345,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_C202T",
+                "gain": -8.653545649857598,
+                "support": 14,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_G155C",
+                "gain": -9.96933648651143,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_C218G",
+                "gain": -9.43700208456724,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_C98T",
+                "gain": -9.752730197128678,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_A8G",
+                "gain": -10.139665707732675,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_A151G",
+                "gain": -10.344677285327066,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_C80A",
+                "gain": -8.275005360028231,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_A196G",
+                "gain": -10.126266912846042,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_A197T",
+                "gain": -9.700990547541586,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_C10A",
+                "gain": -9.137770374868893,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_C100A",
+                "gain": -7.4823556086858565,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_C108A",
+                "gain": -8.577687990716221,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_A66T",
+                "gain": -9.284959885157562,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_C61G",
+                "gain": -9.984293417438174,
+                "support": 10,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_G168T",
+                "gain": -10.27872569575738,
+                "support": 9,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_A9T",
+                "gain": -9.676007840122253,
+                "support": 8,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_G212T",
+                "gain": -7.9699328326028,
+                "support": 6,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_G150T_G249A",
+                "gain": -11.99026077941383,
+                "support": 9,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_G150T_T235C",
+                "gain": -8.241215424385445,
+                "support": 7,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_G150T_G249C",
+                "gain": -12.724834234305177,
+                "support": 5,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_G249A_T272G",
+                "gain": -8.455829006693577,
+                "support": 4,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-2*01__SWIGP_G70T_T71A_C282T",
+                "gain": -18.032759737494654,
+                "support": 10,
+                "coverage": 500,
+                "baseline": "IGHV1-2*01",
+                "selected": false
+              }
+            ]
+          },
+          {
+            "gene": "IGHV1-3",
+            "representativeLineages": 500,
+            "testedCandidates": 1,
+            "proposedNovelCandidates": 0,
+            "activeAlleles": [
+              {
+                "id": "IGHV1-3*01",
+                "names": [
+                  "IGHV1-3*01"
+                ],
+                "sequence": "TTTAACGCGGGCGCGGAGCAATAGCTCACTCTGAGCGATCACCGGTGAATTGGTACCCGTTTGACATTTTGCCTCTCACCAGATGCGCCGTATTCTCTCCTGTGGATTATTCGTACGTAGATCATCTCTATCCCGGCACGGCCAGATACATAACACACGTCCGCGGGCGTATCTCCCACAGCCGCGAAGGGTGGGTGAGCAGTGCGGGCACGCCGGATACATACCAGCTGGCTTGAGGGTTGATAGTCGTCTTGCGTCGTTTATTCACTTTGATCATGGTTTTTGACTTGGGACCC",
+                "known": true,
+                "parentAllele": "IGHV1-3*01",
+                "substitutions": [],
+                "frequency": 1,
+                "expectedLineages": 500,
+                "localBestLineages": 500,
+                "directSupport": 500,
+                "directCoverage": 500,
+                "discoveryGain": null,
+                "selectionGain": null
+              }
+            ],
+            "relativeLogLikelihood": 0,
+            "iterations": 1,
+            "converged": true,
+            "proposalEvidence": [
+              {
+                "id": "IGHV1-3*01__SWIGP_C75T",
+                "gain": -10.365594363518092,
+                "support": 19,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_A146T",
+                "gain": -9.85573504199359,
+                "support": 18,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_A106G",
+                "gain": -10.07227973631445,
+                "support": 18,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_G195T",
+                "gain": -10.081714469937118,
+                "support": 17,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_C268T",
+                "gain": -8.601587496246431,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_A5C",
+                "gain": -10.48408270841741,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_C19T",
+                "gain": -10.234497392080023,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_G199T",
+                "gain": -7.965494107170108,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_C27G",
+                "gain": -10.33559789503262,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_G104C",
+                "gain": -10.41047958182196,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_C19G",
+                "gain": -10.687067737451002,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_T269C",
+                "gain": -10.734432804757347,
+                "support": 14,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_G199C",
+                "gain": -8.406151734142036,
+                "support": 14,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_A148G",
+                "gain": -7.55992511105267,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_G166T",
+                "gain": -7.678205223946235,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_G194A",
+                "gain": -8.828194894807531,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_T274A",
+                "gain": -8.715358636209082,
+                "support": 9,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_G202A",
+                "gain": -10.706901484063337,
+                "support": 4,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_A150C_A180G",
+                "gain": -13.677777088053602,
+                "support": 9,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_A150C_G167C",
+                "gain": -12.837386713079894,
+                "support": 8,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-3*01__SWIGP_T70A_G71T_C86G_A153T",
+                "gain": -18.388828613361817,
+                "support": 4,
+                "coverage": 500,
+                "baseline": "IGHV1-3*01",
+                "selected": false
+              }
+            ]
+          },
+          {
+            "gene": "IGHV1-4",
+            "representativeLineages": 500,
+            "testedCandidates": 1,
+            "proposedNovelCandidates": 0,
+            "activeAlleles": [
+              {
+                "id": "IGHV1-4*01",
+                "names": [
+                  "IGHV1-4*01"
+                ],
+                "sequence": "TGCAGTGCAGCCCAGCCTCTACTTAGTTGTGGACCTCCCTTTAGAGCTCCGAGGAACGAGACGTGAAGAGGGATGCGATGACTCGCTCAGGCGTAGGCGGAAAATTGCTTATCTCATCCGGACTCAACCGTTTCCGTTGGAGAGGGTTCCACTTGCTTCAAATCCTCGACGGAGGATGTGAACAACTCGAGGCCGCCTCCCTGCGTCTGCGCTAGCGGATTGCGTCCTGAGAATTGGCGCGTCAGTCTAGTAGTACACTCCTTCATCCATGCCCATCTCCGTCTTGACTTGGTACA",
+                "known": true,
+                "parentAllele": "IGHV1-4*01",
+                "substitutions": [],
+                "frequency": 1,
+                "expectedLineages": 500,
+                "localBestLineages": 500,
+                "directSupport": 500,
+                "directCoverage": 500,
+                "discoveryGain": null,
+                "selectionGain": null
+              }
+            ],
+            "relativeLogLikelihood": 0,
+            "iterations": 1,
+            "converged": true,
+            "proposalEvidence": [
+              {
+                "id": "IGHV1-4*01__SWIGP_T206C",
+                "gain": -9.857984434893346,
+                "support": 19,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G15A",
+                "gain": -6.6843238065231025,
+                "support": 17,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_T79G",
+                "gain": -10.544814908158095,
+                "support": 17,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G271C",
+                "gain": -9.839199065039118,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_C188A",
+                "gain": -9.476196552649832,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_A244T",
+                "gain": -8.391654069816077,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_T79C",
+                "gain": -10.400472308374724,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_T158A",
+                "gain": -9.596062160160308,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_C118A",
+                "gain": -9.706267873915841,
+                "support": 14,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_T148G",
+                "gain": -7.901385532076957,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G26T",
+                "gain": -9.830324958698938,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_C243T",
+                "gain": -8.520443000001315,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G100C",
+                "gain": -9.216171652113346,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G136C",
+                "gain": -8.568035560062341,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G237C",
+                "gain": -8.856582961849696,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_A4T",
+                "gain": -10.405298594503805,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_A116C",
+                "gain": -10.764000999907225,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G53C",
+                "gain": -10.183530541736907,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G253T",
+                "gain": -10.732316913989777,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_C123T",
+                "gain": -6.5992469474376625,
+                "support": 10,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G5T",
+                "gain": -9.444039603797464,
+                "support": 10,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_T133G",
+                "gain": -9.321569743698454,
+                "support": 9,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G174A",
+                "gain": -10.810005588291702,
+                "support": 9,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_T202A",
+                "gain": -8.594229955692242,
+                "support": 8,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_T208C",
+                "gain": -10.658309106273819,
+                "support": 8,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G172A",
+                "gain": -10.345657767311963,
+                "support": 7,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G51C",
+                "gain": -10.037739771634996,
+                "support": 7,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_A185C",
+                "gain": -10.330605117556615,
+                "support": 7,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_C204G",
+                "gain": -8.97003118410229,
+                "support": 7,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_G70T_G71T",
+                "gain": -17.146728247255993,
+                "support": 173,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-4*01__SWIGP_C84G_C150G",
+                "gain": -12.26886367435489,
+                "support": 5,
+                "coverage": 500,
+                "baseline": "IGHV1-4*01",
+                "selected": false
+              }
+            ]
+          },
+          {
+            "gene": "IGHV1-5",
+            "representativeLineages": 500,
+            "testedCandidates": 1,
+            "proposedNovelCandidates": 0,
+            "activeAlleles": [
+              {
+                "id": "IGHV1-5*01",
+                "names": [
+                  "IGHV1-5*01"
+                ],
+                "sequence": "TTCTGGTGCCATGTCCCTTACGGCTGCTTATAAATCTCATGCTGATCGAGTCGATGATCAATGCTTCCACACGGACTTATCTTCTATTGCTTGCGTTGTACGGATAATTTTAATGACCTAGAGTCTCGGGGATGCCTCGGAAACGCTCAAGCACCGGATGTTTTAGGAATCCTAATCCCTCAAGCGTTTTAGTGGGTTGTGAGTGACTCAATCCTCCCCAACGTCAGCCACCGCAATATTGAGAATCGGTCCGTGCTCGCTTAGATTGGTTACCTGGGGTTCGTCTCAATGAAGCC",
+                "known": true,
+                "parentAllele": "IGHV1-5*01",
+                "substitutions": [],
+                "frequency": 1,
+                "expectedLineages": 500,
+                "localBestLineages": 500,
+                "directSupport": 500,
+                "directCoverage": 500,
+                "discoveryGain": null,
+                "selectionGain": null
+              }
+            ],
+            "relativeLogLikelihood": 0,
+            "iterations": 1,
+            "converged": true,
+            "proposalEvidence": [
+              {
+                "id": "IGHV1-5*01__SWIGP_G128A",
+                "gain": -6.805546487624588,
+                "support": 18,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G205C",
+                "gain": -6.110778523578751,
+                "support": 18,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_T267A",
+                "gain": -8.51706612339975,
+                "support": 17,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G6A",
+                "gain": -10.363426271314076,
+                "support": 17,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_T262G",
+                "gain": -9.082313596050888,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_T198G",
+                "gain": -10.304844809878482,
+                "support": 16,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_C3T",
+                "gain": -8.574824810440298,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G115C",
+                "gain": -8.194341936905964,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_C76T",
+                "gain": -10.211948563976556,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_T92C",
+                "gain": -9.221791931775222,
+                "support": 15,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G130A",
+                "gain": -10.785152707530656,
+                "support": 14,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G26A",
+                "gain": -10.913189406528225,
+                "support": 14,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_T19G",
+                "gain": -10.74549672506771,
+                "support": 14,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G48T",
+                "gain": -10.819686063669486,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_T190A",
+                "gain": -9.878501868058272,
+                "support": 13,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_C209T",
+                "gain": -9.705579242051051,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_A263T",
+                "gain": -9.335159656240066,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_A79T",
+                "gain": -10.183788077393658,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G264T",
+                "gain": -9.482067158128984,
+                "support": 12,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G277T",
+                "gain": -9.091042387857371,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G205A",
+                "gain": -10.119777989143046,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_C232A",
+                "gain": -8.889999292774803,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G166T",
+                "gain": -8.509506093983283,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_T280C",
+                "gain": -9.22861061567189,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G89T",
+                "gain": -10.562856584372938,
+                "support": 11,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_C214G",
+                "gain": -10.154148900884152,
+                "support": 10,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_A183T",
+                "gain": -10.038290089786997,
+                "support": 10,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_G44C",
+                "gain": -10.386852449992261,
+                "support": 10,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_C101T",
+                "gain": -9.772112227981523,
+                "support": 10,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_A245T",
+                "gain": -10.401620308236609,
+                "support": 10,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              },
+              {
+                "id": "IGHV1-5*01__SWIGP_T40A",
+                "gain": -9.151196491019412,
+                "support": 8,
+                "coverage": 500,
+                "baseline": "IGHV1-5*01",
+                "selected": false
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "testedCandidates": 5,
+    "activeKnownAlleles": 5,
+    "activeNovelAlleles": 0,
+    "proposalTruncations": 1,
+    "warnings": [
+      "1 gene fit reached the novel-candidate cap; hypotheses with the largest expected unmutated-lineage support were retained. Increase the candidate cap before interpreting non-recovery in those genes.",
+      "Novel changes confined to the final two V bases are unresolved under the gene-specific junction-start model. Interior candidate sequences retain their parent terminal bases; those bases are not independently inferred.",
+      "Discovery scores are model-comparison statistics, not calibrated false-discovery probabilities. Stable full-reference candidates still need independent validation.",
+      "Only expressed, same-length V-allele hypotheses are identifiable here. Untested genes are retained in downloaded references, and a final full reassignment is still required."
+    ]
+  }
+}

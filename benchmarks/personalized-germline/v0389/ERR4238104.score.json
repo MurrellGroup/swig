@@ -1,0 +1,201 @@
+{
+  "animal": "ERR4238104",
+  "full": {
+    "positive": 0,
+    "passes": 0
+  },
+  "panels": {
+    "dropout": {
+      "targets": [
+        {
+          "target": "IGHV2-NL_1*01_S7874",
+          "nearExactCdr3s": 319,
+          "nominated": true,
+          "logEvidence": -32.88283714404588,
+          "positive": false,
+          "passes": false,
+          "nullOptimizationGap": 1.612163251791344,
+          "logThreshold": 9.504501410525673
+        },
+        {
+          "target": "IGHV3-NL_1*01_S9854",
+          "nearExactCdr3s": 490,
+          "nominated": true,
+          "logEvidence": 44.59770691167466,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 0.36021207422315626,
+          "logThreshold": 9.504501410525673
+        },
+        {
+          "target": "IGHV3-NL_11*01_S3736",
+          "nearExactCdr3s": 984,
+          "nominated": true,
+          "logEvidence": 205.86675767867587,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 0.7848818987655761,
+          "logThreshold": 9.504501410525673
+        },
+        {
+          "target": "IGHV3-NL_17*01_S4736",
+          "nearExactCdr3s": 569,
+          "nominated": true,
+          "logEvidence": 55.373752625398424,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 0.005700835147933958,
+          "logThreshold": 9.504501410525673
+        },
+        {
+          "target": "IGHV4-149*01_S1166",
+          "nearExactCdr3s": 553,
+          "nominated": true,
+          "logEvidence": 75.56566894429261,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 20.68060217424795,
+          "logThreshold": 9.504501410525673
+        },
+        {
+          "target": "IGHV3-94*01_S3427",
+          "nearExactCdr3s": 471,
+          "nominated": true,
+          "logEvidence": 66.78242013709269,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 0.0035241490368775885,
+          "logThreshold": 9.504501410525673
+        }
+      ],
+      "nominated": 6,
+      "positive": 5,
+      "passes": 5,
+      "positiveExtras": [
+        {
+          "id": "IGHV3-NL_16*01_S5133__SWIGP_T32C_G33C_G67A_T159C",
+          "sequence": "GAGGTGCAGCTGGTGGAGTCTGGGGGAGGCTCCGTACAGCCTGGCGGGTCCCTGAGACTCTCCTGTACAGCCTCTGGATTCACCTTCAGTAGCACCAGGATGAACTGGATCCGACAGGCTCCAGGGAAGAGGCTGGAGTGGGTGGCCGACATAAAGTACGATGGAAGTGAGAAATACTATGTAGACTCTGTGAAGGGCCGATTCACCATCTCCAGAGACAATGCCAAGAACTCCCTCTATCTGCAAATGAACAGCCTGAGAGCTGAGGACACAGCCGTGTATTACTGTGTGAGA",
+          "known": false,
+          "candidate": 1,
+          "logEvidence": 1.1560992895890028,
+          "nullUpper": -6.6242972154924615,
+          "gap": 2.8595370960005084e-07,
+          "logThreshold": 9.504501410525673,
+          "positive": true,
+          "passes": false
+        }
+      ],
+      "passingExtras": [],
+      "positiveExtrasAbsentFull": [
+        {
+          "id": "IGHV3-NL_16*01_S5133__SWIGP_T32C_G33C_G67A_T159C",
+          "sequence": "GAGGTGCAGCTGGTGGAGTCTGGGGGAGGCTCCGTACAGCCTGGCGGGTCCCTGAGACTCTCCTGTACAGCCTCTGGATTCACCTTCAGTAGCACCAGGATGAACTGGATCCGACAGGCTCCAGGGAAGAGGCTGGAGTGGGTGGCCGACATAAAGTACGATGGAAGTGAGAAATACTATGTAGACTCTGTGAAGGGCCGATTCACCATCTCCAGAGACAATGCCAAGAACTCCCTCTATCTGCAAATGAACAGCCTGAGAGCTGAGGACACAGCCGTGTATTACTGTGTGAGA",
+          "known": false,
+          "candidate": 1,
+          "logEvidence": 1.1560992895890028,
+          "nullUpper": -6.6242972154924615,
+          "gap": 2.8595370960005084e-07,
+          "logThreshold": 9.504501410525673,
+          "positive": true,
+          "passes": false
+        }
+      ]
+    },
+    "rare": {
+      "targets": [
+        {
+          "target": "IGHV3-73*02_S7884",
+          "nearExactCdr3s": 23,
+          "nominated": true,
+          "logEvidence": 16.568076148895813,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 9.829802072758298e-06,
+          "logThreshold": 9.50747760319872
+        },
+        {
+          "target": "IGHV5-15*01",
+          "nearExactCdr3s": 23,
+          "nominated": true,
+          "logEvidence": -62.71181992072911,
+          "positive": false,
+          "passes": false,
+          "nullOptimizationGap": 0.02184503633841217,
+          "logThreshold": 9.50747760319872
+        },
+        {
+          "target": "IGHV3-88*01",
+          "nearExactCdr3s": 24,
+          "nominated": true,
+          "logEvidence": -6.653769583316631,
+          "positive": false,
+          "passes": false,
+          "nullOptimizationGap": 9.584978226229168e-06,
+          "logThreshold": 9.50747760319872
+        },
+        {
+          "target": "IGHV1-170*01",
+          "nearExactCdr3s": 30,
+          "nominated": true,
+          "logEvidence": 9.60165096594061,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 4.846008216929931e-06,
+          "logThreshold": 9.50747760319872
+        },
+        {
+          "target": "IGHV1-138*01_S2593",
+          "nearExactCdr3s": 31,
+          "nominated": true,
+          "logEvidence": 11.576613070266838,
+          "positive": true,
+          "passes": true,
+          "nullOptimizationGap": 7.093285428361185e-06,
+          "logThreshold": 9.50747760319872
+        },
+        {
+          "target": "IGHV3-172*01_S8824",
+          "nearExactCdr3s": 31,
+          "nominated": true,
+          "logEvidence": 3.088768581404196,
+          "positive": true,
+          "passes": false,
+          "nullOptimizationGap": 9.831809990146212e-06,
+          "logThreshold": 9.50747760319872
+        }
+      ],
+      "nominated": 6,
+      "positive": 4,
+      "passes": 3,
+      "positiveExtras": [
+        {
+          "id": "IGHV3-NL_16*01_S5133__SWIGP_T32C_G33C_G67A_T159C",
+          "sequence": "GAGGTGCAGCTGGTGGAGTCTGGGGGAGGCTCCGTACAGCCTGGCGGGTCCCTGAGACTCTCCTGTACAGCCTCTGGATTCACCTTCAGTAGCACCAGGATGAACTGGATCCGACAGGCTCCAGGGAAGAGGCTGGAGTGGGTGGCCGACATAAAGTACGATGGAAGTGAGAAATACTATGTAGACTCTGTGAAGGGCCGATTCACCATCTCCAGAGACAATGCCAAGAACTCCCTCTATCTGCAAATGAACAGCCTGAGAGCTGAGGACACAGCCGTGTATTACTGTGTGAGA",
+          "known": false,
+          "candidate": 0,
+          "logEvidence": 0.04784723144059555,
+          "nullUpper": -10.429919728185181,
+          "gap": 7.079981045979207e-10,
+          "logThreshold": 9.50747760319872,
+          "positive": true,
+          "passes": false
+        }
+      ],
+      "passingExtras": [],
+      "positiveExtrasAbsentFull": [
+        {
+          "id": "IGHV3-NL_16*01_S5133__SWIGP_T32C_G33C_G67A_T159C",
+          "sequence": "GAGGTGCAGCTGGTGGAGTCTGGGGGAGGCTCCGTACAGCCTGGCGGGTCCCTGAGACTCTCCTGTACAGCCTCTGGATTCACCTTCAGTAGCACCAGGATGAACTGGATCCGACAGGCTCCAGGGAAGAGGCTGGAGTGGGTGGCCGACATAAAGTACGATGGAAGTGAGAAATACTATGTAGACTCTGTGAAGGGCCGATTCACCATCTCCAGAGACAATGCCAAGAACTCCCTCTATCTGCAAATGAACAGCCTGAGAGCTGAGGACACAGCCGTGTATTACTGTGTGAGA",
+          "known": false,
+          "candidate": 0,
+          "logEvidence": 0.04784723144059555,
+          "nullUpper": -10.429919728185181,
+          "gap": 7.079981045979207e-10,
+          "logThreshold": 9.50747760319872,
+          "positive": true,
+          "passes": false
+        }
+      ]
+    }
+  }
+}

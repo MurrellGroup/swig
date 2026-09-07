@@ -478,11 +478,19 @@ test("personalized-germline CLI streams gzip AIRR into the shared engine and exp
   const header=['sequence_id','subject_id','clone_id','v_call','v_germline_start','v_sequence_alignment','v_germline_alignment'];
   const rows=Array.from({length:24},(_,i)=>[`read${i}`,'donor',i+1,'IGHV1-1*01',1,query,reference].join('\t'));
   await writeFile(airr,gzipSync(header.join('\t')+'\n'+rows.join('\n')+'\n'));
-  const result=runRawCli(root,['personalized-germline','--airr',airr,'--v-reference',fasta,'--out',out]);assert.equal(result.status,0,result.stderr);
+  const result=runRawCli(root,['personalized-germline','--airr',airr,'--v-reference',fasta,'--out',out,'--max-candidates','96']);assert.equal(result.status,0,result.stderr);
   const dashboard=JSON.parse(await readFile(join(out,'personalized-germline.json'),'utf8'));
+  assert.equal(dashboard.options.maximumNovelCandidatesPerGene,96);
   assert.equal(dashboard.representativeLineages,24);
   assert.ok(dashboard.pools.flatMap(p=>p.genes).flatMap(g=>g.activeAlleles).some(a=>!a.known&&a.sequence===query));
   assert.match(await readFile(join(out,'personalized_pool_1.V.fasta'),'utf8'),/SWIG_PERSONALIZED=novel/);
   assert.match(await readFile(join(out,'personalized-germline.tsv'),'utf8'),/expected_lineages/);
+  const jointOut=join(temporary,'joint');const before=await readFile(join(out,'personalized-germline.json'),'utf8');
+  const joint=runRawCli(root,['joint-germline','--airr',airr,'--v-reference',fasta,'--out',jointOut,'--max-candidates','16','--iterations','100']);assert.equal(joint.status,0,joint.stderr);
+  const independent=JSON.parse(await readFile(join(jointOut,'joint-germline.json'),'utf8'));
+  assert.equal(independent.mode,'joint-inherited-somatic-split');assert.equal(independent.options.maximumCandidates,16);
+  assert.equal(independent.results.length,1);assert.equal(independent.results[0].trainingLineages+independent.results[0].testLineages,24);
+  assert.equal(await readFile(join(out,'personalized-germline.json'),'utf8'),before);
+
  }finally{await rm(temporary,{recursive:true,force:true});}
 });

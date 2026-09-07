@@ -31,6 +31,7 @@ void for_each_kmer(const std::string& sequence, std::uint32_t k, std::size_t str
     const std::uint64_t mask = (std::uint64_t{1} << (2 * k)) - 1;
     std::uint64_t code = 0;
     std::uint32_t valid = 0;
+    const auto effective_stride = std::max<std::size_t>(stride, 1);
     for (std::size_t i = 0; i < sequence.size(); ++i) {
         const int base = encode_base(sequence[i]);
         if (base < 0) {
@@ -42,7 +43,12 @@ void for_each_kmer(const std::string& sequence, std::uint32_t k, std::size_t str
         if (valid < k) ++valid;
         if (valid == k) {
             const std::size_t position = i + 1 - k;
-            if (position % std::max<std::size_t>(stride, 1) == 0) fn(code, position);
+            // Every production V/J/D scan uses stride one. Keep its hot loop
+            // free of integer remainder while preserving arbitrary benchmark
+            // and rescue strides exactly.
+            if (effective_stride == 1 || position % effective_stride == 0) {
+                fn(code, position);
+            }
         }
     }
 }
@@ -81,6 +87,7 @@ public:
                 generation_ = 1;
             }
             touched_.clear();
+            dense_touched_keys_.clear();
             return;
         }
         std::size_t requested = 64;
@@ -99,10 +106,9 @@ public:
         mask_ = keys_.size() - 1;
     }
 
-    void add(std::uint64_t key, std::uint32_t weight) {
+    void add(
+        std::uint32_t gene, int bin, std::uint32_t weight) {
         if (dense_) {
-            const auto gene = static_cast<std::uint32_t>(key >> 32U);
-            const auto bin = static_cast<std::int32_t>(key & 0xffffffffU);
             const auto relative_bin = static_cast<long long>(bin) - dense_minimum_bin_;
             if (relative_bin < 0 ||
                 relative_bin >= static_cast<long long>(dense_bin_count_)) return;
@@ -113,6 +119,9 @@ public:
                 dense_stamps_[slot] = generation_;
                 dense_votes_[slot] = static_cast<std::uint16_t>(weight);
                 touched_.push_back(static_cast<std::uint32_t>(slot));
+                dense_touched_keys_.push_back(
+                    (static_cast<std::uint64_t>(gene) << 32U) |
+                    static_cast<std::uint32_t>(bin));
             } else {
                 dense_votes_[slot] = static_cast<std::uint16_t>(
                     std::min<std::uint32_t>(
@@ -121,6 +130,8 @@ public:
             }
             return;
         }
+        const std::uint64_t key = (static_cast<std::uint64_t>(gene) << 32U) |
+            static_cast<std::uint32_t>(bin);
         // SplitMix64's finalizer gives good low bits for the power-of-two mask
         // even though gene ids occupy the high half of these compound keys.
         std::uint64_t mixed = key;
@@ -136,7 +147,7 @@ public:
         if (stamps_[slot] != generation_) {
             if ((touched_.size() + 1) * 2 >= keys_.size()) {
                 grow();
-                add(key, weight);
+                add(gene, bin, weight);
                 return;
             }
             stamps_[slot] = generation_;
@@ -152,13 +163,9 @@ public:
     template <typename Fn>
     void for_each(Fn&& fn) const {
         if (dense_) {
-            for (const auto slot : touched_) {
-                const auto gene = static_cast<std::uint32_t>(slot / dense_bin_count_);
-                const auto bin = static_cast<std::int32_t>(
-                    slot % dense_bin_count_) + dense_minimum_bin_;
-                const std::uint64_t key = (static_cast<std::uint64_t>(gene) << 32U) |
-                    static_cast<std::uint32_t>(bin);
-                fn(key, static_cast<std::uint32_t>(dense_votes_[slot]));
+            for (std::size_t index = 0; index < touched_.size(); ++index) {
+                fn(dense_touched_keys_[index],
+                    static_cast<std::uint32_t>(dense_votes_[touched_[index]]));
             }
             return;
         }
@@ -166,6 +173,7 @@ public:
     }
 
 private:
+
     void grow() {
         std::vector<std::pair<std::uint64_t, std::uint32_t>> entries;
         entries.reserve(touched_.size());
@@ -177,13 +185,17 @@ private:
         touched_.clear();
         generation_ = 1;
         mask_ = new_size - 1;
-        for (const auto& [key, votes] : entries) add(key, votes);
+        for (const auto& [key, votes] : entries) {
+            add(static_cast<std::uint32_t>(key >> 32U),
+                static_cast<std::int32_t>(key & 0xffffffffU), votes);
+        }
     }
 
     std::vector<std::uint64_t> keys_;
     std::vector<std::uint32_t> votes_;
     std::vector<std::uint32_t> stamps_;
     std::vector<std::uint32_t> touched_;
+    std::vector<std::uint64_t> dense_touched_keys_;
     std::vector<std::uint16_t> dense_votes_;
     std::vector<std::uint32_t> dense_stamps_;
     std::size_t dense_bin_count_ = 0;
@@ -563,10 +575,7 @@ std::vector<Candidate> SegmentIndex::candidates_fast(
                     const int diagonal =
                         static_cast<int>(query_position) - static_cast<int>(hit.position);
                     const int bin = floor_div(diagonal, bin_width);
-                    const std::uint64_t key =
-                        (static_cast<std::uint64_t>(hit.gene) << 32U) |
-                        static_cast<std::uint32_t>(bin);
-                    vote_bins.add(key, weight);
+                    vote_bins.add(hit.gene, bin, weight);
                 }
                 return;
             }
@@ -575,9 +584,7 @@ std::vector<Candidate> SegmentIndex::candidates_fast(
             for (const auto& hit : found->second) {
                 const int diagonal = static_cast<int>(query_position) - static_cast<int>(hit.position);
                 const int bin = floor_div(diagonal, bin_width);
-                const std::uint64_t key = (static_cast<std::uint64_t>(hit.gene) << 32U) |
-                    static_cast<std::uint32_t>(bin);
-                vote_bins.add(key, weight);
+                vote_bins.add(hit.gene, bin, weight);
             }
         });
     };
@@ -631,13 +638,17 @@ std::vector<Candidate> SegmentIndex::candidates_fast(
             use_fallback,
         });
     }
-    std::sort(ranked.begin(), ranked.end(), [](const Candidate& a, const Candidate& b) {
+    const auto compare = [](const Candidate& a, const Candidate& b) {
         if (a.votes != b.votes) return a.votes > b.votes;
         if (a.gene_index != b.gene_index) return a.gene_index < b.gene_index;
         return a.diagonal < b.diagonal;
-    });
-    if (ranked.size() > std::min(limit, genes_.size())) {
-        ranked.resize(std::min(limit, genes_.size()));
+    };
+    const auto retained = std::min(limit, genes_.size());
+    if (ranked.size() > retained) {
+        std::partial_sort(ranked.begin(), ranked.begin() + retained, ranked.end(), compare);
+        ranked.resize(retained);
+    } else {
+        std::sort(ranked.begin(), ranked.end(), compare);
     }
     return ranked;
 }

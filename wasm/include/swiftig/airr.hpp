@@ -14,5 +14,6 @@ void write_airr_record(std::ostream& output, const Annotation& annotation);
 // The ostream functions remain the reference implementation.
 void append_airr_header(std::string& output);
 void append_airr_record(std::string& output, const Annotation& annotation);
+void append_airr_input_prefix(std::string& output, const SequenceRecord& record);
 
 }  // namespace swiftig

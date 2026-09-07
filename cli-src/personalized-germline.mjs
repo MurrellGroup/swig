@@ -5,9 +5,11 @@ import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { PersonalizedGermlineAccumulator, personalizedGermlineEvidenceRows, personalizedGermlineFasta } from '../src/personalized-germline.ts';
 export async function runPersonalizedGermline(args){
- const options={};for(let i=0;i<args.length;i++){if(args[i]==='--help'){console.log('swig-cli personalized-germline --airr FILE[.gz] --v-reference V.fasta --out DIRECTORY [--subject ID]\nRequires clone_id (or lineage_id), V alignments and germline coordinates. Raw sequence and v_sequence_end support boundary uncertainty. One model per subject.');return;}if(!['--airr','--v-reference','--out','--subject'].includes(args[i])||!args[i+1])throw new Error(`Unknown or incomplete personalized-germline option: ${args[i]}`);options[args[i]]=args[++i];}
+ const options={};for(let i=0;i<args.length;i++){if(args[i]==='--help'){console.log('swig-cli personalized-germline --airr FILE[.gz] --v-reference V.fasta --out DIRECTORY [--subject ID] [--max-candidates N]\nRequires clone_id (or lineage_id), V alignments and germline coordinates. Raw sequence and v_sequence_end support boundary uncertainty. One model per subject.');return;}if(!['--airr','--v-reference','--out','--subject','--max-candidates'].includes(args[i])||!args[i+1])throw new Error(`Unknown or incomplete personalized-germline option: ${args[i]}`);options[args[i]]=args[++i];}
  for(const key of ['--airr','--v-reference','--out'])if(!options[key])throw new Error(`personalized-germline requires ${key}.`);
- const fasta=await readFile(options['--v-reference'],'utf8'),acc=new PersonalizedGermlineAccumulator(fasta);
+ const cap=options['--max-candidates']===undefined?undefined:Number(options['--max-candidates']);
+ if(cap!==undefined&&(!Number.isSafeInteger(cap)||cap<1))throw new Error('--max-candidates must be a positive integer.');
+ const fasta=await readFile(options['--v-reference'],'utf8'),acc=new PersonalizedGermlineAccumulator(fasta,cap===undefined?{}:{maximumNovelCandidatesPerGene:cap});
  const input=createReadStream(options['--airr']);const stream=options['--airr'].endsWith('.gz')?input.pipe(createGunzip()):input;
  input.on('error',error=>stream.destroy(error));
  let headers,ordinal=0;

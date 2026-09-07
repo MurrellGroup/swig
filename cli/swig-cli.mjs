@@ -12,7 +12,9 @@ import { once } from "node:events";
 import { availableParallelism } from "node:os";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-//#region src/shm-model/boundary.ts
+function terminalChangeIdentifiable(length, positions) {
+	return positions.some((p) => p <= length - 2);
+}
 const trimWeights = Array.from({ length: 13 }, (_, d) => d === 12 ? .8 ** 12 : .2 * .8 ** d);
 function logSum(values) {
 	const m = Math.max(...values);
@@ -38,6 +40,83 @@ function boundaryLogLikelihood(sequence, query, start, baseLog, weights = trimWe
 function downstreamJunction(raw, start, dStart, jStart) {
 	const end = dStart > 0 ? dStart - 1 : jStart > 0 ? jStart - 1 : raw.length;
 	return raw.slice(start, Math.min(start + 12, end));
+}
+/** Profile gene-specific deletion probabilities from the complete raw boundary.
+* Both hypotheses estimate the same deletion nuisance; the alternative adds only
+* an allele fraction. A changed-site-only marginal cannot identify this nuisance.
+*/
+function profileBoundaryAllele(rows) {
+	if (!rows.length) return {
+		gain: -Infinity,
+		frequency: 0
+	};
+	const grouped = /* @__PURE__ */ new Map();
+	for (const row of rows) {
+		const maximum = Math.max(...row.nullLog, ...row.alleleLog);
+		const key = row.nullLog.join(",") + "|" + row.alleleLog.join(",") + "|" + (row.first ?? []).join(",");
+		const old = grouped.get(key);
+		if (old) old.n++;
+		else grouped.set(key, {
+			nullP: row.nullLog.map((x) => Math.exp(x - maximum)),
+			alleleP: row.alleleLog.map((x) => Math.exp(x - maximum)),
+			n: 1,
+			first: row.first ?? new Array(trimWeights.length).fill(-1)
+		});
+	}
+	const values = [...grouped.values()];
+	const startProbability = (q, index) => index < 0 ? 1 : index < 16 ? q[index] : q.slice((index - 16) * 4, (index - 16) * 4 + 4).reduce((a, b) => a + b, 0);
+	const fit = (alternative, start) => {
+		let junction = new Array(16).fill(1 / 16), weights = [...trimWeights], f = alternative ? start : 0, previous = -Infinity, value = -Infinity;
+		const counts = new Float64Array(weights.length);
+		for (let iteration = 0; iteration < 200; iteration++) {
+			counts.fill(0);
+			const baseCounts = /* @__PURE__ */ new Float64Array(16);
+			let alleleCount = 0;
+			value = 0;
+			for (const row of values) {
+				let normalizer = 0, allele = 0;
+				for (let d = 0; d < weights.length; d++) {
+					const q = startProbability(junction, row.first[d]);
+					normalizer += weights[d] * q * ((1 - f) * row.nullP[d] + f * row.alleleP[d]);
+					allele += weights[d] * q * f * row.alleleP[d];
+				}
+				normalizer = Math.max(1e-300, normalizer);
+				value += row.n * Math.log(normalizer);
+				alleleCount += row.n * allele / normalizer;
+				for (let d = 0; d < weights.length; d++) {
+					const q = startProbability(junction, row.first[d]), z = row.n * weights[d] * q * ((1 - f) * row.nullP[d] + f * row.alleleP[d]) / normalizer;
+					counts[d] += z;
+					const first = row.first[d];
+					if (first >= 0 && first < 16) baseCounts[first] += z;
+					else if (first >= 16) for (let b = 0; b < 4; b++) {
+						const index = (first - 16) * 4 + b;
+						baseCounts[index] += z * junction[index] / Math.max(1e-300, q);
+					}
+				}
+			}
+			if (Math.abs(value - previous) < 1e-7) break;
+			previous = value;
+			weights = Array.from(counts, (c) => Math.max(1e-12, c / rows.length));
+			const total = weights.reduce((a, b) => a + b, 0);
+			weights = weights.map((w) => w / total);
+			const baseTotal = baseCounts.reduce((a, b) => a + b, 0);
+			if (baseTotal > 0) {
+				junction = Array.from(baseCounts, (c) => Math.max(1e-12, c / baseTotal));
+				const sum = junction.reduce((a, b) => a + b, 0);
+				junction = junction.map((q) => q / sum);
+			}
+			if (alternative) f = Math.max(1e-9, Math.min(1 - 1e-9, alleleCount / rows.length));
+		}
+		return {
+			value,
+			frequency: f
+		};
+	};
+	const nullFit = fit(false, 0), a = fit(true, .1), b = fit(true, .9), best = a.value > b.value ? a : b;
+	return {
+		gain: best.value - nullFit.value - .5 * Math.log(Math.max(2, rows.length)),
+		frequency: best.frequency
+	};
 }
 //#endregion
 //#region src/shm-model/hs5f.ts
@@ -7336,7 +7415,11 @@ function otherBurden(o, excluded, error = .001) {
 const family = (gene) => gene.match(/^[A-Z]+\d+/)?.[0] ?? gene;
 /** Per-subject, explicit family-anchor homology; no tested physical gene calibrates itself. */
 var AlignedRateCalibration = class {
+	burdenTotals = /* @__PURE__ */ new Map();
+	burdenCache = /* @__PURE__ */ new Map();
+	error;
 	junctionCounts = /* @__PURE__ */ new Map();
+	transitionCounts = /* @__PURE__ */ new Map();
 	trimCounts = /* @__PURE__ */ new Map();
 	boundaryCache = /* @__PURE__ */ new Map();
 	anchors = /* @__PURE__ */ new Map();
@@ -7344,6 +7427,32 @@ var AlignedRateCalibration = class {
 	maps = /* @__PURE__ */ new Map();
 	events = /* @__PURE__ */ new Map();
 	constructor(observations, error = .001) {
+		this.error = error;
+		for (const o of observations) {
+			let k = 0, w = 0, bases = 0;
+			for (let i = 0; i < o.positions.length; i++) {
+				const p = o.positions[i];
+				if (p > o.parent.sequence.length - 12) continue;
+				k += Number(o.query[i] !== o.parent.sequence[p - 1]);
+				w += hs5fRate(o.parent.sequence, p - 1);
+				bases++;
+			}
+			const key = `${o.subjectId}|${o.locus}`, genes = this.burdenTotals.get(key) ?? /* @__PURE__ */ new Map();
+			const v = genes.get(o.gene) ?? {
+				n: 0,
+				zeros: 0,
+				k: 0,
+				w: 0,
+				bases: 0
+			};
+			v.n++;
+			v.zeros += Number(k === 0);
+			v.k += k;
+			v.w += w;
+			v.bases += bases;
+			genes.set(o.gene, v);
+			this.burdenTotals.set(key, genes);
+		}
 		for (const o of observations) {
 			const key = `${o.subjectId}|${o.locus}`, genes = this.junctionCounts.get(key) ?? /* @__PURE__ */ new Map();
 			const counts = genes.get(o.gene) ?? /* @__PURE__ */ new Float64Array(4);
@@ -7353,6 +7462,16 @@ var AlignedRateCalibration = class {
 			}
 			genes.set(o.gene, counts);
 			this.junctionCounts.set(key, genes);
+		}
+		for (const o of observations) {
+			const key = `${o.subjectId}|${o.locus}`, genes = this.transitionCounts.get(key) ?? /* @__PURE__ */ new Map();
+			const counts = genes.get(o.gene) ?? /* @__PURE__ */ new Float64Array(16), q = o.junction ?? "";
+			for (let i = 1; i < q.length; i++) {
+				const a = "ACGT".indexOf(q[i - 1]), b = "ACGT".indexOf(q[i]);
+				if (a >= 0 && b >= 0) counts[a * 4 + b]++;
+			}
+			genes.set(o.gene, counts);
+			this.transitionCounts.set(key, genes);
 		}
 		for (const o of observations) {
 			if (!o.terminal) continue;
@@ -7389,7 +7508,7 @@ var AlignedRateCalibration = class {
 			for (const p of parents) this.maps.set(`${key}|${p.index}`, globalCoordinateMap(p.sequence, anchor.sequence).map);
 			for (const o of items) {
 				const map = this.maps.get(`${key}|${o.parent.index}`);
-				const tau = otherBurden(o, /* @__PURE__ */ new Set(), error);
+				const exposure = this.mutationExposure(o, /* @__PURE__ */ new Set());
 				for (let i = 0; i < o.positions.length; i++) {
 					const p = o.positions[i] - 1, homology = map[p];
 					if (homology < 0 || p >= o.parent.sequence.length - 12) continue;
@@ -7403,13 +7522,117 @@ var AlignedRateCalibration = class {
 							e: 0
 						};
 						v.k += Number(o.query[i] === alt);
-						v.e += error / 3 + tau * hs5fRate(o.parent.sequence, p, alt);
+						v.e += error / 3 + (1 - exposure.naive) * (1 - error / 3) * -Math.expm1(-exposure.tau * hs5fRate(o.parent.sequence, p, alt));
 						genes.set(o.gene, v);
 						this.events.set(event, genes);
 					}
 				}
 			}
 		}
+	}
+	/** Training-only calibration for a complete competitive component. This new
+	* reader leaves all existing per-gene methods unchanged. */
+	componentModel(o, excluded) {
+		const key = `${o.subjectId}|${o.locus}`, total = {
+			n: 0,
+			zeros: 0,
+			k: 0,
+			w: 0,
+			bases: 0
+		};
+		for (const [gene, v] of this.burdenTotals.get(key) ?? []) if (!excluded.has(gene)) for (const field of [
+			"n",
+			"zeros",
+			"k",
+			"w",
+			"bases"
+		]) total[field] += v[field];
+		let naive = 0, beta = 1;
+		if (total.n >= 20) {
+			const errorCount = this.error * total.bases / total.n, mean = Math.max(0, total.k / total.n - errorCount), zeros = Math.min(.999999, total.zeros / total.n / Math.exp(-errorCount)), activeMean = Math.max(.01, mean / Math.max(1e-6, 1 - zeros) - 1);
+			naive = Math.max(0, Math.min(.999, 1 - mean / activeMean));
+			beta = total.w / total.n / activeMean;
+		}
+		const pool = (source, fallback) => {
+			const counts = fallback.map((p) => p * 4);
+			for (const [gene, v] of source.get(key) ?? []) if (!excluded.has(gene)) v.forEach((n, i) => counts[i] += n);
+			const sum = counts.reduce((a, b) => a + b, 0);
+			return counts.map((n) => n / sum);
+		};
+		return {
+			tau: 1 / beta,
+			naive,
+			trimming: pool(this.trimCounts, trimWeights),
+			junction: pool(this.junctionCounts, [
+				.25,
+				.25,
+				.25,
+				.25
+			])
+		};
+	}
+	/** Empirical zero-inflated Gamma-Poisson exposure, learned outside the tested gene.
+	* The active component has exponential intensity; the atom represents truly
+	* unmutated sequences. Sequencing errors remain possible in that component.
+	*/
+	mutationExposure(o, excluded) {
+		let k = 0, w = 0, n = 0;
+		for (let i = 0; i < o.positions.length; i++) {
+			const p = o.positions[i];
+			if (excluded.has(p) || p > o.parent.sequence.length - 12) continue;
+			k += Number(o.query[i] !== o.parent.sequence[p - 1]);
+			w += hs5fRate(o.parent.sequence, p - 1);
+			n++;
+		}
+		return this.mutationExposureFromCounts(o, k, w, n);
+	}
+	mutationExposureFromCounts(o, k, w, n) {
+		const key = `${o.subjectId}|${o.locus}`, ck = key + "|" + o.gene;
+		let prior = this.burdenCache.get(ck);
+		if (!prior) {
+			const total = {
+				n: 0,
+				zeros: 0,
+				k: 0,
+				w: 0,
+				bases: 0
+			};
+			for (const [gene, v] of this.burdenTotals.get(key) ?? []) if (gene !== o.gene) for (const field of [
+				"n",
+				"zeros",
+				"k",
+				"w",
+				"bases"
+			]) total[field] += v[field];
+			if (total.n < 20) prior = {
+				naive: 0,
+				beta: 1
+			};
+			else {
+				const errorCount = this.error * total.bases / total.n, mean = Math.max(0, total.k / total.n - errorCount);
+				const zeros = Math.min(.999999, total.zeros / total.n / Math.exp(-errorCount));
+				const activeMean = Math.max(.01, mean / Math.max(1e-6, 1 - zeros) - 1);
+				prior = {
+					naive: Math.max(0, Math.min(.999, 1 - mean / activeMean)),
+					beta: total.w / total.n / activeMean
+				};
+			}
+			this.burdenCache.set(ck, prior);
+		}
+		const errorCount = this.error * n, q = w / (prior.beta + w), success = 1 - q;
+		let poisson = Math.exp(-errorCount), active = poisson * success * q ** k, activeShape = (k + 1) * active;
+		for (let errors = 1; errors <= k; errors++) {
+			poisson *= errorCount / errors;
+			const term = poisson * success * q ** (k - errors);
+			active += term;
+			activeShape += (k - errors + 1) * term;
+		}
+		const naiveLikelihood = poisson;
+		const posterior = prior.naive * naiveLikelihood / Math.max(1e-300, prior.naive * naiveLikelihood + (1 - prior.naive) * active);
+		return {
+			tau: activeShape / Math.max(1e-300, active) / (prior.beta + w),
+			naive: posterior
+		};
 	}
 	pooled(o, source, fallback, kind) {
 		const key = `${o.subjectId}|${o.locus}`, ck = key + "|" + o.gene + "|" + kind, cached = this.boundaryCache.get(ck);
@@ -7427,6 +7650,10 @@ var AlignedRateCalibration = class {
 			.25,
 			.25
 		], "junction");
+	}
+	transitions(o) {
+		const counts = this.pooled(o, this.transitionCounts, new Array(16).fill(1 / 16), "transition");
+		return counts.map((v, i) => v / Math.max(1e-12, counts.slice(Math.floor(i / 4) * 4, Math.floor(i / 4) * 4 + 4).reduce((a, b) => a + b, 0)));
 	}
 	trimming(o) {
 		return this.pooled(o, this.trimCounts, trimWeights, "trim");
@@ -7465,42 +7692,105 @@ function discoveryCost(length, changes, parents) {
 	return cost;
 }
 function maximize(fn) {
-	let a = -12, b = 12;
-	const r = (Math.sqrt(5) - 1) / 2;
-	let x = b - r * (b - a), y = a + r * (b - a), fx = fn(x), fy = fn(y);
-	for (let i = 0; i < 45; i++) if (fx > fy) {
-		b = y;
-		y = x;
-		fy = fx;
-		x = b - r * (b - a);
-		fx = fn(x);
-	} else {
-		a = x;
-		x = y;
-		fx = fy;
-		y = a + r * (b - a);
-		fy = fn(y);
+	const grid = Array.from({ length: 25 }, (_, i) => i - 12), scores = grid.map(fn);
+	let best = scores.indexOf(Math.max(...scores)), result = grid[best], value = scores[best];
+	for (let k = 1; k < grid.length - 1; k++) {
+		if (scores[k] < scores[k - 1] || scores[k] < scores[k + 1]) continue;
+		let a = grid[k - 1], b = grid[k + 1];
+		const r = (Math.sqrt(5) - 1) / 2;
+		let x = b - r * (b - a), y = a + r * (b - a), fx = fn(x), fy = fn(y);
+		for (let i = 0; i < 30; i++) if (fx > fy) {
+			b = y;
+			y = x;
+			fy = fx;
+			x = b - r * (b - a);
+			fx = fn(x);
+		} else {
+			a = x;
+			x = y;
+			fx = fy;
+			y = a + r * (b - a);
+			fy = fn(y);
+		}
+		const eta = (a + b) / 2, score = fn(eta);
+		if (score > value) {
+			result = eta;
+			value = score;
+		}
 	}
-	return (a + b) / 2;
+	return result;
 }
 /** Linked lineage mixture against alternate-specific SHM hazards, with log-rate random effects. */
-function testHaplotype(observations, changes, allChanges, calibration, error, parents) {
+function testHaplotype(observations, changes, allChanges, calibration, error, parents, skipBoundaryProfile = false) {
 	if (!observations.length || !changes.length) return {
 		gain: -Infinity,
 		frequency: 0
 	};
+	const parentSequence = observations[0].parent.sequence;
+	if (!skipBoundaryProfile && changes.every((c) => c.position > parentSequence.length - 12)) {
+		if (!terminalChangeIdentifiable(parentSequence.length, changes.map((c) => c.position))) return {
+			gain: -Infinity,
+			frequency: 0,
+			reason: "Terminal change is equivalent to V trimming plus the fitted initial junction word"
+		};
+		const alternate = [...parentSequence];
+		for (const c of allChanges) alternate[c.position - 1] = c.alternate;
+		const nullSequence = [...alternate];
+		for (const c of changes) nullSequence[c.position - 1] = c.reference;
+		const omitted = new Set(allChanges.map((c) => c.position));
+		const junction = calibration.junction(observations[0]), transitions = calibration.transitions(observations[0]);
+		const fit = profileBoundaryAllele(observations.filter((o) => o.terminal).map((o) => {
+			const tau = otherBurden(o, omitted, error);
+			const emit = (seq) => trimWeights.map((_, d) => {
+				let value = 0;
+				for (let i = 0; i < o.terminal.query.length; i++) {
+					const p = o.terminal.start + i, b = o.terminal.query[i];
+					if (!"ACGT".includes(b)) continue;
+					if (p > seq.length - d) {
+						if (p <= seq.length - d + 2) continue;
+						const previous = "ACGT".indexOf(o.terminal.query[i - 1] ?? "N");
+						value += Math.log(previous < 0 ? junction["ACGT".indexOf(b)] : transitions[previous * 4 + "ACGT".indexOf(b)]);
+					} else {
+						const mutation = -Math.expm1(-tau * hs5fRate(seq, p - 1));
+						value += Math.log(b === seq[p - 1] ? (1 - error) * (1 - mutation) : error / 3 + (1 - error) * mutation * hs5fRate(seq, p - 1, b) / Math.max(1e-12, hs5fRate(seq, p - 1)));
+					}
+				}
+				return value;
+			});
+			return {
+				nullLog: emit(nullSequence.join("")),
+				alleleLog: emit(alternate.join("")),
+				first: trimWeights.map((_, d) => {
+					const offset = parentSequence.length - d + 1 - o.terminal.start, first = "ACGT".indexOf(o.terminal.query[offset] ?? "N"), second = "ACGT".indexOf(o.terminal.query[offset + 1] ?? "N");
+					return first < 0 ? -1 : second < 0 ? 16 + first : first * 4 + second;
+				})
+			};
+		}));
+		const rearrangementGain = fit.gain - discoveryCost(parentSequence.length, changes.length, parents);
+		if (!(rearrangementGain > 0)) return {
+			...fit,
+			gain: rearrangementGain
+		};
+		const shm = testHaplotype(observations, changes, allChanges, calibration, error, parents, true);
+		return {
+			...fit,
+			gain: Math.min(rearrangementGain, shm.gain),
+			reason: shm.gain <= 0 ? "Terminal change is explained by the SHM null" : void 0
+		};
+	}
 	const omitted = new Set(allChanges.map((c) => c.position));
 	const grouped = /* @__PURE__ */ new Map();
 	for (const o of observations) {
-		const tau = Math.round(otherBurden(o, omitted, error) * 2e3) / 2e3;
+		const exposure = calibration.mutationExposure(o, omitted), tau = Math.round(exposure.tau * 2e3) / 2e3, naive = Math.round(exposure.naive * 1e3) / 1e3;
 		const states = changes.map((c) => {
 			const b = baseAt(o, c.position);
 			return b === void 0 ? -1 : Number(b === c.alternate);
 		});
 		if (states.every((s) => s < 0)) continue;
-		const key = tau + "|" + states.join("");
+		const key = tau + "|" + naive + "|" + states.join("");
 		const g = grouped.get(key) ?? {
 			tau,
+			naive,
 			states,
 			n: 0
 		};
@@ -7513,7 +7803,23 @@ function testHaplotype(observations, changes, allChanges, calibration, error, pa
 	const probability = (tau, j, eta) => clamp(error / 3 + (1 - error / 3) * -Math.expm1(-tau * rates[j] * Math.exp(eta)));
 	const trim = calibration.trimming(observations[0]), junction = calibration.junction(observations[0]);
 	const terminal = changes.some((c) => c.position > parent.length - 12);
-	const logPrior = (j, eta) => priors[j].shape * eta - priors[j].rate * Math.exp(eta);
+	const centers = priors.map((p) => Math.log(p.shape / p.rate) - .5 * Math.log1p(1 / p.shape));
+	const scales = priors.map((p) => Math.max(.25, Math.log1p(1 / p.shape) / 2));
+	const units = [];
+	for (const j of changes.map((_, j) => j).sort((a, b) => changes[a].position - changes[b].position)) {
+		const last = units[units.length - 1];
+		if (last && changes[j].position - changes[last[last.length - 1]].position <= 4) last.push(j);
+		else units.push([j]);
+	}
+	const clusters = units.filter((unit) => unit.length > 1);
+	const clusterParameters = new Map(clusters.map((unit, i) => [unit, changes.length + i]));
+	const burstRates = clusters.map((unit) => Math.max(...unit.map((j) => rates[j])));
+	for (const unit of clusters) {
+		centers.push(Math.max(...unit.map((j) => centers[j])));
+		scales.push(Math.max(...unit.map((j) => scales[j])));
+	}
+	const parameterIndices = centers.map((_, i) => i);
+	const logPrior = (j, eta) => -2.5 * Math.log1p((eta - centers[j]) ** 2 / (4 * scales[j]));
 	const bernoulli = (y, p) => y ? Math.log(p) : Math.log1p(-p);
 	const trimStates = /* @__PURE__ */ new Map();
 	for (let d = 0; d < trim.length; d++) {
@@ -7526,47 +7832,34 @@ function testHaplotype(observations, changes, allChanges, calibration, error, pa
 		});
 	}
 	const states = [...trimStates.values()];
-	const retainProbability = changes.map((_, j) => states.reduce((sum, s) => sum + (s.retained[j] ? s.weight : 0), 0));
 	const jointLog = (g, eta, signal) => {
 		const p = changes.map((c, j) => signal ? clamp((1 - error) * Math.exp(-g.tau * hs5fRate(parent, c.position - 1))) : probability(g.tau, j, eta[j]));
-		const likelihood = (retained) => changes.reduce((sum, c, j) => g.states[j] < 0 ? sum : sum + bernoulli(g.states[j], retained && !retained[j] ? junction["ACGT".indexOf(c.alternate)] : p[j]), 0);
-		return terminal ? logSum(states.map((s) => Math.log(s.weight) + likelihood(s.retained))) : likelihood();
+		const likelihood = (retained) => units.reduce((total, unit) => {
+			const independent = unit.reduce((sum, j) => g.states[j] < 0 ? sum : sum + bernoulli(g.states[j], retained && !retained[j] ? junction["ACGT".indexOf(changes[j].alternate)] : p[j]), 0);
+			const parameter = clusterParameters.get(unit);
+			if (signal || parameter === void 0) return total + independent;
+			const burst = clamp(-Math.expm1(-g.tau * burstRates[parameter - changes.length] * Math.exp(eta[parameter])));
+			const linked = unit.reduce((sum, j) => g.states[j] < 0 ? sum : sum + bernoulli(g.states[j], retained && !retained[j] ? junction["ACGT".indexOf(changes[j].alternate)] : clamp((1 - error) * Math.exp(-g.tau * hs5fRate(parent, changes[j].position - 1)))), 0);
+			return total + logSum([Math.log1p(-burst) + independent, Math.log(burst) + linked]);
+		}, 0);
+		const active = terminal ? logSum(states.map((s) => Math.log(s.weight) + likelihood(s.retained))) : likelihood();
+		if (g.naive === 0) return active;
+		const naiveLog = (retained) => changes.reduce((sum, c, j) => g.states[j] < 0 ? sum : sum + bernoulli(g.states[j], retained && !retained[j] ? junction["ACGT".indexOf(c.alternate)] : signal ? 1 - error : error / 3), 0);
+		const unmutated = terminal ? logSum(states.map((s) => Math.log(s.weight) + naiveLog(s.retained))) : naiveLog();
+		return logSum([Math.log1p(-g.naive) + active, Math.log(g.naive) + unmutated]);
 	};
-	const optimize = (j, weights, etaAll = changes.map(() => 0)) => {
-		if (terminal && changes.length > 1) return maximize((value) => {
-			const trial = [...etaAll];
-			trial[j] = value;
-			return logPrior(j, value) + groups.reduce((sum, g, i) => sum + g.n * weights[i] * jointLog(g, trial, false), 0);
-		});
-		let eta = Math.log(priors[j].shape / priors[j].rate);
-		for (let it = 0; it < 16; it++) {
-			const lambda = Math.exp(eta);
-			let gradient = priors[j].shape - priors[j].rate * lambda, curvature = -priors[j].rate * lambda;
-			for (let i = 0; i < groups.length; i++) {
-				const g = groups[i], y = g.states[j];
-				if (y < 0) continue;
-				const w = g.n * weights[i], t = g.tau * rates[j] * lambda;
-				const retained = terminal ? retainProbability[j] : 1;
-				const p = clamp(retained * probability(g.tau, j, eta) + (1 - retained) * junction["ACGT".indexOf(changes[j].alternate)]);
-				const numerator = retained * (1 - error / 3) * Math.exp(-t) * t;
-				if (y === 0) {
-					const d = numerator / (1 - p);
-					gradient -= w * d;
-					curvature += w * (-d * (1 - t) - d * d);
-				} else {
-					const d = numerator / p;
-					gradient += w * d;
-					curvature += w * (d * (1 - t) - d * d);
-				}
-			}
-			const step = Math.max(-2, Math.min(2, gradient / Math.min(-1e-9, curvature)));
-			eta = Math.max(-12, Math.min(12, eta - step));
-			if (Math.abs(step) < 1e-5) break;
-		}
-		return eta;
-	};
-	const weights = new Float64Array(groups.length).fill(1), nullEta = changes.map((_, j) => optimize(j, weights));
-	if (terminal) for (let round = 0; round < 4; round++) for (let j = 0; j < changes.length; j++) nullEta[j] = optimize(j, weights, nullEta);
+	const optimize = (j, weights, etaAll = parameterIndices.map((j) => centers[j])) => maximize((value) => {
+		if (changes.length === 1 && !terminal) return logPrior(j, value) + groups.reduce((sum, g, i) => {
+			if (g.states[j] < 0) return sum;
+			const p = clamp((1 - g.naive) * probability(g.tau, j, value) + g.naive * error / 3);
+			return sum + g.n * weights[i] * bernoulli(g.states[j], p);
+		}, 0);
+		const trial = [...etaAll];
+		trial[j] = value;
+		return logPrior(j, value) + groups.reduce((sum, g, i) => sum + g.n * weights[i] * jointLog(g, trial, false), 0);
+	});
+	const weights = new Float64Array(groups.length).fill(1), nullEta = parameterIndices.map((j) => optimize(j, weights));
+	if (changes.length > 1) for (let round = 0; round < 4; round++) for (let j = 0; j < parameterIndices.length; j++) nullEta[j] = optimize(j, weights, nullEta);
 	const logNull = groups.map((g) => jointLog(g, nullEta, false));
 	const logAllele = groups.map((g) => jointLog(g, nullEta, true));
 	const nullObjective = groups.reduce((s, g, i) => s + g.n * logNull[i], 0) + nullEta.reduce((s, e, j) => s + logPrior(j, e), 0);
@@ -7585,7 +7878,7 @@ function testHaplotype(observations, changes, allChanges, calibration, error, pa
 			}
 			next += eta.reduce((s, e, j) => s + logPrior(j, e), 0);
 			f = Math.max(1e-8, Math.min(1 - 1e-8, count / Math.max(1, n)));
-			eta = changes.map((_, j) => optimize(j, weights, eta));
+			for (const j of parameterIndices) eta[j] = optimize(j, weights, eta);
 			if (Math.abs(next - objective) < 1e-5) {
 				objective = next;
 				break;
@@ -7642,7 +7935,7 @@ const DEFAULT_PERSONALIZED_GERMLINE_OPTIONS = {
 	maximumKnownAlleleSnps: 8,
 	maximumNovelSnps: 6,
 	minimumNovelSupport: 4,
-	minimumNovelFraction: .05,
+	minimumNovelFraction: 0,
 	maximumNovelCandidatesPerGene: 64,
 	minimumLogEvidenceGain: 0,
 	sequencingErrorRate: .001,
@@ -7763,9 +8056,10 @@ function parseObservation$1(row, ordinal, lineageId, byName, options) {
 		T: "A"
 	})[b] ?? "N").join("");
 	const anchor = rawPositions.get(cutoff);
+	const downstreamStart = Number(row.d_sequence_start) > 0 ? Number(row.d_sequence_start) - 1 : Number(row.j_sequence_start) > 0 ? Number(row.j_sequence_start) - 1 : raw.length;
 	const terminal = raw && anchor !== void 0 ? {
 		start: cutoff + 1,
-		query: raw.slice(anchor, anchor + 12)
+		query: raw.slice(anchor, Math.max(anchor, Math.min(anchor + 12, downstreamStart)))
 	} : void 0;
 	while (positions.length && positions[positions.length - 1] > cutoff) {
 		positions.pop();
@@ -7816,9 +8110,12 @@ function candidateSubstitutions(parent, sequence) {
 function candidateId(parent, substitutions) {
 	return `${parent.names[0]}__SWIGP_${substitutions.map((item) => `${item.reference}${item.position}${item.alternate}`).join("_")}`.replace(/[^A-Za-z0-9_.|*+\-]/g, "_");
 }
-function proposalEvidence(observations, substitutions) {
+function proposalEvidence(observations, substitutions, counts, calibration) {
 	let support = 0;
-	let coverage = 0;
+	let coverage = 0, priority = 0;
+	const interior = substitutions.filter((c) => c.position <= observations[0].parent.sequence.length - 12);
+	const omittedWeight = interior.reduce((sum, c) => sum + hs5fRate(observations[0].parent.sequence, c.position - 1), 0);
+	const exposureCache = /* @__PURE__ */ new Map();
 	for (const observation of observations) {
 		let complete = true;
 		let alternate = true;
@@ -7832,14 +8129,25 @@ function proposalEvidence(observations, substitutions) {
 			if (base !== substitution.alternate) alternate = false;
 		}
 		if (complete) coverage += 1;
-		if (complete && alternate) support += 1;
+		if (complete && alternate) {
+			support += 1;
+			const c = counts.get(observation);
+			const k = c.k - interior.length, w = Math.max(0, c.w - omittedWeight), n = c.n - interior.length, key = k + "|" + w + "|" + n;
+			let naive = exposureCache.get(key);
+			if (naive === void 0) {
+				naive = calibration.mutationExposureFromCounts(observation, k, w, n).naive;
+				exposureCache.set(key, naive);
+			}
+			priority += naive;
+		}
 	}
 	return {
 		support,
-		coverage
+		coverage,
+		priority
 	};
 }
-function proposeNovelCandidates(observations, options) {
+function proposeNovelCandidates(observations, options, calibration) {
 	const proposals = /* @__PURE__ */ new Map();
 	const byParent = /* @__PURE__ */ new Map();
 	for (const observation of observations) {
@@ -7849,6 +8157,21 @@ function proposeNovelCandidates(observations, options) {
 	}
 	for (const items of byParent.values()) {
 		const parent = items[0].parent;
+		const counts = new Map(items.map((o) => {
+			let k = 0, w = 0, n = 0;
+			for (let i = 0; i < o.positions.length; i++) {
+				const p = o.positions[i];
+				if (p > parent.sequence.length - 12) continue;
+				k += Number(o.query[i] !== parent.sequence[p - 1]);
+				w += hs5fRate(parent.sequence, p - 1);
+				n++;
+			}
+			return [o, {
+				k,
+				w,
+				n
+			}];
+		}));
 		const coverage = new Uint32Array(parent.sequence.length + 1);
 		const support = /* @__PURE__ */ new Map();
 		for (const observation of items) for (let offset = 0; offset < observation.positions.length; offset += 1) {
@@ -7881,18 +8204,22 @@ function proposeNovelCandidates(observations, options) {
 				if (event) substitutions.push(event);
 			}
 			substitutions.sort((left, right) => left.position - right.position || left.alternate.localeCompare(right.alternate));
-			if (!substitutions.length || substitutions.length > options.maximumNovelSnps) continue;
-			const signature = substitutions.map((item) => `${item.position}:${item.alternate}`).join("|");
-			const previous = patterns.get(signature);
-			if (previous) previous.observations += 1;
-			else patterns.set(signature, {
-				substitutions,
-				observations: 1
-			});
+			const core = substitutions.filter((c) => c.position <= parent.sequence.length - 12);
+			const observable = substitutions.filter((c) => c.position <= parent.sequence.length - 2);
+			const variants = [...new Map([core, observable].map((cs) => [cs.map((c) => c.position + ":" + c.alternate).join("|"), cs])).values()];
+			for (const changes of variants) {
+				if (!changes.length || changes.length > options.maximumNovelSnps) continue;
+				const signature = changes.map((item) => `${item.position}:${item.alternate}`).join("|");
+				const previous = patterns.get(signature);
+				if (previous) previous.observations += 1;
+				else patterns.set(signature, {
+					substitutions: changes,
+					observations: 1
+				});
+			}
 		}
 		for (const pattern of patterns.values()) {
-			if (pattern.observations < options.minimumNovelSupport) continue;
-			const evidence = proposalEvidence(items, pattern.substitutions);
+			const evidence = proposalEvidence(items, pattern.substitutions, counts, calibration);
 			if (evidence.support < options.minimumNovelSupport || evidence.support / Math.max(1, evidence.coverage) < options.minimumNovelFraction) continue;
 			const sequence = [...parent.sequence];
 			pattern.substitutions.forEach((item) => {
@@ -7909,14 +8236,15 @@ function proposeNovelCandidates(observations, options) {
 					parent,
 					substitutions: pattern.substitutions,
 					directSupport: evidence.support,
-					directCoverage: evidence.coverage
+					directCoverage: evidence.coverage,
+					proposalPriority: evidence.priority
 				}
 			};
 			const existing = proposals.get(joined);
 			if (!existing || proposal.candidate.directSupport > existing.candidate.directSupport) proposals.set(joined, proposal);
 		}
 	}
-	const ordered = [...proposals.values()].sort((left, right) => right.candidate.directSupport - left.candidate.directSupport || right.candidate.directCoverage - left.candidate.directCoverage || left.signature.localeCompare(right.signature));
+	const ordered = [...proposals.values()].sort((left, right) => (right.candidate.proposalPriority ?? 0) - (left.candidate.proposalPriority ?? 0) || right.candidate.directSupport - left.candidate.directSupport || right.candidate.directCoverage - left.candidate.directCoverage || left.signature.localeCompare(right.signature));
 	const maximum = Math.max(0, Math.floor(options.maximumNovelCandidatesPerGene));
 	return {
 		proposals: ordered.slice(0, maximum),
@@ -7989,11 +8317,11 @@ function normalizedEmissions(observations, candidates, sequencingErrorRate, cali
 				if (!BASES.test(germlineBase)) continue;
 				const mutation = 1 - Math.exp(-tau * context[candidateIndex][index]);
 				const probability = error + (1 - error) * mutation;
-				value += observation.query[offset] === germlineBase ? Math.log1p(-probability) : Math.log(Math.max(1e-12, error / 3 + (probability - error) * rates[candidateIndex][index]["ACGT".indexOf(observation.query[offset])] / Math.max(1e-12, context[candidateIndex][index])));
+				value += observation.query[offset] === germlineBase ? Math.log1p(-error) - tau * context[candidateIndex][index] : Math.log(Math.max(1e-12, error / 3 + (probability - error) * rates[candidateIndex][index]["ACGT".indexOf(observation.query[offset])] / Math.max(1e-12, context[candidateIndex][index])));
 			}
 			if (observation.terminal) value += boundaryLogLikelihood(candidate.sequence, observation.terminal.query, observation.terminal.start, (position, base) => {
 				const index = position - 1, mutation = 1 - Math.exp(-tau * context[candidateIndex][index]);
-				return base === candidate.sequence[index] ? Math.log(Math.max(1e-12, (1 - error) * (1 - mutation))) : Math.log(Math.max(1e-12, error / 3 + (1 - error) * mutation * rates[candidateIndex][index]["ACGT".indexOf(base)] / Math.max(1e-12, context[candidateIndex][index])));
+				return base === candidate.sequence[index] ? Math.log1p(-error) - tau * context[candidateIndex][index] : Math.log(Math.max(1e-12, error / 3 + (1 - error) * mutation * rates[candidateIndex][index]["ACGT".indexOf(base)] / Math.max(1e-12, context[candidateIndex][index])));
 			}, calibration.trimming({
 				...observation,
 				gene: candidate.parent.gene
@@ -8203,13 +8531,28 @@ function inferGene(observations, nodes, options, calibration, parentCount) {
 	const novel = proposeNovelCandidates(observations, {
 		...options,
 		maximumNovelCandidatesPerGene: options.maximumNovelCandidatesPerGene * new Set(observations.map((o) => o.gene)).size
-	});
+	}, calibration);
 	const diagnostics = [];
 	const accepted = [];
 	for (const proposal of [...novel.proposals].sort((a, b) => a.candidate.substitutions.length - b.candidate.substitutions.length || b.candidate.directSupport - a.candidate.directSupport)) {
 		const candidate = proposal.candidate;
 		if (candidatesBySequence.has(candidate.sequence)) continue;
 		if (candidate.sequence.length !== observations[0].parent.sequence.length) continue;
+		const coreChanges = candidate.substitutions.filter((c) => c.position <= candidate.sequence.length - 12);
+		const hasBoundary = coreChanges.length < candidate.substitutions.length;
+		const coreSequence = [...candidate.parent.sequence];
+		coreChanges.forEach((c) => coreSequence[c.position - 1] = c.alternate);
+		if (hasBoundary && coreChanges.length && !candidatesBySequence.has(coreSequence.join(""))) {
+			diagnostics.push({
+				id: candidate.id,
+				gain: -Infinity,
+				support: candidate.directSupport,
+				coverage: candidate.directCoverage,
+				baseline: "Interior haplotype not supported independently",
+				selected: false
+			});
+			continue;
+		}
 		const baseline = accepted.filter((c) => c.parent === candidate.parent && c.substitutions.length < candidate.substitutions.length && c.substitutions.every((x) => candidate.substitutions.some((y) => x.position === y.position && x.alternate === y.alternate))).sort((a, b) => b.substitutions.length - a.substitutions.length || b.directSupport - a.directSupport)[0];
 		const changes = candidate.substitutions.filter((c) => !baseline?.substitutions.some((b) => b.position === c.position && b.alternate === c.alternate));
 		const test = testHaplotype(observations.filter((o) => o.parent === candidate.parent && (!baseline || baseline.substitutions.every((c) => baseAt(o, c.position) === c.alternate))), changes, candidate.substitutions, calibration, options.sequencingErrorRate, parentCount);
@@ -8219,7 +8562,8 @@ function inferGene(observations, nodes, options, calibration, parentCount) {
 			support: candidate.directSupport,
 			coverage: candidate.directCoverage,
 			baseline: baseline?.id ?? candidate.parent.names[0],
-			selected: false
+			selected: false,
+			reason: test.reason
 		});
 		if (!(test.gain > options.minimumLogEvidenceGain)) continue;
 		candidate.searchCost = discoveryCost(candidate.sequence.length, candidate.substitutions.length, parentCount);
@@ -8227,14 +8571,15 @@ function inferGene(observations, nodes, options, calibration, parentCount) {
 		candidatesBySequence.set(candidate.sequence, candidate);
 	}
 	for (const candidate of [...accepted].sort((a, b) => b.directSupport - a.directSupport)) {
-		const baseline = accepted.filter((other) => other !== candidate && candidatesBySequence.has(other.sequence) && other.parent !== candidate.parent && other.directSupport > candidate.directSupport && substitutionCompatible(other.sequence, candidate.sequence, options.maximumKnownAlleleSnps)).sort((a, b) => hammingDistance(a.sequence, candidate.sequence) - hammingDistance(b.sequence, candidate.sequence) || b.directSupport - a.directSupport)[0];
+		const isSuperset = (other) => other.parent === candidate.parent && other.substitutions.length > candidate.substitutions.length && candidate.substitutions.every((c) => other.substitutions.some((s) => s.position === c.position && s.alternate === c.alternate));
+		const baseline = accepted.filter((other) => other !== candidate && candidatesBySequence.has(other.sequence) && (other.parent !== candidate.parent && other.directSupport > candidate.directSupport || isSuperset(other)) && substitutionCompatible(other.sequence, candidate.sequence, options.maximumKnownAlleleSnps)).sort((a, b) => hammingDistance(a.sequence, candidate.sequence) - hammingDistance(b.sequence, candidate.sequence) || b.directSupport - a.directSupport)[0];
 		if (!baseline) continue;
 		const proxyParent = {
 			...baseline.parent,
 			sequence: baseline.sequence
 		};
 		const changes = candidateSubstitutions(proxyParent, candidate.sequence);
-		const items = observations.filter((o) => o.parent === candidate.parent || o.parent === baseline.parent).map((o) => ({
+		const items = observations.filter((o) => (o.parent === candidate.parent || o.parent === baseline.parent) && (!isSuperset(baseline) || candidate.substitutions.every((c) => baseAt(o, c.position) === c.alternate))).map((o) => ({
 			...o,
 			gene: proxyParent.gene,
 			parent: proxyParent
@@ -8246,7 +8591,8 @@ function inferGene(observations, nodes, options, calibration, parentCount) {
 			support: candidate.directSupport,
 			coverage: items.length,
 			baseline: baseline.id,
-			selected: false
+			selected: false,
+			reason: test.reason
 		});
 		if (!(test.gain > options.minimumLogEvidenceGain)) candidatesBySequence.delete(candidate.sequence);
 	}
@@ -8280,6 +8626,7 @@ function inferGene(observations, nodes, options, calibration, parentCount) {
 			localBestLineages,
 			directSupport: candidate.directSupport,
 			directCoverage: candidate.directCoverage,
+			discoveryGain: candidate.known ? null : Math.min(...diagnostics.filter((d) => d.id === candidate.id || d.id === candidate.id + " [conditional backbone]").map((d) => d.gain)),
 			selectionGain: Number.isFinite(selected.gains.get(candidateIndex) ?? NaN) ? selected.gains.get(candidateIndex) : null
 		};
 	}).sort((left, right) => right.frequency - left.frequency || left.id.localeCompare(right.id, void 0, { numeric: true }));
@@ -8329,6 +8676,13 @@ var PersonalizedGermlineAccumulator = class {
 		this.eligibleRecords += 1;
 		const existing = this.selected.get(unit);
 		if (!existing || observation.shmRate < existing.shmRate || observation.shmRate === existing.shmRate && observation.alignedBases > existing.alignedBases || observation.shmRate === existing.shmRate && observation.alignedBases === existing.alignedBases && observation.ordinal < existing.ordinal) this.selected.set(unit, observation);
+	}
+	/** Read-only research input; does not perform inference or alter selection. */
+	researchSnapshot() {
+		return {
+			observations: [...this.selected.values()],
+			references: [...this.nodes]
+		};
 	}
 	selectedRepresentativeOrdinals() {
 		return [...this.selected.values()].map((item) => item.ordinal).sort((left, right) => left - right);
@@ -8404,13 +8758,15 @@ var PersonalizedGermlineAccumulator = class {
 		const skippedLineages = Math.max(0, this.seenLineages.size - this.selected.size);
 		if (skippedLineages) warnings.push(`${skippedLineages.toLocaleString()} assigned lineage${skippedLineages === 1 ? " had" : "s had"} no member with a recognized V call and at least ${this.options.minimumAlignedBases} aligned V nucleotides.`);
 		if ([...this.selected.values()].some((item) => item.subjectId === "unassigned-subject")) warnings.push("Rows without subject_id were pooled together. Supply subject identifiers before interpreting the result as a per-person genotype.");
-		if (proposalTruncations) warnings.push(`${proposalTruncations.toLocaleString()} gene fit${proposalTruncations === 1 ? " reached" : "s reached"} the novel-candidate cap; the highest direct-support hypotheses were retained.`);
+		if (proposalTruncations) warnings.push(`${proposalTruncations.toLocaleString()} gene fit${proposalTruncations === 1 ? " reached" : "s reached"} the novel-candidate cap; hypotheses with the largest expected unmutated-lineage support were retained. Increase the candidate cap before interpreting non-recovery in those genes.`);
 		if (entries.some(([, observations]) => observations.length < 4)) warnings.push("Some expressed V genes have fewer than four usable lineage representatives; their active sets are weakly identified and should not be treated as genomic absence calls.");
+		warnings.push("Novel changes confined to the final two V bases are unresolved under the gene-specific junction-start model. Interior candidate sequences retain their parent terminal bases; those bases are not independently inferred.");
+		warnings.push("Discovery scores are model-comparison statistics, not calibrated false-discovery probabilities. Stable full-reference candidates still need independent validation.");
 		warnings.push("Only expressed, same-length V-allele hypotheses are identifiable here. Untested genes are retained in downloaded references, and a final full reassignment is still required.");
 		return {
 			version: 1,
 			mode: "lowest-current-v-shm-per-lineage",
-			contextModel: "hs5f-aligned-leave-gene-out",
+			contextModel: "hs5f-hurdle-profiled-junction",
 			options: { ...this.options },
 			inputRecords: this.inputRecords,
 			eligibleRecords: this.eligibleRecords,
@@ -8442,6 +8798,7 @@ function personalizedGermlineEvidenceRows(dashboard) {
 		local_best_lineages: allele.localBestLineages,
 		direct_support: allele.directSupport,
 		direct_coverage: allele.directCoverage,
+		discovery_log_score: allele.discoveryGain ?? "known",
 		bic_adjusted_selection_gain: allele.selectionGain ?? "initial"
 	}))));
 }
@@ -8476,19 +8833,432 @@ function personalizedGermlineFasta(referenceFasta, dashboard, poolId) {
 	return serializeReferenceFasta([...retained, ...additions]);
 }
 //#endregion
+//#region src/shm-model/unified-mixture.ts
+function likelihood(rows, theta, q) {
+	let ll = 0;
+	for (const r of rows) {
+		let p = 0;
+		for (let c = 0; c < theta.length; c++) p += theta[c] * r.a[c] + q[c] * r.b[c];
+		ll += (r.count ?? 1) * Math.log(Math.max(1e-300, p));
+	}
+	return ll;
+}
+/** Product-of-simplexes concave MLE; tangent-plane bound certifies an upper bound
+* even if optimization stops early. No local optimum can exaggerate evidence. */
+function fit(rows, allowed, initial, maxIterations = 1e3, tolerance = 1e-5) {
+	const C = rows[0].a.length, theta = new Float64Array(C), q = new Float64Array(C);
+	rows.reduce((s, r) => s + (r.count ?? 1), 0);
+	for (const c of allowed) theta[c] = Math.max(1e-6, initial?.theta[c] ?? 1 / allowed.length);
+	for (let c = 0; c < C; c++) q[c] = Math.max(1e-6, initial?.q[c] ?? 1 / C);
+	const normalize = (x) => {
+		const s = x.reduce((a, b) => a + b, 0);
+		for (let i = 0; i < x.length; i++) x[i] /= s;
+	};
+	normalize(theta);
+	normalize(q);
+	let ll = -Infinity, gap = Infinity, iteration = 0;
+	for (; iteration < maxIterations; iteration++) {
+		const ga = new Float64Array(C), gb = new Float64Array(C);
+		ll = 0;
+		for (const r of rows) {
+			let p = 0;
+			for (let c = 0; c < C; c++) p += theta[c] * r.a[c] + q[c] * r.b[c];
+			p = Math.max(1e-300, p);
+			const w = (r.count ?? 1) / p;
+			ll += (r.count ?? 1) * Math.log(p);
+			for (let c = 0; c < C; c++) {
+				ga[c] += w * r.a[c];
+				gb[c] += w * r.b[c];
+			}
+		}
+		let da = 0, db = 0, ma = -Infinity, mb = -Infinity;
+		for (const c of allowed) {
+			da += theta[c] * ga[c];
+			ma = Math.max(ma, ga[c]);
+		}
+		for (let c = 0; c < C; c++) {
+			db += q[c] * gb[c];
+			mb = Math.max(mb, gb[c]);
+		}
+		gap = Math.max(0, ma - da) + Math.max(0, mb - db);
+		if (gap < tolerance || iteration === maxIterations - 1) break;
+		for (const c of allowed) theta[c] = Math.max(1e-15, theta[c] * ga[c] / Math.max(1e-300, da));
+		for (let c = 0; c < C; c++) q[c] = Math.max(1e-15, q[c] * gb[c] / Math.max(1e-300, db));
+		normalize(theta);
+		normalize(q);
+	}
+	return {
+		theta,
+		q,
+		ll,
+		upper: ll + gap,
+		gap,
+		iterations: iteration + 1
+	};
+}
+const HAZARDS = [
+	0,
+	1,
+	10,
+	100,
+	Infinity
+];
+/** logKernel is flattened candidate × exposure. A and B use a single row scale
+* shared across ALL hazard models, essential for valid likelihood comparisons. */
+function integrate(logKernel, times, weights) {
+	const K = times.length, C = logKernel.length / K, max = Math.max(...logKernel), kernel = Float64Array.from(logKernel, (v) => Math.exp(v - max));
+	return HAZARDS.map((h) => {
+		const a = new Float64Array(C), b = new Float64Array(C);
+		for (let c = 0; c < C; c++) for (let k = 0; k < K; k++) {
+			const retained = times[k] === 0 ? 1 : h === Infinity ? 0 : Math.exp(-h * times[k]);
+			const value = weights[k] * kernel[c * K + k];
+			a[c] += retained * value;
+			b[c] += (1 - retained) * value;
+		}
+		return {
+			a,
+			b
+		};
+	});
+}
+function fitHazards(rows, allowed, initial, maxIterations = 1e3) {
+	const fits = rows.map((r) => fit(r, allowed, initial, maxIterations));
+	let best = 0;
+	for (let h = 1; h < fits.length; h++) if (fits[h].ll > fits[best].ll) best = h;
+	return {
+		best,
+		fit: fits[best],
+		upper: Math.max(...fits.map((f) => f.upper)),
+		fits
+	};
+}
+function splitEvidence(train, test, known, maxIterations = 1e3) {
+	const all = known.map((_, i) => i), alternative = fitHazards(train, all, void 0, maxIterations), predictive = likelihood(test[alternative.best], alternative.fit.theta, alternative.fit.q);
+	const evidence = [];
+	for (let c = 0; c < known.length; c++) if (!known[c]) {
+		if (alternative.fit.theta[c] < 1e-6) {
+			evidence.push({
+				candidate: c,
+				logEvidence: -Infinity,
+				nullUpper: null,
+				gap: null
+			});
+			continue;
+		}
+		const focused = fit(train[alternative.best], all.filter((i) => known[i] || i === c), alternative.fit, maxIterations);
+		const focusedPredictive = likelihood(test[alternative.best], focused.theta, focused.q);
+		const m = Math.max(predictive, focusedPredictive), candidatePredictive = m + Math.log((Math.exp(predictive - m) + Math.exp(focusedPredictive - m)) / 2);
+		const allowed = all.filter((i) => i !== c), feasibleTheta = Float64Array.from(alternative.fit.theta);
+		feasibleTheta[c] = 0;
+		const sum = feasibleTheta.reduce((a, b) => a + b, 0);
+		for (const i of allowed) feasibleTheta[i] = sum > 0 ? feasibleTheta[i] / sum : 1 / allowed.length;
+		if (Math.max(...test.map((rows) => likelihood(rows, feasibleTheta, alternative.fit.q))) >= candidatePredictive) {
+			evidence.push({
+				candidate: c,
+				logEvidence: -Infinity,
+				nullUpper: null,
+				gap: null
+			});
+			continue;
+		}
+		const nullFit = fitHazards(test, allowed, alternative.fit, maxIterations);
+		evidence.push({
+			candidate: c,
+			logEvidence: candidatePredictive - nullFit.upper,
+			nullUpper: nullFit.upper,
+			gap: Math.max(...nullFit.fits.map((f) => f.gap))
+		});
+	}
+	return {
+		hazard: HAZARDS[alternative.best],
+		trainingLogLikelihood: alternative.fit.ll,
+		trainingGap: alternative.fit.gap,
+		predictiveLogLikelihood: predictive,
+		theta: Array.from(alternative.fit.theta),
+		somatic: Array.from(alternative.fit.q),
+		evidence
+	};
+}
+//#endregion
+//#region src/shm-model/unified-kernel.ts
+const I = () => Float64Array.from({ length: 16 }, (_, i) => Number(i % 5 === 0));
+/** Exact (to Poisson truncation tolerance) four-base CTMC, frozen flanking context.
+* Alternative bases are states of the same process; returns and repeated hits
+* are possible. Sequencing error is a separate stochastic channel. */
+function transition(context, t, error = .001) {
+	const Q = /* @__PURE__ */ new Float64Array(16);
+	let rate = 0;
+	for (let a = 0; a < 4; a++) {
+		const seq = context.slice(0, 2) + "ACGT"[a] + context.slice(3);
+		let sum = 0;
+		for (let b = 0; b < 4; b++) if (a !== b) {
+			Q[a * 4 + b] = hs5fRate(seq, 2, "ACGT"[b]);
+			sum += Q[a * 4 + b];
+		}
+		Q[a * 4 + a] = -sum;
+		rate = Math.max(rate, sum);
+	}
+	const P = I();
+	if (t > 0 && rate > 0) {
+		const R = Float64Array.from(Q, (v, i) => v / rate + Number(i % 5 === 0));
+		let power = I(), poisson = Math.exp(-rate * t), mass = poisson;
+		for (let i = 0; i < 16; i++) P[i] = power[i] * poisson;
+		for (let n = 1; n < 1e3 && 1 - mass > 1e-14; n++) {
+			const next = /* @__PURE__ */ new Float64Array(16);
+			for (let a = 0; a < 4; a++) for (let b = 0; b < 4; b++) for (let k = 0; k < 4; k++) next[a * 4 + b] += power[a * 4 + k] * R[k * 4 + b];
+			power = next;
+			poisson *= rate * t / n;
+			mass += poisson;
+			for (let i = 0; i < 16; i++) P[i] += poisson * power[i];
+		}
+		if (mass < 1 - 1e-10) throw new Error("CTMC quadrature did not converge");
+		for (let a = 0; a < 4; a++) {
+			let s = 0;
+			for (let b = 0; b < 4; b++) s += P[a * 4 + b];
+			for (let b = 0; b < 4; b++) P[a * 4 + b] /= s;
+		}
+	}
+	return Float64Array.from(P, (p) => error / 3 + (1 - 4 * error / 3) * p);
+}
+//#endregion
+//#region src/unified-germline.ts
+const DEFAULT_UNIFIED_OPTIONS = {
+	maximumCandidates: 64,
+	maximumIterations: 300,
+	splitSeed: 0
+};
+function inferUnifiedGermline(snapshot, options = DEFAULT_UNIFIED_OPTIONS, onProgress) {
+	for (const field of ["maximumCandidates", "maximumIterations"]) if (!Number.isSafeInteger(options[field]) || options[field] < 1) throw new Error(field + " must be a positive integer");
+	const { observations, references } = snapshot;
+	const isTraining = (o) => {
+		let x = (o.lineageId ^ options.splitSeed) >>> 0;
+		x = Math.imul(x ^ x >>> 16, 73244475);
+		x = Math.imul(x ^ x >>> 16, 73244475);
+		return ((x ^ x >>> 16) >>> 0) % 2 === 0;
+	};
+	const calibration = new AlignedRateCalibration(observations.filter(isTraining)), groups = /* @__PURE__ */ new Map();
+	const parents = references, roots = new Map(parents.map((p) => [p.index, p.index]));
+	const root = (n) => {
+		while (roots.get(n) !== n) n = roots.get(n);
+		return n;
+	};
+	for (let i = 0; i < parents.length; i++) for (let j = 0; j < i; j++) if (parents[i].locus === parents[j].locus && substitutionCompatible(parents[i].sequence, parents[j].sequence, 8)) roots.set(root(parents[i].index), root(parents[j].index));
+	for (const o of observations) {
+		const key = `${o.subjectId}|${o.locus}|${root(o.parent.index)}|${o.parent.sequence.length}`;
+		const g = groups.get(key) ?? [];
+		g.push(o);
+		groups.set(key, g);
+	}
+	const results = [];
+	let done = 0;
+	for (const [key, items] of groups) {
+		onProgress?.(done++, groups.size);
+		const train = items.filter(isTraining), test = items.filter((o) => !isTraining(o));
+		if (train.length < 4 || test.length < 4) continue;
+		const known = references.filter((p) => root(p.index) === root(items[0].parent.index));
+		const proposed = proposeNovelCandidates(train, {
+			...DEFAULT_PERSONALIZED_GERMLINE_OPTIONS,
+			maximumNovelCandidatesPerGene: options.maximumCandidates
+		}, calibration);
+		const candidates = [...new Map([...known.map((p) => ({
+			id: p.names.join(","),
+			sequence: p.sequence,
+			known: true
+		})), ...proposed.proposals.map((p) => ({
+			id: p.candidate.id,
+			sequence: p.candidate.sequence,
+			known: false
+		}))].map((c) => [c.sequence, c])).values()];
+		if (candidates.every((c) => c.known)) continue;
+		const fullLength = items[0].parent.sequence.length;
+		const L = fullLength - 2;
+		const projected = [...new Map([...candidates].reverse().map((c) => [c.sequence.slice(0, L), c])).values()].map((c) => ({
+			...c,
+			sequence: c.sequence.slice(0, L)
+		}));
+		for (const c of projected) if (known.some((k) => k.sequence.slice(0, L) === c.sequence)) c.known = true;
+		if (projected.every((c) => c.known)) continue;
+		const prior = calibration.componentModel(train[0], new Set(known.map((p) => p.gene))), times = [0, ...Array.from({ length: 16 }, (_, j) => -Math.log(1 - (j + .5) / 16) * prior.tau)], weights = [prior.naive, ...new Array(16).fill((1 - prior.naive) / 16)];
+		const cache = /* @__PURE__ */ new Map();
+		const tables = projected.map((c) => Array.from(c.sequence, (_, p) => {
+			const context = ("NN" + c.sequence + "NN").slice(p, p + 5);
+			let table = cache.get(context);
+			if (!table) {
+				table = times.map((t) => transition(context, t));
+				cache.set(context, table);
+			}
+			return table;
+		}));
+		const logTables = projected.map((c, ci) => Array.from(c.sequence, (base, p) => Float64Array.from({ length: times.length * 4 }, (_, i) => Math.log("ACGT".includes(base) ? tables[ci][p][Math.floor(i / 4)]["ACGT".indexOf(base) * 4 + i % 4] : [
+			0,
+			1,
+			2,
+			3
+		].reduce((sum, a) => sum + tables[ci][p][Math.floor(i / 4)][a * 4 + i % 4] / 4, 0)))));
+		const differences = projected.map((c, ci) => Array.from({ length: fullLength - 12 }, (_, p) => p).filter((p) => c.sequence[p] !== projected[0].sequence[p] || tables[ci][p] !== tables[0][p]));
+		const boundaryKeys = projected.map((c) => c.sequence.slice(fullLength - 14));
+		const build = (obs) => {
+			const rows = HAZARDS.map(() => []);
+			for (const o of obs) {
+				const logs = new Float64Array(projected.length * times.length), bases = new Int8Array(fullLength).fill(-1), baseline = new Float64Array(times.length);
+				for (let i = 0; i < o.positions.length; i++) {
+					const p = o.positions[i] - 1, b = "ACGT".indexOf(o.query[i]);
+					if (p >= fullLength - 12 || b < 0) continue;
+					bases[p] = b;
+					for (let k = 0; k < times.length; k++) baseline[k] += logTables[0][p][k * 4 + b];
+				}
+				const tails = /* @__PURE__ */ new Map();
+				for (let c = 0; c < projected.length; c++) {
+					let tail = tails.get(boundaryKeys[c]);
+					if (!tail) {
+						tail = new Float64Array(times.length);
+						if (o.terminal) for (let k = 0; k < times.length; k++) tail[k] = boundaryLogLikelihood(projected[c].sequence + "NN", o.terminal.query, o.terminal.start, (position, base) => {
+							const p = position - 1, b = "ACGT".indexOf(base);
+							return p >= L || b < 0 ? Math.log(.25) : logTables[c][p][k * 4 + b];
+						}, prior.trimming, prior.junction);
+						tails.set(boundaryKeys[c], tail);
+					}
+					for (let k = 0; k < times.length; k++) {
+						let value = baseline[k] + tail[k];
+						for (const p of differences[c]) {
+							const b = bases[p];
+							if (b >= 0) value += logTables[c][p][k * 4 + b] - logTables[0][p][k * 4 + b];
+						}
+						logs[c * times.length + k] = value;
+					}
+				}
+				const integrated = integrate(logs, times, weights);
+				for (let h = 0; h < rows.length; h++) rows[h].push(integrated[h]);
+			}
+			return rows;
+		};
+		const start = performance.now();
+		const fit = splitEvidence(build(train), build(test), projected.map((c) => c.known), options.maximumIterations);
+		results.push({
+			key,
+			trainingLineages: train.length,
+			testLineages: test.length,
+			prior,
+			times,
+			weights,
+			proposalTruncated: proposed.truncated,
+			seconds: (performance.now() - start) / 1e3,
+			...fit,
+			evidence: fit.evidence.map((e) => ({
+				...projected[e.candidate],
+				...e
+			}))
+		});
+	}
+	const testsBySubject = {};
+	for (const r of results) {
+		const subject = r.key.split("|")[0];
+		testsBySubject[subject] = (testsBySubject[subject] ?? 0) + r.evidence.length;
+	}
+	return {
+		evidenceRule: {
+			alpha: .05,
+			testsBySubject,
+			description: "log evidence >= log(M/0.05), conditional on the fitted observation model; not an established real-data error guarantee"
+		},
+		version: 1,
+		mode: "joint-inherited-somatic-split",
+		options,
+		scope: "V sequence excluding final two bases; fixed training-calibrated rearrangement nuisance",
+		results,
+		warnings: [
+			"Experimental model: scores are conditional on the mutation, exposure and rearrangement assumptions; real-data FDR is not established.",
+			"Candidate generation and calibration use the training half only. Small/rare signals may be unidentifiable in the held-out half.",
+			"Final two V bases are unresolved and are not inferred.",
+			"One lowest-current-SHM representative per lineage is used; this sampling choice and imperfect lineage calls remain limitations.",
+			...results.some((r) => r.proposalTruncated) ? ["Some training proposal queues reached the candidate budget; absence from the tested set is not evidence of absence."] : []
+		]
+	};
+}
+//#endregion
+//#region cli-src/unified-germline.mjs
+async function runUnifiedGermline(args) {
+	if (args.includes("--help")) {
+		console.log("swig-cli joint-germline --airr FILE[.gz] --v-reference V.fasta --out DIRECTORY [--max-candidates N] [--iterations N]\nSeparate experimental inherited/SHM model; reports held-out evidence, not validated germline calls.");
+		return;
+	}
+	const options = {};
+	for (let i = 0; i < args.length; i++) {
+		if (![
+			"--airr",
+			"--v-reference",
+			"--out",
+			"--max-candidates",
+			"--iterations"
+		].includes(args[i]) || !args[i + 1]) throw new Error("Unknown or incomplete joint-germline option: " + args[i]);
+		options[args[i]] = args[++i];
+	}
+	for (const k of [
+		"--airr",
+		"--v-reference",
+		"--out"
+	]) if (!options[k]) throw new Error("joint-germline requires " + k);
+	const settings = { ...DEFAULT_UNIFIED_OPTIONS };
+	for (const [arg, key] of [["--max-candidates", "maximumCandidates"], ["--iterations", "maximumIterations"]]) if (options[arg] !== void 0) {
+		const n = Number(options[arg]);
+		if (!Number.isSafeInteger(n) || n < 1) throw new Error(arg + " must be a positive integer");
+		settings[key] = n;
+	}
+	const acc = new PersonalizedGermlineAccumulator(await readFile(options["--v-reference"], "utf8")), raw = createReadStream(options["--airr"]), stream = options["--airr"].endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
+	raw.on("error", (e) => stream.destroy(e));
+	let headers, ordinal = 0;
+	for await (const line of createInterface({
+		input: stream,
+		crlfDelay: Infinity
+	})) {
+		if (!headers) {
+			headers = line.replace(/^\uFEFF/, "").split("	");
+			for (const field of [
+				"v_call",
+				"v_germline_start",
+				"v_sequence_alignment",
+				"v_germline_alignment"
+			]) if (!headers.includes(field)) throw new Error("Missing AIRR field: " + field);
+			if (!headers.includes("clone_id") && !headers.includes("lineage_id")) throw new Error("Lineage assignments are required");
+			continue;
+		}
+		if (!line) continue;
+		const cells = line.split("	"), row = Object.fromEntries(headers.map((h, i) => [h, cells[i] ?? ""]));
+		acc.add(row, ordinal++, Number(row.clone_id || row.lineage_id));
+	}
+	let last = 0;
+	const started = performance.now();
+	const result = inferUnifiedGermline(acc.researchSnapshot(), settings, (done, total) => {
+		if (performance.now() - last > 5e3) {
+			process.stderr.write(`[joint germline] ${done}/${total} components\n`);
+			last = performance.now();
+		}
+	});
+	await mkdir(options["--out"], { recursive: true });
+	await writeFile(join(options["--out"], "joint-germline.json"), JSON.stringify(result, null, 2));
+	console.log(JSON.stringify({
+		components: result.results.length,
+		proposals: result.results.reduce((n, r) => n + r.evidence.length, 0),
+		positiveHeldOut: result.results.reduce((n, r) => n + r.evidence.filter((e) => e.logEvidence > 0).length, 0),
+		seconds: (performance.now() - started) / 1e3,
+		warnings: result.warnings
+	}, null, 2));
+}
+//#endregion
 //#region cli-src/personalized-germline.mjs
 async function runPersonalizedGermline(args) {
 	const options = {};
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === "--help") {
-			console.log("swig-cli personalized-germline --airr FILE[.gz] --v-reference V.fasta --out DIRECTORY [--subject ID]\nRequires clone_id (or lineage_id), V alignments and germline coordinates. Raw sequence and v_sequence_end support boundary uncertainty. One model per subject.");
+			console.log("swig-cli personalized-germline --airr FILE[.gz] --v-reference V.fasta --out DIRECTORY [--subject ID] [--max-candidates N]\nRequires clone_id (or lineage_id), V alignments and germline coordinates. Raw sequence and v_sequence_end support boundary uncertainty. One model per subject.");
 			return;
 		}
 		if (![
 			"--airr",
 			"--v-reference",
 			"--out",
-			"--subject"
+			"--subject",
+			"--max-candidates"
 		].includes(args[i]) || !args[i + 1]) throw new Error(`Unknown or incomplete personalized-germline option: ${args[i]}`);
 		options[args[i]] = args[++i];
 	}
@@ -8497,7 +9267,9 @@ async function runPersonalizedGermline(args) {
 		"--v-reference",
 		"--out"
 	]) if (!options[key]) throw new Error(`personalized-germline requires ${key}.`);
-	const fasta = await readFile(options["--v-reference"], "utf8"), acc = new PersonalizedGermlineAccumulator(fasta);
+	const cap = options["--max-candidates"] === void 0 ? void 0 : Number(options["--max-candidates"]);
+	if (cap !== void 0 && (!Number.isSafeInteger(cap) || cap < 1)) throw new Error("--max-candidates must be a positive integer.");
+	const fasta = await readFile(options["--v-reference"], "utf8"), acc = new PersonalizedGermlineAccumulator(fasta, cap === void 0 ? {} : { maximumNovelCandidatesPerGene: cap });
 	const input = createReadStream(options["--airr"]);
 	const stream = options["--airr"].endsWith(".gz") ? input.pipe(createGunzip()) : input;
 	input.on("error", (error) => stream.destroy(error));
@@ -12073,7 +12845,7 @@ var ShmAccumulator = class {
 };
 //#endregion
 //#region cli-src/swig-cli.mjs
-const VERSION = "0.38.7";
+const VERSION = "0.38.10";
 const CLI_STREAM_HIGH_WATER_MARK = 8388608;
 const CLI_GZIP_CHUNK_SIZE = 1048576;
 const CLI_DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -12085,7 +12857,7 @@ function defaultCliAssets() {
 	};
 }
 function usage() {
-	return `swig-cli ${VERSION}\n\nRun a complete non-phylogenetic Swig pipeline:\n  swig-cli run reads.fastq.gz --out swig-output\n  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N] [--airr-compression none|gzip]\n\nInfer personalized V alleles from lineage-assigned AIRR:\n  swig-cli personalized-germline --airr processed.airr.tsv.gz --v-reference V.fasta --out germline\n\nRun only streaming V(D)J assignment (AIRR outfmt 19):\n  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -out calls.airr.tsv\n\nPrepare custom germlines once and reuse their inferred annotations:\n  swig-cli prepare-reference -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -organism human -ig_seqtype Ig --out-prefix refs/custom\n\nDisplay bundled-data attribution and license:\n  swig-cli notices\n\nCreate an editable config:\n  swig-cli init swig.config.json\n\nSingle-input metadata options:\n  --sample SAMPLE_ID  --donor SUBJECT_ID  --dataset DATASET_ID\n\nSamples with the same subjectId/--donor are treated as the same donor.\nLineage phylogenetics is intentionally not run by swig-cli.`;
+	return `swig-cli ${VERSION}\n\nRun a complete non-phylogenetic Swig pipeline:\n  swig-cli run reads.fastq.gz --out swig-output\n  swig-cli run --config swig.config.json [--out DIRECTORY] [--workers N] [--airr-compression none|gzip]\n\nExperimental joint inherited/SHM model: swig-cli joint-germline --help\n\nInfer personalized V alleles from lineage-assigned AIRR:\n  swig-cli personalized-germline --airr processed.airr.tsv.gz --v-reference V.fasta --out germline\n\nRun only streaming V(D)J assignment (AIRR outfmt 19):\n  swig-cli --vdj -query reads.fasta -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -out calls.airr.tsv\n\nPrepare custom germlines once and reuse their inferred annotations:\n  swig-cli prepare-reference -germline_db_V V.fasta -germline_db_D D.fasta \\\n    -germline_db_J J.fasta -organism human -ig_seqtype Ig --out-prefix refs/custom\n\nDisplay bundled-data attribution and license:\n  swig-cli notices\n\nCreate an editable config:\n  swig-cli init swig.config.json\n\nSingle-input metadata options:\n  --sample SAMPLE_ID  --donor SUBJECT_ID  --dataset DATASET_ID\n\nSamples with the same subjectId/--donor are treated as the same donor.\nLineage phylogenetics is intentionally not run by swig-cli.`;
 }
 function prepareReferenceUsage() {
 	return `swig-cli ${VERSION} prepare-reference\n\nInfer, validate, and persist reusable SWIGMETA germline annotations.\n\nRequired:\n  -germline_db_V FASTA  -germline_db_J FASTA  --out-prefix PREFIX\n\nOptional references and exact metadata:\n  -germline_db_D FASTA  -c_region_db FASTA\n  -custom_internal_data FILE  -auxiliary_data FILE  -d_frame_data FILE\n  -organism NAME (default human)  -ig_seqtype Ig|TCR (default Ig)\n\nMatching controls:\n  --match-mode strict|permissive|best-guess  (default strict)\n  --best-guess             Alias for --match-mode best-guess; disables identity floors\n  --nearest-candidates N   Non-gene candidates aligned after named candidates fail\n  --v-same-gene-min-identity X  --v-nearest-min-identity X\n  --j-same-gene-min-identity X  --j-nearest-min-identity X\n  --require-complete       Exit nonzero if any V/J record remains unresolved\n\nOutputs are PREFIX.V/D/J/C.fasta, PREFIX.swig-reference.json, and\nPREFIX.annotation-diagnostics.tsv. The manifest can be passed directly to\nswig-cli --vdj with --prepared-reference.`;
@@ -13971,6 +14743,10 @@ async function runCli(assets = defaultCliAssets()) {
 	}
 	const command = args[0] && !args[0].startsWith("-") ? args[0] : "run";
 	const rest = command === args[0] ? args.slice(1) : args;
+	if (command === "joint-germline") {
+		await runUnifiedGermline(rest);
+		return;
+	}
 	if (command === "personalized-germline") {
 		await runPersonalizedGermline(rest);
 		return;

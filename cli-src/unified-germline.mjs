@@ -1,0 +1,14 @@
+import {createReadStream} from 'node:fs';import {readFile,mkdir,writeFile} from 'node:fs/promises';import {createGunzip} from 'node:zlib';import {createInterface} from 'node:readline';import {join} from 'node:path';
+import {PersonalizedGermlineAccumulator} from '../src/personalized-germline.ts';
+import {inferUnifiedGermline,DEFAULT_UNIFIED_OPTIONS} from '../src/unified-germline.ts';
+export async function runUnifiedGermline(args){
+ if(args.includes('--help')){console.log('swig-cli joint-germline --airr FILE[.gz] --v-reference V.fasta --out DIRECTORY [--max-candidates N] [--iterations N]\nSeparate experimental inherited/SHM model; reports held-out evidence, not validated germline calls.');return;}
+ const options={};for(let i=0;i<args.length;i++){if(!['--airr','--v-reference','--out','--max-candidates','--iterations'].includes(args[i])||!args[i+1])throw new Error('Unknown or incomplete joint-germline option: '+args[i]);options[args[i]]=args[++i];}
+ for(const k of ['--airr','--v-reference','--out'])if(!options[k])throw new Error('joint-germline requires '+k);
+ const settings={...DEFAULT_UNIFIED_OPTIONS};for(const [arg,key] of [['--max-candidates','maximumCandidates'],['--iterations','maximumIterations']])if(options[arg]!==undefined){const n=Number(options[arg]);if(!Number.isSafeInteger(n)||n<1)throw new Error(arg+' must be a positive integer');settings[key]=n;}
+ const acc=new PersonalizedGermlineAccumulator(await readFile(options['--v-reference'],'utf8')),raw=createReadStream(options['--airr']),stream=options['--airr'].endsWith('.gz')?raw.pipe(createGunzip()):raw;raw.on('error',e=>stream.destroy(e));let headers,ordinal=0;
+ for await(const line of createInterface({input:stream,crlfDelay:Infinity})){if(!headers){headers=line.replace(/^\uFEFF/,'').split('\t');for(const field of ['v_call','v_germline_start','v_sequence_alignment','v_germline_alignment'])if(!headers.includes(field))throw new Error('Missing AIRR field: '+field);if(!headers.includes('clone_id')&&!headers.includes('lineage_id'))throw new Error('Lineage assignments are required');continue;}if(!line)continue;const cells=line.split('\t'),row=Object.fromEntries(headers.map((h,i)=>[h,cells[i]??'']));acc.add(row,ordinal++,Number(row.clone_id||row.lineage_id));}
+ let last=0;const started=performance.now();const result=inferUnifiedGermline(acc.researchSnapshot(),settings,(done,total)=>{if(performance.now()-last>5000){process.stderr.write(`[joint germline] ${done}/${total} components\n`);last=performance.now();}});
+ await mkdir(options['--out'],{recursive:true});await writeFile(join(options['--out'],'joint-germline.json'),JSON.stringify(result,null,2));
+ console.log(JSON.stringify({components:result.results.length,proposals:result.results.reduce((n,r)=>n+r.evidence.length,0),positiveHeldOut:result.results.reduce((n,r)=>n+r.evidence.filter(e=>e.logEvidence>0).length,0),seconds:(performance.now()-started)/1000,warnings:result.warnings},null,2));
+}
