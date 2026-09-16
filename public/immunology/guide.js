@@ -90,11 +90,14 @@ async function loadChapter() {
       pagination.append(link);
     }
 
-    // Fragment targets only exist after the Markdown has loaded. Decoding is
-    // guarded because a malformed fragment must not prevent reading a chapter.
-    if (location.hash) {
+    // Wait for figure dimensions before resolving a deep link: an SVG loaded
+    // above the target would otherwise move it after the initial scroll.
+    const fragment = location.hash;
+    if (fragment) {
+      await Promise.all([...chapter.querySelectorAll('img')].map((image) => image.decode().catch(() => {})));
+      if (location.hash !== fragment) return;
       let id;
-      try { id = decodeURIComponent(location.hash.slice(1)); } catch { id = location.hash.slice(1); }
+      try { id = decodeURIComponent(fragment.slice(1)); } catch { id = fragment.slice(1); }
       const target = document.getElementById(id);
       if (target) {
         target.tabIndex = -1;
