@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="891" viewBox="0 0 1200 891" role="img" aria-labelledby="title desc">
+<title id="title">B-cell activation, germinal-centre cycling, and differentiation</title><desc id="desc">A naive B cell with an already rearranged receptor encounters antigen and helper-T-cell signals. Activated cells expand and can begin early antibody production. Some descendants enter a germinal centre. Mutation and proliferation generate receptor variants. B cells capture intact antigen on follicular dendritic cells and present peptides to follicular helper T cells. Help supports survival and further expansion. Selected cells can return for more cycles. Some surviving cells differentiate into memory B cells or antibody-secreting plasma cells.</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4.5 L0,9 Z" fill="#546777"/></marker><pattern id="added" width="7" height="7" patternUnits="userSpaceOnUse"><rect width="7" height="7" fill="#E8EDF1"/><path d="M-1,1 L1,-1 M0,7 L7,0 M6,8 L8,6" stroke="#C9D3DC" stroke-width="1"/></pattern></defs>
+<rect x="0" y="0" width="1200" height="891" rx="0" fill="#FFFFFF"/>
+<text x="44" y="51" font-family="DejaVu Sans, Arial, sans-serif" font-size="29" font-weight="700" text-anchor="start" fill="#1C3040">A B-cell response: diversification and selection</text>
+<text x="44" y="85" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#546777">Mutation generates variants; antigen capture and T-cell help influence which cells persist.</text>
+<rect x="44" y="125" width="306" height="120" rx="8" fill="#DEEFF2" stroke="#BBC9D2" stroke-width="1.2"/>
+<text x="64" y="160" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#1C3040">Naïve B cell</text>
+<text x="64" y="193" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#1C3040">A rearranged receptor</text>
+<text x="64" y="218" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#1C3040">is already present.</text>
+<rect x="443" y="125" width="310" height="120" rx="8" fill="#F5F8FA" stroke="#BBC9D2" stroke-width="1.2"/>
+<text x="463" y="160" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#1C3040">Activation</text>
+<text x="463" y="193" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#1C3040">Antigen capture and</text>
+<text x="463" y="218" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#1C3040">helper-T-cell signals</text>
+<rect x="848" y="125" width="308" height="120" rx="8" fill="#F5F8FA" stroke="#BBC9D2" stroke-width="1.2"/>
+<text x="868" y="160" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#1C3040">Clonal expansion</text>
+<text x="868" y="193" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#1C3040">Activated cells divide;</text>
+<text x="868" y="218" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#1C3040">early antibody output can begin.</text>
+<path d="M353 185 H436" fill="none" stroke="#546777" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M756 185 H841" fill="none" stroke="#546777" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M1002 247 V315" fill="none" stroke="#546777" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="640" y="278" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#546777">Some descendants enter</text>
+<text x="640" y="302" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#546777">a germinal centre.</text>
+<rect x="44" y="322" width="1112" height="350" rx="12" fill="#F5F8FA" stroke="#BBC9D2" stroke-width="1.2"/>
+<text x="66" y="357" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="700" text-anchor="start" fill="#1C3040">Germinal centre</text>
+<rect x="78" y="392" width="431" height="191" rx="8" fill="#DEEFF2" stroke="#216879" stroke-width="1.2"/>
+<rect x="686" y="392" width="438" height="191" rx="8" fill="#ECE6F5" stroke="#6A5393" stroke-width="1.2"/>
+<text x="101" y="429" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#216879">Mutation and proliferation</text>
+<text x="101" y="465" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#1C3040">AID initiates DNA changes.</text>
+<text x="101" y="493" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#1C3040">Division produces variant descendants.</text>
+<text x="101" y="521" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#1C3040">Changes can improve, impair,</text>
+<text x="101" y="549" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#1C3040">or preserve receptor function.</text>
+<text x="710" y="429" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#6A5393">Antigen capture and selection</text>
+<text x="710" y="465" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#1C3040">B cells bind intact antigen on FDCs.</text>
+<text x="710" y="493" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#1C3040">They present peptides to Tfh cells.</text>
+<text x="710" y="521" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#1C3040">Help supports survival and expansion.</text>
+<text x="710" y="549" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#1C3040">Only some variants receive enough help.</text>
+<path d="M511 477 H679" fill="none" stroke="#546777" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="595" y="456" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="middle" fill="#546777">variants</text>
+<path d="M905 586 V619 H292 V587" fill="none" stroke="#546777" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="600" y="649" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#546777">Selected cells can return for another cycle</text>
+<path d="M600 674 V692 H350 V736" fill="none" stroke="#546777" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M600 692 H850 V736" fill="none" stroke="#546777" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="600" y="721" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="middle" fill="#546777">Some surviving cells differentiate</text>
+<rect x="170" y="739" width="360" height="89" rx="8" fill="#F5F8FA" stroke="#BBC9D2" stroke-width="1.2"/>
+<text x="350" y="776" font-family="DejaVu Sans, Arial, sans-serif" font-size="23" font-weight="700" text-anchor="middle" fill="#1C3040">Memory B cells</text>
+<text x="350" y="805" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="middle" fill="#1C3040">Persist and contribute to later responses</text>
+<rect x="670" y="739" width="360" height="89" rx="8" fill="#F5F8FA" stroke="#BBC9D2" stroke-width="1.2"/>
+<text x="850" y="776" font-family="DejaVu Sans, Arial, sans-serif" font-size="23" font-weight="700" text-anchor="middle" fill="#1C3040">Plasma cells</text>
+<text x="850" y="805" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="middle" fill="#1C3040">Secrete antibodies</text>
+<text x="44" y="862" font-family="DejaVu Sans, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="start" fill="#546777">FDC: follicular dendritic cell. Tfh: follicular helper T cell. A schematic of a T-cell-dependent response.</text>
+</svg>
