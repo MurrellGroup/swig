@@ -26,6 +26,7 @@ import type { PhyloUcaMcmcDiagnostics, PhyloUcaOptions, PhyloUcaProgress, PhyloU
 export type PhyloUcaPanelState = PhyloUcaSavedState;
 
 interface Props {
+  templateOrdinal?: number;
   alignment: string;
   lineageRows: AirrDetailRow[];
   lineageIds: number[];
@@ -155,21 +156,24 @@ function PhyloUcaMcmcMixing({ diagnostics }: { diagnostics: PhyloUcaMcmcDiagnost
   </section>;
 }
 
-export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel, locus, references, inputName, frameOffset, isTcr, sampleColors, multiplicityByOrdinal, lineageByOrdinal, observedTreeNewick, observedTreeSource, initialState, onStateChange }: Props) {
+export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel, locus, references, inputName, frameOffset, isTcr, sampleColors, multiplicityByOrdinal, lineageByOrdinal, observedTreeNewick, observedTreeSource, initialState, onStateChange, templateOrdinal }: Props) {
   const fingerprint = useMemo(() => inspectAlignment(alignment).fingerprint, [alignment]);
   const retainedLineageRows = useMemo(() => alignmentRetainedRows(parseFasta(alignment, true), lineageRows), [alignment, lineageRows]);
+  const retainedTemplateOrdinal = retainedLineageRows.some((row) => row.record.ordinal === templateOrdinal) ? templateOrdinal : undefined;
   const suppliedObservedTree = observedTreeNewick?.trim() ?? "";
   const initialUsesUploadedTree = Boolean(suppliedObservedTree && (!initialState?.result || initialState.result.observedTreeNewick.trim() === suppliedObservedTree));
   const [observedTreeMode, setObservedTreeMode] = useState<"uploaded" | "fasttree">(initialUsesUploadedTree ? "uploaded" : "fasttree");
   const usingUploadedTree = observedTreeMode === "uploaded" && Boolean(suppliedObservedTree);
   const initialFrame = initialState?.frameOffset ?? initialState?.result?.frameOffset ?? 0;
   const matchingInitial = initialState?.alignmentFingerprint === fingerprint
+    && initialState.templateOrdinal === retainedTemplateOrdinal
+    && (!initialState.result || initialState.result.templateOrdinal === retainedTemplateOrdinal)
     && initialState.lineageIds.join(",") === lineageIds.join(",")
     && initialFrame === frameOffset
     && (!usingUploadedTree || initialState.result?.observedTreeNewick.trim() === suppliedObservedTree)
     ? initialState
     : null;
-  const [options, setOptions] = useState<PhyloUcaOptions>(() => completePhyloUcaOptions(matchingInitial?.options));
+  const [options, setOptions] = useState<PhyloUcaOptions>(() => completePhyloUcaOptions(matchingInitial?.options ?? (initialState?.lineageIds.join(",") === lineageIds.join(",") ? initialState.options : undefined)));
   const [result, setResult] = useState<PhyloUcaResult | null>(() => matchingInitial?.result ?? null);
   const [progress, setProgress] = useState<PhyloUcaProgress | null>(null);
   const [treeStage, setTreeStage] = useState(false);
@@ -187,10 +191,11 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
   const annotationScrollRef = useRef<HTMLDivElement>(null);
   const suppliedTreeRef = useRef(suppliedObservedTree);
   const adoptedResultSnapshotRef = useRef(matchingInitial?.result?.generatedAt ?? null);
-  // Tree-source changes invalidate only the fitted result. They must not reset
-  // the user's HMM/search settings; alignment identity changes still do.
-  const identityKey = `${lineageIds.join(",")}|${fingerprint}|${frameOffset}`;
+  // Template/alignment changes invalidate the fit but keep HMM/search settings
+  // within the same lineage; a different lineage gets its saved/default options.
+  const identityKey = `${lineageIds.join(",")}|${fingerprint}|${frameOffset}|${retainedTemplateOrdinal ?? "consensus"}`;
   const identityKeyRef = useRef(identityKey);
+  const lineageKeyRef = useRef(lineageIds.join(","));
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
     if (suppliedTreeRef.current === suppliedObservedTree) return;
@@ -206,13 +211,17 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
     abortRef.current?.abort();
     const restoredFrame = initialState?.frameOffset ?? initialState?.result?.frameOffset ?? 0;
     const restored = initialState?.alignmentFingerprint === fingerprint
+      && initialState.templateOrdinal === retainedTemplateOrdinal
+      && (!initialState.result || initialState.result.templateOrdinal === retainedTemplateOrdinal)
       && initialState.lineageIds.join(",") === lineageIds.join(",")
       && restoredFrame === frameOffset
       && (!usingUploadedTree || initialState.result?.observedTreeNewick.trim() === suppliedObservedTree)
       ? initialState
       : null;
     adoptedResultSnapshotRef.current = restored?.result?.generatedAt ?? null;
-    setOptions(completePhyloUcaOptions(restored?.options));
+    const lineageChanged = lineageKeyRef.current !== lineageIds.join(",");
+    lineageKeyRef.current = lineageIds.join(",");
+    if (restored || lineageChanged) setOptions(completePhyloUcaOptions(restored?.options));
     setResult(restored?.result ?? null);
     setProgress(null);
     setError("");
@@ -227,9 +236,9 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
     setResult(incoming.result);
   }, [matchingInitial]);
   useEffect(() => {
-    const currentResult = result && result.alignmentFingerprint === fingerprint && (result.frameOffset ?? 0) === frameOffset ? result : undefined;
-    onStateChange?.({ lineageIds: [...lineageIds], alignmentFingerprint: fingerprint, frameOffset, options, result: currentResult });
-  }, [fingerprint, frameOffset, lineageIds, onStateChange, options, result]);
+    const currentResult = result && result.alignmentFingerprint === fingerprint && (result.frameOffset ?? 0) === frameOffset && result.templateOrdinal === retainedTemplateOrdinal ? result : undefined;
+    onStateChange?.({ lineageIds: [...lineageIds], alignmentFingerprint: fingerprint, frameOffset, templateOrdinal: retainedTemplateOrdinal, options, result: currentResult });
+  }, [fingerprint, frameOffset, retainedTemplateOrdinal, lineageIds, onStateChange, options, result]);
   useEffect(() => {
     if (result && !(result.codonPosterior?.length) && logoMode !== "nt") setLogoMode("nt");
   }, [logoMode, result]);
@@ -270,6 +279,7 @@ export function PhyloUcaPanel({ alignment, lineageRows, lineageIds, lineageLabel
         observedAlignmentFasta: observed.posteriorFasta,
         retainedColumns: observed.posteriorColumns,
         germlineGuideName: GERMLINE_OUTGROUP,
+        templateOrdinal: retainedTemplateOrdinal,
         lineageRows: retainedLineageRows.map((row) => ({ ordinal: row.record.ordinal, sequenceId: row.record.sequenceId, locus: row.values.locus || row.record.locus, values: { ...row.values } })),
         references: { V: references.V, D: references.D, J: references.J },
         locus,

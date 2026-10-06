@@ -2,10 +2,39 @@ import { parseFasta } from "./post-analysis-core.ts";
 import { biologicalFrameOffset } from "./alignment-model.ts";
 import type { AlignmentFrameOffset } from "./lineage-phylogeny.ts";
 import type { AirrDetailRow } from "./result-store.ts";
+import { parseReferenceFasta } from "./reference-fasta.ts";
 
 export const GERMLINE_OUTGROUP = "__germline_N_masked__";
 
 export type LineageGermlineMethod = "closest" | "consensus";
+
+export interface LineageGermlineOptions {
+  references?: { V: string; J: string };
+  /** Explicit member override; never silently replaced by the automatic rank. */
+  templateOrdinal?: number;
+}
+
+function referenceIndex(fasta: string): Map<string, string> {
+  return new Map(parseReferenceFasta(fasta).map((record) => [record.name, normalizedAlignment(record.sequence).replaceAll("-", "")]));
+}
+
+/** Only exact called records with coordinate-consistent AIRR reference alignments may supply missing flanks. */
+function segmentReferences(row: AirrDetailRow, segment: "v" | "j", index: Map<string, string>): string[] {
+  const start = positiveInteger(row.values[`${segment}_germline_start`]);
+  const end = positiveInteger(row.values[`${segment}_germline_end`]);
+  const aligned = normalizedAlignment(row.values[`${segment}_germline_alignment`]).replaceAll("-", "");
+  const calls = (row.values[`${segment}_call`] || "").split(",").map((call) => call.trim()).filter(Boolean);
+  if (!start || !end || end < start || aligned.length !== end - start + 1 || !calls.length) return [];
+  const records = calls.map((call) => index.get(call));
+  // Missing or conflicting aliases must not be resolved by picking the first call.
+  if (records.some((sequence) => !sequence || sequence.slice(start - 1, end) !== aligned)) return [];
+  return records as string[];
+}
+
+function unanimousSequence(sequences: string[]): string {
+  if (!sequences.length || sequences.some((sequence) => sequence.length !== sequences[0].length)) return "";
+  return [...sequences[0]].map((base, column) => sequences.every((sequence) => sequence[column] === base) ? base : "N").join("");
+}
 
 /** AIRR productivity is explicit; blank/unresolved rows are not assumed in-frame. */
 export function isProductiveLineageRow(row: AirrDetailRow): boolean {
@@ -58,6 +87,9 @@ export interface AnchoredLineageRow {
   name: string;
   sequence: string;
   germline: string;
+  completeOuterAlignment: boolean;
+  restoredVPrefix: number;
+  restoredJSuffix: number;
   /** Biological offset in the ungapped query supplied to a codon aligner. */
   frame: number;
   /** The same phase after AIRR V-reference left padding is materialized. */
@@ -107,6 +139,9 @@ export interface InferredLineageGermline {
   selectedVIdentity?: number;
   selectedJIdentity?: number;
   selectedComparedColumns?: number;
+  selectedCompleteOuterAlignment?: boolean;
+  restoredVPrefix?: number;
+  restoredJSuffix?: number;
 }
 
 interface DoubleDGermlineProjection {
@@ -236,8 +271,10 @@ function projectDoubleDGermline(
  * retain the caller's insertion/gap structure. This is deliberately a quick
  * reference-anchored view rather than a de-novo MSA.
  */
-export function referenceAnchoredLineageRows(rows: AirrDetailRow[]): AnchoredLineageRow[] {
+export function referenceAnchoredLineageRows(rows: AirrDetailRow[], options: LineageGermlineOptions = {}): AnchoredLineageRow[] {
   if (!rows.length) throw new Error("The selected lineage has no retrievable AIRR records.");
+  const vIndex = referenceIndex(options.references?.V ?? "");
+  const jIndex = referenceIndex(options.references?.J ?? "");
   const provisional = rows.map((row, index) => {
     const rawSequence = normalizedAlignment(row.values.sequence_alignment, row.values.sequence);
     const rawGermline = normalizedAlignment(row.values.germline_alignment, rawSequence.replace(/[ACGT]/g, "N"));
@@ -245,12 +282,24 @@ export function referenceAnchoredLineageRows(rows: AirrDetailRow[]): AnchoredLin
     const localColumns = Math.max(rawSequence.length, doubleD.germline.length);
     const reportedStart = Math.floor(Number(row.values.v_germline_start));
     const left = Number.isFinite(reportedStart) && reportedStart >= 1 && reportedStart <= 10_000 ? reportedStart - 1 : 0;
+    const vReferences = segmentReferences(row, "v", vIndex);
+    const jReferences = segmentReferences(row, "j", jIndex);
+    const vAligned = normalizedAlignment(row.values.v_germline_alignment);
+    const jAligned = normalizedAlignment(row.values.j_germline_alignment);
+    const prefix = vReferences.length && doubleD.germline.startsWith(vAligned)
+      ? unanimousSequence(vReferences.map((sequence) => sequence.slice(0, left))) : "";
+    const jEnd = positiveInteger(row.values.j_germline_end);
+    const suffix = jReferences.length && jEnd && doubleD.germline.endsWith(jAligned)
+      ? unanimousSequence(jReferences.map((sequence) => sequence.slice(jEnd))) : "";
     const frame = biologicalFrameOffset(Number(row.values.v_sequence_start) || 1, Number(row.values.sequence_frame) || 1);
     return {
       row,
       name: `${safeName(row.values.sequence_id, `sequence_${index + 1}`)}__${row.record.ordinal + 1}`,
-      sequence: "-".repeat(left) + rawSequence.padEnd(localColumns, "-"),
-      germline: "-".repeat(left) + doubleD.germline.padEnd(localColumns, "-"),
+      sequence: "-".repeat(left) + rawSequence.padEnd(localColumns, "-") + "-".repeat(suffix.length),
+      germline: (prefix || "-".repeat(left)) + doubleD.germline.padEnd(localColumns, "-") + suffix,
+      completeOuterAlignment: reportedStart === 1 && Boolean(vReferences.length && jReferences.length && jReferences.every((sequence) => sequence.length === jEnd)),
+      restoredVPrefix: prefix.length,
+      restoredJSuffix: suffix.length,
       frame,
       alignmentFrameOffset: alignedSequenceFrameOffset(rawSequence, frame, left),
       doubleDPositive: doubleD.positive,
@@ -321,7 +370,7 @@ interface ClosestMemberScore {
   informativeSegments: number;
 }
 
-function closestMember(anchored: AnchoredLineageRow[]): ClosestMemberScore {
+function rankedMembers(anchored: AnchoredLineageRow[]): ClosestMemberScore[] {
   const scores = anchored.map((record) => {
     const values = record.row.values;
     const v = segmentIdentity(values.v_sequence_alignment, values.v_germline_alignment, values.v_identity ?? record.row.record.vIdentity);
@@ -343,22 +392,36 @@ function closestMember(anchored: AnchoredLineageRow[]): ClosestMemberScore {
     return { row: record.row, anchored: record, v, j, equalWeightIdentity, combinedIdentity, compared, informativeSegments: segmentIdentities.length };
   });
   scores.sort((left, right) =>
+    Number(right.anchored.completeOuterAlignment) - Number(left.anchored.completeOuterAlignment) ||
     right.informativeSegments - left.informativeSegments ||
     right.equalWeightIdentity - left.equalWeightIdentity ||
     right.combinedIdentity - left.combinedIdentity ||
     right.compared - left.compared ||
     left.row.record.ordinal - right.row.record.ordinal,
   );
-  return scores[0];
+  return scores;
 }
 
-function inferClosestLineageGermline(rows: AirrDetailRow[]): InferredLineageGermline {
-  const anchored = referenceAnchoredLineageRows(rows);
+export function lineageTemplateChoices(rows: AirrDetailRow[], options: LineageGermlineOptions = {}) {
+  if (!rows.length) return [];
+  return rankedMembers(referenceAnchoredLineageRows(rows, options)).map((score) => ({
+    ordinal: score.row.record.ordinal,
+    sequenceId: score.row.values.sequence_id || score.row.record.sequenceId,
+    complete: score.anchored.completeOuterAlignment,
+    identity: score.equalWeightIdentity,
+    doubleDResolved: score.anchored.doubleDGermlineApplied,
+  }));
+}
+
+function inferClosestLineageGermline(rows: AirrDetailRow[], options: LineageGermlineOptions): InferredLineageGermline {
+  const anchored = referenceAnchoredLineageRows(rows, options);
   const doubleDResolved = anchored.filter((record) => record.doubleDGermlineApplied);
   // If this lineage contains a supported VDDJ architecture, do not let a
   // baseline single-D member silently replace it merely because its V/J ends
   // are marginally less mutated. Rank the VDDJ-aware members by the same rule.
-  const selected = closestMember(doubleDResolved.length ? doubleDResolved : anchored);
+  const ranked = rankedMembers(doubleDResolved.length ? doubleDResolved : anchored);
+  const selected = options.templateOrdinal === undefined ? ranked[0] : rankedMembers(anchored).find((score) => score.row.record.ordinal === options.templateOrdinal);
+  if (!selected) throw new Error("The chosen germline template is not in the current lineage population.");
   const template = [...selected.anchored.germline];
   const uca = [...selected.anchored.germline];
   const supported = template.map((base, column) => base !== "-" || selected.anchored.sequence[column] !== "-");
@@ -406,6 +469,9 @@ function inferClosestLineageGermline(rows: AirrDetailRow[]): InferredLineageGerm
     selectedVIdentity: selected.v.identity ?? undefined,
     selectedJIdentity: selected.j.identity ?? undefined,
     selectedComparedColumns: selected.compared,
+    selectedCompleteOuterAlignment: selected.anchored.completeOuterAlignment,
+    restoredVPrefix: selected.anchored.restoredVPrefix,
+    restoredJSuffix: selected.anchored.restoredJSuffix,
   };
 }
 
@@ -418,8 +484,8 @@ function inferClosestLineageGermline(rows: AirrDetailRow[]): InferredLineageGerm
  * parsimony can treat it as unknown. Endpoint trimming requires coverage from
  * at least 20% of the loaded unique representatives.
  */
-export function inferConsensusLineageGermline(rows: AirrDetailRow[]): InferredLineageGermline {
-  const anchored = referenceAnchoredLineageRows(rows);
+export function inferConsensusLineageGermline(rows: AirrDetailRow[], options: LineageGermlineOptions = {}): InferredLineageGermline {
+  const anchored = referenceAnchoredLineageRows(rows, options);
   const doubleDResolved = anchored.filter((record) => record.doubleDGermlineApplied);
   // Mixing the unchanged baseline single-D composite into a VDDJ junction vote
   // can erase D2. Once a supported D2 architecture exists, use those members
@@ -497,13 +563,23 @@ export function inferConsensusLineageGermline(rows: AirrDetailRow[]): InferredLi
 export function inferLineageGermline(
   rows: AirrDetailRow[],
   method: LineageGermlineMethod = "closest",
+  options: LineageGermlineOptions = {},
 ): InferredLineageGermline {
-  return method === "consensus" ? inferConsensusLineageGermline(rows) : inferClosestLineageGermline(rows);
+  return method === "consensus" ? inferConsensusLineageGermline(rows, options) : inferClosestLineageGermline(rows, options);
+}
+
+/** Keep the chosen member when display/MSA limits sample the lineage population. */
+export function retainLineageTemplate(rows: AirrDetailRow[], sampled: AirrDetailRow[], ordinal?: number): AirrDetailRow[] {
+  if (ordinal === undefined || sampled.some((row) => row.record.ordinal === ordinal)) return sampled;
+  const template = rows.find((row) => row.record.ordinal === ordinal);
+  if (!template) throw new Error("The chosen germline template is not in the current lineage population.");
+  return [...sampled.slice(0, Math.max(0, sampled.length - 1)), template];
 }
 
 export function lineageInputFasta(
   rows: AirrDetailRow[],
   method: LineageGermlineMethod = "closest",
+  options: LineageGermlineOptions = {},
 ): {
   fasta: string;
   frames: number[];
@@ -513,8 +589,8 @@ export function lineageInputFasta(
   frameAnchorUngappedOffset: number;
   alignmentFrameOffset: AlignmentFrameOffset;
 } {
-  const anchored = referenceAnchoredLineageRows(rows);
-  const inferred = inferLineageGermline(rows, method);
+  const anchored = referenceAnchoredLineageRows(rows, options);
+  const inferred = inferLineageGermline(rows, method, options);
   const selectedAnchor = inferred.selectedOrdinal === undefined
     ? undefined
     : anchored.find((record) => record.row.record.ordinal === inferred.selectedOrdinal);
@@ -528,7 +604,7 @@ export function lineageInputFasta(
     sequence: record.sequence,
     frame: record.frame,
   }));
-  records.push({ name: GERMLINE_OUTGROUP, sequence: germline, frame: anchor.frame });
+  records.push({ name: GERMLINE_OUTGROUP, sequence: germline, frame: frameOffset(anchor.frame + anchor.restoredVPrefix) });
   return {
     fasta: records.map((record) => `>${record.name}\n${record.sequence}`).join("\n") + "\n",
     frames: records.map((record) => record.frame),
@@ -540,9 +616,82 @@ export function lineageInputFasta(
   };
 }
 
-export function quickAirrAlignment(rows: AirrDetailRow[], method: LineageGermlineMethod = "closest"): string {
-  const input = lineageInputFasta(rows, method);
+export function quickAirrAlignment(rows: AirrDetailRow[], method: LineageGermlineMethod = "closest", options: LineageGermlineOptions = {}): string {
+  const input = lineageInputFasta(rows, method, options);
   const records = parseFasta(input.fasta, true);
   const maximum = Math.max(...records.map((record) => record.sequence.length));
   return records.map((record) => `>${record.name}\n${record.sequence.padEnd(maximum, "-")}`).join("\n") + "\n";
+}
+
+/**
+ * Reproject a member's AIRR template onto an existing curated MSA by identical
+ * query nucleotides, never by matching the germline to mutated neighbouring tips.
+ * Outer missing-coverage runs are right/left anchored at the first/last query
+ * base. Extra reference-only terminal columns pad every biological tip with gaps.
+ * Deleted query bases or insufficient internal gap columns require a fresh MSA.
+ */
+export function projectLineageTemplate(alignment: string, rows: AirrDetailRow[], options: LineageGermlineOptions = {}): { fasta: string; addedLeftColumns: number } {
+  const input = lineageInputFasta(rows, "closest", options);
+  const source = parseFasta(input.fasta, true).find((record) => record.name === input.frameAnchorName)!;
+  const records = parseFasta(alignment, true);
+  const target = records.find((record) => record.name === source.name);
+  if (!target) throw new Error("The chosen template is absent from this MSA. Rebuild the alignment to include it.");
+  if (source.sequence.replaceAll("-", "") !== target.sequence.replaceAll("-", "")) throw new Error("The template's query bases were edited or deleted. Rebuild the MSA to project its AIRR germline safely.");
+  if (records.some((record) => record.sequence.length !== target.sequence.length)) throw new Error("The lineage MSA is not rectangular.");
+  const columns = (sequence: string) => [...sequence].flatMap((base, column) => base === "-" ? [] : [column]);
+  const sourceColumns = columns(source.sequence);
+  const targetColumns = columns(target.sequence);
+  if (!sourceColumns.length) throw new Error("The template has no aligned query nucleotides.");
+  const prefixLength = sourceColumns[0];
+  const suffixEnd = input.germline.search(/-*$/);
+  const suffixLength = Math.max(0, suffixEnd - sourceColumns.at(-1)! - 1);
+  const left = Math.max(0, prefixLength - targetColumns[0]);
+  const right = Math.max(0, suffixLength - (target.sequence.length - targetColumns.at(-1)! - 1));
+  const guide = Array.from({ length: target.sequence.length + left + right }, () => "-");
+  for (let base = 0; base < sourceColumns.length; base += 1) {
+    guide[targetColumns[base] + left] = input.germline[sourceColumns[base]];
+    if (base === 0) continue;
+    const sourceStart = sourceColumns[base - 1] + 1;
+    const sourceEnd = sourceColumns[base];
+    const targetStart = targetColumns[base - 1] + left + 1;
+    const available = targetColumns[base] - targetColumns[base - 1] - 1;
+    const sourceGap = input.germline.slice(sourceStart, sourceEnd);
+    if (sourceEnd - sourceStart > available || /[ACGTN]/.test(sourceGap) && sourceEnd - sourceStart !== available) throw new Error("The MSA's internal gap columns cannot unambiguously place this template's germline bases. Rebuild the alignment rather than guessing their homology.");
+    for (let offset = 0; offset < sourceEnd - sourceStart; offset += 1) guide[targetStart + offset] = input.germline[sourceStart + offset];
+  }
+  for (let offset = 0; offset < prefixLength; offset += 1) guide[targetColumns[0] + left - prefixLength + offset] = input.germline[offset];
+  for (let offset = 0; offset < suffixLength; offset += 1) guide[targetColumns.at(-1)! + left + 1 + offset] = input.germline[sourceColumns.at(-1)! + 1 + offset];
+  const next = records.filter((record) => record.name !== GERMLINE_OUTGROUP).map((record) => ({ name: record.name, sequence: "-".repeat(left) + record.sequence + "-".repeat(right) }));
+  next.push({ name: GERMLINE_OUTGROUP, sequence: guide.join("") });
+  return { fasta: next.map((record) => `>${record.name}\n${record.sequence}`).join("\n") + "\n", addedLeftColumns: left };
+}
+
+/** Upgrade an older guide's missing outer flanks without replacing its curated interior/trimming. */
+export function restoreLineageOuterFlanks(alignment: string, rows: AirrDetailRow[], options: LineageGermlineOptions = {}): { fasta: string; addedLeftColumns: number; changed: boolean } {
+  const records = parseFasta(alignment, true);
+  const oldGuide = records.find((record) => record.name === GERMLINE_OUTGROUP)?.sequence;
+  if (!oldGuide) return { fasta: alignment, addedLeftColumns: 0, changed: false };
+  const names = new Set(records.map((record) => record.name));
+  // Deleted biological rows cannot supply the upgrade's reference evidence.
+  const retained = referenceAnchoredLineageRows(rows).filter((record) => names.has(record.name)).map((record) => record.row);
+  if (!retained.length) return { fasta: alignment, addedLeftColumns: 0, changed: false };
+  const projected = projectLineageTemplate(alignment, retained, options);
+  const next = parseFasta(projected.fasta, true);
+  const guide = next.find((record) => record.name === GERMLINE_OUTGROUP)!;
+  const original = "-".repeat(projected.addedLeftColumns) + oldGuide;
+  const first = original.search(/[^-]/);
+  const end = original.search(/-*$/);
+  if (first < 0) return { fasta: alignment, addedLeftColumns: 0, changed: false };
+  const repaired = [...original.padEnd(guide.sequence.length, "-")];
+  let changed = false;
+  for (let column = 0; column < repaired.length; column += 1) {
+    if (column >= first && column < end || !/[ACGTN]/.test(guide.sequence[column])) continue;
+    if (repaired[column] !== guide.sequence[column]) {
+      repaired[column] = guide.sequence[column];
+      changed = true;
+    }
+  }
+  if (!changed) return { fasta: alignment, addedLeftColumns: 0, changed: false };
+  guide.sequence = repaired.join("");
+  return { fasta: next.map((record) => `>${record.name}\n${record.sequence}`).join("\n") + "\n", addedLeftColumns: projected.addedLeftColumns, changed: true };
 }

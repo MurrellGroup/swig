@@ -152,6 +152,8 @@ export interface PhyloUcaAirrRow {
 }
 
 export interface PhyloUcaInput {
+  /** Member supplying the guide's trimming anchors; only retained AIRR rows may contribute. */
+  templateOrdinal?: number;
   /** Exact user-curated nucleotide alignment, including the germline guide row. */
   curatedAlignmentFasta: string;
   /** FastTree inferred from observed rows only. */
@@ -346,6 +348,7 @@ export interface PhyloUcaCandidateReport {
 }
 
 export interface PhyloUcaResult {
+  templateOrdinal?: number;
   schema: 1 | 2 | 3 | 4 | 5 | 6;
   method: "fixed-tree-empirical-bayes-phylo-uca";
   lineageLabel: string;
@@ -390,6 +393,7 @@ export interface PhyloUcaResult {
 
 /** Portable/session-safe state for one exact lineage-alignment fingerprint. */
 export interface PhyloUcaSavedState {
+  templateOrdinal?: number;
   lineageIds: number[];
   alignmentFingerprint: string;
   /** Codon posterior is valid only for this selected alignment frame. */

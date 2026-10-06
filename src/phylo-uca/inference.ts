@@ -5,7 +5,7 @@ import {
   PhyloUcaHmmGibbsSampler,
   phyloUcaHmmPosterior,
 } from "./hmm.ts";
-import { preparePhyloUcaReferences } from "./references.ts";
+import { mappedTemplateBoundaries, preparePhyloUcaReferences } from "./references.ts";
 import { PhyloUcaTreeMessages } from "./tree-messages.ts";
 import { normalizeProbabilityVector } from "../probability-logo.ts";
 import { PHYLO_UCA_CODON_STATE_COUNT, PHYLO_UCA_CODON_SYMBOLS } from "./codons.ts";
@@ -273,7 +273,8 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   const originalColumns = curated[0]?.sequence.length ?? observedColumns;
   const guideRecord = curated.find((record) => record.name === input.germlineGuideName);
   const projectedGuide = input.retainedColumns.map((column) => guideRecord?.sequence[column]?.toUpperCase().replace("U", "T").replace(".", "-") ?? "N").join("");
-  const references = preparePhyloUcaReferences(projectedGuide, input.lineageRows, input.references, input.locus, input.options.candidates);
+  const boundaries = mappedTemplateBoundaries(input.observedAlignmentFasta, input.lineageRows, input.templateOrdinal);
+  const references = preparePhyloUcaReferences(projectedGuide, input.lineageRows, input.references, input.locus, input.options.candidates, input.templateOrdinal, boundaries);
   progress("references", 1, 1, `${references.v.length} V, ${references.d.length} D, and ${references.j.length} J candidates retained`);
 
   let messageCount = 0;
@@ -864,6 +865,7 @@ export async function inferPhyloUca(input: PhyloUcaInput, onProgress?: (progress
   progress("finalize", 1, 1, "Preparing UCA sequence, placement tree, and provenance");
   return {
     schema: 6,
+    templateOrdinal: input.templateOrdinal,
     method: "fixed-tree-empirical-bayes-phylo-uca",
     lineageLabel: input.lineageLabel,
     generatedAt: new Date().toISOString(),

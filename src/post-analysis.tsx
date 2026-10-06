@@ -46,7 +46,7 @@ import { UnifiedGermlineRuntime } from "./unified-germline-runtime";
 import { DEFAULT_UNIFIED_OPTIONS, type UnifiedDashboard, type UnifiedOptions } from "./unified-germline";
 import { UnifiedGermlineResultsPanel } from "./unified-germline-panel";
 import { PersonalizedGermlineRuntime } from "./personalized-germline-runtime";
-import { GERMLINE_OUTGROUP, alignedSequenceFrameOffset, inferLineageGermline, isProductiveLineageRow, lineageInputFasta, type LineageGermlineMethod } from "./lineage-alignment";
+import { GERMLINE_OUTGROUP, alignedSequenceFrameOffset, inferLineageGermline, isProductiveLineageRow, lineageInputFasta, lineageTemplateChoices, projectLineageTemplate, restoreLineageOuterFlanks, retainLineageTemplate, type LineageGermlineMethod } from "./lineage-alignment";
 import {
   buildLineageGermlineSketchIndex,
   scoreGermlineCandidate,
@@ -570,7 +570,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const [alignmentMode, setAlignmentMode] = useState<"nt" | "aa">("nt");
   const [alignmentFrameOffset, setAlignmentFrameOffset] = useState<AlignmentFrameOffset>(0);
   const [alignmentMethod, setAlignmentMethod] = useState<"quick" | "kalign" | "codon">("quick");
-  const [lineageGermlineMethod, setLineageGermlineMethod] = useState<LineageGermlineMethod>("closest");
+  const [lineageGermlineMethod, setLineageGermlineMethod] = useState<LineageGermlineMethod>(() => initialSession?.lineageGermlineMethod ?? "closest");
+  const [lineageTemplateSelections, setLineageTemplateSelections] = useState<Record<string, number>>(() => initialSession?.lineageTemplateSelections ?? {});
   const [alignmentLimit, setAlignmentLimit] = useState(200);
   const [alignmentSource, setAlignmentSource] = useState("");
   const [alignmentEdited, setAlignmentEdited] = useState(false);
@@ -596,6 +597,9 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const workbenchLineageRows = alignmentProductiveOnly ? productiveLineageRows : lineageRows;
   const excludedNonProductiveRows = lineageRows.length - productiveLineageRows.length;
   const selectedGroupKey = useMemo(()=>lineageAlignmentKey(selectedLineageIds,alignmentProductiveOnly),[alignmentProductiveOnly,selectedLineageIds]);
+  const requestedTemplateOrdinal = lineageTemplateSelections[selectedGroupKey];
+  const templateOrdinal = workbenchLineageRows.some((row) => row.record.ordinal === requestedTemplateOrdinal) ? requestedTemplateOrdinal : undefined;
+  const templateChoices = useMemo(() => lineageTemplateChoices(workbenchLineageRows, { references }), [workbenchLineageRows, references]);
   const selectedGroupKeyRef = useRef(selectedGroupKey);
   useEffect(() => { alignmentRef.current = alignment; }, [alignment]);
   useEffect(() => { selectedGroupKeyRef.current = selectedGroupKey; }, [selectedGroupKey]);
@@ -765,8 +769,21 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
   const moduleClass=(module:PostModuleId,base:string)=>`${base}${openModules.has(module)?" is-open":" is-collapsed"}${skippedModules.has(module)?" is-skipped":""}`;
   const lineageGermline = useMemo(() => {
     if (!workbenchLineageRows.length) return null;
-    try { return inferLineageGermline(workbenchLineageRows, lineageGermlineMethod); } catch { return null; }
-  }, [workbenchLineageRows, lineageGermlineMethod]);
+    try { return inferLineageGermline(workbenchLineageRows, lineageGermlineMethod, { references, templateOrdinal }); } catch { return null; }
+  }, [workbenchLineageRows, lineageGermlineMethod, references, templateOrdinal]);
+
+  useEffect(() => {
+    if (!alignment || !workbenchLineageRows.length || lineageGermlineMethod !== "closest") return;
+    try {
+      const repaired = restoreLineageOuterFlanks(alignment, workbenchLineageRows, { references, templateOrdinal });
+      if (!repaired.changed) return;
+      installAlignment(repaired.fasta, `${alignmentSource} · restored outer germline flanks`, alignmentEdited, selectedLineageIds, ((alignmentFrameOffset + repaired.addedLeftColumns) % 3) as AlignmentFrameOffset);
+      setAlignmentEditorStatus("Restored missing V 5′ / J 3′ germline flanks in the guide. Curated interior columns and read nucleotides were retained; rerun tree/UCA inference.");
+    } catch {
+      // Curation may have removed the anchor's query bases. Do not guess a map.
+      setAlignmentEditorError("The current MSA cannot safely project this template's AIRR coordinates. Rebuild the MSA or choose an intact member to restore missing germline flanks.");
+    }
+  }, [alignment, workbenchLineageRows, references, templateOrdinal, lineageGermlineMethod]);
 
   useEffect(() => {
     if (directLineage || !autoPipeline?.enabled || initialSession || pipelineRunRef.current) return;
@@ -1035,7 +1052,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       const lineage=lineages?{options:{identity,resolution,ambiguity,productiveOnly,candidateCap,lineageScope},assignments:packSessionVector(await runtime.lineageAssignments()),dashboard:{...lineages}}:undefined;
       if(signal?.aborted)throw new DOMException("Session saving was cancelled.","AbortError");
       const chimera=chmm&&chmmRun?{options:{...chmmRun.options,chmmSource,uploadedMsaName,mutationRates,retainUnevaluated},msa:chmmRun.msa,dashboard:Object.fromEntries(Object.entries(chmm).filter(([key])=>key!=="probabilities"&&key!=="dfr")),filterThreshold:chmmFilterThreshold,probabilities:packSessionVector(chmm.probabilities),dfr:packSessionVector(chmm.dfr),retainedMask:chmmRun.inputMask?packSessionVector(chmmRun.inputMask):undefined}:undefined;
-      return {skippedModules:[...skippedModules],workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,alleleRefinement:alleleRefinement?saveAlleleRefinement(alleleRefinement,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior):undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,
+      return {skippedModules:[...skippedModules],workingStages:[...workingStages],activeMask:activeMask?packSessionVector(activeMask):undefined,collapse,chimera,selection:selectionApplied||selectionPreview?{options:{...selectionDraft},mask:selectionPreview?packSessionVector(selectionPreview.mask):undefined,baseMask:selectionBaseMask?packSessionVector(selectionBaseMask):undefined}:undefined,alleleRefinement:alleleRefinement?saveAlleleRefinement(alleleRefinement,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior):undefined,lineage,selectedLineageIds:[...selectedLineageIds],lineageGermlineMethod,lineageTemplateSelections:{...lineageTemplateSelections},
         alignmentFrameOffset,alignmentProductiveOnly,
         query:{queryText,queryTarget,queryMetric,queryIdentity,queryLimit,queryLocus,queryV,queryJ,queryConstraintMode,queryResultMode,queryInference,queryHits,queryLineageHits,expanded},
         editedAlignments:[...editedAlignments.values()].map((entry)=>({...entry,lineageIds:[...entry.lineageIds]})),
@@ -1054,7 +1071,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     const reason=treeRun?"phylogeny_changed":editedAlignments.size?"edited_alignment_changed":alignment?"lineage_alignment_changed":personalizedGermline?"personalized_germline_changed":missingAlleles?"missing_allele_screen_changed":shmDashboard?"shm_changed":lineages?"lineages_changed":chmm?"chimera_state_changed":dedup?"collapse_state_changed":selectionApplied||selectionPreview?"repertoire_selection_changed":"post_analysis_state_changed";
     sessionChangeCallbackRef.current?.(reason);
   },[
-    alignment,alignmentFrameOffset,alignmentProductiveOnly,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior,alleleOptions,alleleRefinement,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageMerges,lineages,respectConstantCall,
+    alignment,alignmentFrameOffset,alignmentProductiveOnly,alleleApplied,alleleReassignmentPolicy,alleleApplyMinimumPosterior,alleleOptions,alleleRefinement,chmm,dedup,editedAlignments,expanded,lineageGermlineMethod,lineageTemplateSelections,lineageMerges,lineages,respectConstantCall,
     missingAlleleOptions,missingAlleles,personalizedGermlineOptions,personalizedGermline,unifiedOptions,unifiedGermline,queryConstraintMode,queryHits,queryIdentity,queryJ,queryLimit,
     queryLocus,queryMetric,queryResultMode,queryTarget,queryText,queryV,selectedLineageIds,selectionApplied,skippedModules,
     selectedMissingAlleleIds,selectionPreview,shmDashboard,shmMetric,shmSampleOrder,treeRun,phyloUcaState,workingStages,
@@ -1125,8 +1142,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
           installAlignment(initialSession.tree.run.alignmentFasta, initialSession.tree.source || "Saved tree input", false, [1], validAlignmentFrameOffset(initialSession.tree.run.frameOffset) ?? savedFrameOffset);
         } else if ((alignmentProductiveOnly ? rows.filter(isProductiveLineageRow) : rows).length >= 2) {
           const workspaceRows = alignmentProductiveOnly ? rows.filter(isProductiveLineageRow) : rows;
-          const selectedRows = stratifiedLineageRows(workspaceRows, lineageByOrdinal, Math.min(200, workspaceRows.length));
-          const input = lineageInputFasta(selectedRows, lineageGermlineMethod);
+          const requested = initialSession?.lineageTemplateSelections?.[lineageAlignmentKey([1], alignmentProductiveOnly)];
+          const selected = inferLineageGermline(workspaceRows, lineageGermlineMethod, { references, templateOrdinal: workspaceRows.some((row) => row.record.ordinal === requested) ? requested : undefined });
+          const selectedRows = retainLineageTemplate(workspaceRows, stratifiedLineageRows(workspaceRows, lineageByOrdinal, Math.min(200, workspaceRows.length)), selected.selectedOrdinal);
+          const input = lineageInputFasta(selectedRows, lineageGermlineMethod, { references, templateOrdinal: selected.selectedOrdinal });
           const records = parseFasta(input.fasta, true);
           const maximum = Math.max(...records.map((record) => record.sequence.length));
           installAlignment(records.map((record) => `>${record.name}\n${record.sequence.padEnd(maximum, "-")}`).join("\n") + "\n", "AIRR-anchored reference quick view", false, [1], input.alignmentFrameOffset);
@@ -1942,6 +1961,30 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
       : "Restored the complete loaded lineage population. Re-run the desired MSA.");
   }
 
+  function chooseLineageTemplate(value: string) {
+    const ordinal = value === "auto" ? undefined : Number(value);
+    setLineageTemplateSelections((current) => {
+      const next = { ...current };
+      if (ordinal === undefined) delete next[selectedGroupKey]; else next[selectedGroupKey] = ordinal;
+      return next;
+    });
+    setAlignmentEditorError("");
+    if (alignment) {
+      try {
+        const projected = projectLineageTemplate(alignment, workbenchLineageRows, { references, templateOrdinal: ordinal });
+        installAlignment(projected.fasta, `${alignmentSource} · selected AIRR germline template`, alignmentEdited, selectedLineageIds, ((alignmentFrameOffset + projected.addedLeftColumns) % 3) as AlignmentFrameOffset);
+        setAlignmentEditorStatus("Applied the selected member's trimming and full outer reference flanks to this MSA. Tree and UCA results were invalidated; run them again.");
+        return;
+      } catch (projectionError) {
+        clearAlignmentArtifacts();
+        setAlignmentEditorStatus(projectionError instanceof Error ? projectionError.message : String(projectionError));
+        return;
+      }
+    }
+    clearAlignmentArtifacts();
+    setAlignmentEditorStatus("Template choice saved. Build the MSA to apply its trimming and full outer reference flanks.");
+  }
+
   async function runAlignment() {
     if (workbenchLineageRows.length < 2) {
       setError("A lineage MSA needs at least two biological rows after the current productivity filter.");
@@ -1951,8 +1994,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setError("");
     try {
       const next = await runInActiveLock(async (signal) => {
-        const rows = stratifiedLineageRows(workbenchLineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
-        const input = lineageInputFasta(rows, lineageGermlineMethod);
+        const rows = retainLineageTemplate(workbenchLineageRows, stratifiedLineageRows(workbenchLineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit)), lineageGermline?.selectedOrdinal);
+        const input = lineageInputFasta(rows, lineageGermlineMethod, { references, templateOrdinal: lineageGermline?.selectedOrdinal });
         if (alignmentMethod === "quick") {
           const records = parseFasta(input.fasta, true);
           const maximum = Math.max(...records.map((record) => record.sequence.length));
@@ -1988,8 +2031,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setError("");
     try {
       const next = await runInActiveLock(async (signal) => {
-        const rows = stratifiedLineageRows(workbenchLineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
-        const input = lineageInputFasta(rows, lineageGermlineMethod);
+        const rows = retainLineageTemplate(workbenchLineageRows, stratifiedLineageRows(workbenchLineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit)), lineageGermline?.selectedOrdinal);
+        const input = lineageInputFasta(rows, lineageGermlineMethod, { references, templateOrdinal: lineageGermline?.selectedOrdinal });
         const records = parseFasta(input.fasta, true);
         const aligned = await runAlivibeMsaTask(
           records.map((record) => record.sequence.replaceAll("-", "")),
@@ -2029,8 +2072,8 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
     setError("");
     try {
       const next = await runInActiveLock(async (signal) => {
-        const rows = stratifiedLineageRows(workbenchLineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit));
-        const input = lineageInputFasta(rows, lineageGermlineMethod);
+        const rows = retainLineageTemplate(workbenchLineageRows, stratifiedLineageRows(workbenchLineageRows, originalLineageByOrdinal, Math.max(2, alignmentLimit)), lineageGermline?.selectedOrdinal);
+        const input = lineageInputFasta(rows, lineageGermlineMethod, { references, templateOrdinal: lineageGermline?.selectedOrdinal });
         const records = parseFasta(input.fasta, true);
         const aminoAcids = records.map((record, index) => translateCodonSequence(record.sequence, input.frames[index] ?? 0));
         const alignedAminoAcids = await runAlivibeMsaTask(aminoAcids, signal, 3, "amino-acid");
@@ -2948,8 +2991,10 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         <div>
           <span className="section-kicker">Lineage root construction</span>
           <label><span>Germline / UCA method</span><select value={lineageGermlineMethod} onChange={(event)=>{const method=event.target.value as LineageGermlineMethod;setLineageGermlineMethod(method);clearAlignmentArtifacts();clearNeighbourResults(true);}}><option value="closest">Closest member by matched V + J identity · default</option><option value="consensus">Equal-weight member consensus · alternative</option></select></label>
+          {lineageGermlineMethod === "closest" && <label><span>Trimming template</span><select aria-label="Lineage germline trimming template" disabled={Boolean(busy)} value={templateOrdinal ?? "auto"} onChange={(event) => chooseLineageTemplate(event.target.value)}><option value="auto">Automatic · complete alignments preferred</option>{templateChoices.map((choice) => <option key={choice.ordinal} value={choice.ordinal}>{choice.sequenceId} · row {choice.ordinal + 1} · {choice.complete ? "complete" : "partial / unverified"}{choice.identity >= 0 ? ` · ${(choice.identity * 100).toFixed(2)}% V/J` : ""}{choice.doubleDResolved ? " · VDDJ" : ""}</option>)}</select></label>}
           <strong>{lineageGermlineMethod==="closest"?`Template member: ${lineageGermline.selectedSequenceId||`AIRR row ${(lineageGermline.selectedOrdinal??0)+1}`}`:"Equal-weight AIRR-anchored member voting"}</strong>
-          <p>{lineageGermlineMethod==="closest"?"Swig ranks loaded members by equal-weight identity across informative matched V and J columns, then by combined identity, coverage, and AIRR order. The selected member supplies the germline template and trimming endpoints; its observed bases fill only unresolved N junction sites in the comparison UCA. If the lineage contains supported Double-D evidence, selection is restricted to members whose D1 and D2 alignments can both be projected. The N-masked template remains the tree root.":"Each loaded representative contributes one equal vote at every AIRR-anchored V/D/J germline column. For a lineage with supported Double-D evidence, only safely projected V–D1–D2–J members vote, preventing the unchanged baseline single-D composite from erasing D2. A germline base requires ≥80% agreement; unresolved junction bases stay N in the tree root, while the comparison UCA may fill them with ≥60% unweighted query consensus."}</p>
+          <p>{lineageGermlineMethod==="closest"?"Automatic selection favors alignments reaching the V 5′ and J 3′ reference ends, then ranks by equal-weight V/J identity, combined identity, coverage, and AIRR order. The chosen member supplies junction-facing trimming; missing outer coverage is restored in the guide from its exact called references and validated AIRR coordinates. Read gaps remain missing data. A manual choice overrides the ranking and Double-D preference. With supported Double-D evidence, automatic selection prefers safely projected VDDJ members. Junction N sites remain unresolved in the tree guide.":"Each loaded representative contributes one equal vote at every AIRR-anchored V/D/J germline column, including validated outer reference flanks. For a lineage with supported Double-D evidence, only safely projected V–D1–D2–J members vote. A germline base requires ≥80% agreement; unresolved junction bases stay N in the tree root, while the comparison UCA may fill them with ≥60% unweighted query consensus."}</p>
+          {lineageGermlineMethod === "closest" && <small>Outer reference bases restored: V 5′ {lineageGermline.restoredVPrefix ?? 0} · J 3′ {lineageGermline.restoredJSuffix ?? 0}. Completion requires exact called references and consistent AIRR coordinates. {alignment && <button type="button" disabled={Boolean(busy)} onClick={() => chooseLineageTemplate(templateOrdinal === undefined ? "auto" : String(templateOrdinal))}>Apply template to current MSA</button>}</small>}
           {lineageGermline.doubleDPositiveRows>0&&<div className={`double-d-root-status${lineageGermline.doubleDTemplate?" resolved":" unresolved"}`} role="status">
             <b>{lineageGermline.doubleDTemplate?"V–D1–D2–J root":"Double-D root not projected"}</b>
             <span>{lineageGermline.doubleDTemplate
@@ -2993,6 +3038,7 @@ export function PostAnalysisWorkbench({ store, references, scope, loci, resultFa
         </div>
         <PhyloUcaPanel
           alignment={alignment}
+          templateOrdinal={lineageGermlineMethod === "closest" ? lineageGermline?.selectedOrdinal : undefined}
           lineageRows={workbenchLineageRows}
           lineageIds={selectedLineageIds}
           lineageLabel={selectedLineageIds.length > 1 ? `lineages-${selectedLineageIds.join("-")}` : `lineage-${selectedLineage.id}`}

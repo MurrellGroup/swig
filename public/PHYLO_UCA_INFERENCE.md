@@ -21,6 +21,8 @@ The analysis uses:
 - the active composed V, D, and J reference FASTA sets;
 - fixed, user-visible model and search parameters.
 
+The lineage guide preserves non-recombination-trimmable V 5′ and J 3′ flanks using exact called references and coordinate-validated AIRR segment alignments, even when its template read lacks coverage there. Only the guide is completed; terminal tip gaps remain missing observations. Guide `N` bases inside a V/J segment retain their coordinate during candidate projection, so tied-reference uncertainty does not erase candidate-specific flank constraints. The selected template member supplies the V/J projection boundary anchors when its AIRR row is retained; broad candidate screening still takes the union across all retained members, and the HMM continues to infer junction-facing recombination trimming. The selected template ordinal is saved with UCA panel state. Tree-only columns missing at every observed tip may be omitted from FastTree, but the HMM posterior keeps the full curated width, including reference-only flanks.
+
 The N-masked germline guide row used by the ordinary lineage viewer is **not an observed taxon**. It is always removed before UCA inference. The UCA panel's tree-source control is independent of the ordinary lineage-tree display:
 
 - **Infer a fresh tree with FastTree** removes the guide, fits a new observed-only tree, and is always available.
