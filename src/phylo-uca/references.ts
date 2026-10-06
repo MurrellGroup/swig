@@ -263,10 +263,11 @@ function addMemberPlausibility(
   }
 }
 
-function inferSegmentBoundaries(guide: string, rows: readonly PhyloUcaAirrRow[]): { vEnd: number; jStart: number; warnings: string[] } {
+function inferSegmentBoundaries(guide: string, rows: readonly PhyloUcaAirrRow[], templateOrdinal?: number): { vEnd: number; jStart: number; warnings: string[] } {
   const vEnds: number[] = [];
   const jStarts: number[] = [];
-  for (const row of rows) {
+  const template = rows.find((row) => row.ordinal === templateOrdinal);
+  for (const row of template ? [template] : rows) {
     const vColumns = mappedSegmentColumns(row.values.v_germline_alignment ?? "", guide);
     const jColumns = mappedSegmentColumns(row.values.j_germline_alignment ?? "", guide);
     if (vColumns.length) vEnds.push(Math.max(...vColumns));
@@ -293,6 +294,24 @@ function inferSegmentBoundaries(guide: string, rows: readonly PhyloUcaAirrRow[])
   return { vEnd, jStart, warnings };
 }
 
+/** Use AIRR query coordinates in the retained template's MSA, not a short motif's best substring match. */
+export function mappedTemplateBoundaries(alignment: string, rows: readonly PhyloUcaAirrRow[], templateOrdinal?: number): { vEnd: number; jStart: number } | undefined {
+  const row = rows.find((row) => row.ordinal === templateOrdinal);
+  if (!row) return undefined;
+  const record = parseFasta(alignment, true).find((record) => record.name.endsWith(`__${row.ordinal + 1}`));
+  const raw = normalizeSequence(row.values.sequence_alignment ?? "").replaceAll("-", "");
+  if (!record || !raw || normalizeSequence(record.sequence).replaceAll("-", "") !== raw) return undefined;
+  const start = Number(row.values.v_sequence_start);
+  const end = Number(row.values.v_sequence_end);
+  const j = Number(row.values.j_sequence_start);
+  if (![start, end, j].every((value) => Number.isInteger(value) && value >= 1) || end < start || j <= end) return undefined;
+  const columns = [...record.sequence].flatMap((base, column) => base === "-" ? [] : [column]);
+  const vEnd = columns[end - start];
+  const jStart = columns[j - start];
+  if (vEnd === undefined || jStart === undefined || jStart <= vEnd) return undefined;
+  return { vEnd, jStart };
+}
+
 function projectCandidate(
   record: PhyloUcaReferenceRecord,
   guide: string,
@@ -304,7 +323,10 @@ function projectCandidate(
   const anchorColumns: number[] = [];
   for (let column = startColumn; column <= endColumn; column += 1) {
     const character = guide[column];
-    if (!/[ACGT]/.test(character)) continue;
+    // Ambiguous guide nucleotides still occupy reference coordinates. In
+    // particular, tied calls can disagree in a restored, unobserved flank.
+    // Removing those Ns would shift candidate homology or leave it unconstrained.
+    if (!/[ACGTN]/.test(character)) continue;
     anchorCharacters.push(character);
     anchorColumns.push(column);
   }
@@ -325,7 +347,7 @@ function projectCandidate(
     const character = record.sequence[target] ?? "N";
     projection[column] = /[ACGT]/.test(character) ? character : "N";
     referencePositions[column] = target;
-    if (/[ACGT]/.test(character)) {
+    if (/[ACGT]/.test(character) && /[ACGT]/.test(guide[column])) {
       compared += 1;
       if (character !== guide[column]) differences += 1;
     }
@@ -375,9 +397,11 @@ export function preparePhyloUcaReferences(
   references: { V: string; D: string; J: string },
   locus: string,
   options: PhyloUcaCandidateOptions,
+  templateOrdinal?: number,
+  mappedBoundaries?: { vEnd: number; jStart: number },
 ): PreparedPhyloUcaReferences {
   const guide = normalizeSequence(guideRaw);
-  const boundaries = inferSegmentBoundaries(guide, rows);
+  const boundaries = mappedBoundaries ? { ...mappedBoundaries, warnings: [] } : inferSegmentBoundaries(guide, rows, templateOrdinal);
   const allV = parseReferenceFasta(references.V, locus);
   const allD = parseReferenceFasta(references.D, locus);
   const allJ = parseReferenceFasta(references.J, locus);

@@ -10,6 +10,8 @@ The workbench consumes the current cumulative working set and one selected linea
 
 Every row is projected to a common reference origin using the one-based AIRR `v_germline_start`. The caller's aligned sequence, germline alignment, gaps, and insertion structure are retained; shorter rows receive terminal gap padding. A supported VDDJ row is reconstructed from its D1 and D2 AIRR projections when both can be mapped safely. Otherwise the original single-D germline composite is retained and the incomplete Double-D status is reported.
 
+The guide now retains the non-recombination-trimmable V 5′ and J 3′ reference flanks. Exact called records are looked up in the active FASTA, and the reported reference start/end and ungapped segment alignment must agree with those records before completion is allowed. Missing outer reference bases extend only the guide; the observed query keeps gap padding. V 3′ and J 5′ junction-facing deletions are not filled. Tied calls retain a shared base only when every called reference agrees, otherwise `N`; unavailable records, inconsistent coordinates, or incompatible lengths cannot supply a flank. This uses existing assignment metadata and does not require another assignment call.
+
 ## Root/guide alternatives
 
 ### Closest member (default)
@@ -18,13 +20,16 @@ This is a **custom heuristic**, not an implementation of a published ancestral-r
 
 For each loaded representative, Swig calculates nucleotide identity independently on informative V and J aligned query/germline columns. If both segments are informative, their identities receive equal weight, regardless of segment length. Candidates are ranked lexicographically by:
 
-1. number of informative end segments (V and J);
-2. equal-weight mean V/J identity;
-3. identity over the combined informative V/J columns;
-4. number of compared columns; and
-5. original AIRR ordinal.
+1. complete outer alignment (V reference start 1 and J alignment reaching the validated reference end);
+2. number of informative end segments (V and J);
+3. equal-weight mean V/J identity;
+4. identity over the combined informative V/J columns;
+5. number of compared columns; and
+6. original AIRR ordinal.
 
 Older AIRR imports without segment-specific alignments fall back to identity on informative columns of the combined query/germline alignment. If any safely reconstructed VDDJ members exist, ranking is restricted to them so a baseline single-D composite cannot erase D2.
+
+The **Trimming template** selector can override both the automatic ranking and its VDDJ preference with any loaded member. The choice is saved per lineage group and productivity view, and the chosen member is retained when the MSA row limit samples other members. Its AIRR germline supplies the guide's junction-facing trimming pattern. When its intact query is present in a curated MSA, the guide is reprojected through exact query nucleotide correspondence, preserving observed rows and gaps; missing terminal columns are added with tip-gap padding. Edited/deleted template query bases or ambiguous internal gap placement require a fresh MSA. Earlier guides missing outer flanks are upgraded automatically when this mapping is safe, preserving their curated interior and invalidating old tree/UCA results.
 
 The selected member's aligned germline is the **tree guide**. Known reference bases remain fixed. At guide positions marked `N`, the selected member's observed nucleotide may fill a separate comparison-UCA sequence, but the guide used to root the ordinary tree deliberately remains `N`. Thus observed junction bases do not masquerade as known germline in the tree.
 

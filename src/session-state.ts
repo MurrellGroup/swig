@@ -69,6 +69,8 @@ export interface PostAnalysisSessionSnapshot {
   /** Original lineage IDs currently opened together in the workbench. */
   selectedLineageIds?: number[];
   lineageGermlineMethod?: LineageGermlineMethod;
+  /** AIRR template ordinal per lineage group/productivity view; absent means automatic. */
+  lineageTemplateSelections?: Record<string, number>;
   query?: Record<string, unknown>;
   alignment?: { fasta: string; source: string; selectedLineageId?: number; frameOffset?: AlignmentFrameOffset };
   /** Shared nucleotide-column offset used for codon translation in the current lineage MSA. */

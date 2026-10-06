@@ -5,7 +5,7 @@ import zlib from "node:zlib";
 
 import { WASI } from "@bjorn3/browser_wasi_shim";
 import { preprocessGermlineFasta } from "../src/germline-preprocess.ts";
-import { inferLineageGermline } from "../src/lineage-alignment.ts";
+import { inferLineageGermline, lineageInputFasta } from "../src/lineage-alignment.ts";
 import {
   generateVdjDataset,
   parseFasta as parseSimulatorFasta,
@@ -1143,4 +1143,30 @@ test("opt-in double-D screening is sparse and leaves the standard AIRR result by
   assert.equal(gated.tsv, baseline.tsv);
   assert.equal(gated.doubleDCount, 0);
   assert.equal(gated.doubleDRows.length, 0);
+});
+
+test("AER-R/R-optimized truncated AIRR coordinates restore non-trimmable lineage guide flanks", async () => {
+  const human = pack.species.find((entry) => entry.name === "Homo sapiens");
+  const v = human.loci.IGH.V.find((allele) => allele[2]?.slice(2, 12).every((value) => value >= 0));
+  const j = human.loci.IGH.J.find((allele) => allele[2]?.[0] >= 0 && allele[2]?.[1] >= 0);
+  const references = { V: asFasta([v]), D: "", J: asFasta([j]), C: "" };
+  const sequence = `${v[1]}ACGTGACTGACT${j[1]}`;
+  const runtime = await makeRuntime();
+  runtime.initialize(references);
+  runtime.setAssignerStrategy("aer_robust");
+  runtime.setCallingProfile("r_optimized");
+  const values = runtime.annotate(`>truncated\n${sequence.slice(21, -9)}\n`, 1).rows[0];
+  assert.equal(values.v_call, v[0]);
+  assert.equal(values.j_call, j[0]);
+  assert.ok(Number(values.v_germline_start) > 10);
+  assert.ok(Number(values.j_germline_end) < j[1].length);
+  const row = { record: { ordinal: 0, sequenceId: values.sequence_id, locus: values.locus }, values };
+  const input = lineageInputFasta([row], "closest", { references });
+  const prefixLength = Number(values.v_germline_start) - 1;
+  const suffixLength = j[1].length - Number(values.j_germline_end);
+  assert.equal(input.germline.slice(0, prefixLength), v[1].slice(0, prefixLength));
+  assert.equal(input.germline.slice(-suffixLength), j[1].slice(-suffixLength));
+  assert.equal(input.inferred.restoredVPrefix, prefixLength);
+  assert.equal(input.inferred.restoredJSuffix, suffixLength);
+  assert.ok(input.fasta.includes(`\n${"-".repeat(prefixLength)}${values.sequence_alignment}${"-".repeat(suffixLength)}\n`));
 });

@@ -208,7 +208,7 @@ interface ResultSession {
   projectStatus?: string;
 }
 
-const APP_VERSION = "0.38.10";
+const APP_VERSION = "0.38.11";
 const SEGMENTS: SegmentKey[] = ["V", "D", "J", "C"];
 const PAGE_SIZE = 50;
 const MAX_INLINE_COUNT_BYTES = 2 * 1024 * 1024;
@@ -720,7 +720,7 @@ function ReferenceCellControl({ speciesName, locus, segment, builtInFasta, refer
         if (file) onFile(locus, segment, file);
         event.target.value = "";
       }} />
-      <div className="composition-cell-actions"><button className="cell-alleles" type="button" title={`Include or exclude individual ${locus} ${segment} alleles before assignment`} disabled={busy || !filtered.total} onClick={() => onEditAlleles(locus, segment)}>{excluded.length ? `${excluded.length} excluded` : "Exclude alleles…"}</button><button className="cell-upload" type="button" disabled={busy} onClick={() => input.current?.click()}>{reference?.sourceKind === "upload" ? "Replace FASTA" : "Load FASTA"}</button></div>
+      <div className="composition-cell-actions"><button className="cell-alleles" type="button" title={`Include or exclude individual ${locus} ${segment} alleles before assignment`} disabled={busy || !filtered.total} onClick={() => onEditAlleles(locus, segment)}>{excluded.length ? `${excluded.length} excluded` : "Exclude alleles…"}</button><button className="cell-download" type="button" title={`Download the active ${locus} ${segment} FASTA, including metadata and current allele exclusions`} aria-label={`Download ${locus} ${segment} database`} disabled={busy || !filtered.retained} onClick={() => downloadBlob(new Blob([filtered.fasta], { type: "text/plain;charset=utf-8" }), `${inputStem(speciesName)}.${locus}.${segment}.fasta`)}>↓</button><button className="cell-upload" type="button" disabled={busy} onClick={() => input.current?.click()}>{reference?.sourceKind === "upload" ? "Replace FASTA" : "Load FASTA"}</button></div>
     </div>
   );
 }
@@ -2721,6 +2721,10 @@ export default function SwigApp() {
                   </div>
                   {packError && <p className="inline-error" role="alert">{packError}</p>}
                   <CompositionSummary databases={summaryDatabases} hasUploads={hasUploadedReferences} excludedAlleles={activeAlleleExclusionCount} busy={databaseBusy || Boolean(busyCells.size)} release={pack?.release ?? ""} onCancel={cancelReferencePreparation} />
+                  <div className="reference-downloads" aria-label="Download assignment databases"><span>Download active FASTA</span>{(["all", ...SEGMENTS] as const).map((segment) => {
+                    const fasta = compiled ? (segment === "all" ? SEGMENTS.map((key) => compiled[key]).filter((text) => text.trim()).join("\n") : compiled[segment]) : "";
+                    return <button type="button" key={segment} disabled={databaseBusy || Boolean(busyCells.size) || !fasta.trim()} title="Download the exact selected assignment references with metadata and allele exclusions" onClick={() => downloadBlob(new Blob([fasta], { type: "text/plain;charset=utf-8" }), `${inputStem(species?.name || "references")}.${activeScope}.${segment}.fasta`)}>{segment === "all" ? "All" : segment} ↓</button>;
+                  })}</div>
                   <details className="reference-composition-details">
                     <summary><span><b>Customize individual loci, V/D/J/C sources, or allele inclusion</b><small>Replace any segment with another published collection or a local FASTA; exclude individual alleles before assignment.</small></span></summary>
                     {species && <ReferenceCompositionMatrix species={species} scope={activeScope} references={cellReferences} exclusions={alleleExclusions} busyCells={busyCells} pendingSources={pendingCellSources} onSelect={(locus, segment, sourceId) => void selectCellSource(locus, segment, sourceId)} onFile={(locus, segment, file) => void acceptReferenceFile(locus, segment, file)} onEditAlleles={(locus,segment)=>setEditingReferenceCell({locus,segment})} />}

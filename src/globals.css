@@ -963,7 +963,11 @@ input[type="number"] {
 .composition-cell-meta em.complete { color: var(--teal); }
 .composition-cell-meta em.partial { color: #9a6b00; }
 .composition-cell-meta em.missing { color: #b54935; }
-.composition-cell-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.composition-cell-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.cell-download { padding: 3px 5px; background: transparent; color: var(--teal); font-size: 12px; }
+.reference-downloads { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 8px 0 14px; color: var(--muted); font-size: 10px; }
+.reference-downloads button { padding: 3px 5px; background: transparent; color: var(--teal); font-size: 10px; text-decoration: underline; text-underline-offset: 3px; }
+.reference-downloads button:disabled, .cell-download:disabled { opacity: .45; }
 .cell-upload,
 .cell-alleles { color: var(--teal); font-size: 7px; font-weight: 800; }
 .cell-upload { padding: 4px 1px; background: transparent; text-decoration: underline; text-underline-offset: 2px; }

@@ -16,6 +16,8 @@ Exact sequence-identical records may remain distinct labels for assignment outpu
 
 Reference preparation is transactional at the UI level. A whole-database choice is displayed only after all required cells have downloaded, parsed, and prepared successfully. Cancelling terminates preparation/fetches and retains the previously committed matrix. Per-cell preparation follows the same rule.
 
+The assignment controls offer unobtrusive **All / V / D / J / C** FASTA downloads of the active composition, plus a download arrow in each locus/segment cell. Exports contain the selected prepared records, full metadata headers, and current allele exclusions, rather than an unfiltered source collection. Empty segments and downloads during reference preparation are disabled.
+
 ## Coordinate preparation
 
 SwiftIG computes local affine alignments against the selected references and reports AIRR coordinates, alignments, CIGAR strings, identities, and region annotations. Swig uses IMGT-style region fields when they can be mapped from the reference annotations; it does not claim to run IMGT/V-QUEST. See the IMGT unique numbering overview: [Lefranc et al., 2003](https://www.imgt.org/textes/PDF/DCI/27_55-77_2003.pdf).
