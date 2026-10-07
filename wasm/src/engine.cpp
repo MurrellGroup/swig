@@ -717,6 +717,84 @@ bool net_frameshift(const Alignment& alignment) {
     return shift != 0;
 }
 
+// Junction annotation must not equate a score-optimal local V endpoint with
+// absence of the conserved cysteine. Recover only a short, co-linear tail
+// from the selected reference's annotated anchor. Do not search for cysteines
+// in N/D sequence, alter segment calls/boundaries, or choose a mapping because
+// it makes the rearrangement productive.
+std::optional<std::size_t> clipped_v_anchor(
+    const std::string& query, const SegmentHit& hit,
+    std::size_t anchor, const Scoring& scoring, std::size_t query_boundary) {
+    constexpr std::size_t max_tail = 18;
+    constexpr std::size_t context = 12;
+    const auto& alignment = hit.alignment;
+    const auto& reference = hit.gene->sequence;
+    if (anchor < alignment.reference_end || anchor + 3 > reference.size() ||
+        anchor + 3 - alignment.reference_end > max_tail) return std::nullopt;
+    const auto tail = anchor + 3 - alignment.reference_end;
+    const auto boundary = std::min(query.size(), query_boundary);
+    if (alignment.query_end > boundary || tail > boundary - alignment.query_end) {
+        return std::nullopt;
+    }
+    const auto candidate = alignment.query_end + anchor - alignment.reference_end;
+    if (!is_cys_codon(query, candidate)) return std::nullopt;
+
+    // Reconsider a small contiguous part of the retained alignment as well:
+    // an indel crossing its endpoint must not masquerade as a co-linear tail.
+    std::size_t core = 0;
+    for (auto column = alignment.aligned_query.size(); column > 0 && core < context; --column) {
+        if (alignment.aligned_query[column - 1] == '-' ||
+            alignment.aligned_reference[column - 1] == '-') break;
+        ++core;
+    }
+    if (core == 0) return std::nullopt;
+    const auto query_start = alignment.query_end - core;
+    const auto reference_start = alignment.reference_end - core;
+    const auto reference_length = core + tail;
+    const auto query_length = std::min(boundary - query_start, reference_length + max_tail);
+    int collinear_score = 0;
+    for (std::size_t i = 0; i < reference_length; ++i) {
+        const char q = query[query_start + i];
+        const char r = reference[reference_start + i];
+        if (!canonical_base(q) || !canonical_base(r)) return std::nullopt;
+        collinear_score += substitution_score(q, r, scoring);
+    }
+
+    // Anchored affine DP, consuming the complete reference window with a
+    // free query endpoint. Track paths containing any gap separately from
+    // the one co-linear path. A tied/better gapped explanation is unresolved,
+    // even if its cysteine would be in frame. There is no local score reset.
+    constexpr int impossible = std::numeric_limits<int>::min() / 4;
+    std::vector<int> previous(reference_length + 1, impossible);
+    std::vector<int> current(reference_length + 1, impossible);
+    std::vector<int> insertion(reference_length + 1, impossible);
+    std::vector<int> collinear(reference_length + 1, 0);
+    for (std::size_t i = 1; i <= reference_length; ++i) {
+        collinear[i] = collinear[i - 1] + substitution_score(
+            query[query_start + i - 1], reference[reference_start + i - 1], scoring);
+        previous[i] = scoring.gap_open + static_cast<int>(i - 1) * scoring.gap_extend;
+    }
+    if (previous[reference_length] >= collinear_score) return std::nullopt;
+    for (std::size_t i = 1; i <= query_length; ++i) {
+        current[0] = scoring.gap_open + static_cast<int>(i - 1) * scoring.gap_extend;
+        insertion[0] = current[0];
+        int deletion = impossible;
+        for (std::size_t j = 1; j <= reference_length; ++j) {
+            const int from_above = std::max(previous[j], i - 1 == j ? collinear[j] : impossible);
+            insertion[j] = std::max(from_above + scoring.gap_open,
+                                    insertion[j] + scoring.gap_extend);
+            const int from_left = std::max(current[j - 1], i == j - 1 ? collinear[i] : impossible);
+            deletion = std::max(from_left + scoring.gap_open, deletion + scoring.gap_extend);
+            const int diagonal = previous[j - 1] + substitution_score(
+                query[query_start + i - 1], reference[reference_start + j - 1], scoring);
+            current[j] = std::max({diagonal, insertion[j], deletion});
+        }
+        if (current[reference_length] >= collinear_score) return std::nullopt;
+        previous.swap(current);
+    }
+    return candidate;
+}
+
 void merge_equivalent_calls(SegmentHit& selected, const std::vector<SegmentHit>& hits) {
     selected.call = selected.gene->name;
     for (const auto& hit : hits) {
@@ -2679,6 +2757,13 @@ void AnnotationEngine::annotate_junction(Annotation& annotation) const {
     }
     if (v_reference_anchor) {
         cys = map_reference_to_query(annotation.v->alignment, *v_reference_anchor);
+        if (!cys) {
+            const auto boundary = annotation.d
+                ? std::min(annotation.d->alignment.query_start, annotation.j->alignment.query_start)
+                : annotation.j->alignment.query_start;
+            cys = clipped_v_anchor(sequence, *annotation.v, *v_reference_anchor,
+                                   options_.v_scoring, boundary);
+        }
     }
 
     std::optional<std::size_t> j_anchor;
