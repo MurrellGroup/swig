@@ -1,0 +1,93 @@
+:root {
+  color-scheme: light;
+  --paper: #f2efe5;
+  --surface: #fffdf7;
+  --ink: #132321;
+  --secondary: #3f514d;
+  --line: #c9c8be;
+  --teal: #086c64;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  text-rendering: optimizeLegibility;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+a { color: var(--teal); text-underline-offset: .18em; }
+a:hover { text-decoration-thickness: 2px; }
+a:focus-visible, summary:focus-visible, [tabindex]:focus-visible { outline: 3px solid var(--teal); outline-offset: 4px; }
+.skip-link { position: fixed; top: -10rem; left: 1rem; z-index: 10; padding: .8rem 1rem; background: var(--surface); }
+.skip-link:focus { top: 1rem; }
+.guide-header { max-width: 1420px; margin: 0 auto; padding: 1.3rem 2rem; display: flex; gap: 1rem; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+.guide-brand { display: flex; align-items: baseline; gap: 1rem; text-decoration: none; color: var(--ink); font-weight: 800; font-size: 1.35rem; }
+.guide-brand span { font-size: .95rem; font-weight: 500; color: var(--secondary); }
+.app-link { font-size: .9rem; font-weight: 600; }
+.guide-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 3.5rem; max-width: 1380px; margin: 0 auto; padding: 2rem; }
+.guide-sidebar { align-self: start; position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; padding: .2rem .6rem .6rem 0; }
+summary { cursor: pointer; color: var(--secondary); font-weight: 600; font-size: .9rem; }
+.nav-group { margin: 1.5rem 0 .4rem; color: var(--secondary); text-transform: uppercase; letter-spacing: .08em; font-size: .7rem; font-weight: 750; }
+#chapter-links a { display: block; border-left: 3px solid transparent; padding: .43rem .6rem; margin: .1rem 0; font-size: .86rem; line-height: 1.5; text-decoration: none; color: var(--secondary); }
+#chapter-links a:hover { background: var(--surface); }
+#chapter-links a[aria-current="page"] { color: var(--teal); background: var(--surface); border-color: var(--teal); font-weight: 700; }
+main { min-width: 0; padding-bottom: 3rem; }
+.chapter-tools { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .6rem 1.5rem; font-size: .8rem; margin: .2rem 0 1.75rem; }
+article { font-size: 1.04rem; line-height: 1.8; overflow-wrap: break-word; }
+article > p, article > ul, article > ol, article > h2, article > h3, article > h4 { max-width: 78ch; }
+h1 { font-size: clamp(1.85rem, 3vw, 2.55rem); line-height: 1.2; letter-spacing: -.025em; font-weight: 750; margin: 0 0 1.5rem; }
+h2 { font-size: 1.45rem; line-height: 1.35; margin: 2.7rem 0 1rem; }
+h3 { font-size: 1.12rem; line-height: 1.4; margin: 2rem 0 .8rem; }
+h4 { font-size: 1rem; }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 1.5rem; }
+p { margin: 0 0 1.25rem; }
+strong { font-weight: 700; }
+li { margin: .4rem 0; }
+.on-this-page { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 0 0 1.8rem; padding: .75rem 0; font-size: .88rem; }
+.on-this-page ul { padding-left: 1.3rem; margin: .7rem 0 .2rem; }
+.on-this-page li { margin: .2rem 0; }
+.figure-link { display: block; margin: 1.8rem 0; border: 1px solid var(--line); border-radius: .4rem; overflow: hidden; background: white; }
+.figure-link img { width: 100%; height: auto; display: block; }
+.figure-link:hover { outline: 2px solid var(--teal); outline-offset: 2px; }
+code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: .87em; }
+code { background: rgba(19, 35, 33, .055); border-radius: .2rem; padding: .12em .25em; overflow-wrap: anywhere; }
+pre { background: var(--surface); border: 1px solid var(--line); border-radius: .35rem; overflow: auto; padding: 1.1rem; line-height: 1.6; margin: 1.6rem 0; }
+pre code { padding: 0; background: transparent; overflow-wrap: normal; }
+.table-scroll { max-width: 100%; overflow: auto; margin: 1.6rem 0; border: 1px solid var(--line); border-radius: .35rem; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: .86rem; line-height: 1.65; }
+th, td { padding: .8rem .95rem; border-bottom: 1px solid var(--line); min-width: 10rem; vertical-align: top; }
+th { background: #e8e3d5; font-weight: 700; }
+tbody tr:last-child td { border-bottom: 0; }
+.align-left { text-align: left; }
+.align-center { text-align: center; }
+.align-right { text-align: right; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+.chapter-pagination { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1.25rem 2rem; border-top: 1px solid var(--line); margin: 3rem 0 1.5rem; padding-top: 1.2rem; }
+.chapter-pagination a { flex: 1 1 12rem; max-width: 24rem; font-size: .95rem; }
+.chapter-pagination a[rel="next"] { margin-left: auto; text-align: right; }
+.chapter-pagination span { display: block; color: var(--secondary); font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: .3rem; }
+.guide-footer { display: flex; flex-wrap: wrap; gap: 1.3rem; font-size: .8rem; padding-top: 1.2rem; }
+#load-status { color: var(--secondary); }
+#load-status[role="alert"] { padding: 1rem; border: 1px solid var(--line); background: var(--surface); }
+@media (max-width: 899px) {
+  .guide-header { padding: 1rem 1.25rem; }
+  .guide-brand { align-items: flex-start; flex-direction: column; gap: .15rem; }
+  .guide-brand span { font-size: .8rem; }
+  .app-link { max-width: 10rem; text-align: right; font-size: .82rem; }
+  .guide-layout { display: block; padding: 1.25rem; }
+  .guide-sidebar { position: static; max-height: none; overflow: visible; padding: 0 0 1rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--line); }
+  #chapter-links { padding-top: .2rem; }
+  article { font-size: 1rem; line-height: 1.75; }
+  .chapter-tools { font-size: .77rem; }
+  th, td { min-width: 9rem; padding: .7rem; }
+}
+@media print {
+  :root { background: white; color: black; }
+  .guide-header, .guide-sidebar, .chapter-tools, .on-this-page, .chapter-pagination, .guide-footer, .skip-link { display: none; }
+  .guide-layout { display: block; max-width: none; padding: 0; }
+  article { font-size: 10pt; line-height: 1.5; }
+  h1 { font-size: 21pt; }
+  h2 { font-size: 15pt; break-after: avoid; }
+  a { color: inherit; }
+  .figure-link { break-inside: avoid; border: 0; }
+  .table-scroll { overflow: visible; }
+  th, td { min-width: 0; }
+}

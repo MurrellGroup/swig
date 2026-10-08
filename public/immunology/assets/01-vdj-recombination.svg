@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="890" viewBox="0 0 1200 890" role="img" aria-labelledby="title desc">
+<title id="title">V(D)J recombination assembles a heavy-chain variable region</title><desc id="desc">A schematic inherited heavy-chain locus contains several V, D, and J segments followed by constant-region exons. V2, D2, and J1 are selected. Trimming and added nucleotides create a joined variable-region exon. An invented 15-base junction is TGT AC GGTAC TA TGG, with source boundaries that cut across codons. It translates to cysteine, threonine, valine, leucine, tryptophan. IMGT CDR3 is the three internal amino acids; the reported junction also includes the conserved flanking cysteine and tryptophan.</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4.5 L0,9 Z" fill="#546777"/></marker><pattern id="added" width="7" height="7" patternUnits="userSpaceOnUse"><rect width="7" height="7" fill="#E8EDF1"/><path d="M-1,1 L1,-1 M0,7 L7,0 M6,8 L8,6" stroke="#C9D3DC" stroke-width="1"/></pattern></defs>
+<rect x="0" y="0" width="1200" height="890" rx="0" fill="#FFFFFF"/>
+<text x="44" y="51" font-family="DejaVu Sans, Arial, sans-serif" font-size="29" font-weight="700" text-anchor="start" fill="#1C3040">How a heavy-chain variable region is assembled</text>
+<text x="44" y="85" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#546777">Segment choice and junction processing create a new DNA sequence in a developing B cell.</text>
+<rect x="44" y="112" width="1112" height="170" rx="8" fill="#F5F8FA"/>
+<text x="65" y="148" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#1C3040">1  Inherited DNA</text>
+<path d="M76 205 H1130" fill="none" stroke="#BBC9D2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="92" y="180" width="105" height="49" rx="5" fill="#DEEFF2" stroke="#216879" stroke-width="1.2"/>
+<text x="144.5" y="212" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#216879">V1</text>
+<rect x="224" y="180" width="105" height="49" rx="5" fill="#216879" stroke="#216879" stroke-width="1.2"/>
+<text x="276.5" y="212" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#FFFFFF">V2</text>
+<rect x="356" y="180" width="105" height="49" rx="5" fill="#DEEFF2" stroke="#216879" stroke-width="1.2"/>
+<text x="408.5" y="212" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#216879">V3</text>
+<rect x="515" y="180" width="68" height="49" rx="5" fill="#FAEACB" stroke="#97600C" stroke-width="1.2"/>
+<text x="549.0" y="212" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#97600C">D1</text>
+<rect x="614" y="180" width="68" height="49" rx="5" fill="#97600C" stroke="#97600C" stroke-width="1.2"/>
+<text x="648.0" y="212" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#FFFFFF">D2</text>
+<rect x="759" y="180" width="80" height="49" rx="5" fill="#6A5393" stroke="#6A5393" stroke-width="1.2"/>
+<text x="799.0" y="212" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#FFFFFF">J1</text>
+<rect x="871" y="180" width="80" height="49" rx="5" fill="#ECE6F5" stroke="#6A5393" stroke-width="1.2"/>
+<text x="911.0" y="212" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#6A5393">J2</text>
+<rect x="1033" y="180" width="91" height="49" rx="5" fill="#F1E5EB" stroke="#88596E" stroke-width="1.2"/>
+<text x="1078.5" y="212" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#88596E">Cμ</text>
+<text x="276" y="258" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#546777">V segments</text>
+<text x="600" y="258" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#546777">D segments</text>
+<text x="851" y="258" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#546777">J segments</text>
+<text x="1078" y="258" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#546777">C exons</text>
+<path d="M600 284 V305" fill="none" stroke="#546777" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="44" y="313" width="1112" height="205" rx="8" fill="#F5F8FA"/>
+<text x="65" y="349" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#1C3040">2  Somatic joining</text>
+<text x="65" y="380" font-family="DejaVu Sans, Arial, sans-serif" font-size="19" font-weight="400" text-anchor="start" fill="#546777">RAG-directed cutting → end processing → DNA repair</text>
+<rect x="145" y="401" width="430" height="46" rx="0" fill="#DEEFF2" stroke="#216879" stroke-width="1.2"/>
+<text x="360.0" y="432" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#216879">V2</text>
+<rect x="575" y="401" width="62" height="46" rx="0" fill="url(#added)" stroke="#647483" stroke-width="1.2"/>
+<text x="606.0" y="432" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#647483">N</text>
+<rect x="637" y="401" width="127" height="46" rx="0" fill="#FAEACB" stroke="#97600C" stroke-width="1.2"/>
+<text x="700.5" y="432" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#97600C">D2</text>
+<rect x="764" y="401" width="62" height="46" rx="0" fill="url(#added)" stroke="#647483" stroke-width="1.2"/>
+<text x="795.0" y="432" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#647483">N</text>
+<rect x="826" y="401" width="220" height="46" rx="0" fill="#ECE6F5" stroke="#6A5393" stroke-width="1.2"/>
+<text x="936.0" y="432" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle" fill="#6A5393">J1</text>
+<text x="65" y="478" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#1C3040">Segment ends can be trimmed; added nucleotides form the N tracts.</text>
+<text x="65" y="503" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#546777">The joined VDJ exon is later spliced to constant-region exons in RNA.</text>
+<rect x="44" y="547" width="1112" height="291" rx="8" fill="#F5F8FA"/>
+<text x="65" y="584" font-family="DejaVu Sans, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#1C3040">3  A shortened junction example</text>
+<rect x="210" y="609" width="156" height="28" rx="0" fill="#DEEFF2"/>
+<text x="288.0" y="630" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="700" text-anchor="middle" fill="#216879">V end</text>
+<rect x="366" y="609" width="104" height="28" rx="0" fill="#E8EDF1"/>
+<text x="418.0" y="630" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="700" text-anchor="middle" fill="#647483">N</text>
+<rect x="470" y="609" width="260" height="28" rx="0" fill="#FAEACB"/>
+<text x="600.0" y="630" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="700" text-anchor="middle" fill="#97600C">D</text>
+<rect x="730" y="609" width="104" height="28" rx="0" fill="#E8EDF1"/>
+<text x="782.0" y="630" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="700" text-anchor="middle" fill="#647483">N</text>
+<rect x="834" y="609" width="156" height="28" rx="0" fill="#ECE6F5"/>
+<text x="912.0" y="630" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="700" text-anchor="middle" fill="#6A5393">J end</text>
+<rect x="210" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="236.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">T</text>
+<rect x="262" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="288.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">G</text>
+<rect x="314" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="340.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">T</text>
+<rect x="366" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="392.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">A</text>
+<rect x="418" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="444.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">C</text>
+<rect x="470" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="496.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">G</text>
+<rect x="522" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="548.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">G</text>
+<rect x="574" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="600.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">T</text>
+<rect x="626" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="652.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">A</text>
+<rect x="678" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="704.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">C</text>
+<rect x="730" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="756.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">T</text>
+<rect x="782" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="808.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">A</text>
+<rect x="834" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="860.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">T</text>
+<rect x="886" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="912.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">G</text>
+<rect x="938" y="638" width="52" height="48" rx="0" fill="#FFFFFF" stroke="#BBC9D2" stroke-width="0.7"/>
+<text x="964.0" y="672" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="29" font-weight="400" text-anchor="middle" fill="#1C3040">G</text>
+<path d="M213 691 H363" fill="none" stroke="#546777" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="288.0" y="714" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="700" text-anchor="middle" fill="#1C3040">Cys</text>
+<path d="M369 691 H519" fill="none" stroke="#546777" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="444.0" y="714" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#1C3040">Thr</text>
+<path d="M525 691 H675" fill="none" stroke="#546777" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="600.0" y="714" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#1C3040">Val</text>
+<path d="M681 691 H831" fill="none" stroke="#546777" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="756.0" y="714" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#1C3040">Leu</text>
+<path d="M837 691 H987" fill="none" stroke="#546777" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="912.0" y="714" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="700" text-anchor="middle" fill="#1C3040">Trp</text>
+<path d="M366 726 V734 H834 V726" fill="none" stroke="#376294" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="600" y="759" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="700" text-anchor="middle" fill="#376294">IMGT CDR3</text>
+<path d="M210 774 V782 H990 V774" fill="none" stroke="#546777" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="600" y="811" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#1C3040">Junction, including conserved Cys and Trp anchors</text>
+<text x="44" y="869" font-family="DejaVu Sans, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="start" fill="#546777">Invented short fragments; schematic, not to scale. Recombination signals and intervening DNA are omitted.</text>
+</svg>

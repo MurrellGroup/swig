@@ -1,0 +1,28 @@
+name: Check immunology guide
+
+on:
+  pull_request:
+    paths:
+      - 'public/immunology/**'
+      - 'tests/immunology-guide.test.mjs'
+      - 'src/main.tsx'
+      - 'src/guide-entry.css'
+      - 'README.md'
+      - 'package.json'
+      - '.github/workflows/check-immunology-guide.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guide:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # This test suite uses only Node built-ins; npm ci is unnecessary.
+      - run: npm run test:docs

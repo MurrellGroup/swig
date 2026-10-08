@@ -1,0 +1,20 @@
+.guide-entry {
+  width: min(100% - 64px, 1420px);
+  margin: 0 auto;
+  padding: 10px 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 24px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.guide-entry a {
+  color: var(--teal);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.guide-entry a:hover { color: var(--teal-2); }
+@media (max-width: 700px) {
+  .guide-entry { width: calc(100% - 32px); justify-content: flex-start; gap: 8px 18px; }
+}
