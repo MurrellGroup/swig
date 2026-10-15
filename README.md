@@ -6,6 +6,14 @@ There is no backend, database, authentication layer, or platform-specific hostin
 
 The implementation-facing specification for every interface block—from input inspection and V(D)J assignment through collapse, chimera inference, lineages, phylogeny, and UCA inference—is indexed in [`public/METHODS_INDEX.md`](public/METHODS_INDEX.md). Each document distinguishes direct implementations, browser ports, compatible decision rules, and custom methods, and states how cited work is similar or different.
 
+## B- and T-cell immunology guide
+
+[Read the immunology guide](public/immunology/index.md) for an introduction to antigen recognition, receptor assembly, B- and T-cell responses, and the biology behind repertoire and lineage analyses. It follows the sequence-analysis workflow through V(D)J assignment, somatic hypermutation, phylogenies, and unmutated common ancestor inference, including applications in vaccine research.
+
+[Find background by analysis](public/immunology/13-analysis-guide.md), or consult the [glossary](public/immunology/glossary.md) and [references](public/immunology/references.md). The **B- and T-cell immunology guide** link above the main application opens a reader with chapter navigation and full-size figures in a separate tab, leaving the analysis open.
+
+The Markdown and SVG sources are in [`public/immunology/`](public/immunology/). See the [editing and integration notes](public/immunology/MAINTAINERS.md) for maintenance and `npm run test:docs` for documentation checks.
+
 ## Deploy on GitHub Pages
 
 1. Create an empty GitHub repository and place the contents of this directory at its root.
