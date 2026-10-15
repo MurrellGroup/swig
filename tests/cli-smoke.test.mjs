@@ -21,6 +21,14 @@ function runRawCli(root,args){
   return spawnSync(standalone||process.execPath,standalone?args:[join(root,"cli/swig-cli.mjs"),...args],{encoding:"utf8",timeout:120_000});
 }
 
+test("the CLI reports the package release version",async()=>{
+  const root=resolve(import.meta.dirname,"..");
+  const {version}=JSON.parse(await readFile(join(root,"package.json"),"utf8"));
+  const result=runRawCli(root,["--version"]);
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),version);
+});
+
 test("the CLI pipeline runs annotation through lazy lineage-study export",async()=>{
   const root=resolve(import.meta.dirname,"..");
   const temporary=await mkdtemp(join(root,"tmp-cli-test-"));

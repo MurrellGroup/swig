@@ -820,6 +820,80 @@ test("the bounded repeated-sequence cache preserves identifiers and FASTQ qualit
   assert.equal(cachedSecond.rows[0].quality, secondQuality);
 });
 
+const clippedVQuery = fs.readFileSync(new URL("fixtures/clipped-v-anchor.fasta", import.meta.url), "utf8")
+  .split(/\r?\n/).filter((line) => !line.startsWith(">")).join("");
+
+async function clippedVRuntime() {
+  const alpaca = pack.species.find((entry) => entry.name === "Vicugna pacos").loci.IGH;
+  const runtime = await makeRuntime();
+  runtime.setAssignerStrategy("aer_robust");
+  runtime.setCallingProfile("r_optimized");
+  runtime.initialize({ V: asFasta(alpaca.V), D: asFasta(alpaca.D), J: asFasta(alpaca.J) });
+  return runtime;
+}
+
+test("a clipped alpaca V cysteine is rescued without changing the selected segment alignment", async () => {
+  const runtime = await clippedVRuntime();
+  for (const [id, sequence] of [["Dyl", clippedVQuery], ["Dyl_reverse", reverseComplement(clippedVQuery)]]) {
+    const row = runtime.annotate(`>${id}\n${sequence}\n`, 1).rows[0];
+    assert.equal(row.v_call, "IGHV3S66*01");
+    assert.equal(row.j_call, "IGHJ4*01");
+    assert.equal(row.d_call, "IGHD6*01");
+    assert.equal(row.v_cigar, "276M96S12N");
+    assert.equal(row.v_score, "452");
+    assert.equal(row.v_sequence_end, "276");
+    assert.equal(row.v_germline_end, "276");
+    assert.equal(row.cdr3_start, "289");
+    assert.equal(row.cdr3_end, "339");
+    assert.equal(row.cdr3_aa, "AARFAGIVAGPWDEYNY");
+    assert.equal(row.junction_aa, "CAARFAGIVAGPWDEYNYW");
+    assert.equal(row.productive, "T");
+    assert.equal(row.stop_codon, "F");
+    assert.equal(row.vj_in_frame, "T");
+  }
+});
+
+test("rescued V anchors retain stop-codon, junction-frame and V-frameshift vetoes", async () => {
+  const runtime = await clippedVRuntime();
+  const cases = [
+    ["stop", clippedVQuery.slice(0, 120) + "TAA" + clippedVQuery.slice(123), "stop_codon"],
+    ["junction_shift", clippedVQuery.slice(0, 300) + "A" + clippedVQuery.slice(300), "vj_in_frame"],
+    ["v_shift", clippedVQuery.slice(0, 120) + "A" + clippedVQuery.slice(120), "v_frameshift"],
+  ];
+  for (const [id, sequence, veto] of cases) {
+    const row = runtime.annotate(`>${id}\n${sequence}\n`, 1).rows[0];
+    assert.ok(row.cdr3, `${id}: anchor rescue failed before checking productivity`);
+    assert.equal(row.productive, "F", `${id}: nonproductive sequence became productive`);
+    assert.equal(row[veto], veto === "vj_in_frame" ? "F" : "T", id);
+  }
+});
+
+test("V anchor rescue cannot replace a deleted anchor with a later junction cysteine", async () => {
+  const runtime = await clippedVRuntime();
+  const sequence = clippedVQuery.slice(0, 276) + "AACCAACCAACC" +
+    clippedVQuery.slice(288, 315) + "TGT" + clippedVQuery.slice(318);
+  const row = runtime.annotate(`>trimmed_cys\n${sequence}\n`, 1).rows[0];
+  assert.equal(row.v_sequence_end, "276");
+  assert.equal(row.cdr3, "");
+  assert.equal(row.productive, "");
+});
+
+test("unknown clipped V bases and competing indel mappings remain unresolved", async () => {
+  const runtime = await clippedVRuntime();
+  const cases = [
+    ["unknown_tail", clippedVQuery.slice(0, 279) + "N" + clippedVQuery.slice(280)],
+    ["shifted_cys", clippedVQuery.slice(0, 279) + "A" + clippedVQuery.slice(279)],
+    // A cysteine exists at the projected coordinate, but a gapped anchored
+    // mapping is competitive. The codon alone must not enable rescue.
+    ["competing_gap", clippedVQuery.slice(0, 276) + "TCAGTTGCGTGT" + clippedVQuery.slice(288)],
+  ];
+  for (const [id, sequence] of cases) {
+    const row = runtime.annotate(`>${id}\n${sequence}\n`, 1).rows[0];
+    assert.equal(row.cdr3, "", id);
+    assert.equal(row.productive, "", id);
+  }
+});
+
 test("WASM annotates FASTA, FASTQ, and AIRR; handles heavy, light, TCR, strand, and J-only swaps", async () => {
   const human = pack.species.find((entry) => entry.name === "Homo sapiens");
   assert.ok(human, "human reference set is missing");
